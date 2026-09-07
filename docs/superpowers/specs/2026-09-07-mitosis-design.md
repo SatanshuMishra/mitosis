@@ -47,7 +47,7 @@ Every term used in this document, defined once.
 |---|---|
 | **SPEC** | The input document. A human wrote it. It describes work to be done. It is frozen the moment mitosis receives it. |
 | **MSP** | Minimum Shippable Product. One piece of work small enough to be its own pull request, and complete enough that merging it does not break the branch it lands on. |
-| **Cluster** | A group of MSPs that must be built one after another. Clusters run at the same time as each other. |
+| **Cluster** | A group of MSPs that must be built one after another. Clusters are eligible to run at the same time as each other, bounded by the concurrent-cluster cap in section 10. |
 | **Write-set** | The list of files an MSP is expected to change. |
 | **Invariant** | A statement that must be true of what one phase produced. Fixed in this document, identical on every run. Defined in full in section 5.1. |
 | **Acceptance property** | A statement about what one MSP's finished work must do, true when the work was done correctly and false when it was not. It describes an outcome, never a step toward one, and never the code that produces it. Written by that MSP's planner. Defined in full in section 5.1. |
@@ -91,11 +91,12 @@ Every term used in this document, defined once.
   and Phase 4 reads it to plan one MSP. No phase after Phase 4 reads it at all. A
   later phase that reached back would be compensating for a planning failure
   instead of surfacing it.
-- **Parallelising the tasks inside a single MSP.** Clusters run at the same time
-  as each other; the steps within one MSP run in one worktree, in order. Task-level
-  parallelism is not part of this design.
-- **Judging its own finished code.** Phase 6 reviews the work against the plan.
-  The pull request is where a human reviews it.
+- **Parallelising the tasks inside a single MSP.** Clusters are eligible to run
+  at the same time as each other; the steps within one MSP run in one worktree, in
+  order. Task-level parallelism is not part of this design.
+- **Deciding whether finished work is good enough to merge.** Phase 6 reviews
+  the work against the plan; whether it is good enough to merge is the human's
+  call at the pull request.
 
 ---
 
@@ -111,9 +112,11 @@ Each set is listed with the thing it governs, and they all ask one question: did
 this stage carry forward everything it was given, and is its output honest about
 itself?
 
-**A phase asserts its own invariants, and a failure means more work rather than
-an ending.** The set is that phase's exit condition, not a gate somebody else
-holds. This is specified in 5.3 and 5.4, and the reasoning is decision 8.10.
+**A phase asserts its own invariants, and the first response to a failure is more
+work, not an ending.** The set is that phase's exit condition, not a gate somebody
+else holds. Stopping is still possible — 5.3 specifies when — but it is never the
+first response. This is specified in 5.3 and 5.4, and the reasoning is decision
+8.10.
 
 ### Phase 1 — Intake
 
@@ -327,7 +330,7 @@ this phase is deterministic.
 
 Runs once per MSP. **Phases 4 to 7 run as a unit, one MSP at a time.** An MSP goes
 through planning, building, review and shipping before the next MSP in its cluster
-is planned. Clusters still run at the same time as each other.
+is planned. Clusters are still eligible to run at the same time as each other.
 
 What P1 needs from this is narrower than the whole unit: the previous MSP's branch,
 which exists once that MSP's Phase 5 has finished. Running the unit to completion
@@ -579,9 +582,13 @@ check the run performed on it.
 | First MSP in its cluster | The feature branch |
 | Every later MSP in that cluster | The branch of the MSP immediately before it |
 
-This makes each cluster a **stack** of pull requests. Because MSPs inside a
-cluster depend on each other, each one's changes only make sense on top of the
-previous one's.
+This makes each cluster a **stack** of pull requests. MSPs inside a cluster are
+serialized because one needs the other or because they touch the same file, and
+each is built on its predecessor's branch — that is what makes the stack.
+
+An overlap-only successor pays a cost for this: its pull request cannot merge
+until a predecessor it does not actually need merges first, because that
+predecessor's branch is its base.
 
 Clusters are independent, so each cluster's stack targets the feature branch on
 its own.
@@ -817,10 +824,12 @@ A pause is the last resort, never the first response. A statement that cannot be
 affirmed first sends the agent back to do the missing work, as 5.3 describes, and
 only becomes a pause once that is exhausted.
 
-Every MSP after it **in the same cluster** also pauses, because each depends on
-the one before it. Since phases 4 to 7 run one MSP at a time, those have usually
-not been planned yet, so there is nothing of theirs to preserve. They are paused
-before they ever start, and the report is the only place they appear at all.
+Every MSP after it **in the same cluster** also pauses, because each is built on
+its predecessor's branch — whether it needed that predecessor's work or only
+shared a file with it, it is serialized behind it either way. Since phases 4 to 7
+run one MSP at a time, those have usually not been planned yet, so there is
+nothing of theirs to preserve. They are paused before they ever start, and the
+report is the only place they appear at all.
 
 **Other clusters are unaffected and finish normally.** A failure in one cluster
 never stops another.
@@ -989,7 +998,8 @@ matter are caught by git when the pull requests merge.
 ### 8.5 Clusters are dependency chains; clusters run in parallel
 
 **Decision:** MSPs that depend on each other, or that share a file, go in one
-cluster and run in sequence. Clusters run at the same time.
+cluster and run in sequence. Clusters are eligible to run at the same time as
+each other, bounded by the cap in section 10.
 
 **Why:** this is the natural shape of the work, and it maps exactly onto stacked
 pull requests. A cluster is a stack.
