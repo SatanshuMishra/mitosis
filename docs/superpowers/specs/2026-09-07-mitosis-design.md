@@ -53,6 +53,7 @@ Every term used in this document, defined once.
 | **Acceptance property** | A statement about what one MSP's finished work must do, true when the work was done correctly and false when it was not. It describes an outcome, never a step toward one, and never the code that produces it. Written by that MSP's planner. Defined in full in section 5.1. |
 | **Step** | One item of work in a plan. Steps say what to do. Acceptance properties say what must then be true. |
 | **Assertion** | The act of checking an invariant or an acceptance property against the real artifact and affirming it. Where the check can be code, it is code. Where it is a judgment, a model answers it and shows the evidence. |
+| **Assertion record** | What a phase emits alongside its product: one entry per invariant in that phase's set, each carrying a verdict and the evidence behind it. mitosis does not start the next phase until the record is complete and every entry is affirmed. |
 | **Verdict** | Phase 6's pass or fail on one MSP, resting on its acceptance properties and nothing else. |
 | **Planner** | The agent in Phase 4. Reads the SPEC and one MSP, writes the plan. Writes no code and no test. |
 | **Worker** | The agent in Phase 5. Reads the plan, writes the code, keeps the build green. Never reads the SPEC, and never writes an acceptance assertion. |
@@ -109,6 +110,10 @@ next phase begins, and the terminal report asserts its own set as it is written.
 Each set is listed with the thing it governs, and they all ask one question: did
 this stage carry forward everything it was given, and is its output honest about
 itself?
+
+**A phase asserts its own invariants, and a failure means more work rather than
+an ending.** The set is that phase's exit condition, not a gate somebody else
+holds. This is specified in 5.3 and 5.4, and the reasoning is decision 8.10.
 
 ### Phase 1 — Intake
 
@@ -205,9 +210,9 @@ invariant is and how one is asserted.
 
 | # | The statement that must be true | How it is asserted |
 |---|---|---|
-| **D1 — Coverage** | Every piece of work the SPEC asks for is covered by at least one MSP. | A model reads the SPEC and the MSP list and builds the mapping: each part of the SPEC against the MSP or MSPs covering it. Anything left unmapped fails. |
-| **D2 — No invention** | No MSP proposes work the SPEC does not ask for. | The same mapping read the other way. An MSP mapping to nothing in the SPEC fails. |
-| **D3 — Shippability** | Each MSP, merged on its own onto its base, leaves that branch working. | A model judges each MSP against that definition. An MSP that only makes sense once a later one lands is not shippable and fails. |
+| **D1 — Coverage** | Every piece of work the SPEC asks for is covered by at least one MSP. | A model reads the SPEC and the MSP list and builds the mapping: each part of the SPEC against the MSP or MSPs covering it. Anything left unmapped means the split is incomplete, so the pass adds the missing MSP and asserts again. |
+| **D2 — No invention** | No MSP proposes work the SPEC does not ask for. | The same mapping read the other way. An MSP mapping to nothing in the SPEC is removed. |
+| **D3 — Shippability** | Each MSP, merged on its own onto its base, leaves that branch working. | A model judges each MSP against that definition. An MSP that only makes sense once a later one lands is not shippable, and the split is redrawn until it is. |
 | **D4 — Grounded paths** | Every path in every `writes` either exists in the repository now, or is a file that MSP will create. | The existing case mechanically, against the repository. The create case as a model judgment. |
 | **D5 — Dependency sufficiency** | If an MSP cannot be built until another MSP's work exists, that other MSP is named in its `needs`. | A model reads each MSP against the ones it could depend on. |
 | **D6 — A valid order exists** | Every id named in a `needs` is an id in this list, and the graph has no cycle. | Mechanically. |
@@ -264,6 +269,12 @@ mitosis runs them in sequence and reports parallelism as one. It does not refuse
 **Invariants.** These are asserted against the finished schedule rather than
 against the algorithm, so they still mean the same thing if the clustering code is
 ever rewritten.
+
+This phase is the one place where a failure cannot be fixed by iterating, because
+the phase has no freedom: the schedule is a pure function of the MSP list. C1 to
+C4 failing means the clustering code is broken, which no agent can repair, and the
+run stops. C5 failing means the MSP list is wrong, so the fix is a `needs` edge
+back in Phase 2.
 
 | # | The statement that must be true | How it is asserted |
 |---|---|---|
@@ -325,13 +336,13 @@ Phase 5 begins.
 | # | The statement that must be true | How it is asserted |
 |---|---|---|
 | **P1 — Already false** | Every acceptance property is false against this MSP's base branch: the feature branch for the first MSP in a cluster, the previous MSP's branch for every later one. | A model checks each property against that branch. |
-| **P2 — Slice coverage** | Every behavior this MSP's part of the SPEC requires is covered by at least one acceptance property. | A model maps the slice against the property list. Anything unmapped fails. |
+| **P2 — Slice coverage** | Every behavior this MSP's part of the SPEC requires is covered by at least one acceptance property. | A model maps the slice against the property list. Anything unmapped means a property is missing, and the planner writes it. |
 | **P3 — No cheap satisfaction** | For every property, the cheapest way to make it hold requires the real behavior. | The model names the laziest thing that would satisfy the property literally, and that answer is judged. See below. |
 | **P4 — Checkable without reading the code** | Every property can be checked without opening the implementation that produces it. | A model judgment. |
 | **P5 — Grounded** | Every piece of existing code the steps refer to exists in this repository. | Mechanically. |
 | **P6 — In scope and shippable** | The plan stays inside the MSP's brief and its declared files, and describes no work that would leave the branch broken if merged on its own. | A model compares the plan against the brief and `writes`. |
 | **P7 — Properties are not steps** | Acceptance properties are stated separately from the steps, and no property restates a step. | A model judgment. |
-| **P8 — Steps reach the properties** | For every property, the plan names which steps produce it. | A model maps properties against steps. A property no step produces fails. |
+| **P8 — Steps reach the properties** | For every property, the plan names which steps produce it. | A model maps properties against steps. A property no step produces means a step is missing, and the planner adds it. |
 
 **How P3 works, and where its output goes.** Asking a model whether a property is
 strong invites a yes, because that is what the question invites. Asking it for the
@@ -402,7 +413,7 @@ says, and nothing else.
 development — you write tests to know your code works while you are writing it,
 and they run in continuous integration like any other test. They are not the
 acceptance gate. Phase 6 writes the acceptance assertions independently, for the
-reason in section 5.4.
+reason in section 5.5.
 
 **Isolation is physical, not by convention.** Each MSP gets its own checked-out
 copy of the repository. Two workers running at once cannot see or overwrite each
@@ -429,7 +440,7 @@ properties and nothing else. Anything built that the plan never asked for is
 therefore work that nobody will ever check.
 
 **Why W1 is worth stating.** A build can go green and then more commits can land,
-leaving a green result that describes code nobody tested. Section 5.6 says a red
+leaving a green result that describes code nobody tested. Section 5.7 says a red
 build invalidates every prior assertion; W1 is the same idea applied to the build
 result itself.
 
@@ -601,25 +612,83 @@ evidence that makes the yes checkable — the coverage mapping, the run that fai
 before the fix, the file that was opened. A bare affirmation is the thing this
 mechanism exists to replace.
 
-### 5.3 What happens when something cannot be affirmed
+### 5.3 What happens when a statement cannot be affirmed
 
 Never a warning, and never a note attached to output that carries on regardless.
-What stopping means depends on how much has already been built.
 
-| Where it fails | What happens |
+**The first response is more work, not stopping.** An invariant is the phase's
+exit condition, not a gate held by somebody else. The agent that could not affirm
+one is the agent holding the context needed to fix it: an uncovered requirement
+means find it and add the MSP, a property no step produces means add the step, a
+red build means fix the build. It then asserts again. The phase ends when every
+statement holds, not when the agent believes the work is done.
+
+Three outcomes exist, and which applies depends on whether the phase has the
+freedom to fix what it found.
+
+| Outcome | When it applies | Example |
+|---|---|---|
+| **Iterate** | The phase can fix it with the context it already has. This is the normal case, and most statements only ever end here. | D1 finds an uncovered requirement, so the decompose pass adds the missing MSP and asserts again. |
+| **Return to an earlier phase** | The failure is real, but this phase has no freedom to fix it. | C5 finds a hidden dependency. Phase 3 is pure computation over the MSP list, so the fix is a `needs` edge in Phase 2. |
+| **Stop** | No agent can fix it, or iterating has been exhausted. | I1's hash does not match, which is a fact about the world, not a decision. C1 to C4 failing means the clustering code itself is broken. |
+
+**There is no attempt limit on iterating**, exactly as there is none on a red
+build. A run or an MSP that genuinely cannot satisfy a statement escalates to a
+pause, which is section 6.1.
+
+**When it does stop, what stops depends on how much has been built.**
+
+| Where | What stops |
 |---|---|
-| Phases 1 to 4 | The whole run stops. Nothing has been built, so this is the cheapest possible place to fail. |
-| Phases 5, 6 and 7 | That MSP pauses, and every MSP behind it in the same cluster pauses. Other clusters finish normally. This is section 6.1. A failing review **verdict** is not this: it returns the MSP to Phase 5, as 6.1 says. |
-| The terminal report | The report cannot stop, because the report is the output. The failure is printed inside the report itself. |
+| Phases 1 to 4 | The whole run. Nothing has been built, so this is the cheapest possible place to fail. |
+| Phases 5, 6 and 7 | That MSP, and every MSP behind it in its cluster. Other clusters finish normally. A failing review **verdict** is not this: it returns the MSP to Phase 5, as 6.1 says. |
+| The terminal report | Nothing. The report is the output, so the failure is printed inside it. |
 
-In every case the failure names the statement, what was expected, and what was
+In every case the record names the statement, what was expected, and what was
 found.
 
-### 5.4 Who does what
+### 5.4 When a statement is asserted, and what forces it
+
+**When.** At the end of the phase's work, before anything is handed on — and
+again after every round of fixing, because a failure sends the agent back rather
+than ending the phase.
+
+**How many times.** Once per execution of the phase, plus once more for each
+round of fixing. Phases 1 to 3 run once per run, so their sets are asserted once
+per run. Phases 4 to 7 run once per MSP, so their sets are asserted once per MSP.
+There is no fixed number and no cap.
+
+**Re-assertion when the thing underneath changes.** An affirmed statement
+describes the output as it stood when it was affirmed. If that output changes
+afterwards, the statement is asserted again. The common case: a failing review
+returns an MSP to Phase 5, the branch changes, and W1 to W3 and then R1 to R6 all
+have to hold again. A previous affirmation against different output is not
+evidence, which is the same rule 5.7 applies to a red build.
+
+**What forces it, rather than leaving it a suggestion.** Every phase emits an
+**assertion record** alongside its product: one entry per invariant in that
+phase's set, carrying the verdict and the evidence behind it. mitosis does not
+start the next phase until that record exists, has an entry for every statement in
+the set, and every entry is affirmed.
+
+That check is code, not judgment. It reads the record's shape — are all the
+statements present, does each carry a verdict, is the evidence non-empty — and it
+never re-decides whether a judgment was right. A model cannot skip an assertion,
+because skipping one leaves the record incomplete and the run does not advance.
+
+**What this buys, and what it does not.** It makes asserting mandatory rather
+than advisory: no statement can be quietly passed over, and none can be answered
+with a bare yes. It does not make the judgment inside an entry true. A model can
+still affirm something it should have refused, and nothing here catches that —
+which is why the evidence is kept and printed in the terminal report, where the
+person who wrote the SPEC can read it.
+
+### 5.5 Who does what
 
 | Role | Responsibility |
 |---|---|
 | **This document** | Fixes every invariant. They do not change between runs. |
+| **Each phase's own agent** | Asserts that phase's invariants against its own output, and keeps working until every one of them holds. Decision 8.10 explains why this is not self-grading. |
 | **Planner** (Phase 4) | Writes the acceptance properties for one MSP. Writes no test code. |
 | **Worker** (Phase 5) | Writes the code and keeps the build green. Writes no acceptance assertion. |
 | **Reviewer** (Phase 6) | Writes an executable assertion for each acceptance property, independently, and runs it. |
@@ -630,7 +699,7 @@ and the check proving that code correct is exactly that opinion, with extra step
 in front of it. Phase 6 exists to break that, and it is the reason planning,
 building and checking are three phases rather than two.
 
-### 5.5 The strict requirement, and what now enforces it
+### 5.6 The strict requirement, and what now enforces it
 
 **If every acceptance property holds and the MSP still does not work, the
 properties were designed wrong.**
@@ -641,7 +710,7 @@ three Phase 4 invariants: **P1** requires every property to be false before the
 work starts, **P3** requires the cheapest way of satisfying it to need the real
 behavior, and **P7** stops properties collapsing into the task list.
 
-### 5.6 Ordering against continuous integration
+### 5.7 Ordering against continuous integration
 
 **Continuous integration must be green before acceptance properties are
 asserted.**
@@ -653,7 +722,7 @@ If the build later goes red because the code changed, every property must be
 asserted again. A previously passing assertion against different code is not
 evidence.
 
-### 5.7 The two are independent checks
+### 5.8 The two are independent checks
 
 Green integration says the codebase still works. Passing acceptance properties say
 this MSP did what it was asked to do. Neither implies the other, and an MSP needs
@@ -666,6 +735,10 @@ both.
 ### 6.1 What happens when an MSP cannot finish
 
 The MSP pauses. Its branch and any work on it stay in place.
+
+A pause is the last resort, never the first response. A statement that cannot be
+affirmed first sends the agent back to do the missing work, as 5.3 describes, and
+only becomes a pause once that is exhausted.
 
 Every MSP after it **in the same cluster** also pauses, because each depends on
 the one before it.
@@ -754,7 +827,7 @@ the report rather than raised outside it.
 | **T1 — Everything accounted for** | Every MSP from the decomposition appears in exactly one of Shipped or Paused. | Mechanically, against the MSP list. |
 | **T2 — No assumption dropped** | Every assumption any emitter recorded reaches the report. | Mechanically, by count and identity. |
 | **T3 — The real mappings** | The Coverage, Plan coverage and Property strength sections print what D1, P2 and P3 actually produced, not summaries written at report time. | Mechanically, by comparison. |
-| **T4 — Paused entries say something** | Every paused entry names what stopped it and what is blocked behind it. | A model judges specificity. "Failed" fails. |
+| **T4 — Paused entries say something** | Every paused entry names what stopped it and what is blocked behind it. | A model judges specificity. "Failed" is not enough, and the entry is rewritten until it says something a human can act on. |
 
 **Why T3 exists.** Regenerating a mapping at report time is a laundering step: it
 gives a second pass the chance to paper over a gap the first one found. Print the
@@ -864,6 +937,11 @@ correctness, since nothing merges without review.
 acceptance properties and returns a verdict. The worker writes no acceptance
 assertion, and the reviewer adopts none of the worker's tests.
 
+**What this rule does not cover.** It governs acceptance properties, whose
+statements a model wrote during this run. It does not stop an agent from
+asserting the fixed invariants of its own phase, which is a different act for the
+reason given in 8.10.
+
 **Why:** the earlier design had the worker produce the executable assertion for
 each statement and prove it passed. The planner wrote the statement, but the
 worker wrote the check — and a weak check of a strong statement passes. That
@@ -893,7 +971,38 @@ statement a human vetted and one a model invented mid-run.
 correct means, because the SPEC is different every run. This relocates that
 judgment and bounds it with eight rules. It does not remove it.
 
-### 8.10 Git is the state
+### 8.10 A phase asserts its own invariants
+
+**Decision:** the agent that did a phase's work asserts that phase's invariants.
+There is no separate checker and no independent pass.
+
+**Why this does not contradict 8.8:** 8.8 objects to an agent authoring the
+instrument that measures it. A worker that writes both the code and the check
+proving that code correct can write a weak check and pass. A phase invariant has
+no such opening — its statement is fixed in this document, and the agent can only
+answer it or fail to. It cannot make the question easier.
+
+**Why an independent asserter would be worse.** It has no context, because it did
+not do the work. When it finds a gap it can report the gap and nothing else,
+which is the completeness critic in section 9: findings nobody is positioned to
+act on. The agent holding the context is the only one that can act on the answer,
+which is why it has to be the one asked.
+
+**What an invariant therefore is:** the phase's exit condition, not a gate held by
+somebody else. A statement that cannot be affirmed means there is work left, and
+the agent goes and does it.
+
+**Where independence still lives.** Acceptance properties get it from Phase 6,
+because their statements are generated during the run and the instrument needs a
+second author. Phase invariants get it from the human reading the terminal report,
+which is why 5.2 requires the evidence to be shown and why the report prints it.
+
+**What it costs:** the agent that wants to be finished is the one deciding whether
+it is. Self-assertion catches oversight well and motivated reasoning less well.
+The alternative is worse at both, and every definition of done a human works to
+has the same shape.
+
+### 8.11 Git is the state
 
 **Decision:** no run-state file. A re-run reads branches and open pull requests.
 
