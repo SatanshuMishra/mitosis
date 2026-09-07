@@ -85,9 +85,11 @@ Every term used in this document, defined once.
 - **Judging whether the SPEC is good enough.** mitosis never asks the author to
   clarify, expand, or improve the document. It ships the one it was given.
 - **A saved run-state file.** The repository itself is the record.
-- **Re-checking anything against the SPEC after Phase 4.** The SPEC is read in
-  Phase 2 and Phase 4 and nowhere else. A later phase that reached back to it
-  would be compensating for a planning failure instead of surfacing it.
+- **Re-checking anything against the SPEC after Phase 4.** Phase 1 reads it to
+  freeze it and to recognise already-shipped work, Phase 2 reads it to split it,
+  and Phase 4 reads it to plan one MSP. No phase after Phase 4 reads it at all. A
+  later phase that reached back would be compensating for a planning failure
+  instead of surfacing it.
 - **Parallelising the tasks inside a single MSP.** Clusters run at the same time
   as each other; the steps within one MSP run in one worktree, in order. Task-level
   parallelism is not part of this design.
@@ -103,9 +105,10 @@ properties, failure handling, and the report — are specified in sections 5
 through 7.
 
 Every phase asserts a fixed set of invariants about its own output before the
-next phase begins. Those sets are listed with the phase they belong to, and what
-they have in common is one question: did this phase carry forward everything it
-was given, and is its output honest about itself?
+next phase begins, and the terminal report asserts its own set as it is written.
+Each set is listed with the thing it governs, and they all ask one question: did
+this stage carry forward everything it was given, and is its output honest about
+itself?
 
 ### Phase 1 — Intake
 
@@ -148,7 +151,8 @@ building something twice is recoverable, and skipping it is not.
 progress. Behavior stays correct, because the frozen copy is what was used, but
 the human needs to be told that their document and the run have diverged.
 
-**Output:** a frozen SPEC and the repository state.
+**Output:** a frozen SPEC, the repository state, and the list of work already
+shipped by an earlier run.
 
 ---
 
@@ -227,8 +231,9 @@ should not be there costs only parallelism. A missing one costs correctness.
 
 **Input:** the MSP list.
 
-**What happens:** pure computation. No model is involved. This phase is
-deterministic — the same MSP list always produces the same clusters.
+**What happens:** the schedule is pure computation. No model decides it, and the
+same MSP list always produces the same clusters. A model is involved afterwards,
+but only to assert C5 against the finished schedule; it never changes it.
 
 1. Build a graph whose nodes are MSPs.
 2. Draw an edge between two MSPs when **either** of these is true:
@@ -284,7 +289,7 @@ this phase is deterministic.
 
 ### Phase 4 — Plan
 
-**Input:** the frozen SPEC, and one MSP.
+**Input:** the frozen SPEC, one MSP, and the branch this MSP will be built on.
 
 Runs once per MSP.
 
@@ -319,7 +324,7 @@ Phase 5 begins.
 
 | # | The statement that must be true | How it is asserted |
 |---|---|---|
-| **P1 — Already false** | Every acceptance property is false against the codebase as it stands, before any of this MSP's work exists. | A model checks each property against the current repository. |
+| **P1 — Already false** | Every acceptance property is false against this MSP's base branch: the feature branch for the first MSP in a cluster, the previous MSP's branch for every later one. | A model checks each property against that branch. |
 | **P2 — Slice coverage** | Every behavior this MSP's part of the SPEC requires is covered by at least one acceptance property. | A model maps the slice against the property list. Anything unmapped fails. |
 | **P3 — No cheap satisfaction** | For every property, the cheapest way to make it hold requires the real behavior. | The model names the laziest thing that would satisfy the property literally, and that answer is judged. See below. |
 | **P4 — Checkable without reading the code** | Every property can be checked without opening the implementation that produces it. | A model judgment. |
@@ -467,14 +472,19 @@ authors back into one, with an extra step in front of it.
 |---|---|---|
 | **R1 — Independently authored** | Every assertion was written by the reviewer, not taken from the worker's tests. | Mechanically, by provenance: the assertion files are new in the reviewer's commit. |
 | **R2 — Every property covered** | Every acceptance property has its own assertion. None skipped, none folded into another. | Mechanically, by mapping properties to assertions. |
-| **R3 — Inertness** | With this MSP's change reverted, at least one assertion fails. | By actually reverting, running, observing the failure, and restoring. |
+| **R3 — Inertness** | With this MSP's change reverted, **every** assertion fails. | By actually reverting, running all of them, observing every failure, and restoring. |
 | **R4 — Against the shipped code** | The assertions ran against the branch's current head, with continuous integration green. | Mechanically. |
 | **R5 — Verdict on properties only** | The pass or fail rests on the stated acceptance properties and nothing else. | A model judgment on the verdict text. |
 | **R6 — The SPEC was not read** | The SPEC is not among the reviewer's inputs. | Mechanically, by construction. |
 
-**R3 is the strongest statement in this set.** An assertion suite that still passes
-when the work is removed is testing nothing at all. It is the executable form of
-P1: P1 requires each property to be false before the work, and R3 proves it was.
+**R3 is the strongest statement in this set.** An assertion suite that still
+passes when the work is removed is testing nothing at all.
+
+**Why it demands every assertion and not one.** R3 is the executable form of P1,
+and P1 is about every property, not some of them. A reverted branch is exactly the
+state P1 describes — the work does not exist — so an assertion that still passes
+there is checking something P1 already claimed was false. One of the two is then
+wrong, and neither the planner nor the reviewer would ever find out.
 
 **Why R5 exists.** A reviewer allowed to fail an MSP on general opinion puts
 unbounded judgment back into a pipeline built to avoid it. The verdict is about
@@ -490,7 +500,8 @@ cannot be satisfied escalates into the terminal report.
 
 ### Phase 7 — Ship
 
-**Input:** a reviewed MSP branch with a passing verdict.
+**Input:** a reviewed MSP branch with a passing verdict, and the record of every
+check the run performed on it.
 
 **What happens:** open one pull request.
 
@@ -521,7 +532,7 @@ ad-hoc. Title grammar and body fields follow that tool's mandatory format.
 | **S1 — Reviewed first** | Phase 6 returned a passing verdict for this MSP. | Mechanically. |
 | **S2 — Correct base** | The base branch is what the stacking rule above says it is. | Mechanically. |
 | **S3 — No invented verification** | Every check listed as verified corresponds to a command that actually ran, with its real result. | A model compares each claimed line against what the run executed. |
-| **S4 — No silent omission** | A check that was not run appears as not-verified, rather than being left out. | A model compares the plan's checks against what the body lists. |
+| **S4 — No silent omission** | A check that was not run appears as not-verified, rather than being left out. | A model compares the checks the run actually performed against what the body lists. |
 
 **Why S3 and S4 are two halves of one problem.** A fabricated verification line is
 an obvious lie. An omitted one is not obviously anything: a reviewer reads a short
@@ -598,7 +609,7 @@ What stopping means depends on how much has already been built.
 | Where it fails | What happens |
 |---|---|
 | Phases 1 to 4 | The whole run stops. Nothing has been built, so this is the cheapest possible place to fail. |
-| Phases 5, 6 and 7 | That MSP pauses, and every MSP behind it in the same cluster pauses. Other clusters finish normally. This is section 6.1. |
+| Phases 5, 6 and 7 | That MSP pauses, and every MSP behind it in the same cluster pauses. Other clusters finish normally. This is section 6.1. A failing review **verdict** is not this: it returns the MSP to Phase 5, as 6.1 says. |
 | The terminal report | The report cannot stop, because the report is the output. The failure is printed inside the report itself. |
 
 In every case the failure names the statement, what was expected, and what was
@@ -673,7 +684,8 @@ An MSP that cannot reach green integration means the SPEC was unclear or the pla
 was wrong. The defect is upstream, in specification or planning, not in shipping.
 
 Building recovery machinery for it would be designing around a problem that should
-be fixed where it starts. mitosis pauses, reports honestly, and stops.
+be fixed where it starts. The affected cluster pauses and mitosis reports it
+honestly. Every other cluster finishes.
 
 ### 6.3 Resuming
 
@@ -733,15 +745,15 @@ quietly narrowed its slice is never caught by a later phase, by design. Printing
 the per-MSP mapping gives the same two-minute check at plan level that Coverage
 gives at split level.
 
-**Invariants.** The report is the only phase whose failure cannot stop anything,
-because the report is the output. A failed statement here is printed in the report
-rather than raised outside it.
+**Invariants.** The report is not a phase, and a failure here cannot stop
+anything, because the report is the output. A failed statement is printed inside
+the report rather than raised outside it.
 
 | # | The statement that must be true | How it is asserted |
 |---|---|---|
 | **T1 — Everything accounted for** | Every MSP from the decomposition appears in exactly one of Shipped or Paused. | Mechanically, against the MSP list. |
 | **T2 — No assumption dropped** | Every assumption any emitter recorded reaches the report. | Mechanically, by count and identity. |
-| **T3 — The real mappings** | The Coverage and Plan coverage sections print the mappings D1 and P2 actually produced, not summaries written at report time. | Mechanically, by comparison. |
+| **T3 — The real mappings** | The Coverage, Plan coverage and Property strength sections print what D1, P2 and P3 actually produced, not summaries written at report time. | Mechanically, by comparison. |
 | **T4 — Paused entries say something** | Every paused entry names what stopped it and what is blocked behind it. | A model judges specificity. "Failed" fails. |
 
 **Why T3 exists.** Regenerating a mapping at report time is a laundering step: it
@@ -778,7 +790,7 @@ implementation brief per MSP, written before any of the work was examined. That
 made the decomposition large, repetitive against the SPEC prose, and worse than a
 plan written with full context.
 
-### 8.3 Correctness is invariants, not human review
+### 8.3 Correctness is asserted statements, not human review
 
 **Decision:** every phase has invariants that must be affirmed before anything
 downstream proceeds, and they are fixed in this document. Each MSP additionally
@@ -786,8 +798,8 @@ has acceptance properties, written by its planner and asserted by a separate
 reviewer. All passing, plus green integration, means done.
 
 **Why:** with no human in the loop, "done" has to be decided by something other
-than the opinion of whoever did the work. An implementer's own view that it
-finished is not evidence, and neither is a decomposer's own view that it split
+than the opinion of whoever did the work. An implementer's own opinion that it
+finished is not evidence, and neither is a decomposer's own opinion that it split
 the SPEC correctly.
 
 **Why a model asserts and not only a program:** most of what makes a phase's
@@ -840,9 +852,11 @@ It asks nothing at intake, because it does not review the SPEC.
 defeats unattended parallel execution. Review still happens — at the pull request,
 where a human reads actual code instead of a plan predicting it.
 
-**What it costs:** a bad decomposition burns a full parallel run before anyone
-sees it. That is time and tokens, not correctness, since nothing merges without
-review.
+**What it costs:** the Phase 1 to 4 invariants stop the run before anything is
+built, so a bad split no longer burns a parallel run by itself. What survives is
+narrower: a split or a plan that its own assertions wrongly affirmed, which is not
+caught until a human reads the pull requests. That is time and tokens, not
+correctness, since nothing merges without review.
 
 ### 8.8 Review is its own phase, and the worker never checks its own work
 
@@ -932,6 +946,9 @@ request it opens.
 - No pull request may break the branch it merges into. This is what makes an MSP
   minimum and shippable rather than merely small.
 - Code written by mitosis carries no comments.
-- A test that has never failed proves nothing. Assertions must be shown failing
-  before the work and passing after it.
+- A test that has never failed proves nothing. An assertion must be seen failing
+  and then passing, in one of two forms: red before the work and green after it,
+  or — where the assertion is written after the work already exists — red when the
+  work is reverted and green when it is restored. Phase 6 uses the second form,
+  and R3 is where it is enforced.
 - Nothing connects to a live database or cloud admin surface.
