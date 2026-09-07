@@ -254,12 +254,13 @@ but only to assert C5 against the finished schedule; it never changes it.
    - one declares the other in its `needs`, or
    - their write-sets share at least one file.
 3. Each connected group of MSPs becomes one cluster.
-4. Inside a cluster, order the MSPs so every dependency comes before what depends
-   on it.
+4. Inside a cluster, order the MSPs by a topological sort on `needs` edges, with
+   ties broken by ascending id in lexicographic byte order.
 
 **The execution rule:**
 
-- **Clusters run at the same time as each other.**
+- **Clusters are eligible to run at the same time as each other**, bounded by the
+  concurrent-cluster cap in section 10.
 - **MSPs inside a cluster run one after another.**
 
 **Why file overlap creates an ordering edge:** this is the entire job of the
@@ -271,6 +272,19 @@ parallel, can both register the same path and merge cleanly with a bug.
 **Why this phase must be deterministic:** everything upstream is a model's
 judgment. The schedule is the one thing that must be reproducible, so a given MSP
 list always produces the same execution order.
+
+**Why the order needs a tie-break.** A `needs` edge has a direction — one MSP
+names the other — but a file-overlap edge does not: it forces two MSPs apart in
+time without saying which comes first. Two MSPs joined only by a shared file would
+otherwise admit either order, and the order is load-bearing: it decides which MSP
+is first in its cluster, which decides that MSP's pull request base and, for the
+first MSP in the cluster, the base of the whole stack.
+
+**Why id, not list position.** Phase 2 is a model pass; it can emit the same set
+of MSPs in a different order on two runs over the same SPEC without that being a
+defect. Breaking ties on ascending id, in lexicographic byte order, is stable
+under that reordering. Breaking them on the position an MSP happened to appear in
+Phase 2's output would not be.
 
 **A single cluster is a valid outcome.** If every MSP depends on the previous one,
 mitosis runs them in sequence and reports parallelism as one. It does not refuse.
@@ -288,7 +302,7 @@ is a `needs` edge back in Phase 2.
 | # | The statement that must be true | How it is asserted |
 |---|---|---|
 | **C1 — Nothing lost or duplicated** | Every MSP appears in exactly one cluster. | Mechanically. |
-| **C2 — Order respects dependencies** | Inside a cluster, every `needs` edge points backwards in the order. | Mechanically. |
+| **C2 — Order matches the rule** | Inside a cluster, the order is exactly the one step 4's ordering rule produces: a topological sort on `needs` edges, ties broken by ascending id. | Mechanically. |
 | **C3 — No cross-cluster file sharing** | No two MSPs in different clusters share a file. | Mechanically. |
 | **C4 — The safety property** | Two MSPs run at the same time only if neither needs the other and they share no file. | Mechanically, against the schedule. |
 | **C5 — No hidden interaction** | No two MSPs scheduled at the same time actually depend on each other in a way their file lists do not show. | A model reads every concurrent pair. |
