@@ -48,8 +48,8 @@ Every term used in this document, defined once.
 | **MSP** | Minimum Shippable Product. One piece of work small enough to be its own pull request, and complete enough that merging it does not break the branch it lands on. |
 | **Cluster** | A group of MSPs that must be built one after another. Clusters run at the same time as each other. |
 | **Write-set** | The list of files an MSP is expected to change. |
-| **Invariant** | A statement that must be true when an MSP is correctly built. |
-| **Assertion** | Executable proof that an invariant holds. |
+| **Invariant** | A statement that must be true when the work was done correctly. Some are about one MSP. Some are about the output of a whole phase. |
+| **Assertion** | The act of checking an invariant against the real artifact and affirming it. Where the check can be code, it is code. Where it is a judgment, a model answers it and shows the evidence. |
 | **Worktree** | A separate checked-out copy of the repository. Each MSP gets its own, so no two workers can see or overwrite each other's files. |
 | **Feature branch** | The shared branch that every MSP's pull request eventually targets. |
 | **Stacked pull request** | A pull request whose base is another open pull request's branch, rather than the feature branch. |
@@ -128,6 +128,21 @@ emits the list of MSPs. For each MSP it produces:
 | `writes` | The files this MSP is expected to change. |
 | `needs` | The ids of MSPs that must be finished before this one starts. |
 
+**What reading the codebase means:** the model is not given the repository as
+text. It explores it with ordinary file tools — list a directory, search for a
+string, open a file — the way a new engineer would on their first morning. It
+reads the project's conventions, opens the files the SPEC appears to touch, and
+looks at how work of this kind is already shaped here.
+
+Four things depend on it:
+
+| What it gets | Why the decomposition needs it |
+|---|---|
+| What already exists | "Add rate limiting" is one MSP in a project that already has a middleware layer and two in a project that does not. The same sentence decomposes differently in different repositories. |
+| How big a piece is | An MSP must be small enough to review as one pull request and complete enough not to break the branch. Neither can be judged without knowing whether the change touches two files or forty. |
+| Real file paths | Phase 3 decides what may run in parallel purely by checking whether two write-sets overlap. Invented paths make that check compare fiction against fiction, and two MSPs that should have been ordered run at the same time. |
+| What is already done | On a re-run, the branches and open pull requests say which MSPs finished last time. |
+
 **Why a model does this and not the SPEC author:** requiring the author to
 hand-write this list means teaching every author a format before they can use the
 tool. That is the problem this design exists to remove. The model reads the
@@ -142,7 +157,31 @@ of the SPEC this MSP covers.
 emitted. The decompose pass is told what is already shipped and plans only the
 remainder.
 
-**Output:** a list of MSPs.
+**Invariants.** Six statements, fixed and identical on every run, asserted
+against the finished MSP list before Phase 3 begins. Section 5 defines what a
+phase invariant is and how one is asserted.
+
+| # | The statement that must be true | How it is asserted |
+|---|---|---|
+| **D1 — Coverage** | Every piece of work the SPEC asks for is covered by at least one MSP. | A model reads the SPEC and the MSP list and builds the mapping: each part of the SPEC against the MSP or MSPs covering it. Anything left unmapped fails. |
+| **D2 — No invention** | No MSP proposes work the SPEC does not ask for. | The same mapping read the other way. An MSP mapping to nothing in the SPEC fails. |
+| **D3 — Shippability** | Each MSP, merged on its own onto its base, leaves that branch working. | A model judges each MSP against that definition. An MSP that only makes sense once a later one lands is not shippable and fails. |
+| **D4 — Grounded paths** | Every path in every `writes` either exists in the repository now, or is a file that MSP will create. | The existing case mechanically, against the repository. The create case as a model judgment. |
+| **D5 — Dependency sufficiency** | If an MSP cannot be built until another MSP's work exists, that other MSP is named in its `needs`. | A model reads each MSP against the ones it could depend on. |
+| **D6 — A valid order exists** | Every id named in a `needs` is an id in this list, and the graph has no cycle. | Mechanically. |
+
+**The mapping is kept, not discarded.** What D1 and D2 produce goes into the
+terminal report. A human holding the SPEC can then check the split in a couple of
+minutes, instead of later failing to notice that a pull request nobody told them
+to expect never arrived. This is what turns a missing MSP from an absence into a
+line of text.
+
+**Why D5 carries more weight than it looks:** a missing dependency edge puts two
+MSPs in different clusters, so they run at the same time, and the second builds
+against a base where the first one's work does not exist. A dependency edge that
+should not be there costs only parallelism. A missing one costs correctness.
+
+**Output:** a list of MSPs, and the coverage mapping.
 
 ---
 
@@ -268,23 +307,61 @@ ad-hoc. Title grammar and body fields follow that tool's mandatory format.
 
 ## 5. Invariants
 
-Invariants are how mitosis knows an MSP is correct without a human looking.
+Invariants are how mitosis knows something is correct without a human looking.
+They are the mechanism the whole design rests on. Everything else — the phases,
+the isolation, the stacking — is arrangement; this is the part that makes an
+unattended run trustworthy.
 
 ### 5.1 What an invariant is
 
-A statement that must be true when this MSP is correctly built.
+A statement that must be true when the work was done correctly.
 
-Not a test. Not a description of the work. A statement of fact about the finished
-system that can be proven by running something.
+Not a test. Not a description of the work. A statement of fact about a finished
+thing, which something must actually check and affirm rather than assume.
 
-#### 5.2 Who does what
+### 5.2 The two kinds
+
+| Kind | What it is about | Who writes the statements | When it is asserted |
+|---|---|---|---|
+| **Phase invariant** | The output of one pipeline phase | This document. Fixed and identical on every run. | At the end of that phase, before the next one starts |
+| **MSP invariant** | One MSP's finished code | That MSP's planner, in Phase 4 | In Phase 5, after continuous integration is green |
+
+Phase invariants are constant because what makes a decomposition or a schedule
+correct does not vary between projects. MSP invariants are designed fresh each
+time, because what makes one piece of work correct is specific to that work.
+
+### 5.3 A model asserts. A program checks what a program can.
+
+Some invariants can be settled by running code — a graph has no cycle, a path
+exists on disk. Those are checked mechanically, and the mechanical check is cheap
+enough that there is never a reason to skip it.
+
+**A mechanical check never replaces the assertion.** The model is asked the
+question too, in plain words, against the actual artifact — the same way a
+careful human reviewer would be asked, and for the same reason. Code only checks
+what somebody thought to encode. The questions that matter most have no
+mechanical form at all: whether a decomposition covers everything the SPEC asked
+for is a reading task, not a computation.
+
+**Asserting means showing the work.** An assertion is not a yes. It is the
+evidence that makes the yes checkable — the coverage mapping, the failing run
+before the fix, the file that was opened. A bare affirmation is the thing this
+mechanism exists to replace.
+
+**An invariant that cannot be affirmed stops the run.** It does not warn, and the
+run does not continue with a note attached. mitosis pauses and the terminal
+report names the invariant, what was expected, and what was found. Failing at the
+end of Phase 2 is cheap, because nothing has been built yet.
+
+### 5.4 Who does what
 
 | Role | Responsibility |
 |---|---|
-| **Planner** | Determines the invariants. Writes the statements. Writes no test code. |
-| **Implementer** | Produces an executable assertion for each invariant and proves it passes. |
+| **This document** | Determines every phase invariant. They do not change between runs. |
+| **Planner** | Determines the MSP invariants for one MSP. Writes the statements. Writes no test code. |
+| **Implementer** | Produces an executable assertion for each MSP invariant and proves it passes. |
 
-#### 5.3 The strict requirement on the planner
+### 5.5 The strict requirement on the planner
 
 **If every invariant passes and the MSP still does not work, the invariants were
 designed wrong.**
@@ -294,7 +371,7 @@ worthless. Designing invariants such that all of them passing genuinely means th
 MSP works is the planner's core responsibility, and it is a strict requirement,
 not a goal.
 
-#### 5.4 Ordering against continuous integration
+### 5.6 Ordering against continuous integration
 
 **Continuous integration must be green before invariants are asserted.**
 
@@ -305,7 +382,7 @@ If integration later goes red — because the code changed — every invariant m
 asserted again. A previously passing assertion against different code is not
 evidence.
 
-#### 5.5 The two are independent checks
+### 5.7 The two are independent checks
 
 Green integration says the codebase still works. Passing invariants say this MSP
 did what it was asked to do. Neither implies the other, and an MSP needs both.
@@ -354,6 +431,7 @@ It contains:
 |---|---|
 | **Shipped** | Every MSP that finished, with its pull request link and cluster. |
 | **Paused** | Every MSP that did not finish, what stopped it, and what is now blocked behind it. |
+| **Coverage** | The mapping Phase 2 produced: each part of the SPEC against the MSP or MSPs that cover it. |
 | **Assumptions** | Every place the SPEC was interpreted rather than followed literally. The decompose pass and every planner emit these. |
 | **Parallelism** | How many clusters ran at once, and how long the longest chain was. |
 | **File drift** | For each MSP, files it declared against files it actually changed. |
@@ -370,9 +448,16 @@ the decomposition is any good. Re-running an MSP because it touched one extra fi
 that nothing else touched would pay a full rebuild for a mistake that harmed
 nothing.
 
-**Why "paused" must be loud:** work that was never planned produces no pull
-request, no conflict, and no failing build. Absence has no signal of its own. The
-report is the only place it can appear.
+**Why "paused" must be loud:** a paused MSP opens no pull request to reject and
+produces no failing build to notice. Nothing else in the run states it, so the
+report must.
+
+**Why coverage is printed even though D1 already passed:** the Phase 2 coverage
+invariant stops the run when it finds a gap, so any decomposition that reaches
+the report has already claimed to cover the SPEC. Printing the mapping lets the
+person who wrote the SPEC check that claim against their own document in a couple
+of minutes. It is the difference between trusting an assertion and being able to
+see it.
 
 ---
 
@@ -406,14 +491,27 @@ plan written with full context.
 
 ### 8.3 Correctness is invariants, not human review
 
-**Decision:** the planner designs invariants. The implementer asserts them. All
+**Decision:** every phase and every MSP has invariants that must be affirmed
+before anything downstream proceeds. Phase invariants are fixed in this document.
+MSP invariants are designed by the planner and asserted by the implementer. All
 passing, plus green integration, means done.
 
-**Why:** with no human in the loop, "done" has to be something a program can
-decide. An implementer's own opinion that it finished is not evidence.
+**Why:** with no human in the loop, "done" has to be decided by something other
+than the opinion of whoever did the work. An implementer's own view that it
+finished is not evidence, and neither is a decomposer's own view that it split
+the SPEC correctly.
 
-**The burden this creates:** the planner must design invariants whose passing
-genuinely means the MSP works. This is stated as a strict requirement in 5.3.
+**Why a model asserts and not only a program:** most of what makes a phase's
+output correct cannot be computed. Whether a decomposition covers the SPEC is a
+reading task. Checking only what a program can check would leave the most
+important properties unchecked, so a model is asked the question in plain words
+and must show its evidence. Where a program can settle it, the program runs as
+well — see 5.3.
+
+**The burden this creates:** whoever writes an invariant must write one whose
+passing genuinely means the work is correct. For MSP invariants that is the
+planner, stated as a strict requirement in 5.5. For phase invariants it is this
+document.
 
 ### 8.4 Write-sets schedule; they never gate
 
@@ -477,7 +575,7 @@ Recorded so they are not re-proposed without new information.
 | **Merging MSPs locally, one pull request for the feature** | Made a local serial merge the only collision check, and hid incomplete work inside one large review. |
 | **A human gate before workers spawn** | Requires a human present mid-run. Pull request review does the same job later, on real code. |
 | **Asking the author clarifying questions at intake** | SPEC quality is not mitosis's responsibility. Intake is also the phase with the least information — nothing is decomposed and no planner has read the SPEC against the codebase. Ambiguity is interpreted and reported instead. |
-| **A completeness critic** | A second model asking the decomposer's own question, whose findings nobody could act on. |
+| **A completeness critic** | **Superseded, not still rejected.** The original objection was that it put a second model on the decomposer's own question and produced findings nobody could act on. Under phase invariants the findings are acted on: D1 and D2 stop the run, and their mapping reaches the report. The objection no longer holds. |
 | **Binding write-sets** | Pays a full rebuild to enforce a guess, against collisions git already catches. |
 | **A saved run-state file** | Duplicates what branches and pull requests already record. |
 | **Refusing a SPEC with no parallelism** | The per-MSP planning, testing and pull request discipline is valuable even when parallelism is one. |
