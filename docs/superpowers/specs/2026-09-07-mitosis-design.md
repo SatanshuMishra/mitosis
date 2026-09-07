@@ -53,7 +53,7 @@ Every term used in this document, defined once.
 | **Acceptance property** | A statement about what one MSP's finished work must do, true when the work was done correctly and false when it was not. It describes an outcome, never a step toward one, and never the code that produces it. Written by that MSP's planner. Defined in full in section 5.1. |
 | **Step** | One item of work in a plan. Steps say what to do. Acceptance properties say what must then be true. |
 | **Assertion** | The act of checking an invariant or an acceptance property against the real artifact and affirming it. Where the check can be code, it is code. Where it is a judgment, a model answers it and shows the evidence. |
-| **Assertion record** | What a phase emits alongside its product: one entry per invariant in that phase's set, each carrying a verdict and the evidence behind it. mitosis does not start the next phase until the record is complete and every entry is affirmed. |
+| **Assertion record** | What a phase emits alongside its product: one entry per invariant in that phase's set, each carrying a verdict and the evidence behind it. mitosis does not start the next phase until the record is complete and every entry is affirmed. The terminal report is not a phase, but emits one too, for T1 to T5, printed inside itself. |
 | **Verdict** | Phase 6's pass or fail on one MSP, resting on its acceptance properties and nothing else. |
 | **Planner** | The agent in Phase 4. Reads the SPEC and one MSP, writes the plan. Writes no code and no test. |
 | **Worker** | The agent in Phase 5. Reads the plan, writes the code, keeps the build green. Never reads the SPEC, and never writes an acceptance assertion. |
@@ -123,6 +123,7 @@ holds. This is specified in 5.3 and 5.4, and the reasoning is decision 8.10.
 
 1. Read the SPEC. From this moment it is frozen and is never modified.
 2. Read the repository: current branch, existing branches, open pull requests.
+3. Create the feature branch if it does not already exist, named from the SPEC file.
 
 **mitosis does not review the SPEC.** It does not judge whether the document is
 clear, complete, or specific enough, and it never asks the author to improve it.
@@ -144,7 +145,7 @@ start. That is a check on the environment, never a judgment about the document.
 | # | The statement that must be true | How it is asserted |
 |---|---|---|
 | **I1 — The freeze was taken** | The SPEC text handed to every later phase is byte-identical to the file this phase read. | Mechanically, by hash, at the end of this phase. |
-| **I2 — Prior work identified** | Every open pull request on the feature branch is either matched to a specific MSP with a stated reason, or explicitly marked unrecognized. | A model reads each open pull request against the SPEC. |
+| **I2 — Prior work identified** | Every open pull request on the feature branch is either matched to a specific MSP with a stated reason, or explicitly marked unrecognized. | A model reads each open pull request against the SPEC. On a first run the branch has just been created and there are none, which satisfies this trivially. |
 
 **Why I2's two errors are not equally dangerous.** Failing to match a pull request
 means an MSP is built a second time, which is loud, because it conflicts. Matching
@@ -276,10 +277,10 @@ mitosis runs them in sequence and reports parallelism as one. It does not refuse
 against the algorithm, so they still mean the same thing if the clustering code is
 ever rewritten.
 
-This phase is the one place where a failure cannot be fixed by iterating, because
-the phase has no freedom: the schedule is a pure function of the MSP list. C1 to
-C4 failing means the clustering code is broken, which no agent can repair, and the
-run stops. C5 failing means the MSP list is wrong, so the fix is a `needs` edge
+No failure here is fixed by iterating, because this phase has no freedom: the
+schedule is a pure function of the MSP list, so there is nothing it could do
+differently. C1 to C4 failing means the clustering code is broken, which no agent
+can repair, and the run stops. C5 failing means the MSP list is wrong, so the fix is a `needs` edge
 back in Phase 2.
 
 | # | The statement that must be true | How it is asserted |
@@ -308,7 +309,11 @@ this phase is deterministic.
 
 **Input:** the frozen SPEC, one MSP, and the branch this MSP will be built on.
 
-Runs once per MSP.
+Runs once per MSP. **Phases 4 to 7 run as a unit, one MSP at a time.** An MSP is
+planned, built, reviewed and shipped before the next MSP in its cluster is planned.
+That is what makes P1's base branch well defined: when Phase 4 runs for the second
+MSP in a cluster, the first has already shipped, and its branch is the one the
+second will be built on. Clusters still run at the same time as each other.
 
 **What this phase is responsible for, in one sentence:** producing a plan that
 covers this MSP's slice of the SPEC completely and can actually be built.
@@ -423,7 +428,8 @@ nothing left to attach to.
 
 ### Phase 5 — Implement
 
-**Input:** one MSP's plan.
+**Input:** one MSP's plan, and — when Phase 6 has sent the MSP back — the failing
+verdict that returned it.
 
 Runs once per MSP, in the order the schedule set.
 
@@ -509,7 +515,7 @@ authors back into one, with an extra step in front of it.
 
 | # | The statement that must be true | How it is asserted |
 |---|---|---|
-| **R1 — Independently authored** | Every assertion was written by the reviewer, not taken from the worker's tests. | Mechanically, by provenance: the assertion files are new in the reviewer's commit. |
+| **R1 — Independently authored** | Every assertion was written by the reviewer, not taken from the worker's tests. | Mechanically, by provenance: every assertion file was authored in a review commit and none in a worker commit. Stated this way it still holds on a second review pass, where the files already exist from the first. |
 | **R2 — Every property covered** | Every acceptance property has its own assertion. None skipped, none folded into another. | Mechanically, by mapping properties to assertions. |
 | **R3 — Inertness** | With this MSP's change reverted, **every** assertion fails. | By actually reverting, running all of them, observing every failure, and restoring. |
 | **R4 — Against the shipped code** | The assertions ran against the branch's current head, with continuous integration green. | Mechanically. |
@@ -598,7 +604,8 @@ isolation, the stacking — is arrangement.
 | What it is about | The output of one phase | One MSP's finished behavior |
 | Written by | This document | That MSP's planner, in Phase 4 |
 | Changes between runs | Never | Every time |
-| Read by a human | Once, when this document is edited | Never |
+| Human review before it is used | Yes. A person writes and edits this document before any run. | None. A model writes them mid-run and they are used immediately. |
+| Read by a human afterwards | Here, in this document | In the terminal report, under Plan coverage, Property strength and Review |
 | Checked | At the end of its own phase | In Phase 6, by the reviewer |
 
 **An invariant is a statement that must be true of what a phase produced.** There
@@ -620,9 +627,10 @@ Three examples make that boundary concrete.
 
 **Why they carry different names.** Invariants are fixed, versioned, and read by a
 human before they ever run. Acceptance properties are generated fresh by a model
-on every run and read by nobody. Calling both of them "invariants" would hide the
-single most important difference between them, which is how much human judgment
-each one has already had.
+during the run and used the moment they exist, with nobody between writing and
+use. Both are read afterwards, in the report — but only one was reviewed before it
+mattered. Calling them by the same name would hide that difference, which is the
+most important thing about them.
 
 ### 5.2 A model is asked. A program checks what a program can.
 
@@ -723,11 +731,17 @@ person who wrote the SPEC can read it.
 | **Worker** (Phase 5) | Writes the code and keeps the build green. Writes no acceptance assertion. |
 | **Reviewer** (Phase 6) | Writes an executable assertion for each acceptance property, independently, and runs it. |
 
-**The worker never grades its own work.** Section 8.3 states that an implementer's
-own opinion that it finished is not evidence. A worker that wrote both the code
-and the check proving that code correct is exactly that opinion, with extra steps
-in front of it. Phase 6 exists to break that, and it is the reason planning,
-building and checking are three phases rather than two.
+**The worker never writes its own acceptance assertion.** Section 8.3 states that
+an implementer's own opinion that it finished is not evidence. A worker that wrote
+both the code and the check proving that code correct is exactly that opinion,
+with extra steps in front of it. Phase 6 exists to break that, and it is the reason
+planning, building and checking are three phases rather than two.
+
+**This is narrower than it sounds**, and the second row above is why. The worker
+does assert W1 to W3 about its own diff, because those statements are fixed in this
+document and it cannot make them easier. What it may not do is author the
+instrument that measures an acceptance property, whose wording a model produced
+during this run. Decision 8.10 draws that line.
 
 ### 5.6 The strict requirement, and what now enforces it
 
@@ -837,9 +851,9 @@ nothing.
 produces no failing build to notice. Nothing else in the run states it, so the
 report must.
 
-**Why coverage is printed even though D1 already passed:** the Phase 2 coverage
-invariant stops the run when it finds a gap, so any decomposition that reaches
-the report has already claimed to cover the SPEC. Printing the mapping lets the
+**Why coverage is printed even though D1 already passed:** D1 sends the decompose
+pass back to add whatever it finds missing, so any decomposition that reaches the
+report has already claimed to cover the SPEC. Printing the mapping lets the
 person who wrote the SPEC check that claim against their own document in a couple
 of minutes. It is the difference between trusting an assertion and being able to
 see it.
@@ -964,8 +978,9 @@ It asks nothing at intake, because it does not review the SPEC.
 defeats unattended parallel execution. Review still happens — at the pull request,
 where a human reads actual code instead of a plan predicting it.
 
-**What it costs:** the Phase 1 to 4 invariants stop the run before anything is
-built, so a bad split no longer burns a parallel run by itself. What survives is
+**What it costs:** the Phase 1 to 4 invariants send each phase back to fix what
+they find, and stop the run only once that is exhausted — either way before
+anything is built, so a bad split no longer burns a parallel run by itself. What survives is
 narrower: a split or a plan that its own assertions wrongly affirmed, which is not
 caught until a human reads the pull requests. That is time and tokens, not
 correctness, since nothing merges without review.
@@ -1061,13 +1076,13 @@ Recorded so they are not re-proposed without new information.
 | **Merging MSPs locally, one pull request for the feature** | Made a local serial merge the only collision check, and hid incomplete work inside one large review. |
 | **A human gate before workers spawn** | Requires a human present mid-run. Pull request review does the same job later, on real code. |
 | **Asking the author clarifying questions at intake** | SPEC quality is not mitosis's responsibility. Intake is also the phase with the least information — nothing is decomposed and no planner has read the SPEC against the codebase. Ambiguity is interpreted and reported instead. |
-| **The implementer proving its own work** | The planner wrote the statement but the worker wrote the check, and a weak check of a strong statement passes. Contradicted 8.3. Replaced by Phase 6. |
+| **The implementer writing its own acceptance assertion** | The planner wrote the statement but the worker wrote the check, and a weak check of a strong statement passes. Contradicted 8.3. Replaced by Phase 6. This concerns acceptance properties only — a phase still asserts its own fixed invariants, per 8.10. |
 | **A separate MSP-invariant artifact alongside the plan** | A second specification of the same thing, written by the same planner in the same pass. Folded into the plan as acceptance properties, governed by fixed Phase 4 invariants. |
 | **Task-level parallelism inside one MSP** | Not rejected on merit — out of scope for this design. All steps in an MSP share one worktree and one branch, so it would need a task-level scheduler and local merging, which reopens what 8.6 settled. It is its own decision. |
-| **A completeness critic** | **Superseded, not still rejected.** The original objection was that it put a second model on the decomposer's own question and produced findings nobody could act on. Under the Phase 2 invariants the findings are acted on: D1 and D2 stop the run, and their mapping reaches the report. The objection no longer holds. |
+| **A completeness critic** | **Superseded, not still rejected.** The original objection was that it put a second model on the decomposer's own question and produced findings nobody could act on. Under the Phase 2 invariants the findings are acted on by the pass that produced them: D1 and D2 send it back to fix the split, and their mapping reaches the report. The objection no longer holds. |
 | **Binding write-sets** | Pays a full rebuild to enforce a guess, against collisions git already catches. |
 | **A saved run-state file** | Duplicates what branches and pull requests already record. |
-| **Refusing a SPEC with no parallelism** | The per-MSP planning, testing and pull request discipline is valuable even when parallelism is one. |
+| **Refusing a SPEC with no parallelism** | The per-MSP planning, review and pull request discipline is valuable even when parallelism is one. |
 
 ---
 
