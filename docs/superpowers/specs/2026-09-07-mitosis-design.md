@@ -74,6 +74,8 @@ Every term used in this document, defined once.
 - **Merging any pull request.** A human merges. mitosis never does.
 - **Shipping the feature branch.** A separate, future shipping adapter owns this.
 - **Requiring a particular SPEC format.** mitosis reads what you already wrote.
+- **Judging whether the SPEC is good enough.** mitosis never asks the author to
+  clarify, expand, or improve the document. It ships the one it was given.
 - **A saved run-state file.** The repository itself is the record.
 - **Reviewing its own output.** The pull request is the review surface.
 
@@ -92,19 +94,23 @@ and the report — are specified in sections 5 through 7.
 
 1. Read the SPEC. From this moment it is frozen and is never modified.
 2. Read the repository: current branch, existing branches, open pull requests.
-3. Identify anything in the SPEC genuinely ambiguous enough to change what gets built.
-4. If there is anything, ask the human every question at once, in one message.
-5. Once answered, the run goes dark.
 
-**Why questions come first and only once:** after this phase no human is watching.
-A worker that discovers halfway through that the SPEC was unclear has already
-burned parallel work. All uncertainty is resolved before anything spawns.
+**mitosis does not review the SPEC.** It does not judge whether the document is
+clear, complete, or specific enough, and it never asks the author to improve it.
+A vague SPEC produces a vague result, exactly as it would if a human implemented
+it by hand. Writing a good SPEC is the author's job; shipping the one they wrote
+is mitosis's.
 
-**What counts as worth asking:** something where two readings produce materially
-different code. Not stylistic preference, not something a reasonable default
-covers. A run that asks nothing is the normal case.
+**Where ambiguity goes instead:** it is interpreted, recorded, and reported.
+Every place a reading was chosen rather than followed literally lands in the
+terminal report's Assumptions section, specified in section 7. Nothing merges
+before a human reads it.
 
-**Output:** a frozen SPEC, the repository state, and the human's answers.
+**Preconditions are not SPEC review.** If the SPEC path does not resolve, or the
+repository is in a state where a run cannot mean anything, mitosis refuses to
+start. That is a check on the environment, never a judgment about the document.
+
+**Output:** a frozen SPEC and the repository state.
 
 ---
 
@@ -348,9 +354,15 @@ It contains:
 |---|---|
 | **Shipped** | Every MSP that finished, with its pull request link and cluster. |
 | **Paused** | Every MSP that did not finish, what stopped it, and what is now blocked behind it. |
-| **Assumptions** | Every place the SPEC was interpreted rather than followed literally. |
+| **Assumptions** | Every place the SPEC was interpreted rather than followed literally. The decompose pass and every planner emit these. |
 | **Parallelism** | How many clusters ran at once, and how long the longest chain was. |
 | **File drift** | For each MSP, files it declared against files it actually changed. |
+
+**Why assumptions must be complete:** mitosis never asks the author to clarify
+the SPEC, so interpreting an unclear passage is the only thing it can do with
+one. This section is the sole place that interpretation becomes visible. An
+interpretation that is made and not recorded is indistinguishable from the SPEC
+having said it.
 
 **Why file drift is reported and never acted on:** the write-set's job ended when
 the schedule was computed. Knowing that declarations were wrong tells you whether
@@ -432,10 +444,10 @@ one file, and it hid an incomplete decomposition inside a single large review.
 Separate pull requests hand conflict detection to git, and give each piece of work
 its own review surface.
 
-### 8.7 No human between intake and the report
+### 8.7 No human after invocation
 
-**Decision:** after intake's questions are answered, no human is consulted until
-the run ends.
+**Decision:** once mitosis is invoked, no human is consulted until the run ends.
+It asks nothing at intake, because it does not review the SPEC.
 
 **Why:** a checkpoint in the middle requires somebody awake while it runs, which
 defeats unattended parallel execution. Review still happens — at the pull request,
@@ -464,6 +476,7 @@ Recorded so they are not re-proposed without new information.
 | **A complete implementation brief per MSP in the decomposition** | Solved a problem that only existed because there was no planning phase. Adding the planner removed the need. |
 | **Merging MSPs locally, one pull request for the feature** | Made a local serial merge the only collision check, and hid incomplete work inside one large review. |
 | **A human gate before workers spawn** | Requires a human present mid-run. Pull request review does the same job later, on real code. |
+| **Asking the author clarifying questions at intake** | SPEC quality is not mitosis's responsibility. Intake is also the phase with the least information — nothing is decomposed and no planner has read the SPEC against the codebase. Ambiguity is interpreted and reported instead. |
 | **A completeness critic** | A second model asking the decomposer's own question, whose findings nobody could act on. |
 | **Binding write-sets** | Pays a full rebuild to enforce a guess, against collisions git already catches. |
 | **A saved run-state file** | Duplicates what branches and pull requests already record. |
