@@ -280,8 +280,8 @@ ever rewritten.
 No failure here is fixed by iterating, because this phase has no freedom: the
 schedule is a pure function of the MSP list, so there is nothing it could do
 differently. C1 to C4 failing means the clustering code is broken, which no agent
-can repair, and the run stops. C5 failing means the MSP list is wrong, so the fix is a `needs` edge
-back in Phase 2.
+can repair, and the run stops. C5 failing means the MSP list is wrong, so the fix
+is a `needs` edge back in Phase 2.
 
 | # | The statement that must be true | How it is asserted |
 |---|---|---|
@@ -309,11 +309,14 @@ this phase is deterministic.
 
 **Input:** the frozen SPEC, one MSP, and the branch this MSP will be built on.
 
-Runs once per MSP. **Phases 4 to 7 run as a unit, one MSP at a time.** An MSP is
-planned, built, reviewed and shipped before the next MSP in its cluster is planned.
-That is what makes P1's base branch well defined: when Phase 4 runs for the second
-MSP in a cluster, the first has already shipped, and its branch is the one the
-second will be built on. Clusters still run at the same time as each other.
+Runs once per MSP. **Phases 4 to 7 run as a unit, one MSP at a time.** An MSP goes
+through planning, building, review and shipping before the next MSP in its cluster
+is planned. Clusters still run at the same time as each other.
+
+What P1 needs from this is narrower than the whole unit: the previous MSP's branch,
+which exists once that MSP's Phase 5 has finished. Running the unit to completion
+is the simpler rule and costs nothing, because MSPs in a cluster are sequential
+either way.
 
 **What this phase is responsible for, in one sentence:** producing a plan that
 covers this MSP's slice of the SPEC completely and can actually be built.
@@ -489,7 +492,8 @@ and not a gate — see decision 8.4.
 
 **Input:** one MSP's plan, and its finished branch.
 
-Runs once per MSP, after Phase 5.
+Runs after Phase 5, once per MSP — and again each time a failing verdict sends the
+MSP back and it returns.
 
 **What this phase is responsible for, in one sentence:** proving that the finished
 work satisfies the plan, without trusting anything the worker said about it.
@@ -606,7 +610,7 @@ isolation, the stacking — is arrangement.
 | Changes between runs | Never | Every time |
 | Human review before it is used | Yes. A person writes and edits this document before any run. | None. A model writes them mid-run and they are used immediately. |
 | Read by a human afterwards | Here, in this document | In the terminal report, under Plan coverage, Property strength and Review |
-| Checked | At the end of its own phase | In Phase 6, by the reviewer |
+| Checked | At the end of the phase that owns it, or as the report is written for T1 to T5 | In Phase 6, by the reviewer |
 
 **An invariant is a statement that must be true of what a phase produced.** There
 are eight fixed sets — one for each of the seven phases, and one for the terminal
@@ -678,9 +682,14 @@ pause, which is section 6.1.
 
 | Where | What stops |
 |---|---|
-| Phases 1 to 4 | The whole run. Nothing has been built, so this is the cheapest possible place to fail. |
-| Phases 5, 6 and 7 | That MSP, and every MSP behind it in its cluster. Other clusters finish normally. A failing review **verdict** is not this: it returns the MSP to Phase 5, as 6.1 says. |
+| Phases 1 to 3 | The whole run. These finish before any MSP is planned, so nothing has been built and this is the cheapest possible place to fail. |
+| Phases 4 to 7 | That MSP, and every MSP behind it in its cluster. Other clusters finish normally. A failing review **verdict** is not a stop at all: it returns the MSP to Phase 5, as 6.1 says. |
 | The terminal report | Nothing. The report is the output, so the failure is printed inside it. |
+
+**Why Phase 4 sits with 5 to 7 and not with 1 to 3.** Phases 4 to 7 run as a unit,
+one MSP at a time, so a planning failure on the third MSP in a cluster arrives
+after the first two have already been built and shipped. Stopping the whole run
+there would throw away finished work over a plan for one piece.
 
 In every case the record names the statement, what was expected, and what was
 found.
@@ -692,9 +701,13 @@ again after every round of fixing, because a failure sends the agent back rather
 than ending the phase.
 
 **How many times.** Once per execution of the phase, plus once more for each
-round of fixing. Phases 1 to 3 run once per run, so their sets are asserted once
-per run. Phases 4 to 7 run once per MSP, so their sets are asserted once per MSP.
-There is no fixed number and no cap.
+round of fixing. There is no fixed number and no cap.
+
+Phases 1 to 3 run once per run, and phases 4 to 7 once per MSP, **when nothing
+goes wrong**. That is the floor, not the count. Two things raise it: a phase that
+iterates asserts again on each round, and a phase can be re-entered from
+downstream — C5 sends a fix back to Phase 2, and a failing verdict sends an MSP
+back to Phase 5 and then through Phase 6 again.
 
 **Re-assertion when the thing underneath changes.** An affirmed statement
 describes the output as it stood when it was affirmed. If that output changes
@@ -778,14 +791,17 @@ both.
 
 ### 6.1 What happens when an MSP cannot finish
 
-The MSP pauses. Its branch and any work on it stay in place.
+The MSP pauses. Whatever exists for it — a branch, a plan, committed work — stays
+in place, and nothing is unwound.
 
 A pause is the last resort, never the first response. A statement that cannot be
 affirmed first sends the agent back to do the missing work, as 5.3 describes, and
 only becomes a pause once that is exhausted.
 
 Every MSP after it **in the same cluster** also pauses, because each depends on
-the one before it.
+the one before it. Since phases 4 to 7 run one MSP at a time, those have usually
+not been planned yet, so there is nothing of theirs to preserve. They are paused
+before they ever start, and the report is the only place they appear at all.
 
 **Other clusters are unaffected and finish normally.** A failure in one cluster
 never stops another.
@@ -978,14 +994,14 @@ It asks nothing at intake, because it does not review the SPEC.
 defeats unattended parallel execution. Review still happens — at the pull request,
 where a human reads actual code instead of a plan predicting it.
 
-**What it costs:** the Phase 1 to 4 invariants send each phase back to fix what
+**What it costs:** the Phase 1 to 3 invariants send each phase back to fix what
 they find, and stop the run only once that is exhausted — either way before
-anything is built, so a bad split no longer burns a parallel run by itself. What survives is
-narrower: a split or a plan that its own assertions wrongly affirmed, which is not
-caught until a human reads the pull requests. That is time and tokens, not
-correctness, since nothing merges without review.
+anything is built, so a bad split no longer burns a parallel run by itself. What
+survives is narrower: a split or a plan that its own assertions wrongly affirmed,
+which is not caught until a human reads the pull requests. That is time and
+tokens, not correctness, since nothing merges without review.
 
-### 8.8 Review is its own phase, and the worker never checks its own work
+### 8.8 Review is its own phase, and the worker writes no acceptance assertion
 
 **Decision:** Phase 5 builds. Phase 6 writes independent assertions for the plan's
 acceptance properties and returns a verdict. The worker writes no acceptance
