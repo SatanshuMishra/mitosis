@@ -145,7 +145,7 @@ start. That is a check on the environment, never a judgment about the document.
 | # | The statement that must be true | How it is asserted |
 |---|---|---|
 | **I1 — The freeze was taken** | The SPEC text handed to every later phase is byte-identical to the file this phase read. | Mechanically, by hash, at the end of this phase. |
-| **I2 — Prior work identified** | Every open pull request on the feature branch is either matched to a specific MSP with a stated reason, or explicitly marked unrecognized. | A model reads each open pull request against the SPEC. On a first run the branch has just been created and there are none, which satisfies this trivially. |
+| **I2 — Prior work identified** | Every open pull request belonging to this SPEC's run — one whose base is the feature branch, or whose base is another MSP branch in a stack rooted on it — is either matched to a specific MSP with a stated reason, or explicitly marked unrecognized. | A model reads each such open pull request against the SPEC. On a first run the branch has just been created and there are none, which satisfies this trivially. |
 
 **Why I2's two errors are not equally dangerous.** Failing to match a pull request
 means an MSP is built a second time, which is loud, because it conflicts. Matching
@@ -209,7 +209,9 @@ identify which slice of the SPEC this MSP covers.
 
 **Excluding finished work:** MSPs whose pull request already exists are not
 emitted. The decompose pass is told what is already shipped and plans only the
-remainder.
+remainder. D1, below, is written to cover this: a part of the SPEC satisfied by
+already-shipped work counts as covered exactly as one covered by an MSP in this
+list, so excluding it here never reopens what D1 already closed.
 
 **Invariants.** Six statements, fixed and identical on every run, asserted
 against the finished MSP list before Phase 3 begins. Section 5 defines what an
@@ -217,7 +219,7 @@ invariant is and how one is asserted.
 
 | # | The statement that must be true | How it is asserted |
 |---|---|---|
-| **D1 — Coverage** | Every piece of work the SPEC asks for is covered by at least one MSP. | A model reads the SPEC and the MSP list and builds the mapping: each part of the SPEC against the MSP or MSPs covering it. Anything left unmapped means the split is incomplete, so the pass adds the missing MSP and asserts again. |
+| **D1 — Coverage** | Every piece of work the SPEC asks for is covered by at least one MSP — one in this list, or one already shipped by an earlier run. | A model reads the SPEC, the MSP list, and the already-shipped work, and builds the mapping: each part of the SPEC against what covers it, of either kind. A part mapped to nothing means the split is incomplete, so the pass adds the missing MSP and asserts again. A part mapped only to already-shipped work is marked as such, and no MSP is emitted for it. |
 | **D2 — No invention** | No MSP proposes work the SPEC does not ask for. | The same mapping read the other way. An MSP mapping to nothing in the SPEC is removed. |
 | **D3 — Shippability** | Each MSP, merged on its own onto its base, leaves that branch working. | A model judges each MSP against that definition. An MSP that only makes sense once a later one lands is not shippable, and the split is redrawn until it is. |
 | **D4 — Grounded paths** | Every path in every `writes` either exists in the repository now, or is a file that MSP will create. | The existing case mechanically, against the repository. The create case as a model judgment. |
