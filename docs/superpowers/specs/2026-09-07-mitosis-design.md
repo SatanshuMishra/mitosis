@@ -779,9 +779,12 @@ properties were designed wrong.**
 
 A property that can hold without the MSP being correctly implemented is worthless.
 This requirement used to be stated here and checked nowhere. It is now enforced by
-three Phase 4 invariants: **P1** requires every property to be false before the
-work starts, **P3** requires the cheapest way of satisfying it to need the real
-behavior, and **P7** stops properties collapsing into the task list.
+the meaningfulness chain from Phase 4: **P1** requires every property to be false
+before the work starts, **P3** requires the cheapest way of satisfying it to need
+the real behavior, and **P4** requires it to be checkable without opening the
+implementation. **P7** is separate: it is the structural precondition that keeps
+properties stated apart from steps, so the meaningfulness chain has something to
+attach to.
 
 ### 5.7 Ordering against continuous integration
 
@@ -858,7 +861,7 @@ It contains:
 |---|---|
 | **Shipped** | Every MSP that finished, with its pull request link and cluster. |
 | **Paused** | Every MSP that did not finish, what stopped it, and what is now blocked behind it. |
-| **Coverage** | The mapping Phase 2 produced: each part of the SPEC against the MSP or MSPs that cover it. |
+| **Coverage** | The mapping Phase 2 produced, in both directions: each part of the SPEC against the MSP or MSPs that cover it — including one already shipped by an earlier run and not part of this run's decomposition — and each MSP against the part or parts of the SPEC it covers. |
 | **Plan coverage** | For each MSP, the mapping P2 produced: its slice of the SPEC against the acceptance properties covering it. |
 | **Property strength** | For each acceptance property, the cheapest satisfaction P3 named, and why it was judged sufficient. |
 | **Review** | For each MSP, the verdict and the assertions that produced it. |
@@ -903,7 +906,7 @@ the report rather than raised outside it.
 |---|---|---|
 | **T1 — Everything accounted for** | Every MSP from the decomposition appears in exactly one of Shipped or Paused. | Mechanically, against the MSP list. |
 | **T2 — No assumption dropped** | Every assumption any emitter recorded reaches the report. | Mechanically, by count and identity. |
-| **T3 — The real mappings** | The Coverage, Plan coverage and Property strength sections print what D1, P2 and P3 actually produced, not summaries written at report time. | Mechanically, by comparison. |
+| **T3 — The real mappings** | The Coverage, Plan coverage and Property strength sections print what D1, D2, P2 and P3 actually produced, not summaries written at report time. | Mechanically, by comparison. |
 | **T4 — Paused entries say something** | Every paused entry names what stopped it and what is blocked behind it. | A model judges specificity. "Failed" is not enough, and the entry is rewritten until it says something a human can act on. |
 | **T5 — The SPEC did not change underneath** | The SPEC file on disk still matches the copy Phase 1 froze. | Mechanically, by hash. |
 
@@ -969,8 +972,10 @@ well — see 5.2.
 
 **The burden this creates:** whoever writes a statement must write one whose
 passing genuinely means the work is correct. For acceptance properties that is the
-planner, and P1, P3 and P7 are what enforce it. For invariants it is this
-document, and they get the human review that generated properties never do.
+planner, and P1, P3 and P4 are what enforce it, with P7 as the separate
+precondition that keeps properties apart from steps in the first place. For
+invariants it is this document, and they get the human review that generated
+properties never do.
 
 ### 8.4 Write-sets schedule; they never gate
 
