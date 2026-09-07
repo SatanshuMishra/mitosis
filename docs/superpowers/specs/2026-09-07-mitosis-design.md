@@ -143,7 +143,7 @@ start. That is a check on the environment, never a judgment about the document.
 
 | # | The statement that must be true | How it is asserted |
 |---|---|---|
-| **I1 — The freeze held** | The SPEC text every later phase used is byte-identical to the file that was read. | Mechanically, by hash, when the run starts and again when it ends. |
+| **I1 — The freeze was taken** | The SPEC text handed to every later phase is byte-identical to the file this phase read. | Mechanically, by hash, at the end of this phase. |
 | **I2 — Prior work identified** | Every open pull request on the feature branch is either matched to a specific MSP with a stated reason, or explicitly marked unrecognized. | A model reads each open pull request against the SPEC. |
 
 **Why I2's two errors are not equally dangerous.** Failing to match a pull request
@@ -152,9 +152,15 @@ the wrong one means an MSP is treated as finished and never built at all, which 
 silent. A match that cannot be justified is therefore recorded as unrecognized:
 building something twice is recoverable, and skipping it is not.
 
-**Why I1 is checked twice.** Someone may edit the SPEC while a long run is in
-progress. Behavior stays correct, because the frozen copy is what was used, but
-the human needs to be told that their document and the run have diverged.
+**Why the other half of this check is not here.** Someone may edit the SPEC while
+a long run is in progress. Behavior stays correct, because the frozen copy is what
+was used, but the human needs to be told that their document and the run have
+diverged.
+
+That comparison can only be made once the run is over, which is nowhere near this
+phase's assertion record. A statement is asserted at the end of the phase that
+owns it, so a statement with no moment to be asked in has no owner and nothing
+forces it. It belongs to the terminal report instead, as T5.
 
 **Output:** a frozen SPEC, the repository state, and the list of work already
 shipped by an earlier run.
@@ -344,6 +350,28 @@ Phase 5 begins.
 | **P7 — Properties are not steps** | Acceptance properties are stated separately from the steps, and no property restates a step. | A model judgment. |
 | **P8 — Steps reach the properties** | For every property, the plan names which steps produce it. | A model maps properties against steps. A property no step produces means a step is missing, and the planner adds it. |
 
+**Why P1 can be asserted at all.** Phase 4 writes no code. At the moment P1 is
+asked — the end of this phase — the plan exists and the work does not, so "before
+the work" is simply the present, and nothing needs to have been captured earlier.
+This is also why P1 names a branch rather than a moment: a branch can be checked
+whenever you like, and a moment that has passed cannot.
+
+**P1 and R3 are the same claim, checked twice.** Phase 6's R3 reverts the finished
+work, which lands the branch in exactly the state P1 described, and requires every
+assertion to fail there.
+
+| | P1 | R3 |
+|---|---|---|
+| When | End of Phase 4, before anything is built | End of Phase 6, after the work and a green build |
+| How | A model reads each property against the base branch | Revert, run, observe, restore |
+| What it is | A judgment, which can be wrong | A fact |
+| Cost of catching a bad property here | One more round of planning | A build and a review pass, thrown away |
+
+Dropping P1 would not lose correctness, because R3 still catches a property that
+was already true. It would move every catch to the far side of a build. P1 is the
+cheap fallible check and R3 the expensive certain one, and keeping both is what
+makes the common case cheap.
+
 **How P3 works, and where its output goes.** Asking a model whether a property is
 strong invites a yes, because that is what the question invites. Asking it for the
 least work that would satisfy the property literally produces something concrete
@@ -496,6 +524,8 @@ and P1 is about every property, not some of them. A reverted branch is exactly t
 state P1 describes — the work does not exist — so an assertion that still passes
 there is checking something P1 already claimed was false. One of the two is then
 wrong, and neither the planner nor the reviewer would ever find out.
+
+Phase 4 sets out why both P1 and R3 exist rather than only this one.
 
 **Why R5 exists.** A reviewer allowed to fail an MSP on general opinion puts
 unbounded judgment back into a pipeline built to avoid it. The verdict is about
@@ -789,6 +819,7 @@ It contains:
 | **Assumptions** | Every place the SPEC was interpreted rather than followed literally. The decompose pass and every planner emit these. |
 | **Parallelism** | How many clusters ran at once, and how long the longest chain was. |
 | **File drift** | For each MSP, files it declared against files it actually changed. |
+| **SPEC drift** | Whether the SPEC file on disk still matches the copy this run froze. |
 
 **Why assumptions must be complete:** mitosis never asks the author to clarify
 the SPEC, so interpreting an unclear passage is the only thing it can do with
@@ -828,10 +859,18 @@ the report rather than raised outside it.
 | **T2 — No assumption dropped** | Every assumption any emitter recorded reaches the report. | Mechanically, by count and identity. |
 | **T3 — The real mappings** | The Coverage, Plan coverage and Property strength sections print what D1, P2 and P3 actually produced, not summaries written at report time. | Mechanically, by comparison. |
 | **T4 — Paused entries say something** | Every paused entry names what stopped it and what is blocked behind it. | A model judges specificity. "Failed" is not enough, and the entry is rewritten until it says something a human can act on. |
+| **T5 — The SPEC did not change underneath** | The SPEC file on disk still matches the copy Phase 1 froze. | Mechanically, by hash. |
 
 **Why T3 exists.** Regenerating a mapping at report time is a laundering step: it
 gives a second pass the chance to paper over a gap the first one found. Print the
 artifact that was actually asserted, or the assertion meant nothing.
+
+**Why T5 is here and not in Phase 1.** Phase 1 can only prove that it froze the
+document correctly, which is I1. Whether the file changed afterwards is unanswerable
+until the run ends, and a statement is asserted at the end of the phase that owns
+it. The report is also where it matters most: somebody about to read these results
+needs to know first whether the document in front of them is the one that was built
+from.
 
 ---
 
