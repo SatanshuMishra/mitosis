@@ -51,7 +51,7 @@ Every term used in this document, defined once.
 | **Write-set** | The list of files an MSP is expected to change. |
 | **Invariant** | A statement that must be true of what one phase produced. Fixed in this document, identical on every run. Defined in full in section 5.1. |
 | **Acceptance property** | A statement about what one MSP's finished work must do, true when the work was done correctly and false when it was not. It describes an outcome, never a step toward one, and never the code that produces it. Written by that MSP's planner. Defined in full in section 5.1. |
-| **Step** | One item of work in a plan. Steps say what to do. Acceptance properties say what must then be true. |
+| **Step** | One item of work in a plan. It carries an id, the files it touches, and the ids of the steps it needs, so the plan can schedule it. Steps say what to do. Acceptance properties say what must then be true. |
 | **Assertion** | The act of checking an invariant or an acceptance property against the real artifact and affirming it. Where the check can be code, it is code. Where it is a judgment, a model answers it and shows the evidence. |
 | **Assertion record** | What a phase emits alongside its product: one entry per invariant in that phase's set, each carrying a verdict and the evidence behind it. mitosis does not start the next phase until the record is complete and every entry is affirmed. The terminal report is not a phase, but emits one too, for T1 to T5, printed inside itself. |
 | **Verdict** | Phase 6's pass or fail on one MSP, resting on its acceptance properties and nothing else. |
@@ -72,7 +72,7 @@ Every term used in this document, defined once.
 - Reading a SPEC in whatever form its author wrote it.
 - Splitting the work into MSPs and clusters.
 - Planning each MSP.
-- Implementing each MSP.
+- Implementing each MSP, running its independent steps at the same time.
 - Driving each MSP's continuous integration to green.
 - Reviewing each MSP's finished work against its plan.
 - Opening one pull request per MSP.
@@ -91,9 +91,6 @@ Every term used in this document, defined once.
   and Phase 4 reads it to plan one MSP. No phase after Phase 4 reads it at all. A
   later phase that reached back would be compensating for a planning failure
   instead of surfacing it.
-- **Parallelising the tasks inside a single MSP.** Clusters are eligible to run
-  at the same time as each other; the steps within one MSP run in one worktree, in
-  order. Task-level parallelism is not part of this design.
 - **Deciding whether finished work is good enough to merge.** Phase 6 reviews
   the work against the plan; whether it is good enough to merge is the human's
   call at the pull request.
@@ -272,6 +269,11 @@ the files would be corrupted, but because the second one needs to see the first
 one's work. Two MSPs adding different routes to one file, run blindly in
 parallel, can both register the same path and merge cleanly with a bug.
 
+**That reason is about two worktrees.** Corruption is off the table between two
+MSPs because each has its own checkout. Two steps inside one MSP share a checkout,
+so overlap there risks the file itself as well, and Phase 5 states what that costs
+and what is done about it.
+
 **Why this phase must be deterministic:** everything upstream is a model's
 judgment. The schedule is the one thing that must be reproducible, so a given MSP
 list always produces the same execution order.
@@ -290,7 +292,8 @@ under that reordering. Breaking them on the position an MSP happened to appear i
 Phase 2's output would not be.
 
 **A single cluster is a valid outcome.** If every MSP depends on the previous one,
-mitosis runs them in sequence and reports parallelism as one. It does not refuse.
+mitosis runs them in sequence and reports cluster parallelism as one. It does not
+refuse.
 
 **Invariants.** These are asserted against the finished schedule rather than
 against the algorithm, so they still mean the same thing if the clustering code is
@@ -345,8 +348,21 @@ one artifact — the plan — with two clearly separated parts.
 
 | Part | What it is |
 |---|---|
-| **Steps** | The work to do, in order: what to build, where, following what patterns already in this codebase. Steps say what to do. |
+| **Steps** | The work to do: what to build, where, following what patterns already in this codebase. Each step carries an id, the files it touches, and the ids of the steps it needs. Steps say what to do. |
 | **Acceptance properties** | What must be true once the work is finished. Outcomes, never steps toward one, and never the code that produces them. Defined in section 5.1. |
+
+**Why the steps are a graph and not a line.** A list of steps states one thing
+about order: this one, then the next. Most of that order is an artifact of writing
+the list down rather than a constraint that is really there — a step adding a
+migration and a step adding an unrelated route neither need each other nor touch
+the same file, and running them one after the other only spends time. Naming what
+each step touches and which steps it needs states the constraint that exists and
+leaves everything else free.
+
+**The planner is the agent that can see this.** It is writing the steps, so it
+already knows which file each one lands in and which of them build on another's
+work. Nobody downstream holds that: the worker receives the plan and would have to
+infer an ordering the planner had in hand and did not write down.
 
 **Why there is a planning phase at all:** without one, the decompose pass would
 have to write a complete implementation brief for every MSP up front — hundreds of
@@ -363,7 +379,7 @@ against the SPEC would be compensating for a planning failure rather than
 surfacing it, and would make every later phase worse at its own job. This is why
 the bar here is a requirement rather than a goal.
 
-**Invariants.** Eight statements, fixed, asserted against the finished plan before
+**Invariants.** Eleven statements, fixed, asserted against the finished plan before
 Phase 5 begins.
 
 | # | The statement that must be true | How it is asserted |
@@ -376,6 +392,9 @@ Phase 5 begins.
 | **P6 — In scope and shippable** | The plan stays inside the MSP's brief and its declared files, and describes no work that would leave the branch broken if merged on its own. | A model compares the plan against the brief and `writes`. |
 | **P7 — Properties are not steps** | Acceptance properties are stated separately from the steps, and no property restates a step. | A model judgment. |
 | **P8 — Steps reach the properties** | For every property, the plan names which steps produce it. | A model maps properties against steps. A property no step produces means a step is missing, and the planner adds it. |
+| **P9 — Step graph is valid** | Every id named in a step's `needs` is a step in this plan, and the graph has no cycle. | Mechanically. |
+| **P10 — Step files grounded** | Every path a step declares either exists in the repository now, or is a file that step will create. | The existing case mechanically, against the repository. The create case as a model judgment. |
+| **P11 — No hidden interaction** | No two steps that could run at the same time interact in a way their file lists do not show. | A model reads every such pair. |
 
 **Why P1 can be asserted at all.** Phase 4 writes no code. At the moment P1 is
 asked — the end of this phase — the plan exists and the work does not, so "before
@@ -425,7 +444,7 @@ reviewer who must read the implementation to check a property is reading the
 worker's code to decide whether the worker's code is right, which is exactly the
 coupling Phase 6 exists to break.
 
-**How the eight fit together.** They are two chains and a frame, and reading them
+**How P1 to P8 fit together.** They are two chains and a frame, and reading them
 as eight separate rules misses what they are doing.
 
 *The completeness chain* runs SPEC slice → acceptance properties → steps. P2
@@ -443,6 +462,20 @@ real code, declared scope, a branch that still works when merged alone. P7 is
 load-bearing in a way that is easy to miss — if properties and steps collapse into
 one list, P2 and P8 become the same check, and the meaningfulness chain has
 nothing left to attach to.
+
+*P9, P10 and P11 are a third group*, and they govern the step list rather than
+the properties: they are what makes it schedulable. P9 and P10 ground it — every
+id resolves to a step in this plan, the graph terminates, and every declared path
+is a real one. P11 asks whether two steps that could run together interact in a
+way their file lists do not show.
+
+**P11 is C5 one level down.** Phase 3 asks that question of two MSPs sharing no
+file; P11 asks it of two steps sharing no file, and the blind spot is the same
+one: one step writes a configuration key, a constant, a fixture, and another reads
+it from a file that appears in neither list. It is cheap to ask here because the
+planner already holds the whole plan — every step, every file, every dependency —
+so it folds into this phase's existing assertion round instead of costing a pass
+of its own.
 
 **Output:** a plan, with its steps and its acceptance properties.
 
@@ -462,7 +495,9 @@ says, and nothing else.
 
 1. Create a worktree and a branch for this MSP.
 2. The worker receives the plan. It does not receive the SPEC.
-3. It writes the code.
+3. It writes the code, running independent steps at the same time. A step may
+   start once every step it needs is done and no step in flight touches a file it
+   touches.
 4. It drives continuous integration to green.
 
 **The worker writes no acceptance assertion.** Its own tests are ordinary
@@ -473,10 +508,36 @@ reason in section 5.5.
 
 **Isolation is physical, not by convention.** Each MSP gets its own checked-out
 copy of the repository. Two workers running at once cannot see or overwrite each
-other's files, regardless of what their write-sets claimed.
+other's files, regardless of what their write-sets claimed. That isolation is
+between MSPs. Steps inside one MSP share the one copy, and are kept apart only by
+the schedule.
 
-**The steps inside one MSP run in order, in one worktree.** There is no task-level
-parallelism. Parallelism in this design is between clusters and nowhere else.
+**Two things happen alone.** A commit is taken when no step is in flight: two
+agents committing in one worktree contend for one index, and each sweeps up
+whatever the other has half-written, producing a commit nobody wrote and no step
+accounts for. Continuous integration runs when no step is in flight, never while
+a sibling is mid-edit: a build taken then reports on a tree that was nobody's
+finished work.
+
+**A declared file list describes source files, and some steps reach past them.**
+A step may install a dependency, regenerate a lockfile, or write a build cache.
+Each of those is state every other step reads, and none of it appears in anyone's
+list. A step that mutates shared build state is never scheduled concurrently with
+anything.
+
+**The hazard, which git cannot see.** Between clusters, two workers that touch one
+file are in two worktrees on two branches, and the collision surfaces as a
+conflict when the pull requests merge. Inside one worktree there is no merge and
+no conflict marker. Two concurrent steps that both touch a file neither declared
+produce a lost update instead: one reads the file, the other reads it, both write,
+and the first change is gone with nothing recording that it was there. The final
+tree is internally consistent and simply missing work, which is exactly why git
+has nothing to report — there is no disagreement left in it to find.
+
+**The remedy is after the fact.** What each step actually touched is recorded as
+it runs, which is what W4 reads. When two steps that ran at the same time turn out
+to have touched one file, the later of the two is re-run on its own, against the
+tree as it now stands. That is decision 8.4 at step level.
 
 **Red integration is ordinary work, not a special state.** A failing build is a
 bug, and fixing bugs is what the worker does. There is no retry counter and no
@@ -490,6 +551,7 @@ SPEC or of the plan, and it escalates into the terminal report.
 | **W1 — Green on this commit** | Continuous integration is green on the branch's current head, not on an earlier commit. | Mechanically, comparing the build's commit to the branch head. |
 | **W2 — Every step done** | Every step in the plan has corresponding work in the diff. | A model reads the plan's steps against the diff. |
 | **W3 — Nothing beyond the plan** | No work was done that the plan did not ask for. | A model reads the diff against the plan. |
+| **W4 — No concurrent overlap** | No two steps that ran at the same time touched the same file. | Mechanically, from the files each step actually changed. |
 
 **Why W3 matters more than it sounds.** Phase 6 checks the plan's acceptance
 properties and nothing else. Anything built that the plan never asked for is
@@ -500,8 +562,9 @@ leaving a green result that describes code nobody tested. Section 5.7 says a red
 build invalidates every prior assertion; W1 is the same idea applied to the build
 result itself.
 
-Files actually changed are recorded for the drift report. That is data collection
-and not a gate — see decision 8.4.
+Files actually changed are recorded twice: per step, which is what W4 reads, and
+per MSP, which is what the drift report prints. The per-MSP record is data
+collection and not a gate — see decision 8.4.
 
 **Output:** a branch with committed work and green integration.
 
@@ -735,7 +798,7 @@ back to Phase 5 and then through Phase 6 again.
 **Re-assertion when the thing underneath changes.** An affirmed statement
 describes the output as it stood when it was affirmed. If that output changes
 afterwards, the statement is asserted again. The common case: a failing review
-returns an MSP to Phase 5, the branch changes, and W1 to W3 and then R1 to R6 all
+returns an MSP to Phase 5, the branch changes, and W1 to W4 and then R1 to R6 all
 have to hold again. A previous affirmation against different output is not
 evidence, which is the same rule 5.7 applies to a red build.
 
@@ -774,7 +837,7 @@ with extra steps in front of it. Phase 6 exists to break that, and it is the rea
 planning, building and checking are three phases rather than two.
 
 **This is narrower than it sounds**, and the second row above is why. The worker
-does assert W1 to W3 about its own diff, because those statements are fixed in this
+does assert W1 to W4 about its own diff, because those statements are fixed in this
 document and it cannot make them easier. What it may not do is author the
 instrument that measures an acceptance property, whose wording a model produced
 during this run. Decision 8.10 draws that line.
@@ -875,7 +938,7 @@ It contains:
 | **Property strength** | For each acceptance property, the cheapest satisfaction P3 named, and why it was judged sufficient. |
 | **Review** | For each MSP, the verdict and the assertions that produced it. |
 | **Assumptions** | Every place the SPEC was interpreted rather than followed literally. The decompose pass and every planner emit these. |
-| **Parallelism** | How many clusters ran at once, and how long the longest chain was. |
+| **Parallelism** | How many clusters ran at once, how long the longest chain was, and for each MSP how many of its steps ran at once. |
 | **File drift** | For each MSP, files it declared against files it actually changed. |
 | **SPEC drift** | Whether the SPEC file on disk still matches the copy this run froze. |
 
@@ -988,12 +1051,26 @@ properties never do.
 
 ### 8.4 Write-sets schedule; they never gate
 
-**Decision:** write-sets decide what cannot run at the same time. Afterwards, the
-difference between declared and actual files is recorded and never acted on.
+**Decision:** write-sets decide what cannot run at the same time, and a step's
+declared files do the same one level down. Neither is checked before the work
+runs. Afterwards, at MSP level, the difference between declared and actual files
+is recorded and never acted on.
 
 **Why:** the write-set is a guess made before the code exists. Enforcing it would
 pay a full rebuild for a guess that harmed nothing. The collisions that actually
 matter are caught by git when the pull requests merge.
+
+**Where that reasoning stops.** It holds because two MSPs sit in two worktrees on
+two branches, and a branch that merges is somewhere git can speak. Two steps sit
+in one worktree, where there is no merge and nothing downstream ever sees that a
+declaration was wrong. The declared list is therefore checked after the fact at
+step level — that is W4 — and a collision re-runs the later of the two steps.
+
+**That is still not a gate.** A step runs freely against whatever it declared, and
+nothing stops it, delays it, or asks it to prove its list first. It is redone only
+when two concurrent steps actually touched one file, which is a fact about the run
+rather than a prediction made before it. The principle is unchanged; its scope
+narrowed to where git can finish the job on its own.
 
 ### 8.5 Clusters are dependency chains; clusters run in parallel
 
@@ -1070,7 +1147,7 @@ statement a human vetted and one a model invented mid-run.
 
 **What it does not change:** something generated per run still decides what
 correct means, because the SPEC is different every run. This relocates that
-judgment and bounds it with eight rules. It does not remove it.
+judgment and bounds it with the eight rules P1 to P8. It does not remove it.
 
 ### 8.10 A phase asserts its own invariants
 
@@ -1110,6 +1187,34 @@ has the same shape.
 **Why:** a state file is a second record of something git already knows, and a
 second record can go stale.
 
+### 8.12 Steps inside one MSP may run at the same time
+
+**Decision:** the steps in an MSP's plan run concurrently where they can. A step
+starts once every step it needs is done and no step in flight touches a file it
+touches. Everything else about the MSP is unchanged.
+
+**Why:** a run's wall clock is its longest cluster — the chain of MSPs that have
+to run one after another, and that therefore finishes last. Cluster parallelism
+widens a run, putting more chains in flight at once, but it cannot shorten the
+longest one, and the longest one is the whole of what the human waits for. A SPEC
+whose work is genuinely sequential collapses to a single cluster, where that chain
+is the entire run. Running an MSP's independent steps at the same time is the only
+lever this design has on that number.
+
+**What it costs:** the plan is a larger artifact, because every step now carries
+the files it touches and the steps it needs, and three more invariants — P9 to
+P11 — check that it does. Two things must still happen with nothing in flight: a
+commit, because two agents committing in one worktree contend for one index, and
+continuous integration, because a build taken mid-edit reports on nobody's
+finished work. And one hazard appears that has no equivalent between clusters:
+two concurrent steps writing a file neither declared lose one of the two writes,
+with no merge and no conflict marker to say so. Phase 5 states that hazard and its
+remedy, and W4 is what finds it.
+
+**What it does not do:** no second worktree, no second branch, no merge, no second
+pull request, and no new unit of work between the MSP and the step. An MSP is
+still one branch with one review surface, and 8.6 is untouched.
+
 ---
 
 ## 9. Rejected alternatives
@@ -1125,11 +1230,11 @@ Recorded so they are not re-proposed without new information.
 | **Asking the author clarifying questions at intake** | SPEC quality is not mitosis's responsibility. Intake is also the phase with the least information — nothing is decomposed and no planner has read the SPEC against the codebase. Ambiguity is interpreted and reported instead. |
 | **The implementer writing its own acceptance assertion** | The planner wrote the statement but the worker wrote the check, and a weak check of a strong statement passes. Contradicted 8.3. Replaced by Phase 6. This concerns acceptance properties only — a phase still asserts its own fixed invariants, per 8.10. |
 | **A separate MSP-invariant artifact alongside the plan** | A second specification of the same thing, written by the same planner in the same pass. Folded into the plan as acceptance properties, governed by fixed Phase 4 invariants. |
-| **Task-level parallelism inside one MSP** | Not rejected on merit — out of scope for this design. It would need the plan's steps to carry the files they touch and the steps they need, and a rule for what two concurrent writers may do in one worktree. It does not need local merging: all steps share one worktree and one branch, so two steps writing different files produce no merge operation at all, and nothing here reopens what 8.6 settled. It is its own decision. |
+| **Task-level parallelism inside one MSP** | **Superseded, not still rejected.** It was deferred as out of scope, on the reasoning that it would need the plan's steps to carry files and dependencies and a rule for what two concurrent writers may do in one worktree. Decision 8.12 takes both on: the steps carry them, P9 to P11 check that they are sound, and W4 catches a collision after the fact. It never needed local merging, and 8.6 is untouched — one worktree, one branch and one pull request per MSP. |
 | **A completeness critic** | **Superseded, not still rejected.** The original objection was that it put a second model on the decomposer's own question and produced findings nobody could act on. Under the Phase 2 invariants the findings are acted on by the pass that produced them: D1 and D2 send it back to fix the split, and their mapping reaches the report. The objection no longer holds. |
-| **Binding write-sets** | Pays a full rebuild to enforce a guess, against collisions git already catches. |
+| **Binding write-sets** | Pays a full rebuild to enforce a guess, against collisions that are caught anyway — by git when the pull requests merge, and by W4 inside a worktree. |
 | **A saved run-state file** | Duplicates what branches and pull requests already record. |
-| **Refusing a SPEC with no parallelism** | The per-MSP planning, review and pull request discipline is valuable even when parallelism is one. |
+| **Refusing a SPEC with no parallelism** | The per-MSP planning, review and pull request discipline is valuable even when cluster parallelism is one. |
 
 ---
 
