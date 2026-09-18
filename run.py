@@ -734,6 +734,47 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None):
     return _gate_result(judged, implementation, commit, reverted)
 
 
+def changed_files(tree, branch, base, exclude=()):
+    excluded = ["^" + ref for ref in exclude if branch_exists(tree, ref)]
+    out = git(["log", "--format=", "--name-only", "--no-renames", branch, "^" + base, *excluded], tree)
+    found = ()
+    for line in out.splitlines():
+        path = line.strip()
+        if path and path not in found:
+            found = found + (path,)
+    return sorted(found)
+
+
+def msp_owner_of(plan, path):
+    normalized = _norm(path)
+    for index, msp in enumerate(plan.get("msps") or []):
+        if normalized in {_norm(f) for f in msp.get("files") or ()}:
+            return index
+    return None
+
+
+def reconcile(plan, msp, tree, branch, base, producer_branches=()):
+    changed = changed_files(tree, branch, base, producer_branches)
+    declared = sorted({_norm(f) for f in plan["msps"][msp].get("files") or ()})
+    undeclared = [path for path in changed if _norm(path) not in declared]
+    unwritten = [path for path in declared if path not in {_norm(c) for c in changed}]
+    crossing = ()
+    for path in undeclared:
+        owner = msp_owner_of(plan, path)
+        if owner is not None and owner != msp:
+            crossing = crossing + (
+                {"path": path, "msp": owner, "label": plan["msps"][owner].get("label") or str(owner)},
+            )
+    return {
+        "changed": changed,
+        "declared": declared,
+        "undeclared": undeclared,
+        "unwritten": unwritten,
+        "crossing": list(crossing),
+        "fatal": bool(crossing),
+    }
+
+
 def _lane_indexes(plan, msp):
     return [index for index, lane in enumerate(plan.get("lanes") or []) if lane["msp"] == msp]
 
@@ -861,4 +902,24 @@ def execute(
         state = write_state(
             run_dir, _msp_record(state, msp, state=gate_state(result), reason=None, gate=result)
         )
+        if result["blocks"]:
+            continue
+        findings = reconcile(
+            plan,
+            msp,
+            tree["path"],
+            tree["branch"],
+            feature_branch,
+            tuple(trees[p]["branch"] for p in producers[msp]),
+        )
+        state = write_state(run_dir, _msp_record(state, msp, reconcile=findings))
+        if findings["fatal"]:
+            crossed = ", ".join(
+                "%s belongs to MSP %s" % (entry["path"], entry["label"]) for entry in findings["crossing"]
+            )
+            state = write_state(
+                run_dir,
+                _msp_record(state, msp, state=MSP_BLOCKED, reason="a write crossed an MSP boundary: " + crossed),
+            )
+            continue
     return state

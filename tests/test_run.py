@@ -75,7 +75,8 @@ if mode == "hang":
     with open(os.path.join(marker_dir, "child-%s" % lane), "w") as handle:
         handle.write(str(child.pid))
     child.wait()
-for path in write_set:
+written = write_set[:1] if mode == "partial" else write_set
+for path in written:
     if os.path.dirname(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a") as handle:
@@ -83,6 +84,9 @@ for path in write_set:
 if mode == "undeclared":
     with open("stray.txt", "w") as handle:
         handle.write("undeclared\n")
+if mode == "cross":
+    with open("b.txt", "a") as handle:
+        handle.write("written across an MSP boundary by lane %s\n" % lane)
 if mode == "noisy":
     for i in range(5000):
         print("prose line %d" % i)
@@ -718,6 +722,68 @@ class Gate(RepoCase):
         self.assertEqual(sh(["git", "ls-remote", "--heads", "origin"], self.repo), "")
 
 
+class Reconcile(RepoCase):
+    def an_undeclared_file_is_reported_from_the_git_diff(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = self.build(plan, mode="undeclared")
+        run.commit_all(trees[0]["path"], "everything")
+        findings = run.reconcile(plan, 0, trees[0]["path"], trees[0]["branch"], "main")
+        self.assertEqual(findings["undeclared"], ["stray.txt"])
+        self.assertEqual(findings["unwritten"], [])
+        self.assertEqual(findings["crossing"], [])
+        self.assertFalse(findings["fatal"])
+        self.assertEqual(sorted(findings["changed"]), ["a.txt", "stray.txt"])
+
+    def a_declared_file_never_written_is_reported(self):
+        plan = core.plan([step("a", ["a.txt", "never.txt"])])
+        trees = self.build(plan, mode="partial")
+        run.commit_all(trees[0]["path"], "everything")
+        findings = run.reconcile(plan, 0, trees[0]["path"], trees[0]["branch"], "main")
+        self.assertEqual(findings["unwritten"], ["never.txt"])
+        self.assertEqual(findings["undeclared"], [])
+        self.assertFalse(findings["fatal"])
+
+    def a_file_crossing_an_msp_boundary_is_fatal(self):
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], msp="beta")])
+        trees = self.build(plan, mode="cross")
+        run.commit_all(trees[0]["path"], "everything")
+        findings = run.reconcile(plan, 0, trees[0]["path"], trees[0]["branch"], "main")
+        self.assertTrue(findings["fatal"])
+        self.assertEqual([c["path"] for c in findings["crossing"]], ["b.txt"])
+        self.assertEqual(findings["crossing"][0]["msp"], 1)
+        self.assertEqual(findings["crossing"][0]["label"], "beta")
+        self.assertEqual(findings["undeclared"], ["b.txt"])
+        shutil.rmtree(self.run_dir, ignore_errors=True)
+        state = self.execute(plan, mode="cross", pr=self.pr_command())
+        self.assertTrue(state["msps"]["0"]["reconcile"]["fatal"])
+        self.assertNotEqual(state["msps"]["0"]["state"], "shipped")
+        self.assertIn("b.txt", state["msps"]["0"]["reason"])
+        self.assertNotIn(trees[0]["branch"], [pr[0] for pr in self.pull_requests()])
+
+    def reconcile_ignores_the_worker_self_report(self):
+        plan = core.plan([step("a", ["a.txt", "never.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        records = self.dispatch(plan, trees, mode="partial")
+        self.assertEqual(records[0]["returned"]["files_changed"], ["a.txt", "never.txt"])
+        write(os.path.join(trees[0]["path"], "stray.txt"), "not in any report\n")
+        run.commit_all(trees[0]["path"], "everything")
+        findings = run.reconcile(plan, 0, trees[0]["path"], trees[0]["branch"], "main")
+        self.assertEqual(findings["unwritten"], ["never.txt"])
+        self.assertEqual(findings["undeclared"], ["stray.txt"])
+        self.assertEqual(sorted(findings["changed"]), ["a.txt", "stray.txt"])
+
+    def a_producers_merged_files_are_not_this_msps_writes(self):
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"])])
+        trees = self.build(plan)
+        run.commit_all(trees[1]["path"], "everything")
+        self.assertTrue(os.path.isfile(os.path.join(trees[1]["path"], "a.txt")))
+        findings = run.reconcile(plan, 1, trees[1]["path"], trees[1]["branch"], "main", (trees[0]["branch"],))
+        self.assertEqual(findings["changed"], ["b.txt"])
+        self.assertEqual(findings["undeclared"], [])
+        self.assertEqual(findings["crossing"], [])
+        self.assertFalse(findings["fatal"])
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -729,7 +795,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Worktrees, Dispatch, Resume, Gate):
+    for case in (Worktrees, Dispatch, Resume, Gate, Reconcile):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 
