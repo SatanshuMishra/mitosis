@@ -39,9 +39,9 @@ CONTRACT = "\n".join(
         "  task: the Step's entire brief; the Worker that builds it receives nothing else",
         "  files: the write-set, a non-empty list of paths relative to the codebase root",
         "  source: null; the document path and hash are stamped in for you",
-        '  acceptance: a list of {"%s": "<test file>", "%s": "<test identifier>"} objects, never prose;'
+        '  acceptance: a list of {"%s": "<test file>", "%s": "<test identifier>"} objects,'
         % core.ACCEPTANCE_KEYS
-        + " an empty list declares that the Step proves nothing mechanically",
+        + " never prose; an empty list declares that the Step proves nothing mechanically",
         "A Step may also carry: " + ", ".join(OPTIONAL_ITEM_FIELDS) + ".",
         "  after: names of Steps that must be built first; these edges join parts of the document"
         " that may be far apart, and they can only be seen from the whole of it",
@@ -50,8 +50,8 @@ CONTRACT = "\n".join(
         "  complexity: one of " + ", ".join(core.COMPLEXITY_VALUES),
         "  file_notes: {path: what changes there}",
         "  msp: a tag forcing Steps to ship as one pull request",
-        "  spec_ref: the sections this Step came from, each as its number or its exact heading text,"
-        " or as a line number or a range like 12-20 when the document has no headings",
+        "  spec_ref: the sections this Step came from, each as its number or its exact heading"
+        " text, or as a line number or a range like 12-20 when the document has no headings",
         "  assumptions: the readings you chose where the document was underdetermined",
         '"assumptions" at the top level lists every such reading with the "step" it belongs to;'
         " a Step with any assumption is never rated simple",
@@ -59,6 +59,153 @@ CONTRACT = "\n".join(
         " one string each; return an empty list when there are none",
     )
 )
+
+
+COVERAGE_MODES = ("headings", "lines", "none")
+
+_ATX = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
+_SETEXT = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
+_FENCE = re.compile(r"^ {0,3}(```|~~~)")
+_NUMBERED = re.compile(r"^(\d+(?:\.\d+)*)\.?[ \t]+(.+)$")
+_RANGE = re.compile(r"^(\d+)\s*-\s*(\d+)$")
+
+
+def _heading(raw, level, line):
+    numbered = _NUMBERED.match(raw)
+    if numbered:
+        return {
+            "id": numbered.group(1),
+            "title": numbered.group(2).strip(),
+            "heading": raw,
+            "line": line,
+            "level": level,
+        }
+    return {"id": raw, "title": raw, "heading": raw, "line": line, "level": level}
+
+
+def _headings(lines):
+    found = ()
+    fenced = False
+    previous = None
+    for number, line in enumerate(lines, 1):
+        if _FENCE.match(line):
+            fenced = not fenced
+            previous = None
+            continue
+        if fenced:
+            continue
+        atx = _ATX.match(line)
+        if atx:
+            title = atx.group(2).strip()
+            if title:
+                found = found + (_heading(title, len(atx.group(1)), number),)
+            previous = None
+            continue
+        if previous is not None and _SETEXT.match(line):
+            level = 1 if line.strip().startswith("=") else 2
+            found = found + (_heading(previous.strip(), level, number - 1),)
+            previous = None
+            continue
+        previous = line if line.strip() else None
+    return found
+
+
+def sections(text):
+    if text is None:
+        return {
+            "mode": "none",
+            "sections": [],
+            "reason": "the document is not decodable as UTF-8 text",
+        }
+    lines = text.splitlines()
+    found = _headings(lines)
+    if found:
+        return {"mode": "headings", "sections": list(found), "reason": None}
+    found = tuple(
+        {"id": str(number), "title": line.strip(), "heading": line.strip(), "line": number}
+        for number, line in enumerate(lines, 1)
+        if line.strip()
+    )
+    if found:
+        return {"mode": "lines", "sections": list(found), "reason": None}
+    return {
+        "mode": "none",
+        "sections": [],
+        "reason": "the document has no headings and no non-blank lines",
+    }
+
+
+def _spec_refs(item):
+    if not isinstance(item, dict):
+        return ()
+    raw = item.get("spec_ref")
+    if raw is None:
+        return ()
+    if isinstance(raw, (str, int)):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return ()
+    return tuple(str(claim) for claim in raw if isinstance(claim, (str, int)))
+
+
+def _normalized(claim):
+    return claim.strip().lstrip("#").strip().rstrip(".").strip().lower()
+
+
+def _claims(claim, section):
+    wanted = _normalized(claim)
+    if not wanted:
+        return False
+    candidates = {
+        section["id"].lower(),
+        section["title"].lower(),
+        section["heading"].lower(),
+        ("%s %s" % (section["id"], section["title"])).lower(),
+        ("%s. %s" % (section["id"], section["title"])).lower(),
+    }
+    if wanted in candidates:
+        return True
+    span = _RANGE.match(wanted)
+    if span and section["id"].isdigit():
+        return int(span.group(1)) <= int(section["id"]) <= int(span.group(2))
+    return False
+
+
+def _step_label(item, index):
+    name = item.get("name") if isinstance(item, dict) else None
+    return name if isinstance(name, str) and name else "item #%d" % index
+
+
+def coverage(text, items):
+    found = sections(text)
+    if found["mode"] == "none":
+        return {**found, "claimed": [], "uncovered": [], "unmatched_claims": []}
+    claims = tuple(
+        (_step_label(item, index), claim)
+        for index, item in enumerate(items)
+        for claim in _spec_refs(item)
+    )
+    matched = {
+        section["line"]
+        for section in found["sections"]
+        if any(_claims(claim, section) for _, claim in claims)
+    }
+    return {
+        **found,
+        "claimed": [s["id"] for s in found["sections"] if s["line"] in matched],
+        "uncovered": [s for s in found["sections"] if s["line"] not in matched],
+        "unmatched_claims": [
+            "%s: %s" % (label, claim)
+            for label, claim in claims
+            if not any(_claims(claim, section) for section in found["sections"])
+        ],
+    }
+
+
+def _section_label(section):
+    if section["id"] == section["title"]:
+        return section["title"]
+    return "%s %s" % (section["id"], section["title"])
 
 
 def freeze(path):
@@ -115,7 +262,9 @@ def _codebase_lines(codebase):
     lines = ["Codebase root: %s" % codebase.get("root")]
     paths = codebase.get("paths") or []
     overflow = codebase.get("overflow") or 0
-    shown = "%d shown, %d more not shown" % (len(paths), overflow) if overflow else "%d" % len(paths)
+    shown = "%d" % len(paths)
+    if overflow:
+        shown = "%d shown, %d more not shown" % (len(paths), overflow)
     lines.append("Files in the codebase (%s):" % shown)
     lines.extend("  " + path for path in paths)
     return lines
@@ -127,7 +276,26 @@ def _document_lines(document):
         return [
             "The document is not decodable as UTF-8 text; open it from its path.",
         ]
-    return ["The document follows, between the markers.", DOCUMENT_OPEN, text.rstrip("\n"), DOCUMENT_CLOSE]
+    return [
+        "The document follows, between the markers.",
+        DOCUMENT_OPEN,
+        text.rstrip("\n"),
+        DOCUMENT_CLOSE,
+    ]
+
+
+def _claimable_lines(document):
+    found = sections(document.get("text"))
+    if found["mode"] == "headings":
+        return [
+            "Sections you may claim in spec_ref, by number or exact heading:"
+        ] + ["  " + _section_label(section) for section in found["sections"]]
+    if found["mode"] == "lines":
+        return [
+            "The document has no headings; claim spec_ref by line number or range"
+            " across its %d non-blank lines." % len(found["sections"])
+        ]
+    return ["Coverage is not computable for this document: %s." % found["reason"]]
 
 
 def render_prompt(document, codebase, graph=None, charter=None):
@@ -142,8 +310,14 @@ def render_prompt(document, codebase, graph=None, charter=None):
         header.append(
             "Charter: %s (binding on every Step; every Worker receives it unchanged)" % charter
         )
-    parts = [header, _codebase_lines(codebase), _graph_lines(graph), _document_lines(document)]
-    parts.append(["Return contract:", CONTRACT])
+    parts = [
+        header,
+        _codebase_lines(codebase),
+        _graph_lines(graph),
+        _document_lines(document),
+        _claimable_lines(document),
+        ["Return contract:", CONTRACT],
+    ]
     return "\n\n".join("\n".join(part) for part in parts if part) + "\n"
 
 
@@ -362,9 +536,27 @@ def decompose(
         "errors": spawn_errors + collected["errors"],
         "counts": collected["counts"],
         "raised": collected["raised"],
+        "coverage": coverage(frozen["text"], collected["items"]),
         "exit": spawned["exit"],
         "log": log,
     }
+
+
+def _coverage_lines(covered):
+    if not covered:
+        return []
+    if covered["mode"] == "none":
+        return ["coverage not computable: %s" % covered["reason"]]
+    lines = [
+        "coverage by %s: %d of %d sections unclaimed"
+        % (covered["mode"], len(covered["uncovered"]), len(covered["sections"]))
+    ]
+    lines.extend("  unclaimed: " + _section_label(section) for section in covered["uncovered"])
+    if covered["unmatched_claims"]:
+        lines.append(
+            "spec_ref claims matching no section: " + "; ".join(covered["unmatched_claims"])
+        )
+    return lines
 
 
 def report(result):
@@ -380,7 +572,11 @@ def report(result):
     ]
     raised = result.get("raised") or []
     if raised:
-        lines.append("%d Steps raised from simple for carrying assumptions: %s" % (len(raised), ", ".join(raised)))
+        lines.append(
+            "%d Steps raised from simple for carrying assumptions: %s"
+            % (len(raised), ", ".join(raised))
+        )
+    lines.extend(_coverage_lines(result.get("coverage")))
     errors = result.get("errors") or []
     if errors:
         lines.append("%d contract errors:" % len(errors))
