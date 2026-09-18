@@ -1,7 +1,9 @@
+import hashlib
 import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -10,6 +12,16 @@ from datetime import datetime, timezone
 import core
 
 BRANCH_PREFIX = "mitosis"
+
+PROBE_PREFIX = "probe"
+
+PLAN_FILE = "plan.json"
+
+STATE_FILE = "state.json"
+
+MSP_BLOCKED = "blocked"
+
+ACCEPTANCE_FAILURE_EXIT = 1
 
 PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 
@@ -41,6 +53,10 @@ class GitError(RuntimeError):
 
 
 class ConfigError(ValueError):
+    pass
+
+
+class ResumeError(RuntimeError):
     pass
 
 
@@ -443,3 +459,406 @@ def dispatch(plan, trees, command, timeout, concurrency, run_dir, base, models=N
                     )
                 pending = []
     return records
+
+
+def write_json(path, payload):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    partial = path + ".partial"
+    with open(partial, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    os.replace(partial, path)
+
+
+def read_json(path):
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def write_state(run_dir, state):
+    write_json(os.path.join(run_dir, STATE_FILE), state)
+    return state
+
+
+def load_state(run_dir):
+    path = os.path.join(run_dir, STATE_FILE)
+    if not os.path.isfile(path):
+        return None
+    loaded = read_json(path)
+    return loaded if isinstance(loaded, dict) else None
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def document_drift(plan, root):
+    source = plan.get("source")
+    if not isinstance(source, dict) or not source.get("path"):
+        return None
+    path = os.path.join(root, source["path"]) if root else source["path"]
+    actual = sha256_file(path) if os.path.isfile(path) else None
+    expected = source.get("sha256")
+    return {
+        "path": source["path"],
+        "expected": expected,
+        "actual": actual,
+        "drifted": actual != expected,
+    }
+
+
+def prior_state(run_dir, plan, resume):
+    if not resume:
+        return None
+    state = load_state(run_dir)
+    if state is None:
+        return None
+    if state.get("plan_id") != plan.get("plan_id"):
+        raise ResumeError(
+            "%s holds a run of plan %s, not plan %s; the work-set changed, so prior results do not apply"
+            % (run_dir, state.get("plan_id"), plan.get("plan_id"))
+        )
+    return state
+
+
+def msp_producers(plan):
+    lanes = plan.get("lanes") or []
+    producers = {index: () for index in range(len(plan.get("msps") or []))}
+    for consumer, sources in lane_edges(plan).items():
+        own = lanes[consumer]["msp"]
+        for producer in sources:
+            other = lanes[producer]["msp"]
+            if other != own and other not in producers[own]:
+                producers = {**producers, own: producers[own] + (other,)}
+    return {msp: tuple(sorted(found)) for msp, found in producers.items()}
+
+
+def msp_order(plan):
+    producers = msp_producers(plan)
+    placed = ()
+    remaining = sorted(producers)
+    while remaining:
+        ready = [msp for msp in remaining if all(p in placed for p in producers[msp])]
+        if not ready:
+            ready = remaining[:1]
+        placed = placed + tuple(ready)
+        remaining = [msp for msp in remaining if msp not in ready]
+    return placed
+
+
+def _norm(path):
+    return os.path.normpath(str(path)).replace(os.sep, "/")
+
+
+def _steps_by_name(plan):
+    return {item["name"]: item for item in plan.get("items") or []}
+
+
+def acceptance_files(plan, msp):
+    steps = _steps_by_name(plan)
+    named = ()
+    for name in plan["msps"][msp]["steps"]:
+        for entry in steps[name].get("acceptance") or []:
+            if isinstance(entry, dict) and isinstance(entry.get("file"), str):
+                path = _norm(entry["file"])
+                if path not in named:
+                    named = named + (path,)
+    return named
+
+
+def implementation_paths(plan, msp):
+    named = acceptance_files(plan, msp)
+    return [path for path in plan["msps"][msp]["files"] if _norm(path) not in named]
+
+
+def msp_properties(plan, msp):
+    steps = _steps_by_name(plan)
+    modes = plan.get("verify_modes") or {}
+    found = ()
+    for name in plan["msps"][msp]["steps"]:
+        acceptance = steps[name].get("acceptance") or []
+        if not acceptance:
+            found = found + (
+                {
+                    "step": name,
+                    "file": None,
+                    "test": None,
+                    "outcome": "not-applicable",
+                    "reason": "no acceptance property declared",
+                },
+            )
+            continue
+        for entry in acceptance:
+            serial = modes.get(name) == "serial"
+            found = found + (
+                {
+                    "step": name,
+                    "file": entry["file"],
+                    "test": entry["test"],
+                    "outcome": "not-applicable" if serial else None,
+                    "reason": "serial surface; the probe cannot run it headlessly" if serial else None,
+                },
+            )
+    return found
+
+
+def commit_all(tree, message):
+    git(["add", "-A"], tree)
+    if git(["status", "--porcelain"], tree):
+        git(["commit", "-q", "-m", message], tree)
+    return git(["rev-parse", "HEAD"], tree)
+
+
+def revert_implementation(tree, base, paths):
+    reverted = ()
+    for path in paths:
+        if git_ok(["cat-file", "-e", "%s:%s" % (base, path)], tree):
+            git(["checkout", "-q", base, "--", path], tree)
+        else:
+            git(["rm", "-r", "-q", "--ignore-unmatch", "--", path], tree)
+            full = os.path.join(tree, path)
+            if os.path.isdir(full) and not os.path.islink(full):
+                shutil.rmtree(full)
+            elif os.path.lexists(full):
+                os.remove(full)
+        reverted = reverted + (path,)
+    return list(reverted)
+
+
+def run_acceptance(command, tree, entry, log_path, timeout):
+    argv = build_argv(command, {"file": entry["file"], "test": entry["test"], "worktree": tree})
+    return run_worker(argv, tree, timeout, log_path, log_path + ".err")
+
+
+def probe_outcome(with_work, reverted):
+    if with_work[1]:
+        return "inconclusive", "timed out with the work present"
+    if with_work[0] != 0:
+        return "inconclusive", "exit %d with the work present" % with_work[0]
+    if reverted is None:
+        return "inconclusive", "the probe did not run"
+    if reverted[1]:
+        return "inconclusive", "timed out with the implementation reverted"
+    if reverted[0] == 0:
+        return "inert", "passes with the implementation reverted"
+    if reverted[0] == ACCEPTANCE_FAILURE_EXIT:
+        return "pass", None
+    return (
+        "inconclusive",
+        "exit %d with the implementation reverted; a test that never ran is not a test that failed"
+        % reverted[0],
+    )
+
+
+def gate_outcome(properties):
+    outcomes = [entry["outcome"] for entry in properties]
+    for candidate in ("inert", "inconclusive", "pass"):
+        if candidate in outcomes:
+            return candidate
+    return "not-applicable"
+
+
+def gate_state(result):
+    if result["outcome"] == "inert":
+        return "gate-failed"
+    if result["outcome"] == "inconclusive":
+        return "gate-inconclusive"
+    return None
+
+
+def _gate_result(properties, implementation, commit, reverted):
+    resolved = [
+        {**entry, "outcome": entry["outcome"] or "inconclusive"}
+        for entry in properties
+    ]
+    outcome = gate_outcome(resolved)
+    return {
+        "outcome": outcome,
+        "blocks": outcome in ("inert", "inconclusive"),
+        "properties": resolved,
+        "implementation": list(implementation),
+        "reverted": list(reverted),
+        "counts": {key: sum(1 for e in resolved if e["outcome"] == key) for key in core.GATE_OUTCOMES},
+        "commit": commit,
+    }
+
+
+def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None):
+    label = plan["msps"][msp].get("label") or str(msp)
+    commit = commit_all(tree, "chore(%s): commit the MSP's work before the gate" % label)
+    properties = msp_properties(plan, msp)
+    implementation = implementation_paths(plan, msp)
+    runnable = [index for index, entry in enumerate(properties) if entry["outcome"] is None]
+    if not runnable:
+        return _gate_result(properties, implementation, commit, ())
+    os.makedirs(log_dir, exist_ok=True)
+    with_work = {
+        index: run_acceptance(
+            command, tree, properties[index], os.path.join(log_dir, "%d-with-work.log" % index), timeout
+        )
+        for index in runnable
+    }
+    probe = "%s/%s" % (PROBE_PREFIX, branch)
+    git(["checkout", "-q", "-B", probe], tree)
+    try:
+        reverted = revert_implementation(tree, base, implementation)
+        without = {
+            index: run_acceptance(
+                command, tree, properties[index], os.path.join(log_dir, "%d-reverted.log" % index), timeout
+            )
+            for index in runnable
+            if with_work[index] == (0, False)
+        }
+    finally:
+        git(["checkout", "-q", "-f", branch], tree)
+        git_run(["branch", "-D", probe], tree)
+    judged = ()
+    for index, entry in enumerate(properties):
+        if index not in with_work:
+            judged = judged + (entry,)
+            continue
+        outcome, reason = probe_outcome(with_work[index], without.get(index))
+        judged = judged + (
+            {
+                **entry,
+                "outcome": outcome,
+                "reason": reason,
+                "with_work": with_work[index][0],
+                "reverted": without[index][0] if index in without else None,
+            },
+        )
+    return _gate_result(judged, implementation, commit, reverted)
+
+
+def _lane_indexes(plan, msp):
+    return [index for index, lane in enumerate(plan.get("lanes") or []) if lane["msp"] == msp]
+
+
+def _msp_record(run_state, msp, **fields):
+    current = run_state["msps"].get(str(msp)) or {}
+    return {**run_state, "msps": {**run_state["msps"], str(msp): {**current, **fields}}}
+
+
+def execute(
+    plan,
+    repo,
+    feature_branch,
+    run_dir,
+    worker_command,
+    acceptance_command,
+    pr_command,
+    timeout,
+    concurrency,
+    models=None,
+    resume=False,
+    root=None,
+    trees_root=None,
+    remote="origin",
+    prefix=BRANCH_PREFIX,
+):
+    prior = prior_state(run_dir, plan, resume)
+    check_models(plan, worker_command, models)
+    os.makedirs(run_dir, exist_ok=True)
+    write_json(os.path.join(run_dir, PLAN_FILE), plan)
+    state = {
+        "version": core.__version__,
+        "plan_id": plan.get("plan_id"),
+        "feature_branch": feature_branch,
+        "started": now(),
+        "drift": document_drift(plan, root or repo),
+        "worktrees": [],
+        "lanes": dict((prior or {}).get("lanes") or {}),
+        "msps": dict((prior or {}).get("msps") or {}),
+        "stacking_exceptions": list((prior or {}).get("stacking_exceptions") or []),
+    }
+    write_state(run_dir, state)
+    trees = prepare_worktrees(
+        plan["msps"], feature_branch, trees_root or os.path.join(run_dir, "trees"), repo, prefix
+    )
+    state = write_state(run_dir, {**state, "worktrees": trees})
+    holder = [state]
+
+    def on_lane(lane, record):
+        holder[0] = write_state(
+            run_dir, {**holder[0], "lanes": {**holder[0]["lanes"], str(lane): record}}
+        )
+
+    dispatch(
+        plan,
+        trees,
+        worker_command,
+        timeout,
+        concurrency,
+        run_dir,
+        feature_branch,
+        models=models,
+        prior=state["lanes"],
+        on_lane=on_lane,
+    )
+    state = holder[0]
+    producers = msp_producers(plan)
+    for msp in msp_order(plan):
+        current = state["msps"].get(str(msp)) or {}
+        if current.get("state") == "shipped":
+            continue
+        label = plan["msps"][msp].get("label") or str(msp)
+        tree = trees[msp]
+        not_ok = [
+            index
+            for index in _lane_indexes(plan, msp)
+            if (state["lanes"].get(str(index)) or {}).get("state") != "ok"
+        ]
+        if not_ok:
+            lane_state = (state["lanes"].get(str(not_ok[0])) or {}).get("state")
+            state = write_state(
+                run_dir,
+                _msp_record(
+                    state, msp, state=MSP_BLOCKED, reason="Lane %d is %s" % (not_ok[0], lane_state)
+                ),
+            )
+            continue
+        unshipped = [
+            p for p in producers[msp] if (state["msps"].get(str(p)) or {}).get("state") != "shipped"
+        ]
+        if unshipped:
+            blocker = unshipped[0]
+            state = write_state(
+                run_dir,
+                _msp_record(
+                    state,
+                    msp,
+                    state=MSP_BLOCKED,
+                    reason="MSP %s is %s"
+                    % (
+                        plan["msps"][blocker].get("label") or str(blocker),
+                        (state["msps"].get(str(blocker)) or {}).get("state"),
+                    ),
+                    blocked_by=[blocker],
+                ),
+            )
+            continue
+        try:
+            result = gate(
+                plan,
+                msp,
+                tree["path"],
+                tree["branch"],
+                feature_branch,
+                acceptance_command,
+                os.path.join(run_dir, "gate", "msp-%d" % msp),
+                timeout,
+            )
+        except (OSError, GitError, subprocess.SubprocessError) as error:
+            state = write_state(
+                run_dir,
+                _msp_record(state, msp, state="gate-inconclusive", reason=str(error), gate=None),
+            )
+            continue
+        state = write_state(
+            run_dir, _msp_record(state, msp, state=gate_state(result), reason=None, gate=result)
+        )
+    return state
