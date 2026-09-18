@@ -114,6 +114,18 @@ sys.exit(7)
 '''
 
 
+PR_SCRIPT = r'''
+import json
+import os
+import sys
+
+marker_dir = sys.argv[1]
+with open(os.path.join(marker_dir, "pr"), "a") as handle:
+    handle.write(json.dumps(sys.argv[2:]) + "\n")
+print("https://example.invalid/pull/%d" % len(open(os.path.join(marker_dir, "pr")).read().splitlines()))
+'''
+
+
 def sha256_of(path):
     import hashlib
 
@@ -212,6 +224,41 @@ class RepoCase(unittest.TestCase):
             prior=prior,
             **extra,
         )
+
+    def build(self, plan, mode="ok"):
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        records = self.dispatch(plan, trees, mode=mode)
+        self.assertTrue(all(r["state"] == "ok" for r in records.values()))
+        return trees
+
+    def gate(self, plan, trees, accept="real", msp=0, command=None):
+        return run.gate(
+            plan,
+            msp,
+            trees[msp]["path"],
+            trees[msp]["branch"],
+            "main",
+            command or self.acceptance_command(accept),
+            os.path.join(self.run_dir, "gate"),
+            60,
+        )
+
+    def pr_command(self):
+        script = os.path.join(self.tmp, "pr.py")
+        if not os.path.exists(script):
+            write(script, PR_SCRIPT)
+        os.makedirs(self.markers, exist_ok=True)
+        return "%s %s %s {branch} {base} {title} {body}" % (
+            shlex.quote(sys.executable),
+            shlex.quote(script),
+            shlex.quote(self.markers),
+        )
+
+    def pull_requests(self):
+        path = os.path.join(self.markers, "pr")
+        if not os.path.exists(path):
+            return []
+        return [json.loads(line) for line in read(path).splitlines()]
 
     def branches(self):
         out = sh(["git", "for-each-ref", "--format=%(refname:short)", "refs/heads"], self.repo)
@@ -534,6 +581,143 @@ class Resume(RepoCase):
         self.assertEqual(self.marker(0).count("ran"), 2)
 
 
+class Gate(RepoCase):
+    def a_load_bearing_property_passes_the_gate(self):
+        plan = core.plan([gated_step()])
+        trees = self.build(plan)
+        result = self.gate(plan, trees, accept="real")
+        self.assertEqual(result["outcome"], "pass")
+        self.assertFalse(result["blocks"])
+        self.assertEqual(result["counts"]["pass"], 1)
+        self.assertEqual(result["reverted"], ["impl.txt"])
+        self.assertEqual([p["outcome"] for p in result["properties"]], ["pass"])
+        runs = self.gate_runs()
+        self.assertEqual(len(runs), 2)
+        self.assertIn("work=True", runs[0])
+        self.assertIn("work=False", runs[1])
+        tree = trees[0]["path"]
+        self.assertEqual(sh(["git", "rev-parse", "--abbrev-ref", "HEAD"], tree), trees[0]["branch"])
+        self.assertEqual(sh(["git", "status", "--porcelain"], tree), "")
+        self.assertEqual(read(os.path.join(tree, "impl.txt")), "work by lane 0\n")
+        self.assertFalse(any(b.startswith(run.PROBE_PREFIX + "/") for b in self.branches()))
+
+    def an_inert_acceptance_property_blocks_the_pull_request(self):
+        plan = core.plan([gated_step()])
+        trees = self.build(plan)
+        result = self.gate(plan, trees, accept="inert")
+        self.assertEqual(result["outcome"], "inert")
+        self.assertTrue(result["blocks"])
+        self.assertEqual(run.gate_state(result), "gate-failed")
+        shutil.rmtree(self.run_dir, ignore_errors=True)
+        state = self.execute(core.plan([gated_step()]), accept="inert", pr=self.pr_command())
+        self.assertEqual(state["msps"]["0"]["state"], "gate-failed")
+        self.assertEqual(state["msps"]["0"]["gate"]["outcome"], "inert")
+        self.assertEqual(self.pull_requests(), [])
+
+    def a_reverted_build_error_is_inconclusive_not_a_pass(self):
+        plan = core.plan([gated_step()])
+        trees = self.build(plan)
+        result = self.gate(plan, trees, accept="brittle")
+        self.assertEqual(result["outcome"], "inconclusive")
+        self.assertTrue(result["blocks"])
+        self.assertEqual(run.gate_state(result), "gate-inconclusive")
+        self.assertEqual(result["properties"][0]["reverted"], 2)
+        self.assertEqual(result["counts"]["pass"], 0)
+
+    def a_property_failing_with_the_work_present_is_inconclusive(self):
+        plan = core.plan([gated_step()])
+        trees = self.build(plan)
+        result = self.gate(plan, trees, accept="failing")
+        self.assertEqual(result["outcome"], "inconclusive")
+        self.assertTrue(result["blocks"])
+        self.assertIn("work present", result["properties"][0]["reason"])
+        self.assertEqual(len(self.gate_runs()), 1)
+
+    def a_step_whose_test_file_is_not_named_is_counted_not_passed(self):
+        plan = core.plan([step("impl", ["impl.txt", "tests/t_impl.txt"])])
+        self.assertEqual(run.implementation_paths(plan, 0), ["impl.txt", "tests/t_impl.txt"])
+        trees = self.build(plan)
+        result = self.gate(plan, trees, accept="real")
+        self.assertEqual(result["outcome"], "not-applicable")
+        self.assertFalse(result["blocks"])
+        self.assertEqual(result["counts"], {"pass": 0, "inert": 0, "inconclusive": 0, "not-applicable": 1})
+        self.assertEqual(self.gate_runs(), [])
+        self.assertIsNone(run.gate_state(result))
+
+    def the_implementation_set_is_the_write_set_minus_named_acceptance_files(self):
+        plan = core.plan(
+            [
+                gated_step("one"),
+                step("two", ["other.txt", "tests/t_other.txt"], msp="m", acceptance=[{"file": "tests/t_other.txt", "test": "p"}]),
+                step("three", ["tests/t_impl.txt", "impl.txt"], msp="m"),
+            ]
+        )
+        self.assertEqual(len(plan["msps"]), 1)
+        self.assertEqual(run.implementation_paths(plan, 0), ["impl.txt", "other.txt"])
+
+    def a_serial_acceptance_property_is_counted_not_run(self):
+        plan = core.plan([gated_step()], serial_markers=["impl.txt"])
+        self.assertEqual(plan["verify_modes"]["impl"], "serial")
+        trees = self.build(plan)
+        result = self.gate(plan, trees, accept="inert")
+        self.assertEqual(result["outcome"], "not-applicable")
+        self.assertFalse(result["blocks"])
+        self.assertEqual(result["counts"]["not-applicable"], 1)
+        self.assertIn("serial", result["properties"][0]["reason"])
+        self.assertEqual(self.gate_runs(), [])
+
+    def an_empty_acceptance_list_is_counted_and_does_not_block(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = self.build(plan)
+        result = self.gate(plan, trees, accept="inert")
+        self.assertEqual(result["outcome"], "not-applicable")
+        self.assertFalse(result["blocks"])
+        self.assertEqual(result["counts"]["not-applicable"], 1)
+        self.assertEqual(result["properties"][0]["step"], "a")
+        self.assertEqual(self.gate_runs(), [])
+        shutil.rmtree(self.run_dir, ignore_errors=True)
+        state = self.execute(core.plan([step("a", ["a.txt"])]), accept="inert")
+        self.assertNotIn(state["msps"]["0"]["state"], ("gate-failed", "gate-inconclusive", run.MSP_BLOCKED))
+        self.assertEqual(state["msps"]["0"]["gate"]["counts"]["not-applicable"], 1)
+
+    def the_probe_branch_is_deleted_even_when_the_gate_throws(self):
+        plan = core.plan([gated_step()])
+        trees = self.build(plan)
+        tree = trees[0]["path"]
+        with self.assertRaises(FileNotFoundError):
+            self.gate(plan, trees, command=os.path.join(self.tmp, "no-such-runner") + " {file} {test}")
+        self.assertFalse(any(b.startswith(run.PROBE_PREFIX + "/") for b in self.branches()))
+        self.assertEqual(sh(["git", "rev-parse", "--abbrev-ref", "HEAD"], tree), trees[0]["branch"])
+        self.assertEqual(sh(["git", "status", "--porcelain"], tree), "")
+        self.assertEqual(read(os.path.join(tree, "impl.txt")), "work by lane 0\n")
+
+    def a_gate_that_throws_leaves_the_msp_inconclusive(self):
+        plan = core.plan([gated_step()])
+        state = run.execute(
+            plan,
+            self.repo,
+            "main",
+            self.run_dir,
+            self.worker_command("ok"),
+            os.path.join(self.tmp, "no-such-runner") + " {file} {test}",
+            None,
+            60,
+            2,
+            trees_root=self.trees,
+        )
+        self.assertEqual(state["msps"]["0"]["state"], "gate-inconclusive")
+        self.assertIn("no-such-runner", state["msps"]["0"]["reason"])
+
+    def nothing_is_pushed_before_the_gate_passes(self):
+        remote = os.path.join(self.tmp, "remote.git")
+        sh(["git", "init", "-q", "--bare", remote], self.tmp)
+        sh(["git", "remote", "add", "origin", remote], self.repo)
+        plan = core.plan([gated_step()])
+        state = self.execute(plan, accept="inert", pr=self.pr_command())
+        self.assertEqual(state["msps"]["0"]["state"], "gate-failed")
+        self.assertEqual(sh(["git", "ls-remote", "--heads", "origin"], self.repo), "")
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -545,7 +729,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Worktrees, Dispatch, Resume):
+    for case in (Worktrees, Dispatch, Resume, Gate):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 
