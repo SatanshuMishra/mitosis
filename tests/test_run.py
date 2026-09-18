@@ -1,8 +1,11 @@
+import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -38,6 +41,59 @@ def read(path):
         return handle.read()
 
 
+def step(name, files, **extra):
+    base = {
+        "name": name,
+        "task": "do " + name,
+        "files": list(files),
+        "source": None,
+        "acceptance": [],
+    }
+    return {**base, **extra}
+
+
+def lane_named(plan, name):
+    return next(i for i, lane in enumerate(plan["lanes"]) if name in lane["steps"])
+
+
+WORKER_SCRIPT = r'''
+import json
+import os
+import subprocess
+import sys
+
+mode, marker_dir, lane, task = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+prefix = "Write-set for this Lane, the only files you may edit: "
+write_set = []
+for line in task.splitlines():
+    if line.startswith(prefix):
+        write_set = [p.strip() for p in line[len(prefix):].split(",") if p.strip()]
+with open(os.path.join(marker_dir, "lane-%s" % lane), "a") as handle:
+    handle.write("ran; saw " + " ".join(sorted(os.listdir("."))) + "\n")
+if mode == "hang":
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    with open(os.path.join(marker_dir, "child-%s" % lane), "w") as handle:
+        handle.write(str(child.pid))
+    child.wait()
+for path in write_set:
+    if os.path.dirname(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a") as handle:
+        handle.write("work by lane %s\n" % lane)
+if mode == "undeclared":
+    with open("stray.txt", "w") as handle:
+        handle.write("undeclared\n")
+if mode == "noisy":
+    for i in range(5000):
+        print("prose line %d" % i)
+status = "failed" if mode == "reports-failed" else "ok"
+notes = "n" * 500 if mode == "noisy" else "done"
+if mode != "silent":
+    print(json.dumps({"item": "lane-%s" % lane, "status": status, "files_changed": write_set, "notes": notes}))
+sys.exit(3 if mode == "crash" else 0)
+'''
+
+
 class RepoCase(unittest.TestCase):
     def setUp(self):
         self.saved_env = {key: os.environ.get(key) for key in ISOLATED_GIT_ENV}
@@ -45,6 +101,8 @@ class RepoCase(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="mitosis-")
         self.repo = os.path.join(self.tmp, "repo")
         self.trees = os.path.join(self.tmp, "trees")
+        self.run_dir = os.path.join(self.tmp, "run")
+        self.markers = os.path.join(self.tmp, "markers")
         os.makedirs(self.repo)
         sh(["git", "init", "-q", "-b", "main"], self.repo)
         write(os.path.join(self.repo, "README.md"), "seed\n")
@@ -58,6 +116,41 @@ class RepoCase(unittest.TestCase):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+    def worker_command(self, mode="ok"):
+        script = os.path.join(self.tmp, "worker.py")
+        if not os.path.exists(script):
+            write(script, WORKER_SCRIPT)
+        os.makedirs(self.markers, exist_ok=True)
+        return "%s %s %s %s {lane} {task}" % (
+            shlex.quote(sys.executable),
+            shlex.quote(script),
+            mode,
+            shlex.quote(self.markers),
+        )
+
+    def marker(self, lane):
+        path = os.path.join(self.markers, "lane-%d" % lane)
+        return read(path) if os.path.exists(path) else None
+
+    def commit_file(self, tree, path, content, message="commit"):
+        write(os.path.join(tree, path), content)
+        sh(["git", "add", "-A", "--", path], tree)
+        sh(["git", "commit", "-q", "-m", message], tree)
+        return sh(["git", "rev-parse", "HEAD"], tree)
+
+    def dispatch(self, plan, trees, mode="ok", timeout=60, prior=None, concurrency=2, **extra):
+        return run.dispatch(
+            plan,
+            trees,
+            self.worker_command(mode),
+            timeout,
+            concurrency,
+            self.run_dir,
+            "main",
+            prior=prior,
+            **extra,
+        )
 
     def branches(self):
         out = sh(["git", "for-each-ref", "--format=%(refname:short)", "refs/heads"], self.repo)
@@ -125,6 +218,149 @@ class Worktrees(RepoCase):
         self.assertIn("no-such-branch", str(caught.exception))
 
 
+class Dispatch(RepoCase):
+    def build_argv_cannot_be_reinterpreted_as_shell(self):
+        task = 'echo "quoted"; rm -rf /\nsecond line && $(whoami) | tee {model}'
+        template = "%s -c %s {task} {model} tail" % (
+            shlex.quote(sys.executable),
+            shlex.quote("import json, sys; print(json.dumps(sys.argv[1:]))"),
+        )
+        argv = run.build_argv(template, {"task": task, "model": "m1"})
+        self.assertEqual(argv[3], task)
+        self.assertEqual(argv[4], "m1")
+        self.assertEqual(argv[5], "tail")
+        self.assertEqual(len(argv), 6)
+        seen = json.loads(subprocess.run(argv, capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(seen, [task, "m1", "tail"])
+        self.assertEqual(run.build_argv("a {unknown} b", {}), ["a", "{unknown}", "b"])
+
+    def an_unmapped_tier_refuses_to_start(self):
+        plan = core.plan([step("a", ["a.txt"], complexity="complex")])
+        with self.assertRaises(run.ConfigError) as caught:
+            run.check_models(plan, "agent --model {model} {task}", {"cheap": "small"})
+        self.assertIn("top", str(caught.exception))
+        run.check_models(plan, "agent {task}", {})
+        run.check_models(plan, "agent --model {model} {task}", {"top": "big"})
+
+    def a_lane_is_ok_when_both_channels_agree(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        records = self.dispatch(plan, trees)
+        self.assertEqual(records[0]["state"], "ok")
+        self.assertEqual(records[0]["exit"], 0)
+        self.assertEqual(records[0]["returned"]["status"], "ok")
+        self.assertEqual(read(os.path.join(trees[0]["path"], "a.txt")), "work by lane 0\n")
+        self.assertEqual(sh(["git", "status", "--porcelain"], trees[0]["path"]), "")
+        self.assertEqual(records[0]["commit"], sh(["git", "rev-parse", "HEAD"], trees[0]["path"]))
+        self.assertNotEqual(records[0]["commit"], sh(["git", "rev-parse", "main"], self.repo))
+
+    def a_worker_that_reports_failure_and_exits_zero_is_failed(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        records = self.dispatch(plan, trees, mode="reports-failed")
+        self.assertEqual(records[0]["state"], "failed")
+        self.assertEqual(records[0]["exit"], 0)
+        self.assertEqual(records[0]["returned"]["status"], "failed")
+        self.assertIn("failed", records[0]["reason"])
+
+    def a_worker_that_exits_nonzero_and_reports_ok_is_failed(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        records = self.dispatch(plan, trees, mode="crash")
+        self.assertEqual(records[0]["state"], "failed")
+        self.assertEqual(records[0]["exit"], 3)
+        self.assertEqual(records[0]["returned"]["status"], "ok")
+        self.assertIn("3", records[0]["reason"])
+
+    def a_worker_with_no_return_line_is_failed(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        records = self.dispatch(plan, trees, mode="silent")
+        self.assertEqual(records[0]["state"], "failed")
+        self.assertEqual(records[0]["exit"], 0)
+        self.assertIsNone(records[0]["returned"])
+
+    def a_worker_that_never_exits_is_killed_and_failed(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        started = time.monotonic()
+        records = self.dispatch(plan, trees, mode="hang", timeout=1)
+        self.assertLess(time.monotonic() - started, 30)
+        self.assertEqual(records[0]["state"], "failed")
+        self.assertEqual(records[0]["reason"], "timeout")
+        child = int(read(os.path.join(self.markers, "child-0")))
+        time.sleep(0.5)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(child, 0)
+
+    def a_failed_producer_merge_blocks_the_consumer(self):
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        producer = self.commit_file(trees[0]["path"], "shared.txt", "one\n")
+        self.commit_file(trees[1]["path"], "shared.txt", "two\n")
+        prior = {0: {"lane": 0, "msp": 0, "state": "ok", "commit": producer}}
+        records = self.dispatch(plan, trees, prior=prior)
+        self.assertEqual(records[0]["state"], "ok")
+        self.assertEqual(records[1]["state"], "merge-blocked")
+        self.assertIn(trees[0]["branch"], records[1]["reason"])
+        self.assertIn(trees[1]["branch"], records[1]["reason"])
+        self.assertIsNone(self.marker(1))
+        self.assertEqual(sh(["git", "status", "--porcelain"], trees[1]["path"]), "")
+        self.assertEqual(read(os.path.join(trees[1]["path"], "shared.txt")), "two\n")
+
+    def a_producers_committed_work_is_merged_before_the_consumer_starts(self):
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        records = self.dispatch(plan, trees)
+        self.assertEqual(records[0]["state"], "ok")
+        self.assertEqual(records[1]["state"], "ok")
+        self.assertIn("a.txt", self.marker(1))
+        self.assertEqual(records[1]["merged"], [trees[0]["branch"]])
+        self.assertTrue(os.path.isfile(os.path.join(trees[1]["path"], "a.txt")))
+
+    def a_failed_lane_blocks_only_its_dependents(self):
+        plan = core.plan(
+            [
+                step("a", ["a.txt"]),
+                step("b", ["b.txt"], after=["a"]),
+                step("c", ["c.txt"], after=["b"]),
+                step("d", ["d.txt"]),
+            ]
+        )
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        records = self.dispatch(plan, trees, mode="crash")
+        by_step = {plan["lanes"][i]["steps"][0]: r for i, r in records.items()}
+        self.assertEqual(by_step["a"]["state"], "failed")
+        self.assertEqual(by_step["b"]["state"], "blocked")
+        self.assertEqual(by_step["c"]["state"], "blocked")
+        self.assertEqual(by_step["d"]["state"], "failed")
+        self.assertIn(str(lane_named(plan, "a")), by_step["b"]["reason"])
+        self.assertIsNone(self.marker(lane_named(plan, "b")))
+        self.assertIsNone(self.marker(lane_named(plan, "c")))
+        self.assertIsNotNone(self.marker(lane_named(plan, "d")))
+
+    def worker_output_goes_to_disk_and_the_record_stays_small(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        records = self.dispatch(plan, trees, mode="noisy")
+        record = records[0]
+        self.assertEqual(record["state"], "ok")
+        self.assertLess(len(json.dumps(record)), 1500)
+        self.assertLessEqual(len(record["returned"]["notes"]), core.NOTES_CAP)
+        self.assertIn("prose line 4999", read(record["stdout"]))
+        self.assertTrue(record["stdout"].startswith(self.run_dir))
+
+    def a_resumed_ok_lane_is_not_dispatched_again(self):
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        prior = {0: {"lane": 0, "msp": 0, "state": "ok", "commit": None}}
+        records = self.dispatch(plan, trees, prior=prior)
+        self.assertEqual(records[0], prior[0])
+        self.assertEqual(records[1]["state"], "ok")
+        self.assertIsNone(self.marker(0))
+        self.assertIsNotNone(self.marker(1))
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -136,7 +372,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Worktrees,):
+    for case in (Worktrees, Dispatch):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

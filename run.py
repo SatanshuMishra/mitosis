@@ -1,10 +1,33 @@
+import json
 import os
 import re
+import shlex
+import signal
 import subprocess
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from datetime import datetime, timezone
 
 import core
 
 BRANCH_PREFIX = "mitosis"
+
+PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
+
+LANE_RECORD_KEYS = (
+    "lane",
+    "msp",
+    "state",
+    "reason",
+    "exit",
+    "timed_out",
+    "returned",
+    "stdout",
+    "stderr",
+    "merged",
+    "commit",
+    "started",
+    "finished",
+)
 
 
 class GitError(RuntimeError):
@@ -17,22 +40,29 @@ class GitError(RuntimeError):
         )
 
 
-def git(args, cwd, check=True):
-    completed = subprocess.run(
+class ConfigError(ValueError):
+    pass
+
+
+def git_run(args, cwd):
+    return subprocess.run(
         ["git", *args], cwd=cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL
     )
+
+
+def git(args, cwd, check=True):
+    completed = git_run(args, cwd)
     if check and completed.returncode != 0:
         raise GitError(args, completed.returncode, completed.stderr)
     return completed.stdout.strip()
 
 
 def git_ok(args, cwd):
-    return (
-        subprocess.run(
-            ["git", *args], cwd=cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL
-        ).returncode
-        == 0
-    )
+    return git_run(args, cwd).returncode == 0
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def branch_exists(repo, branch):
@@ -106,3 +136,310 @@ def prepare_worktrees(msps, base, root, repo, prefix=BRANCH_PREFIX):
             },
         )
     return list(trees)
+
+
+def build_argv(template, values):
+    def fill(match):
+        key = match.group(1)
+        if key not in values:
+            return match.group(0)
+        value = values[key]
+        return "" if value is None else str(value)
+
+    return [PLACEHOLDER.sub(fill, argument) for argument in shlex.split(template)]
+
+
+def check_models(plan, template, models):
+    if "{model}" not in template:
+        return
+    tiers = sorted({lane.get("tier") for lane in plan.get("lanes", ())})
+    missing = [tier for tier in tiers if tier not in (models or {})]
+    if missing:
+        raise ConfigError(
+            "the dispatch command uses {model} but no model is mapped for tier %s"
+            % ", ".join(str(tier) for tier in missing)
+        )
+
+
+def lane_edges(plan):
+    return {
+        int(consumer): tuple(int(producer) for producer in producers)
+        for consumer, producers in (plan.get("lane_after") or {}).items()
+    }
+
+
+def last_line(path):
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except OSError:
+        return None
+    lines = [line for line in data.decode("utf-8", "replace").splitlines() if line.strip()]
+    return lines[-1] if lines else None
+
+
+def parse_return(line):
+    if line is None:
+        return None
+    try:
+        parsed = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    files = parsed.get("files_changed")
+    notes = parsed.get("notes")
+    bounded = {
+        "item": parsed.get("item") if isinstance(parsed.get("item"), str) else None,
+        "status": parsed.get("status") if isinstance(parsed.get("status"), str) else None,
+        "files_changed": [f for f in files if isinstance(f, str)] if isinstance(files, list) else [],
+        "notes": (notes if isinstance(notes, str) else "")[: core.NOTES_CAP],
+    }
+    return {key: bounded[key] for key in core.RETURN_KEYS}
+
+
+def lane_verdict(exit_code, returned, timed_out):
+    if timed_out:
+        return "failed", "timeout"
+    status = returned.get("status") if returned else None
+    if exit_code == 0 and status == "ok":
+        return "ok", None
+    if returned is None:
+        return "failed", "exit %d with no return line" % exit_code
+    if exit_code == 0:
+        return "failed", "exit 0 but reported %s" % status
+    if status == "ok":
+        return "failed", "exit %d but reported ok" % exit_code
+    return "failed", "exit %d and reported %s" % (exit_code, status)
+
+
+def kill_tree(proc):
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (AttributeError, OSError):
+        proc.kill()
+
+
+def run_worker(argv, cwd, timeout, stdout_path, stderr_path):
+    with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
+        proc = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            stdout=out,
+            stderr=err,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        try:
+            return proc.wait(timeout=timeout), False
+        except subprocess.TimeoutExpired:
+            kill_tree(proc)
+            return proc.wait(), True
+
+
+def merge_target(tree, producer, base):
+    if branch_exists(tree, producer["branch"]):
+        return producer["branch"]
+    commit = producer.get("commit")
+    if commit and git_ok(["merge-base", "--is-ancestor", commit, base], tree):
+        return commit
+    return None
+
+
+def merge_producers(tree, consumer_branch, producers, base):
+    merged = ()
+    for producer in producers:
+        target = merge_target(tree, producer, base)
+        if target is None:
+            return merged, (
+                "producer branch %s is missing and its commits are not reachable from %s"
+                % (producer["branch"], base)
+            )
+        result = git_run(["merge", "--no-edit", target], tree)
+        if result.returncode != 0:
+            git_run(["merge", "--abort"], tree)
+            detail = (result.stderr.strip() or result.stdout.strip()).splitlines()
+            return merged, "merging %s into %s failed: %s" % (
+                producer["branch"],
+                consumer_branch,
+                detail[0] if detail else "exit %d" % result.returncode,
+            )
+        merged = merged + (producer["branch"],)
+    return merged, None
+
+
+def commit_paths(tree, paths, message):
+    present = [p for p in paths if os.path.lexists(os.path.join(tree, p))]
+    tracked = git(["ls-files", "--", *paths], tree).splitlines() if paths else []
+    targets = sorted(set(present) | set(tracked))
+    if targets:
+        git(["add", "-A", "--", *targets], tree)
+        if git(["status", "--porcelain", "--", *targets], tree):
+            git(["commit", "-q", "-m", message, "--", *targets], tree)
+    return git(["rev-parse", "HEAD"], tree)
+
+
+def lane_record(lane, msp, state, **fields):
+    base = dict.fromkeys(LANE_RECORD_KEYS)
+    return {
+        **base,
+        **fields,
+        "lane": lane,
+        "msp": msp,
+        "state": state,
+        "merged": list(fields.get("merged") or ()),
+    }
+
+
+def _cross_producers(plan, lane, producers, trees, records):
+    lanes = plan["lanes"]
+    own = lanes[lane]["msp"]
+    seen = ()
+    for producer in producers:
+        msp = lanes[producer]["msp"]
+        if msp == own or any(entry["msp"] == msp for entry in seen):
+            continue
+        seen = seen + (
+            {
+                "msp": msp,
+                "branch": trees[msp]["branch"],
+                "commit": records.get(producer, {}).get("commit"),
+            },
+        )
+    return seen
+
+
+def _worker_values(plan, lane, tree, models, run_dir):
+    brief = plan["briefs"][lane]
+    tier = plan["lanes"][lane].get("tier")
+    return {
+        "task": brief["text"],
+        "model": (models or {}).get(tier, ""),
+        "tier": tier,
+        "worktree": tree["path"],
+        "branch": tree["branch"],
+        "lane": lane,
+        "msp": tree.get("label") or tree["msp"],
+        "charter": brief.get("charter"),
+        "document": brief.get("document"),
+        "run_dir": run_dir,
+    }
+
+
+def _finish(plan, lane, tree, started, merged, out, err, code, timed_out):
+    returned = parse_return(last_line(out))
+    state, reason = lane_verdict(code, returned, timed_out)
+    commit = None
+    if state == "ok":
+        steps = plan["lanes"][lane]["steps"]
+        commit = commit_paths(
+            tree["path"],
+            plan["briefs"][lane]["write_set"],
+            "chore(%s): land Lane %d (%s)" % (tree.get("label") or tree["msp"], lane, ", ".join(steps)),
+        )
+    return lane_record(
+        lane,
+        tree["msp"],
+        state,
+        reason=reason,
+        exit=code,
+        timed_out=timed_out,
+        returned=returned,
+        stdout=out,
+        stderr=err,
+        merged=merged,
+        commit=commit,
+        started=started,
+        finished=now(),
+    )
+
+
+def dispatch(plan, trees, command, timeout, concurrency, run_dir, base, models=None, prior=None, on_lane=None):
+    if timeout is None:
+        raise ConfigError("a per-Lane timeout is required; mitosis has no default")
+    check_models(plan, command, models)
+    lanes = plan.get("lanes") or []
+    edges = lane_edges(plan)
+    tree_of = {tree["msp"]: tree for tree in trees}
+    lane_dir = os.path.join(run_dir, "lanes")
+    os.makedirs(lane_dir, exist_ok=True)
+    records = {
+        int(index): record
+        for index, record in (prior or {}).items()
+        if isinstance(record, dict) and record.get("state") == "ok"
+    }
+    ordered = [int(i) for i in plan.get("lane_order") or range(len(lanes))]
+    pending = [i for i in ordered + [i for i in range(len(lanes)) if i not in ordered] if i not in records]
+    running = {}
+    cap = max(1, int(concurrency))
+
+    def settle(lane, record):
+        if on_lane is not None:
+            on_lane(lane, record)
+        return {**records, lane: record}
+
+    with ThreadPoolExecutor(max_workers=cap) as pool:
+        while pending or running:
+            progressed = False
+            waiting = ()
+            for lane in pending:
+                msp = lanes[lane]["msp"]
+                producers = edges.get(lane, ())
+                unfinished = [p for p in producers if p not in records]
+                if unfinished:
+                    live = [p for p in unfinished if p in pending or p in running.values()]
+                    if live:
+                        waiting = waiting + (lane,)
+                        continue
+                    records = settle(
+                        lane,
+                        lane_record(lane, msp, "blocked", reason="producer Lane %d never ran" % unfinished[0]),
+                    )
+                    progressed = True
+                    continue
+                if len(running) >= cap:
+                    waiting = waiting + (lane,)
+                    continue
+                bad = [p for p in producers if records[p].get("state") != "ok"]
+                if bad:
+                    records = settle(
+                        lane,
+                        lane_record(
+                            lane,
+                            msp,
+                            "blocked",
+                            reason="producer Lane %d is %s" % (bad[0], records[bad[0]].get("state")),
+                        ),
+                    )
+                    progressed = True
+                    continue
+                tree = tree_of[msp]
+                cross = _cross_producers(plan, lane, producers, tree_of, records)
+                merged, error = merge_producers(tree["path"], tree["branch"], cross, base)
+                if error is not None:
+                    records = settle(lane, lane_record(lane, msp, "merge-blocked", reason=error, merged=merged))
+                    progressed = True
+                    continue
+                out = os.path.join(lane_dir, "%d.out" % lane)
+                err = os.path.join(lane_dir, "%d.err" % lane)
+                argv = build_argv(command, _worker_values(plan, lane, tree, models, run_dir))
+                future = pool.submit(run_worker, argv, tree["path"], timeout, out, err)
+                running = {**running, future: (lane, now(), merged, out, err)}
+                progressed = True
+            pending = list(waiting)
+            if running:
+                done, _ = wait(list(running), return_when=FIRST_COMPLETED)
+                for future in done:
+                    lane, started, merged, out, err = running[future]
+                    running = {f: v for f, v in running.items() if f is not future}
+                    code, timed_out = future.result()
+                    tree = tree_of[lanes[lane]["msp"]]
+                    records = settle(lane, _finish(plan, lane, tree, started, merged, out, err, code, timed_out))
+            elif pending and not progressed:
+                for lane in pending:
+                    records = settle(
+                        lane,
+                        lane_record(lane, lanes[lane]["msp"], "blocked", reason="no producer can finish"),
+                    )
+                pending = []
+    return records
