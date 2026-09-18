@@ -28,6 +28,57 @@ def write(root, relative, content):
     return path
 
 
+WORKER = """
+import json
+import os
+import sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+prompt = sys.stdin.read()
+with open(os.path.join(here, "prompt.txt"), "w", encoding="utf-8") as handle:
+    handle.write(prompt)
+with open(os.path.join(here, "argv.json"), "w", encoding="utf-8") as handle:
+    json.dump(sys.argv[1:], handle)
+print("chatter that must stay out of the record")
+print("more chatter", file=sys.stderr)
+with open(os.path.join(here, "reply.txt"), encoding="utf-8") as handle:
+    print(handle.read().strip())
+sys.exit(int(os.environ.get("WORKER_EXIT", "0")))
+"""
+
+SLEEPER = """
+import time
+time.sleep(60)
+"""
+
+
+def worker(root, reply, script=WORKER):
+    path = write(root, "worker/worker.py", script)
+    write(root, "worker/reply.txt", reply if isinstance(reply, str) else json.dumps(reply))
+    return "%s %s" % (shlex.quote(sys.executable), shlex.quote(path))
+
+
+def received(root, name):
+    with open(os.path.join(root, "worker", name), encoding="utf-8") as handle:
+        return handle.read()
+
+
+def item(name, **extra):
+    return {
+        "name": name,
+        "task": "do " + name,
+        "files": [name + ".py"],
+        "source": None,
+        "acceptance": [],
+        **extra,
+    }
+
+
+def run(root, document_text, reply, **extra):
+    document = write(root, "docs/spec.md", document_text)
+    return decompose.decompose(document, worker(root, reply), root, timeout=20, **extra)
+
+
 class Contract(unittest.TestCase):
     def the_contract_names_every_required_item_field(self):
         for field in core.REQUIRED_ITEM_FIELDS:
@@ -131,6 +182,173 @@ class Contract(unittest.TestCase):
             self.assertEqual(capped["overflow"], 1)
 
 
+class Run(unittest.TestCase):
+    def an_edge_between_distant_sections_survives(self):
+        text = "".join("# %d. Section %d\n\nbody %d\n\n" % (n, n, n) for n in range(1, 10))
+        reply = {
+            "items": [
+                item("from-one", spec_ref=["1"]),
+                item("from-nine", after=["from-one"], spec_ref=["9"]),
+            ],
+            "assumptions": [],
+            "constraints": [],
+        }
+        with tempfile.TemporaryDirectory() as root:
+            result = run(root, text, reply)
+            prompt = received(root, "prompt.txt")
+            self.assertIn("# 1. Section 1", prompt)
+            self.assertIn("# 9. Section 9", prompt)
+            self.assertEqual(prompt.count("# 5. Section 5"), 1)
+        self.assertEqual(result["errors"], [])
+        by_name = {step["name"]: step for step in result["items"]}
+        self.assertEqual(by_name["from-nine"]["after"], ["from-one"])
+        self.assertEqual(core.validate(result["items"])["errors"], [])
+
+    def a_document_with_no_global_statements_reports_zero(self):
+        reply = {"items": [item("only")], "assumptions": [], "constraints": []}
+        with tempfile.TemporaryDirectory() as root:
+            result = run(root, "# One\n\nbody\n", reply)
+        self.assertEqual(result["constraints"], [])
+        self.assertIn("0 global constraints extracted", decompose.report(result))
+        reply = {**reply, "constraints": ["never write comments", "standard library only"]}
+        with tempfile.TemporaryDirectory() as root:
+            result = run(root, "# One\n\nbody\n", reply)
+        self.assertEqual(len(result["constraints"]), 2)
+        self.assertIn("2 global constraints extracted", decompose.report(result))
+
+    def the_frozen_hash_is_stamped_into_every_item(self):
+        text = "# One\n\nbody\n\n# Two\n\nmore\n"
+        reply = {
+            "items": [
+                item("a"),
+                item("b", source={"path": "wrong.md", "sha256": "f" * 64}),
+                item("c"),
+            ],
+            "assumptions": [],
+            "constraints": [],
+        }
+        with tempfile.TemporaryDirectory() as root:
+            result = run(root, text, reply)
+            document = os.path.join(root, "docs", "spec.md")
+        expected = {"path": document, "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()}
+        self.assertEqual(result["source"], expected)
+        self.assertEqual(len(result["items"]), 3)
+        for step in result["items"]:
+            self.assertEqual(step["source"], expected)
+            self.assertEqual(tuple(step["source"]), core.SOURCE_KEYS)
+        self.assertEqual(result["errors"], [])
+
+    def an_item_missing_a_required_field_is_reported_not_dropped(self):
+        broken = {"name": "no-files", "task": "do it", "acceptance": []}
+        reply = {"items": [item("whole"), broken], "assumptions": [], "constraints": []}
+        with tempfile.TemporaryDirectory() as root:
+            result = run(root, "# One\n\nbody\n", reply)
+        self.assertEqual([step["name"] for step in result["items"]], ["whole", "no-files"])
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertIn("no-files", result["errors"][0])
+        self.assertIn("files", result["errors"][0])
+        self.assertIn(result["errors"][0], decompose.report(result))
+
+    def assumptions_reach_the_item_they_belong_to(self):
+        reply = {
+            "items": [
+                item("plain", complexity="simple"),
+                item("vague", complexity="simple", assumptions=["inline reading"]),
+            ],
+            "assumptions": [
+                {"step": "vague", "text": "the endpoint is idempotent"},
+                {"step": "vague", "text": "inline reading"},
+                {"step": "ghost", "text": "belongs to nobody"},
+            ],
+            "constraints": [],
+        }
+        with tempfile.TemporaryDirectory() as root:
+            result = run(root, "# One\n\nbody\n", reply)
+        by_name = {step["name"]: step for step in result["items"]}
+        self.assertEqual(
+            by_name["vague"]["assumptions"], ["inline reading", "the endpoint is idempotent"]
+        )
+        self.assertEqual(by_name["vague"]["complexity"], "complex")
+        self.assertNotIn("assumptions", by_name["plain"])
+        self.assertEqual(by_name["plain"]["complexity"], "simple")
+        self.assertEqual(result["raised"], ["vague"])
+        self.assertEqual(result["counts"]["assumptions"], 1)
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertIn("ghost", result["errors"][0])
+
+    def a_worker_that_never_exits_is_killed_and_reported(self):
+        with tempfile.TemporaryDirectory() as root:
+            document = write(root, "docs/spec.md", "# One\n\nbody\n")
+            template = worker(root, "", script=SLEEPER)
+            result = decompose.decompose(document, template, root, timeout=0.5)
+        self.assertEqual(result["items"], [])
+        self.assertTrue(any("timeout" in error for error in result["errors"]))
+
+    def a_return_that_is_not_json_is_reported(self):
+        with tempfile.TemporaryDirectory() as root:
+            result = run(root, "# One\n\nbody\n", "I decomposed it, here are the steps")
+        self.assertEqual(result["items"], [])
+        self.assertTrue(any("JSON" in error for error in result["errors"]))
+        with tempfile.TemporaryDirectory() as root:
+            result = run(root, "# One\n\nbody\n", json.dumps({"items": {"a": 1}}))
+        self.assertEqual(result["items"], [])
+        self.assertTrue(any("items" in error for error in result["errors"]))
+        self.assertTrue(any("assumptions" in error for error in result["errors"]))
+        self.assertTrue(any("constraints" in error for error in result["errors"]))
+
+    def a_non_zero_exit_with_a_valid_line_is_still_a_failure(self):
+        reply = {"items": [item("a")], "assumptions": [], "constraints": []}
+        kept = os.environ.get("WORKER_EXIT")
+        os.environ["WORKER_EXIT"] = "3"
+        try:
+            with tempfile.TemporaryDirectory() as root:
+                result = run(root, "# One\n\nbody\n", reply)
+        finally:
+            if kept is None:
+                del os.environ["WORKER_EXIT"]
+            else:
+                os.environ["WORKER_EXIT"] = kept
+        self.assertEqual([step["name"] for step in result["items"]], ["a"])
+        self.assertEqual(result["exit"], 3)
+        self.assertTrue(any("exited 3" in error for error in result["errors"]))
+
+    def worker_output_goes_to_disk_and_the_record_stays_small(self):
+        reply = {"items": [item("a")], "assumptions": [], "constraints": []}
+        with tempfile.TemporaryDirectory() as root:
+            log = os.path.join(root, "run", "decompose.log")
+            result = run(root, "# One\n\nbody\n", reply, log=log)
+            with open(log, encoding="utf-8") as handle:
+                transcript = handle.read()
+            argv = json.loads(received(root, "argv.json"))
+        self.assertIn("chatter that must stay out of the record", transcript)
+        self.assertIn("more chatter", transcript)
+        self.assertEqual(result["log"], log)
+        self.assertNotIn("chatter", json.dumps(result))
+        self.assertEqual(argv, [])
+
+    def a_template_can_name_the_document_and_the_model(self):
+        reply = {"items": [item("a")], "assumptions": [], "constraints": []}
+        with tempfile.TemporaryDirectory() as root:
+            document = write(root, "docs/spec.md", "# One\n\nbody\n")
+            template = worker(root, reply) + " --doc {document} --model {model}"
+            result = decompose.decompose(document, template, root, timeout=20, model="top-model")
+            argv = json.loads(received(root, "argv.json"))
+        self.assertEqual(argv, ["--doc", document, "--model", "top-model"])
+        self.assertEqual(result["errors"], [])
+        with tempfile.TemporaryDirectory() as root:
+            document = write(root, "docs/spec.md", "# One\n\nbody\n")
+            with self.assertRaises(ValueError):
+                decompose.decompose(document, worker(root, reply) + " {model}", root, timeout=20)
+
+    def a_command_that_cannot_start_is_reported(self):
+        with tempfile.TemporaryDirectory() as root:
+            document = write(root, "docs/spec.md", "# One\n\nbody\n")
+            result = decompose.decompose(document, "/nonexistent/worker --go", root, timeout=5)
+        self.assertEqual(result["items"], [])
+        self.assertIsNone(result["exit"])
+        self.assertTrue(any("could not start" in error for error in result["errors"]))
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -142,7 +360,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Contract,):
+    for case in (Contract, Run):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

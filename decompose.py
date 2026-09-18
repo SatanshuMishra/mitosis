@@ -1,7 +1,10 @@
 import hashlib
+import json
 import os
 import re
 import shlex
+import signal
+import subprocess
 
 import core
 
@@ -174,3 +177,212 @@ def check_items(items, source, root=None):
     stamped = [_stamp(item, source) for item in items]
     checked = core.validate(stamped, root=root)
     return {"items": stamped, "errors": checked["errors"], "counts": checked["counts"]}
+
+
+def _kill_tree(process):
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        process.kill()
+
+
+def _write_log(log, out, err):
+    if not log:
+        return
+    parent = os.path.dirname(log)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(log, "wb") as handle:
+        handle.write(b"--- stdout ---\n" + out + b"\n--- stderr ---\n" + err)
+
+
+def spawn(argv, prompt, timeout, cwd=None, log=None):
+    try:
+        process = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=cwd,
+            start_new_session=True,
+        )
+    except OSError as failure:
+        return {"exit": None, "line": None, "reason": "could not start %s: %s" % (argv[0], failure)}
+    reason = None
+    try:
+        out, err = process.communicate(prompt.encode("utf-8"), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_tree(process)
+        out, err = process.communicate()
+        reason = "timeout after %s seconds" % timeout
+    _write_log(log, out, err)
+    lines = [line for line in out.decode("utf-8", "replace").splitlines() if line.strip()]
+    return {
+        "exit": process.returncode,
+        "line": lines[-1] if lines and reason is None else None,
+        "reason": reason,
+    }
+
+
+def _clip(text, limit=200):
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _empty_return(errors):
+    return {**dict.fromkeys(RETURN_KEYS, []), "errors": list(errors)}
+
+
+def parse_return(line):
+    if line is None:
+        return _empty_return(["the decompose Worker printed no return line"])
+    try:
+        value = json.loads(line)
+    except ValueError:
+        return _empty_return(["the decompose Worker's last line is not JSON: " + _clip(line)])
+    if not isinstance(value, dict):
+        return _empty_return(
+            ["the return must be a JSON object with keys %s" % ", ".join(RETURN_KEYS)]
+        )
+    parsed = {}
+    errors = []
+    for key in RETURN_KEYS:
+        if key not in value:
+            errors.append("the return is missing '%s'" % key)
+            parsed = {**parsed, key: []}
+        elif not isinstance(value[key], list):
+            errors.append("'%s' must be a list, got %s" % (key, type(value[key]).__name__))
+            parsed = {**parsed, key: []}
+        else:
+            parsed = {**parsed, key: value[key]}
+    return {**parsed, "errors": errors}
+
+
+def _own_assumptions(item):
+    own = item.get("assumptions")
+    if not isinstance(own, list):
+        return ()
+    return tuple(text for text in own if isinstance(text, str))
+
+
+def fold_assumptions(items, assumptions):
+    names = {
+        item["name"]
+        for item in items
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+    extra = {}
+    errors = []
+    for position, entry in enumerate(assumptions):
+        if not (
+            isinstance(entry, dict)
+            and isinstance(entry.get("step"), str)
+            and isinstance(entry.get("text"), str)
+        ):
+            errors.append("assumptions[%d] must be a {step, text} object" % position)
+            continue
+        if entry["step"] not in names:
+            errors.append(
+                "assumptions[%d] names '%s', which is not a Step in this return"
+                % (position, entry["step"])
+            )
+            continue
+        extra = {**extra, entry["step"]: extra.get(entry["step"], ()) + (entry["text"],)}
+    folded = []
+    for item in items:
+        if not isinstance(item, dict):
+            folded.append(item)
+            continue
+        merged = tuple(dict.fromkeys(_own_assumptions(item) + extra.get(item.get("name"), ())))
+        if merged:
+            folded.append({**item, "assumptions": list(merged)})
+        else:
+            folded.append(item)
+    return folded, errors
+
+
+def _raise_vague(item):
+    if isinstance(item, dict) and item.get("assumptions") and item.get("complexity") == "simple":
+        return {**item, "complexity": "complex"}
+    return item
+
+
+def collect(parsed, source, root=None):
+    folded, fold_errors = fold_assumptions(parsed["items"], parsed["assumptions"])
+    lifted = [_raise_vague(item) for item in folded]
+    raised = [after["name"] for before, after in zip(folded, lifted) if after is not before]
+    checked = check_items(lifted, source, root)
+    return {
+        "items": checked["items"],
+        "constraints": parsed["constraints"],
+        "errors": parsed["errors"] + fold_errors + checked["errors"],
+        "counts": checked["counts"],
+        "raised": raised,
+    }
+
+
+def _spawn_errors(spawned):
+    errors = []
+    if spawned["reason"]:
+        errors.append("the decompose Worker failed: " + spawned["reason"])
+    if spawned["exit"] not in (None, 0):
+        errors.append("the decompose Worker exited %d" % spawned["exit"])
+    return errors
+
+
+def decompose(
+    document,
+    template,
+    root,
+    timeout,
+    model=None,
+    graph=None,
+    charter=None,
+    cap=None,
+    log=None,
+):
+    frozen = freeze(document)
+    source = source_of(frozen)
+    prompt = render_prompt(frozen, inventory(root, cap), graph, charter)
+    substitutions = {PROMPT_PLACEHOLDER: prompt, DOCUMENT_PLACEHOLDER: frozen["path"]}
+    if model is not None:
+        substitutions = {**substitutions, MODEL_PLACEHOLDER: model}
+    argv = build_argv(template, substitutions)
+    spawned = spawn(argv, prompt, timeout, cwd=root, log=log)
+    spawn_errors = _spawn_errors(spawned)
+    parsed = (
+        parse_return(spawned["line"])
+        if spawned["line"] is not None or not spawn_errors
+        else _empty_return([])
+    )
+    collected = collect(parsed, source, root)
+    return {
+        "source": source,
+        "items": collected["items"],
+        "constraints": collected["constraints"],
+        "errors": spawn_errors + collected["errors"],
+        "counts": collected["counts"],
+        "raised": collected["raised"],
+        "exit": spawned["exit"],
+        "log": log,
+    }
+
+
+def report(result):
+    source = result.get("source") or {}
+    counts = result.get("counts") or {}
+    lines = [
+        "%d Steps decomposed from %s (sha256 %s)"
+        % (len(result.get("items", [])), source.get("path"), source.get("sha256")),
+        "%d global constraints extracted" % len(result.get("constraints", [])),
+        "%d Steps carry assumptions" % counts.get("assumptions", 0),
+        "%d Steps declare no acceptance" % counts.get("no_acceptance", 0),
+        "%d write-set paths do not exist yet" % counts.get("missing_paths", 0),
+    ]
+    raised = result.get("raised") or []
+    if raised:
+        lines.append("%d Steps raised from simple for carrying assumptions: %s" % (len(raised), ", ".join(raised)))
+    errors = result.get("errors") or []
+    if errors:
+        lines.append("%d contract errors:" % len(errors))
+        lines.extend(errors)
+    return lines
