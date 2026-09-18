@@ -119,7 +119,9 @@ class Contract(unittest.TestCase):
     def the_prompt_carries_the_document_path(self):
         document = frozen("docs/specs/change.md", "# Alpha\n\ntext\n\n# Omega\n\nmore\n")
         codebase = {"root": "/repo", "paths": ["core.py", "tests/test_core.py"], "overflow": 3}
-        prompt = decompose.render_prompt(document, codebase, graph="graph.json", charter="CHARTER.md")
+        prompt = decompose.render_prompt(
+            document, codebase, graph="graph.json", charter="CHARTER.md"
+        )
         self.assertIn("docs/specs/change.md", prompt)
         self.assertIn(document["sha256"], prompt)
         self.assertIn("# Alpha", prompt)
@@ -144,7 +146,9 @@ class Contract(unittest.TestCase):
                 decompose.DOCUMENT_PLACEHOLDER: "docs/spec.md",
             },
         )
-        self.assertEqual(argv, ["worker", "--prompt", prompt, "--model", "top-model", "--doc=docs/spec.md"])
+        self.assertEqual(
+            argv, ["worker", "--prompt", prompt, "--model", "top-model", "--doc=docs/spec.md"]
+        )
 
     def a_template_placeholder_without_a_value_is_refused(self):
         with self.assertRaises(ValueError) as caught:
@@ -349,6 +353,144 @@ class Run(unittest.TestCase):
         self.assertTrue(any("could not start" in error for error in result["errors"]))
 
 
+SPEC = "\n".join(
+    (
+        "# 1. Intro",
+        "",
+        "words",
+        "",
+        "## 1.1 Scope",
+        "",
+        "more words",
+        "",
+        "```",
+        "# not a heading",
+        "```",
+        "",
+        "## 2. Build",
+        "",
+        "Setext title",
+        "============",
+        "",
+        "### Unnumbered heading",
+        "",
+        "tail",
+        "",
+    )
+)
+
+
+class Coverage(unittest.TestCase):
+    def sections_come_from_markdown_headings(self):
+        found = decompose.sections(SPEC)
+        self.assertEqual(found["mode"], "headings")
+        self.assertIsNone(found["reason"])
+        self.assertEqual(
+            [(s["id"], s["title"], s["level"]) for s in found["sections"]],
+            [
+                ("1", "Intro", 1),
+                ("1.1", "Scope", 2),
+                ("2", "Build", 2),
+                ("Setext title", "Setext title", 1),
+                ("Unnumbered heading", "Unnumbered heading", 3),
+            ],
+        )
+        self.assertEqual([s["line"] for s in found["sections"]], [1, 5, 13, 15, 18])
+
+    def an_unclaimed_section_is_reported(self):
+        items = [
+            item("intro", spec_ref=["1", "scope"]),
+            item("tail", spec_ref="Unnumbered heading"),
+            item("build", spec_ref=["## 2. Build"]),
+        ]
+        covered = decompose.coverage(SPEC, items)
+        self.assertEqual(covered["mode"], "headings")
+        self.assertEqual([s["id"] for s in covered["uncovered"]], ["Setext title"])
+        self.assertEqual(covered["claimed"], ["1", "1.1", "2", "Unnumbered heading"])
+        self.assertEqual(covered["unmatched_claims"], [])
+        lines = decompose.report({"items": items, "coverage": covered})
+        self.assertTrue(any("1 of 5 sections unclaimed" in line for line in lines))
+        self.assertTrue(any("Setext title" in line for line in lines))
+
+    def a_claim_matching_no_section_is_reported(self):
+        items = [item("intro", spec_ref=["1", "99"]), item("none")]
+        covered = decompose.coverage(SPEC, items)
+        self.assertEqual(covered["unmatched_claims"], ["intro: 99"])
+        self.assertEqual(len(covered["uncovered"]), 4)
+
+    def a_document_without_headings_falls_back_to_lines(self):
+        text = "first ask\nsecond ask\n\nthird ask\nfourth ask\n"
+        items = [item("one", spec_ref=["1"]), item("rest", spec_ref="3-4")]
+        covered = decompose.coverage(text, items)
+        self.assertEqual(covered["mode"], "lines")
+        self.assertIsNone(covered["reason"])
+        self.assertEqual([s["id"] for s in covered["sections"]], ["1", "2", "4", "5"])
+        self.assertEqual(
+            [(s["id"], s["title"]) for s in covered["uncovered"]],
+            [("2", "second ask"), ("5", "fourth ask")],
+        )
+        self.assertEqual(covered["claimed"], ["1", "4"])
+        lines = decompose.report({"items": items, "coverage": covered})
+        self.assertTrue(any("by lines" in line for line in lines))
+
+    def an_uncomputable_coverage_says_why(self):
+        empty = decompose.coverage("", [item("a", spec_ref=["1"])])
+        self.assertEqual(empty["mode"], "none")
+        self.assertIn("no headings", empty["reason"])
+        self.assertIn("no non-blank lines", empty["reason"])
+        self.assertEqual(empty["sections"], [])
+        self.assertEqual(empty["uncovered"], [])
+        blank = decompose.coverage("\n\n   \n", [])
+        self.assertEqual(blank["mode"], "none")
+        binary = decompose.coverage(None, [])
+        self.assertEqual(binary["mode"], "none")
+        self.assertIn("UTF-8", binary["reason"])
+        lines = decompose.report({"items": [], "coverage": binary})
+        self.assertTrue(any("not computable" in line and "UTF-8" in line for line in lines))
+
+    def no_document_is_ever_refused(self):
+        reply = {"items": [item("a", spec_ref=["1"])], "assumptions": [], "constraints": []}
+        documents = {
+            "empty.md": "",
+            "blank.txt": "\n\n",
+            "prose.txt": "just one ask\nand another\n",
+            "data.json": '{"key": "value"}\n',
+            "fenced.md": "```\n# code\n```\n",
+            "headed.md": "# 1. Only\n\nbody\n",
+        }
+        with tempfile.TemporaryDirectory() as root:
+            for name, text in documents.items():
+                document = write(root, name, text)
+                result = decompose.decompose(document, worker(root, reply), root, timeout=20)
+                self.assertEqual([step["name"] for step in result["items"]], ["a"], name)
+                self.assertIn(result["coverage"]["mode"], ("headings", "lines", "none"), name)
+                self.assertEqual(result["errors"], [], name)
+            with open(os.path.join(root, "blob.bin"), "wb") as handle:
+                handle.write(b"\xff\xfe\x00\x01")
+            result = decompose.decompose(
+                os.path.join(root, "blob.bin"), worker(root, reply), root, timeout=20
+            )
+            self.assertEqual(result["coverage"]["mode"], "none")
+            self.assertIn("UTF-8", result["coverage"]["reason"])
+            self.assertEqual([step["name"] for step in result["items"]], ["a"])
+            self.assertIn("blob.bin", received(root, "prompt.txt"))
+
+    def coverage_reaches_the_decompose_result(self):
+        reply = {
+            "items": [item("one", spec_ref=["1"]), item("two", spec_ref=["Two"])],
+            "assumptions": [],
+            "constraints": [],
+        }
+        with tempfile.TemporaryDirectory() as root:
+            result = run(root, "# 1. One\n\nbody\n\n# Two\n\nbody\n\n# 3. Three\n\nbody\n", reply)
+            prompt = received(root, "prompt.txt")
+        self.assertIn("Sections you may claim", prompt)
+        self.assertIn("  3 Three", prompt)
+        self.assertEqual(result["coverage"]["mode"], "headings")
+        self.assertEqual([s["id"] for s in result["coverage"]["uncovered"]], ["3"])
+        self.assertTrue(any("3 Three" in line for line in decompose.report(result)))
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -360,7 +502,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Contract, Run):
+    for case in (Contract, Run, Coverage):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 
