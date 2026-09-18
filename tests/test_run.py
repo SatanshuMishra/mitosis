@@ -90,8 +90,35 @@ status = "failed" if mode == "reports-failed" else "ok"
 notes = "n" * 500 if mode == "noisy" else "done"
 if mode != "silent":
     print(json.dumps({"item": "lane-%s" % lane, "status": status, "files_changed": write_set, "notes": notes}))
-sys.exit(3 if mode == "crash" else 0)
+sys.exit(3 if mode in ("crash", "crash-" + lane) else 0)
 '''
+
+
+ACCEPT_SCRIPT = r'''
+import os
+import sys
+
+mode, marker_dir, file, test = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+has_work = os.path.exists("impl.txt") and "work" in open("impl.txt").read()
+with open(os.path.join(marker_dir, "gate"), "a") as handle:
+    handle.write("%s %s %s work=%s\n" % (mode, file, test, has_work))
+if mode == "inert":
+    sys.exit(0)
+if mode == "real":
+    sys.exit(0 if has_work else 1)
+if mode == "brittle":
+    sys.exit(0 if has_work else 2)
+if mode == "failing":
+    sys.exit(1)
+sys.exit(7)
+'''
+
+
+def sha256_of(path):
+    import hashlib
+
+    with open(path, "rb") as handle:
+        return hashlib.sha256(handle.read()).hexdigest()
 
 
 class RepoCase(unittest.TestCase):
@@ -132,6 +159,40 @@ class RepoCase(unittest.TestCase):
     def marker(self, lane):
         path = os.path.join(self.markers, "lane-%d" % lane)
         return read(path) if os.path.exists(path) else None
+
+    def acceptance_command(self, mode="real"):
+        script = os.path.join(self.tmp, "accept.py")
+        if not os.path.exists(script):
+            write(script, ACCEPT_SCRIPT)
+        os.makedirs(self.markers, exist_ok=True)
+        return "%s %s %s %s {file} {test}" % (
+            shlex.quote(sys.executable),
+            shlex.quote(script),
+            mode,
+            shlex.quote(self.markers),
+        )
+
+    def gate_runs(self):
+        path = os.path.join(self.markers, "gate")
+        return read(path).splitlines() if os.path.exists(path) else []
+
+    def execute(self, plan, mode="ok", accept="real", pr=None, timeout=60, **extra):
+        return run.execute(
+            plan,
+            self.repo,
+            "main",
+            self.run_dir,
+            self.worker_command(mode),
+            self.acceptance_command(accept),
+            pr,
+            timeout,
+            2,
+            trees_root=self.trees,
+            **extra,
+        )
+
+    def state(self):
+        return json.loads(read(os.path.join(self.run_dir, run.STATE_FILE)))
 
     def commit_file(self, tree, path, content, message="commit"):
         write(os.path.join(tree, path), content)
@@ -361,6 +422,118 @@ class Dispatch(RepoCase):
         self.assertIsNotNone(self.marker(1))
 
 
+def gated_step(name="impl", **extra):
+    files = ["impl.txt", "tests/t_impl.txt"]
+    acceptance = [{"file": "tests/t_impl.txt", "test": "property"}]
+    return step(name, files, acceptance=acceptance, **extra)
+
+
+class Resume(RepoCase):
+    def the_run_directory_holds_the_plan_and_an_incremental_state(self):
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"])])
+        seen = []
+        original = run.write_state
+
+        def spy(run_dir, state):
+            seen.append(json.loads(json.dumps(state)))
+            return original(run_dir, state)
+
+        run.write_state = spy
+        try:
+            final = self.execute(plan)
+        finally:
+            run.write_state = original
+        self.assertEqual(json.loads(read(os.path.join(self.run_dir, run.PLAN_FILE)))["plan_id"], plan["plan_id"])
+        self.assertEqual(self.state(), final)
+        self.assertEqual(final["plan_id"], plan["plan_id"])
+        self.assertEqual({r["state"] for r in final["lanes"].values()}, {"ok"})
+        self.assertEqual(sorted(final["lanes"]), ["0", "1"])
+        lane_counts = [len(s["lanes"]) for s in seen]
+        self.assertIn(1, lane_counts)
+        self.assertIn(2, lane_counts)
+        self.assertTrue(all(s["plan_id"] == plan["plan_id"] for s in seen))
+
+    def resume_refuses_a_different_plan(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        os.makedirs(self.run_dir)
+        write(os.path.join(self.run_dir, run.STATE_FILE), json.dumps({"plan_id": "someoneelse", "lanes": {}, "msps": {}}))
+        with self.assertRaises(run.ResumeError) as caught:
+            self.execute(plan, resume=True)
+        self.assertIn("someoneelse", str(caught.exception))
+        self.assertIn(plan["plan_id"], str(caught.exception))
+        self.assertIsNone(self.marker(0))
+
+    def resume_skips_completed_lanes(self):
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"])])
+        first = self.execute(plan, mode="crash-1")
+        self.assertEqual(first["lanes"]["0"]["state"], "ok")
+        self.assertEqual(first["lanes"]["1"]["state"], "failed")
+        self.assertEqual(self.marker(0).count("ran"), 1)
+        self.assertEqual(self.marker(1).count("ran"), 1)
+        second = self.execute(plan, mode="ok", resume=True)
+        self.assertEqual(second["lanes"]["0"], first["lanes"]["0"])
+        self.assertEqual(second["lanes"]["1"]["state"], "ok")
+        self.assertEqual(self.marker(0).count("ran"), 1)
+        self.assertEqual(self.marker(1).count("ran"), 2)
+
+    def a_gate_failure_resumes_without_rerunning_lanes(self):
+        plan = core.plan([gated_step()])
+        first = self.execute(plan, accept="inert")
+        self.assertEqual(first["lanes"]["0"]["state"], "ok")
+        self.assertEqual(first["msps"]["0"]["state"], "gate-failed")
+        self.assertEqual(first["msps"]["0"]["gate"]["outcome"], "inert")
+        self.assertEqual(self.marker(0).count("ran"), 1)
+        first_gate_runs = len(self.gate_runs())
+        self.assertGreater(first_gate_runs, 0)
+        second = self.execute(plan, accept="real", resume=True)
+        self.assertEqual(self.marker(0).count("ran"), 1)
+        self.assertGreater(len(self.gate_runs()), first_gate_runs)
+        self.assertEqual(second["lanes"]["0"], first["lanes"]["0"])
+        self.assertEqual(second["msps"]["0"]["gate"]["outcome"], "pass")
+        self.assertNotEqual(second["msps"]["0"]["state"], "gate-failed")
+
+    def a_merged_predecessor_satisfies_its_dependents(self):
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        landed = self.commit_file(trees[0]["path"], "a.txt", "work by a human-merged lane\n")
+        sh(["git", "worktree", "remove", "--force", trees[0]["path"]], self.repo)
+        sh(["git", "merge", "-q", "--ff-only", trees[0]["branch"]], self.repo)
+        sh(["git", "branch", "-D", trees[0]["branch"]], self.repo)
+        self.assertNotIn(trees[0]["branch"], self.branches())
+        prior = {0: {"lane": 0, "msp": 0, "state": "ok", "commit": landed}}
+        records = self.dispatch(plan, trees, prior=prior)
+        self.assertEqual(records[1]["state"], "ok")
+        self.assertIn("a.txt", self.marker(1))
+        self.assertTrue(os.path.isfile(os.path.join(trees[1]["path"], "a.txt")))
+
+    def an_unreachable_deleted_predecessor_merge_blocks_its_dependents(self):
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        landed = self.commit_file(trees[0]["path"], "a.txt", "never merged\n")
+        sh(["git", "worktree", "remove", "--force", trees[0]["path"]], self.repo)
+        sh(["git", "branch", "-D", trees[0]["branch"]], self.repo)
+        prior = {0: {"lane": 0, "msp": 0, "state": "ok", "commit": landed}}
+        records = self.dispatch(plan, trees, prior=prior)
+        self.assertEqual(records[1]["state"], "merge-blocked")
+        self.assertIn(trees[0]["branch"], records[1]["reason"])
+        self.assertIsNone(self.marker(1))
+
+    def document_drift_reports_without_blocking_resume(self):
+        doc = os.path.join(self.repo, "docs", "change.md")
+        write(doc, "original\n")
+        source = {"path": "docs/change.md", "sha256": sha256_of(doc)}
+        plan = core.plan([step("a", ["a.txt"], source=source)])
+        first = self.execute(plan, mode="crash")
+        self.assertFalse(first["drift"]["drifted"])
+        self.assertEqual(first["lanes"]["0"]["state"], "failed")
+        write(doc, "changed after the plan was made\n")
+        second = self.execute(plan, mode="ok", resume=True)
+        self.assertTrue(second["drift"]["drifted"])
+        self.assertEqual(second["drift"]["path"], "docs/change.md")
+        self.assertEqual(second["lanes"]["0"]["state"], "ok")
+        self.assertEqual(self.marker(0).count("ran"), 2)
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -372,7 +545,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Worktrees, Dispatch):
+    for case in (Worktrees, Dispatch, Resume):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 
