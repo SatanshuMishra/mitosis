@@ -303,6 +303,91 @@ class Tiering(unittest.TestCase):
         self.assertEqual(core.verify_modes(items, ()), {"page": "offload", "api": "offload", "flow": "offload"})
 
 
+class Cost(unittest.TestCase):
+    def coalesce_never_groups_across_msps(self):
+        items = [
+            step("a1", ["a1.py"], msp="a"),
+            step("a2", ["a2.py"], msp="a"),
+            step("b1", ["b1.py"], msp="b"),
+            step("b2", ["b2.py"], msp="b"),
+        ]
+        lanes = core.lane_items(items)
+        owners = core.lane_msps(items, lanes)
+        tiers = {item["name"]: "cheap" for item in items}
+        groups = core.coalesce(items, lanes, tiers, budget=4)
+        self.assertEqual(len(groups), 2)
+        for group in groups:
+            self.assertEqual(len({owners[lane] for lane in group}), 1)
+        singles = [step("x", ["x.py"]), step("y", ["y.py"])]
+        single_lanes = core.lane_items(singles)
+        self.assertEqual(core.coalesce(singles, single_lanes, {"x": "cheap", "y": "cheap"}, budget=4), [])
+
+    def coalesce_never_takes_a_top_tier_step(self):
+        items = [
+            step("c1", ["c1.py"], msp="m"),
+            step("c2", ["c2.py"], msp="m"),
+            step("risky", ["risky.py"], msp="m"),
+            step("c3", ["c3.py"], msp="m"),
+        ]
+        lanes = core.lane_items(items)
+        tiers = {"c1": "cheap", "c2": "cheap", "risky": "top", "c3": "cheap"}
+        groups = core.coalesce(items, lanes, tiers, budget=10)
+        risky = lane_of(lanes, items, "risky")
+        self.assertEqual(groups, [[lane for lane in range(len(lanes)) if lane != risky]])
+        dependent = [
+            step("p", ["p.py"], msp="m"),
+            step("q", ["q.py"], msp="m", after=["p"]),
+            step("r", ["r.py"], msp="m", after=["p"]),
+            step("s", ["s.py"], msp="m"),
+            step("t", ["t.py"], msp="m"),
+        ]
+        dependent_lanes = core.lane_items(dependent)
+        edges = core.lane_after(dependent, dependent_lanes)
+        groups = core.coalesce(dependent, dependent_lanes, dict.fromkeys("pqrst", "cheap"), edges=edges, budget=10)
+        self.assertEqual(groups, [[lane_of(dependent_lanes, dependent, "s"), lane_of(dependent_lanes, dependent, "t")]])
+        budgeted = core.coalesce(items, lanes, tiers, budget=2)
+        self.assertTrue(all(len(group) == 2 for group in budgeted))
+        self.assertTrue(all(risky not in group for group in budgeted))
+
+    def context_pack_reports_truncation_instead_of_hiding_it(self):
+        items = [step("a", ["a.py"])]
+        adjacency = {"a.py": ["n1.py", "n2.py", "n3.py", "n4.py", "n5.py"], "n1.py": ["far.py"]}
+        capped = core.context_packs(items, adjacency, 1, 2)["a"]
+        self.assertEqual(capped["paths"], ["a.py", "n1.py", "n2.py"])
+        self.assertEqual(capped["overflow"], 3)
+        full = core.context_packs(items, adjacency, 1, None)["a"]
+        self.assertEqual(full["paths"], ["a.py", "n1.py", "n2.py", "n3.py", "n4.py", "n5.py"])
+        self.assertEqual(full["overflow"], 0)
+        two_hops = core.context_packs(items, adjacency, 2, None)["a"]
+        self.assertIn("far.py", two_hops["paths"])
+        self.assertEqual(two_hops["paths"][-1], "far.py")
+
+    def context_pack_works_without_a_graph(self):
+        items = [step("a", ["a.py", "b.py"]), step("c", ["c.py"])]
+        packs = core.context_packs(items, None, 2, 10)
+        self.assertEqual(packs, {
+            "a": {"paths": ["a.py", "b.py"], "overflow": 0},
+            "c": {"paths": ["c.py"], "overflow": 0},
+        })
+        zero_hops = core.context_packs(items, {"a.py": ["z.py"]}, 0, 10)
+        self.assertEqual(zero_hops["a"]["paths"], ["a.py", "b.py"])
+
+    def the_lane_unblocking_the_most_work_goes_first(self):
+        items = [
+            step("root", ["root.py"]),
+            step("mid", ["mid.py"], after=["root"]),
+            step("leaf", ["leaf.py"], after=["mid"]),
+            step("side", ["s1.py", "s2.py", "s3.py"], after=["root"]),
+        ]
+        lanes = ((0,), (1,), (2,), (3,))
+        edges = core.lane_after(items, lanes)
+        self.assertEqual(core.lane_order(lanes, edges, items), (0, 1, 3, 2))
+        self.assertEqual(core.lane_order(lanes, {}, items), (3, 0, 1, 2))
+        self.assertEqual(core.item_cost(items[3]), 3)
+        self.assertEqual(core.item_cost({**items[3], "cost": 7}), 7)
+        self.assertEqual(core.item_cost(step("bare", ["one.py"])), 1)
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -314,7 +399,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Grouping, Validation, Tiering):
+    for case in (Grouping, Validation, Tiering, Cost):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 
