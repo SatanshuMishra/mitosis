@@ -1,5 +1,7 @@
+import fnmatch
 import json
 import os
+import re
 
 __version__ = "0.1.0"
 
@@ -458,3 +460,152 @@ def validate(items, root=None):
     ]
     errors = errors + _source_errors(items)
     return {"errors": errors, "counts": _counts(items, root)}
+
+
+def marker_matches(path, marker):
+    if not isinstance(marker, str) or not marker:
+        return False
+    normalized = _norm(path)
+    return fnmatch.fnmatch(normalized, marker) or marker in normalized or marker in path
+
+
+def _marker_hits(paths, markers):
+    return tuple(
+        marker
+        for marker in (markers or ())
+        if any(marker_matches(path, marker) for path in paths)
+    )
+
+
+def _touches(record_path, path):
+    a = _norm(record_path).rstrip("/")
+    b = _norm(path).rstrip("/")
+    return a == b or b.startswith(a + "/") or a.startswith(b + "/")
+
+
+def _record_files(record):
+    if not isinstance(record, dict):
+        return ()
+    files = record.get("files")
+    if not isinstance(files, list):
+        return ()
+    return tuple(f for f in files if isinstance(f, str))
+
+
+def _is_regression(record):
+    return isinstance(record, dict) and record.get("outcome") != "ok"
+
+
+def surface_history(history, paths):
+    return tuple(
+        record
+        for record in (history or ())
+        if _is_regression(record)
+        and any(_touches(recorded, path) for recorded in _record_files(record) for path in paths)
+    )
+
+
+def trajectory_store(path):
+    if not path or not os.path.isfile(path):
+        return ()
+    records = []
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(parsed, dict):
+                records.append(parsed)
+    return tuple(records)
+
+
+def tier_for(write_set, risk_markers, complexity, assumptions, history=()):
+    paths = tuple(write_set or ())
+    mechanical = complexity == "simple" and not assumptions
+    low_blast = not _marker_hits(paths, risk_markers) and not surface_history(history, paths)
+    return "cheap" if mechanical and low_blast else "top"
+
+
+def _numbered(path):
+    return bool(re.match(r"\d+", os.path.basename(_norm(path))))
+
+
+def _adjacent(graph, left, right):
+    if not graph:
+        return False
+    for a in left:
+        neighbours = graph.get(a) or graph.get(_norm(a)) or ()
+        if any(_norm(n) in right for n in neighbours):
+            return True
+    for b in right:
+        neighbours = graph.get(b) or graph.get(_norm(b)) or ()
+        if any(_norm(n) in left for n in neighbours):
+            return True
+    return False
+
+
+def _pair_signals(left, right, graph, risk_markers, history):
+    signals = []
+    if _adjacent(graph, left, right):
+        signals.append("import-adjacency")
+    if set(_marker_hits(left, risk_markers)) & set(_marker_hits(right, risk_markers)):
+        signals.append("shared-risk-marker")
+    if any(
+        any(_touches(f, a) for f in _record_files(record) for a in left)
+        and any(_touches(f, b) for f in _record_files(record) for b in right)
+        for record in (history or ())
+        if _is_regression(record)
+    ):
+        signals.append("recorded-regression")
+    left_dirs = {os.path.dirname(p) for p in left if _numbered(p)}
+    right_dirs = {os.path.dirname(p) for p in right if _numbered(p)}
+    if left_dirs & right_dirs:
+        signals.append("same-migration-directory")
+    return signals
+
+
+def coupling_review(items, lanes, graph, risk_markers=(), history=()):
+    lane_of = _owners(lanes, len(items))
+    review = []
+    for a in range(len(items)):
+        for b in range(a + 1, len(items)):
+            if lane_of[a] == lane_of[b]:
+                continue
+            left = frozenset(_files(items[a]))
+            right = frozenset(_files(items[b]))
+            if left & right:
+                continue
+            signals = _pair_signals(left, right, graph, risk_markers, history)
+            if signals:
+                review.append(
+                    {
+                        "steps": [items[a]["name"], items[b]["name"]],
+                        "lanes": [lane_of[a], lane_of[b]],
+                        "signals": signals,
+                    }
+                )
+    return review
+
+
+def _acceptance_files(item):
+    acceptance = item.get("acceptance")
+    if not isinstance(acceptance, list):
+        return ()
+    return tuple(
+        entry["file"]
+        for entry in acceptance
+        if isinstance(entry, dict) and isinstance(entry.get("file"), str)
+    )
+
+
+def verify_modes(items, serial_markers):
+    modes = {}
+    for item in items:
+        surface = _files(item) + _acceptance_files(item)
+        serial = bool(_marker_hits(surface, serial_markers))
+        modes = {**modes, item["name"]: "serial" if serial else "offload"}
+    return modes

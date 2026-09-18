@@ -213,6 +213,96 @@ class Validation(unittest.TestCase):
         self.assertTrue(core.validate(["not a dict"])["errors"])
 
 
+class Tiering(unittest.TestCase):
+    def assumptions_block_a_simple_rating(self):
+        self.assertEqual(core.tier_for(["a.py"], (), "simple", []), "cheap")
+        self.assertEqual(core.tier_for(["a.py"], (), "simple", ["took the narrow reading"]), "top")
+
+    def tier_needs_both_axes_to_be_cheap(self):
+        markers = ("migrations/", "*.sql")
+        self.assertEqual(core.tier_for(["src/a.py"], markers, "simple", []), "cheap")
+        self.assertEqual(core.tier_for(["db/migrations/0001.py"], markers, "simple", []), "top")
+        self.assertEqual(core.tier_for(["schema.sql"], markers, "simple", []), "top")
+        self.assertEqual(core.tier_for(["src/a.py"], markers, "complex", []), "top")
+        self.assertEqual(core.tier_for(["src/a.py"], markers, None, []), "top")
+        self.assertEqual(core.tier_for(["db/migrations/0001.py"], markers, "complex", []), "top")
+
+    def history_only_ever_raises_a_tier(self):
+        regression = ({"files": ["src/a.py"], "outcome": "failed"},)
+        clean = ({"files": ["src/a.py"], "outcome": "ok"},)
+        self.assertEqual(core.tier_for(["src/a.py"], (), "simple", []), "cheap")
+        self.assertEqual(core.tier_for(["src/a.py"], (), "simple", [], history=regression), "top")
+        self.assertEqual(core.tier_for(["src/a.py"], (), "simple", [], history=clean), "cheap")
+        self.assertEqual(core.tier_for(["src/a.py"], (), "complex", [], history=clean), "top")
+        self.assertEqual(core.tier_for(["src/b.py"], (), "simple", [], history=regression), "cheap")
+        nested = ({"files": ["src/auth/"], "outcome": "failed"},)
+        self.assertEqual(core.tier_for(["src/auth/login.py"], (), "simple", [], history=nested), "top")
+
+    def a_missing_trajectory_store_changes_nothing(self):
+        import tempfile
+
+        missing = os.path.join(tempfile.gettempdir(), "mitosis-no-such-store.jsonl")
+        self.assertFalse(os.path.exists(missing))
+        history = core.trajectory_store(missing)
+        self.assertEqual(history, ())
+        for complexity in ("simple", "complex"):
+            self.assertEqual(
+                core.tier_for(["src/a.py"], (), complexity, [], history=history),
+                core.tier_for(["src/a.py"], (), complexity, []),
+            )
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
+            handle.write('{"files": ["src/a.py"], "outcome": "failed"}\n')
+            handle.write("not json\n")
+            handle.write('{"files": ["src/b.py"], "outcome": "ok"}\n')
+            path = handle.name
+        try:
+            loaded = core.trajectory_store(path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(len(loaded), 2)
+        self.assertEqual(core.tier_for(["src/a.py"], (), "simple", [], history=loaded), "top")
+
+    def same_migration_directory_is_flagged_for_review(self):
+        items = [
+            step("seven", ["db/migrations/0007_add_x.sql"]),
+            step("eight", ["db/migrations/0008_add_y.sql"]),
+            step("plain-a", ["src/a.py"]),
+            step("plain-b", ["src/b.py"]),
+            step("auth-a", ["src/auth/a.py"]),
+            step("auth-b", ["lib/auth/b.py"]),
+            step("shared-a", ["src/shared.py"]),
+            step("shared-b", ["src/shared.py", "src/other.py"]),
+        ]
+        lanes = core.lane_items(items)
+        graph = {"src/a.py": ["src/b.py"]}
+        history = ({"files": ["src/a.py", "lib/auth/b.py"], "outcome": "failed"},)
+        review = core.coupling_review(items, lanes, graph, risk_markers=("auth/",), history=history)
+        by_pair = {tuple(entry["steps"]): entry["signals"] for entry in review}
+        self.assertEqual(by_pair[("seven", "eight")], ["same-migration-directory"])
+        self.assertEqual(by_pair[("plain-a", "plain-b")], ["import-adjacency"])
+        self.assertEqual(by_pair[("auth-a", "auth-b")], ["shared-risk-marker"])
+        self.assertEqual(by_pair[("plain-a", "auth-b")], ["recorded-regression"])
+        self.assertNotIn(("shared-a", "shared-b"), by_pair)
+        self.assertNotIn(("seven", "plain-a"), by_pair)
+        for entry in review:
+            self.assertEqual(len(entry["lanes"]), 2)
+            self.assertNotEqual(entry["lanes"][0], entry["lanes"][1])
+        self.assertEqual(core.coupling_review(items, lanes, None), [
+            entry for entry in review if entry["signals"] == ["same-migration-directory"]
+        ])
+
+    def verify_mode_splits_serial_from_offloadable(self):
+        items = [
+            step("page", ["src/ui/page.tsx"]),
+            step("api", ["src/api/handler.py"]),
+            step("flow", ["src/api/flow.py"], acceptance=[{"file": "tests/ui/flow_test.py", "test": "F.t"}]),
+        ]
+        modes = core.verify_modes(items, ("ui/",))
+        self.assertEqual(modes, {"page": "serial", "api": "offload", "flow": "serial"})
+        self.assertEqual(set(modes.values()) <= set(core.VERIFY_MODES), True)
+        self.assertEqual(core.verify_modes(items, ()), {"page": "offload", "api": "offload", "flow": "offload"})
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -224,7 +314,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Grouping, Validation):
+    for case in (Grouping, Validation, Tiering):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 
