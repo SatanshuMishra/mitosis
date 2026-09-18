@@ -1,4 +1,5 @@
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -408,7 +409,11 @@ def cycles(items):
         if member in placed:
             continue
         component = tuple(
-            sorted(j for j in on_cycle if j == member or (j in reach[member] and member in reach[j]))
+            sorted(
+                j
+                for j in on_cycle
+                if j == member or (j in reach[member] and member in reach[j])
+            )
         )
         placed.update(component)
         groups.append(tuple(items[j]["name"] for j in component))
@@ -466,7 +471,7 @@ def marker_matches(path, marker):
     if not isinstance(marker, str) or not marker:
         return False
     normalized = _norm(path)
-    return fnmatch.fnmatch(normalized, marker) or marker in normalized or marker in path
+    return fnmatch.fnmatch(normalized, marker) or marker in normalized
 
 
 def _marker_hits(paths, markers):
@@ -493,7 +498,7 @@ def _record_files(record):
 
 
 def _is_regression(record):
-    return isinstance(record, dict) and record.get("outcome") != "ok"
+    return isinstance(record, dict) and "outcome" in record and record["outcome"] != "ok"
 
 
 def surface_history(history, paths):
@@ -535,17 +540,9 @@ def _numbered(path):
 
 
 def _adjacent(graph, left, right):
-    if not graph:
-        return False
-    for a in left:
-        neighbours = graph.get(a) or graph.get(_norm(a)) or ()
-        if any(_norm(n) in right for n in neighbours):
-            return True
-    for b in right:
-        neighbours = graph.get(b) or graph.get(_norm(b)) or ()
-        if any(_norm(n) in left for n in neighbours):
-            return True
-    return False
+    return any(n in right for a in left for n in _neighbours(graph, a)) or any(
+        n in left for b in right for n in _neighbours(graph, b)
+    )
 
 
 def _pair_signals(left, right, graph, risk_markers, history):
@@ -634,20 +631,23 @@ def _neighbours(adjacency, path):
 
 
 def _expand(write_set, adjacency, hops):
-    seen = tuple(write_set)
+    seen = frozenset(write_set)
     frontier = tuple(write_set)
     gathered = ()
     for _ in range(max(0, hops)):
-        next_frontier = ()
-        for path in frontier:
-            for neighbour in _neighbours(adjacency, path):
-                if neighbour not in seen and neighbour not in next_frontier:
-                    next_frontier = next_frontier + (neighbour,)
-        if not next_frontier:
+        fresh = tuple(
+            dict.fromkeys(
+                neighbour
+                for path in frontier
+                for neighbour in _neighbours(adjacency, path)
+                if neighbour not in seen
+            )
+        )
+        if not fresh:
             break
-        seen = seen + next_frontier
-        gathered = gathered + next_frontier
-        frontier = next_frontier
+        seen = seen | frozenset(fresh)
+        gathered = gathered + fresh
+        frontier = fresh
     return gathered
 
 
@@ -716,3 +716,168 @@ def coalesce(items, lanes, tier, edges=None, budget=3):
         if len(current) > 1:
             groups.append(list(current))
     return groups
+
+
+class ValidationError(ValueError):
+    def __init__(self, errors):
+        super().__init__("; ".join(errors))
+        self.errors = tuple(errors)
+
+
+def plan_id_for(plan):
+    body = {key: value for key, value in plan.items() if key != "plan_id"}
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:12]
+
+
+def _msp_label(items, msp):
+    tags = tuple(str(items[i]["msp"]) for i in msp if items[i].get("msp") not in (None, ""))
+    return tags[0] if tags else items[msp[0]]["name"]
+
+
+def _step_brief(item):
+    keys = ("name", "task", "files", "file_notes", "acceptance", "after", "assumptions", "spec_ref")
+    return {key: item[key] for key in keys if key in item}
+
+
+def _lane_read_set(items, lane, packs):
+    write_set = frozenset(path for i in lane for path in _files(items[i]))
+    read = ()
+    for i in lane:
+        for path in packs.get(items[i]["name"], {}).get("paths", ()):
+            if path not in write_set and path not in read:
+                read = read + (path,)
+    return list(read)
+
+
+def brief_text(brief):
+    header = ["Lane %d of MSP %s" % (brief["lane"], brief["msp_label"])]
+    if brief.get("charter"):
+        header.append("Charter: %s (binding; read it fully before any Step)" % brief["charter"])
+    if brief.get("document"):
+        header.append(
+            "Document: %s (open it from your worktree; it carries what no Step owns)"
+            % brief["document"]
+        )
+    body = ["Steps, in this order:"]
+    for position, item in enumerate(brief["steps"], 1):
+        body.append("")
+        body.append("%d. %s" % (position, item["name"]))
+        body.append("   Task: %s" % item["task"])
+        body.append("   Write-set: %s" % ", ".join(item.get("files", ())))
+        for path, note in (item.get("file_notes") or {}).items():
+            body.append("   Note for %s: %s" % (path, note))
+        acceptance = item.get("acceptance") or []
+        if acceptance:
+            body.append(
+                "   Acceptance: %s"
+                % ", ".join("%s::%s" % (entry["file"], entry["test"]) for entry in acceptance)
+            )
+        else:
+            body.append("   Acceptance: none declared")
+        for assumption in item.get("assumptions") or []:
+            body.append("   Assumption: %s" % assumption)
+    footer = [
+        "Write-set for this Lane, the only files you may edit: %s" % ", ".join(brief["write_set"]),
+    ]
+    if brief.get("read_set"):
+        footer.append("Read-set, context only, never edit: %s" % ", ".join(brief["read_set"]))
+    footer.append("When finished, print one line of JSON and nothing after it:")
+    footer.append(brief["return_contract"])
+    return "\n\n".join("\n".join(part) for part in (header, body, footer)) + "\n"
+
+
+def _brief(items, lane_index, lane, msp_index, msp_label, packs, charter, source):
+    write_set = ()
+    for i in lane:
+        for path in _files(items[i]):
+            if path not in write_set:
+                write_set = write_set + (path,)
+    partial = {
+        "lane": lane_index,
+        "msp": msp_index,
+        "msp_label": msp_label,
+        "steps": [_step_brief(items[i]) for i in lane],
+        "write_set": list(write_set),
+        "read_set": _lane_read_set(items, lane, packs),
+        "charter": charter,
+        "document": source.get("path") if isinstance(source, dict) else None,
+        "return_contract": RETURN_CONTRACT,
+    }
+    return {**partial, "text": brief_text(partial)}
+
+
+def _present(value):
+    if value is None:
+        return False
+    if isinstance(value, (list, tuple, dict)) and not value:
+        return False
+    return True
+
+
+def plan(
+    items,
+    charter=None,
+    risk_markers=(),
+    serial_markers=(),
+    graph=None,
+    hops=1,
+    cap=None,
+    history=(),
+    budget=3,
+    root=None,
+):
+    checked = validate(items, root=root)
+    if checked["errors"]:
+        raise ValidationError(checked["errors"])
+    msps = msp_items(items)
+    lanes = lane_items(items)
+    owners = lane_msps(items, lanes)
+    edges = lane_after(items, lanes)
+    tiers = {
+        item["name"]: tier_for(
+            _files(item), risk_markers, item.get("complexity"), item.get("assumptions"), history
+        )
+        for item in items
+    }
+    packs = context_packs(items, graph, hops, cap)
+    labels = tuple(_msp_label(items, msp) for msp in msps)
+    source = items[0].get("source") if items else None
+    body = {
+        "version": __version__,
+        "source": source,
+        "items": items,
+        "msps": [
+            {
+                "label": labels[index],
+                "steps": [items[i]["name"] for i in msp],
+                "files": sorted({path for i in msp for path in _files(items[i])}),
+            }
+            for index, msp in enumerate(msps)
+        ],
+        "lanes": [
+            {
+                "msp": owners[index],
+                "steps": [items[i]["name"] for i in lane],
+                "tier": "top" if any(tiers[items[i]["name"]] == "top" for i in lane) else "cheap",
+                "cost": lane_cost(items, lane),
+            }
+            for index, lane in enumerate(lanes)
+        ],
+        "lane_after": {str(consumer): list(producers) for consumer, producers in edges.items()},
+        "clusters": [list(group) for group in clusters(items, lanes)],
+        "tiers": tiers,
+        "verify_modes": verify_modes(items, serial_markers),
+        "context_packs": packs,
+        "lane_order": list(lane_order(lanes, edges, items)),
+        "coalesce": coalesce(items, lanes, tiers, edges, budget),
+        "coupling_review": coupling_review(items, lanes, graph, risk_markers, history),
+        "counts": checked["counts"],
+        "briefs": [
+            _brief(items, index, lane, owners[index], labels[owners[index]], packs, charter, source)
+            for index, lane in enumerate(lanes)
+        ],
+    }
+    kept = {key: body[key] for key in PLAN_KEYS if key in body and _present(body[key])}
+    identified = {**kept, "plan_id": plan_id_for(kept)}
+    return {key: identified[key] for key in PLAN_KEYS if key in identified}

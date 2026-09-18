@@ -388,6 +388,114 @@ class Cost(unittest.TestCase):
         self.assertEqual(core.item_cost(step("bare", ["one.py"])), 1)
 
 
+SOURCE = {"path": "docs/spec.md", "sha256": "0" * 64}
+
+
+def rich_items():
+    return [
+        step("core-vocab", ["core.py"], source=dict(SOURCE), complexity="simple",
+             acceptance=[{"file": "tests/test_core.py", "test": "Vocab.declares"}]),
+        step("run-dispatch", ["run.py"], source=dict(SOURCE), complexity="simple", after=["core-vocab"],
+             file_notes={"run.py": "dispatch loop"}),
+        step("docs-readme", ["README.md"], source=dict(SOURCE), complexity="simple", msp="docs"),
+        step("docs-skill", ["SKILL.md"], source=dict(SOURCE), complexity="simple", msp="docs",
+             assumptions=["the skill loads on invoke"]),
+        step("docs-lint", ["tests/test_docs.py"], source=dict(SOURCE), complexity="simple", msp="docs"),
+    ]
+
+
+class Plan(unittest.TestCase):
+    def the_plan_emits_exactly_the_declared_keys(self):
+        result = core.plan(rich_items(), charter="docs/charter.md", graph={"core.py": ["run.py"]})
+        self.assertEqual(set(result), set(core.PLAN_KEYS))
+        self.assertEqual(list(result), [key for key in core.PLAN_KEYS if key in result])
+        self.assertEqual(result["version"], core.__version__)
+        self.assertEqual(result["source"], SOURCE)
+        self.assertEqual(len(result["msps"]), 3)
+        self.assertEqual(len(result["lanes"]), 5)
+        self.assertEqual(sorted(len(c) for c in result["clusters"]), [1, 2])
+        self.assertEqual(result["counts"]["assumptions"], 1)
+        self.assertEqual(result["tiers"]["docs-skill"], "top")
+        self.assertEqual(result["tiers"]["docs-readme"], "cheap")
+        self.assertTrue(result["coupling_review"])
+        self.assertTrue(result["lane_after"])
+        self.assertEqual(len(result["coalesce"]), 1)
+
+    def empty_sections_are_omitted_not_padded(self):
+        result = core.plan([step("only", ["only.py"], complexity="simple")])
+        self.assertTrue(set(result) < set(core.PLAN_KEYS))
+        for absent in ("source", "lane_after", "coalesce", "coupling_review"):
+            self.assertNotIn(absent, result)
+        for key, value in result.items():
+            self.assertIsNotNone(value)
+            self.assertNotEqual(value, [])
+            self.assertNotEqual(value, {})
+        self.assertEqual(result["counts"], {"missing_paths": 1, "no_acceptance": 1, "assumptions": 0})
+
+    def plan_id_is_stable_and_changes_with_the_plan(self):
+        import json
+
+        first = core.plan(rich_items(), charter="docs/charter.md")
+        second = core.plan(rich_items(), charter="docs/charter.md")
+        self.assertEqual(first["plan_id"], second["plan_id"])
+        self.assertRegex(first["plan_id"], r"^[0-9a-f]{12}$")
+        reloaded = json.loads(json.dumps(first))
+        self.assertEqual(core.plan_id_for(reloaded), first["plan_id"])
+        changed = rich_items()
+        changed[1] = {**changed[1], "task": "dispatch differently"}
+        self.assertNotEqual(core.plan(changed, charter="docs/charter.md")["plan_id"], first["plan_id"])
+        self.assertNotEqual(core.plan(rich_items())["plan_id"], first["plan_id"])
+
+    def the_brief_lives_in_the_plan(self):
+        items = rich_items()
+        result = core.plan(items, charter="docs/charter.md", graph={"core.py": ["run.py"]}, hops=1)
+        self.assertEqual(len(result["briefs"]), len(result["lanes"]))
+        for lane_index, brief in enumerate(result["briefs"]):
+            self.assertEqual(brief["lane"], lane_index)
+            self.assertEqual(brief["msp"], result["lanes"][lane_index]["msp"])
+            self.assertEqual([s["name"] for s in brief["steps"]], result["lanes"][lane_index]["steps"])
+            self.assertEqual(brief["charter"], "docs/charter.md")
+            self.assertEqual(brief["document"], SOURCE["path"])
+            self.assertEqual(brief["return_contract"], core.RETURN_CONTRACT)
+            self.assertEqual(brief["text"], core.brief_text(brief))
+            for s in brief["steps"]:
+                self.assertIn(s["task"], brief["text"])
+            self.assertIn("docs/charter.md", brief["text"])
+            self.assertIn(SOURCE["path"], brief["text"])
+            self.assertIn(core.RETURN_CONTRACT, brief["text"])
+        by_step = {s["name"]: b for b in result["briefs"] for s in b["steps"]}
+        self.assertEqual(by_step["core-vocab"]["write_set"], ["core.py"])
+        self.assertEqual(by_step["core-vocab"]["read_set"], ["run.py"])
+        self.assertIn("run.py", by_step["core-vocab"]["text"])
+        chain = [step("first", ["x.py"], msp="m"), step("second", ["y.py"], msp="m", after=["first"])]
+        chained = core.plan(chain)
+        self.assertEqual(len(chained["briefs"]), 1)
+        self.assertEqual([s["name"] for s in chained["briefs"][0]["steps"]], ["first", "second"])
+        self.assertLess(chained["briefs"][0]["text"].index("do first"), chained["briefs"][0]["text"].index("do second"))
+
+    def plan_touches_no_git_and_no_subprocess(self):
+        import builtins
+        import re
+        from unittest import mock
+
+        with open(core.__file__, encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertNotIn("subprocess", source)
+        self.assertNotIn("os.system", source)
+        self.assertNotIn("popen", source)
+        self.assertIsNone(re.search(r"\bgit\b", source))
+        with mock.patch.object(builtins, "open", side_effect=AssertionError("plan opened a file")):
+            result = core.plan(rich_items(), charter="docs/charter.md", graph={"core.py": ["run.py"]})
+        self.assertEqual(set(result), set(core.PLAN_KEYS))
+
+    def plan_refuses_invalid_items_with_messages(self):
+        with self.assertRaises(core.ValidationError) as caught:
+            core.plan([step("a", ["a.py"], after=["ghost"])])
+        self.assertEqual(len(caught.exception.errors), 1)
+        self.assertIn("ghost", caught.exception.errors[0])
+        self.assertIn("ghost", str(caught.exception))
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -399,7 +507,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Grouping, Validation, Tiering, Cost):
+    for case in (Grouping, Validation, Tiering, Cost, Plan):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 
