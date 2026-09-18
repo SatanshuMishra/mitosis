@@ -609,3 +609,110 @@ def verify_modes(items, serial_markers):
         serial = bool(_marker_hits(surface, serial_markers))
         modes = {**modes, item["name"]: "serial" if serial else "offload"}
     return modes
+
+
+def item_cost(item):
+    explicit = item.get("cost")
+    if isinstance(explicit, (int, float)) and not isinstance(explicit, bool) and explicit > 0:
+        return explicit
+    return max(1, len(_files(item)))
+
+
+def lane_cost(items, lane):
+    return sum(item_cost(items[i]) for i in lane)
+
+
+def _neighbours(adjacency, path):
+    if not adjacency:
+        return ()
+    raw = adjacency.get(path)
+    if raw is None:
+        raw = adjacency.get(_norm(path))
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    return tuple(_norm(n) for n in raw if isinstance(n, str))
+
+
+def _expand(write_set, adjacency, hops):
+    seen = tuple(write_set)
+    frontier = tuple(write_set)
+    gathered = ()
+    for _ in range(max(0, hops)):
+        next_frontier = ()
+        for path in frontier:
+            for neighbour in _neighbours(adjacency, path):
+                if neighbour not in seen and neighbour not in next_frontier:
+                    next_frontier = next_frontier + (neighbour,)
+        if not next_frontier:
+            break
+        seen = seen + next_frontier
+        gathered = gathered + next_frontier
+        frontier = next_frontier
+    return gathered
+
+
+def context_packs(items, adjacency, hops, cap):
+    packs = {}
+    for item in items:
+        write_set = tuple(dict.fromkeys(_files(item)))
+        neighbours = _expand(write_set, adjacency, hops) if adjacency else ()
+        limit = len(neighbours) if cap is None else max(0, int(cap))
+        kept = neighbours[:limit]
+        packs = {
+            **packs,
+            item["name"]: {
+                "paths": list(write_set + kept),
+                "overflow": len(neighbours) - len(kept),
+            },
+        }
+    return packs
+
+
+def _dependents(lane_count, edges):
+    consumers = {}
+    for consumer, producers in (edges or {}).items():
+        for producer in producers:
+            consumers[int(producer)] = consumers.get(int(producer), ()) + (int(consumer),)
+    return tuple(len(_reachable(lane, consumers)) for lane in range(lane_count))
+
+
+def lane_order(lanes, edges, items):
+    waiting = _dependents(len(lanes), edges)
+    costs = tuple(lane_cost(items, lane) for lane in lanes)
+    return tuple(
+        sorted(range(len(lanes)), key=lambda lane: (-waiting[lane], -costs[lane], lane))
+    )
+
+
+def coalesce(items, lanes, tier, edges=None, budget=3):
+    owners = lane_msps(items, lanes)
+    producers = frozenset(
+        int(producer) for consumers in (edges or {}).values() for producer in consumers
+    )
+    consumers = frozenset(int(consumer) for consumer in (edges or {}))
+    candidates = tuple(
+        lane_index
+        for lane_index, lane in enumerate(lanes)
+        if all(tier.get(items[i]["name"]) == "cheap" for i in lane)
+        and lane_cost(items, lane) <= budget
+        and lane_index not in producers
+        and lane_index not in consumers
+    )
+    groups = []
+    for msp_index in sorted(set(owners)):
+        current = ()
+        spent = 0
+        for lane_index in candidates:
+            if owners[lane_index] != msp_index:
+                continue
+            cost = lane_cost(items, lanes[lane_index])
+            if current and spent + cost > budget:
+                if len(current) > 1:
+                    groups.append(list(current))
+                current = ()
+                spent = 0
+            current = current + (lane_index,)
+            spent = spent + cost
+        if len(current) > 1:
+            groups.append(list(current))
+    return groups
