@@ -140,6 +140,79 @@ class Grouping(unittest.TestCase):
         self.assertEqual(core.msp_items(untagged_neighbour), ((0, 1),))
 
 
+class Validation(unittest.TestCase):
+    def an_after_naming_a_missing_step_is_fatal(self):
+        clean = [step("a", ["a.py"]), step("b", ["b.py"], after=["a"])]
+        self.assertEqual(core.validate(clean)["errors"], [])
+        broken = [step("a", ["a.py"]), step("b", ["b.py"], after=["zz"])]
+        errors = core.validate(broken)["errors"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("zz", errors[0])
+        self.assertIn("b", errors[0])
+
+    def a_dependency_cycle_names_its_members(self):
+        items = [
+            step("alpha", ["a.py"], after=["gamma"]),
+            step("beta", ["b.py"], after=["alpha"]),
+            step("gamma", ["c.py"], after=["beta"]),
+            step("delta", ["d.py"], after=["alpha"]),
+        ]
+        errors = core.validate(items)["errors"]
+        self.assertEqual(len(errors), 1)
+        for member in ("alpha", "beta", "gamma"):
+            self.assertIn(member, errors[0])
+        self.assertNotIn("delta", errors[0])
+
+    def prose_acceptance_is_rejected_at_validate(self):
+        prose = [step("a", ["a.py"], acceptance="python3 -m unittest passes")]
+        self.assertTrue(any("acceptance" in e for e in core.validate(prose)["errors"]))
+        listed_prose = [step("a", ["a.py"], acceptance=["the tests pass"])]
+        self.assertTrue(any("acceptance" in e for e in core.validate(listed_prose)["errors"]))
+        half = [step("a", ["a.py"], acceptance=[{"file": "tests/test_a.py"}])]
+        self.assertTrue(any("acceptance" in e for e in core.validate(half)["errors"]))
+        runnable = [step("a", ["a.py"], acceptance=[{"file": "tests/test_a.py", "test": "A.works"}])]
+        self.assertEqual(core.validate(runnable)["errors"], [])
+
+    def items_declaring_different_sources_are_fatal(self):
+        one = {"path": "docs/spec.md", "sha256": "aa"}
+        other = {"path": "docs/spec.md", "sha256": "bb"}
+        agreeing = [step("a", ["a.py"], source=one), step("b", ["b.py"], source=dict(one))]
+        self.assertEqual(core.validate(agreeing)["errors"], [])
+        disagreeing = [step("a", ["a.py"], source=one), step("b", ["b.py"], source=other)]
+        errors = core.validate(disagreeing)["errors"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("source", errors[0])
+        mixed = [step("a", ["a.py"], source=one), step("b", ["b.py"])]
+        self.assertEqual(len(core.validate(mixed)["errors"]), 1)
+
+    def a_nonexistent_write_set_path_is_counted_not_fatal(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as root:
+            present = os.path.join(root, "present.py")
+            with open(present, "w") as handle:
+                handle.write("")
+            items = [
+                step("a", ["present.py"], assumptions=["chose the narrow reading"]),
+                step("b", ["absent/new.py"], acceptance=[{"file": "tests/t.py", "test": "T.t"}]),
+                step("c", ["also/absent.py", "present.py"]),
+            ]
+            result = core.validate(items, root=root)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["counts"], {"missing_paths": 2, "no_acceptance": 2, "assumptions": 1})
+
+    def a_missing_required_field_is_a_message_not_a_traceback(self):
+        missing = [{"name": "a", "task": "t", "source": None, "acceptance": []}]
+        errors = core.validate(missing)["errors"]
+        self.assertTrue(any("files" in e for e in errors))
+        empty = [step("a", [])]
+        self.assertTrue(any("files" in e for e in core.validate(empty)["errors"]))
+        duplicate = [step("a", ["a.py"]), step("a", ["b.py"])]
+        self.assertTrue(any("duplicate" in e for e in core.validate(duplicate)["errors"]))
+        self.assertTrue(core.validate({"not": "a list"})["errors"])
+        self.assertTrue(core.validate(["not a dict"])["errors"])
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -151,7 +224,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Grouping,):
+    for case in (Grouping, Validation):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

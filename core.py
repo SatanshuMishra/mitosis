@@ -1,3 +1,4 @@
+import json
 import os
 
 __version__ = "0.1.0"
@@ -290,3 +291,170 @@ def clusters(items, lanes):
         if lane_owner[producer] != lane_owner[consumer]
     )
     return union_find(msp_count, pairs)
+
+
+def _label(item, index):
+    name = item.get("name") if isinstance(item, dict) else None
+    return name if isinstance(name, str) and name else "item #%d" % index
+
+
+def _shape_errors(items):
+    errors = []
+    for index, item in enumerate(items):
+        label = _label(item, index)
+        if not isinstance(item, dict):
+            errors.append("%s: a Step must be an object, got %s" % (label, type(item).__name__))
+            continue
+        for field in REQUIRED_ITEM_FIELDS:
+            if field not in item:
+                errors.append("%s: missing required field '%s'" % (label, field))
+        if "name" in item and not (isinstance(item["name"], str) and item["name"]):
+            errors.append("%s: 'name' must be a non-empty string" % label)
+        if "task" in item and not isinstance(item["task"], str):
+            errors.append("%s: 'task' must be a string" % label)
+        if "files" in item:
+            files = item["files"]
+            if not isinstance(files, list) or not files:
+                errors.append("%s: 'files' must be a non-empty list of paths" % label)
+            elif not all(isinstance(f, str) and f for f in files):
+                errors.append("%s: every entry of 'files' must be a path string" % label)
+        if "after" in item and not (
+            isinstance(item["after"], list) and all(isinstance(n, str) for n in item["after"])
+        ):
+            errors.append("%s: 'after' must be a list of Step names" % label)
+        if "assumptions" in item and not isinstance(item["assumptions"], list):
+            errors.append("%s: 'assumptions' must be a list" % label)
+        if "acceptance" in item:
+            errors.extend(_acceptance_errors(item["acceptance"], label))
+    return errors
+
+
+def _acceptance_errors(acceptance, label):
+    if not isinstance(acceptance, list):
+        return [
+            "%s: 'acceptance' must be a list of {file, test} objects, not prose; got %s"
+            % (label, type(acceptance).__name__)
+        ]
+    errors = []
+    for position, entry in enumerate(acceptance):
+        if not isinstance(entry, dict):
+            errors.append(
+                "%s: acceptance[%d] must be a {file, test} object, not prose" % (label, position)
+            )
+            continue
+        for key in ACCEPTANCE_KEYS:
+            if not (isinstance(entry.get(key), str) and entry.get(key)):
+                errors.append(
+                    "%s: acceptance[%d] must name a '%s' string" % (label, position, key)
+                )
+    return errors
+
+
+def _duplicate_errors(items):
+    seen = {}
+    errors = []
+    for index, item in enumerate(items):
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        if name in seen:
+            errors.append(
+                "duplicate name '%s' at items %d and %d" % (name, seen[name], index)
+            )
+        else:
+            seen = {**seen, name: index}
+    return errors
+
+
+def _edge_errors(items, by_name):
+    errors = []
+    for index, item in enumerate(items):
+        for name in _after(item):
+            if name not in by_name:
+                errors.append(
+                    "%s: after names '%s', which is not a Step in this file"
+                    % (_label(item, index), name)
+                )
+    return errors
+
+
+def _reachable(start, successors):
+    seen = set()
+    frontier = list(successors.get(start, ()))
+    while frontier:
+        current = frontier.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        frontier.extend(successors.get(current, ()))
+    return frozenset(seen)
+
+
+def cycles(items):
+    by_name = _by_name(items)
+    successors = {}
+    for consumer, item in enumerate(items):
+        for name in _after(item):
+            producer = by_name.get(name)
+            if producer is not None:
+                successors[producer] = successors.get(producer, ()) + (consumer,)
+    reach = {i: _reachable(i, successors) for i in range(len(items))}
+    on_cycle = sorted(i for i in range(len(items)) if i in reach[i])
+    groups = []
+    placed = set()
+    for member in on_cycle:
+        if member in placed:
+            continue
+        component = tuple(
+            sorted(j for j in on_cycle if j == member or (j in reach[member] and member in reach[j]))
+        )
+        placed.update(component)
+        groups.append(tuple(items[j]["name"] for j in component))
+    return tuple(groups)
+
+
+def _source_errors(items):
+    normalized = {}
+    for index, item in enumerate(items):
+        key = json.dumps(item.get("source"), sort_keys=True)
+        normalized.setdefault(key, []).append(_label(item, index))
+    if len(normalized) <= 1:
+        return []
+    described = "; ".join(
+        "%s declared by %s" % (key, ", ".join(labels)) for key, labels in normalized.items()
+    )
+    return ["every Step must declare the same source: " + described]
+
+
+def _counts(items, root):
+    base = root if root is not None else os.getcwd()
+    missing = {
+        path
+        for item in items
+        for path in _files(item)
+        if not os.path.exists(os.path.join(base, path))
+    }
+    return {
+        "missing_paths": len(missing),
+        "no_acceptance": sum(1 for item in items if item.get("acceptance") == []),
+        "assumptions": sum(1 for item in items if item.get("assumptions")),
+    }
+
+
+def validate(items, root=None):
+    if not isinstance(items, list):
+        return {
+            "errors": ["the items file must be a JSON array at the top level"],
+            "counts": dict.fromkeys(COUNT_KEYS, 0),
+        }
+    errors = _shape_errors(items)
+    if errors:
+        return {"errors": errors, "counts": dict.fromkeys(COUNT_KEYS, 0)}
+    errors = _duplicate_errors(items)
+    by_name = _by_name(items)
+    errors = errors + _edge_errors(items, by_name)
+    errors = errors + [
+        "dependency cycle: " + " -> ".join(members + (members[0],)) for members in cycles(items)
+    ]
+    errors = errors + _source_errors(items)
+    return {"errors": errors, "counts": _counts(items, root)}
