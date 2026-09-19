@@ -9,6 +9,7 @@ import signal
 import subprocess
 
 import core
+import shape
 
 RETURN_KEYS = ("items", "assumptions", "constraints")
 
@@ -850,6 +851,42 @@ def _assemble_structure(frozen, spawned, log, root, prior=None):
     return {**assembled, "errors": assembled["errors"] + _task_errors(assembled["items"])}
 
 
+def _sample_logs(log, count):
+    if log is None or count == 1:
+        return [log] * count
+    stem, extension = os.path.splitext(log)
+    return ["%s-%d%s" % (stem, number, extension) for number in range(1, count + 1)]
+
+
+def sample_structures(
+    samples,
+    document,
+    template,
+    root,
+    timeout,
+    model=None,
+    graph=None,
+    charter=None,
+    cap=None,
+    log=None,
+    decisions=None,
+    prior=None,
+):
+    count = samples if isinstance(samples, int) and samples > 0 else 1
+    frozen = freeze(document)
+    prompt = render_structure_prompt(
+        frozen, inventory(root, cap), graph, charter, decisions, prior
+    )
+    argv = _argv_for(frozen, template, prompt, model)
+    logs = _sample_logs(log, count)
+    jobs = [{"argv": argv, "prompt": prompt, "log": sample_log} for sample_log in logs]
+    spawned = spawn_many(jobs, timeout, count, cwd=root)
+    return [
+        _assemble_structure(frozen, one, sample_log, root, prior)
+        for one, sample_log in zip(spawned, logs)
+    ]
+
+
 def structure(
     document,
     template,
@@ -863,13 +900,75 @@ def structure(
     decisions=None,
     prior=None,
 ):
-    frozen = freeze(document)
-    prompt = render_structure_prompt(
-        frozen, inventory(root, cap), graph, charter, decisions, prior
+    return sample_structures(
+        1,
+        document,
+        template,
+        root,
+        timeout,
+        model=model,
+        graph=graph,
+        charter=charter,
+        cap=cap,
+        log=log,
+        decisions=decisions,
+        prior=prior,
+    )[0]
+
+
+def _scorable(result):
+    return [item for item in result.get("items") or [] if isinstance(item, dict)]
+
+
+def _rank_key(result, index):
+    scored = shape.scalars(_scorable(result))
+    return (
+        1 if result.get("errors") else 0,
+        -scored["parallelism"],
+        scored["fused_without_overlap"],
+        -scored["msps_per_step"],
+        scored["largest_lane"],
+        index,
     )
-    argv = _argv_for(frozen, template, prompt, model)
-    spawned = spawn(argv, prompt, timeout, cwd=root, log=log)
-    return _assemble_structure(frozen, spawned, log, root, prior)
+
+
+def rank(results):
+    return sorted(range(len(results)), key=lambda index: _rank_key(results[index], index))
+
+
+def _owner_counts(items):
+    counts = {}
+    for item in items:
+        files = item.get("files")
+        paths = {path for path in files if isinstance(path, str)} if isinstance(files, list) else ()
+        for path in paths:
+            counts = {**counts, path: counts.get(path, 0) + 1}
+    return counts
+
+
+def _per_sample(values):
+    return ", ".join("sample %d has %d" % (number, value) for number, value in enumerate(values, 1))
+
+
+def disagreements(results):
+    if len(results) < 2:
+        return []
+    structures = [_scorable(result) for result in results]
+    owners = [_owner_counts(items) for items in structures]
+    paths = sorted(set().union(*owners))
+    found = []
+    for path in paths:
+        counts = [owned.get(path, 0) for owned in owners]
+        if len(set(counts)) > 1:
+            found.append(
+                "The samples do not agree on how many Steps own %s: %s." % (path, _per_sample(counts))
+            )
+    scored = [shape.scalars(items) for items in structures]
+    for key, label in (("msps", "the number of MSPs"), ("parallelism", "the parallelism")):
+        values = [one[key] for one in scored]
+        if len(set(values)) > 1:
+            found.append("The samples do not agree on %s: %s." % (label, _per_sample(values)))
+    return found
 
 
 def _coverage_lines(covered):
