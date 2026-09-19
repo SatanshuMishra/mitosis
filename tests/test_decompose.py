@@ -4,6 +4,7 @@ import os
 import shlex
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -77,6 +78,35 @@ def item(name, **extra):
 def run(root, document_text, reply, **extra):
     document = write(root, "docs/spec.md", document_text)
     return decompose.decompose(document, worker(root, reply), root, timeout=20, **extra)
+
+
+def bare(name, **extra):
+    return {
+        "name": name,
+        "files": [name + ".py"],
+        "source": None,
+        "acceptance": [],
+        **extra,
+    }
+
+
+def run_structure(root, document_text, reply, **extra):
+    document = write(root, "docs/spec.md", document_text)
+    return decompose.structure(document, worker(root, reply), root, timeout=20, **extra)
+
+
+def delayed(seconds, reply):
+    return [
+        sys.executable,
+        "-c",
+        "import sys, time; time.sleep(float(sys.argv[1])); print(sys.argv[2])",
+        str(seconds),
+        json.dumps(reply),
+    ]
+
+
+def job(argv, prompt="", log=None):
+    return {"argv": argv, "prompt": prompt, "log": log}
 
 
 class Contract(unittest.TestCase):
@@ -536,6 +566,197 @@ class EmptyReturn(unittest.TestCase):
         self.assertEqual(decompose._empty_errors({"text": "# A\n"}, [{"name": "a"}]), [])
 
 
+class Structure(unittest.TestCase):
+    def the_structure_contract_forbids_a_task(self):
+        contract = decompose.STRUCTURE_CONTRACT
+        sentence = "A Step must not carry a task"
+        self.assertIn(sentence, contract)
+        forbidding = [line for line in contract.splitlines() if sentence in line]
+        self.assertEqual(len(forbidding), 1)
+        self.assertIn("rejected", forbidding[0])
+        self.assertNotIn("task", contract.replace(forbidding[0], ""))
+        for field in core.STRUCTURE_ITEM_FIELDS:
+            self.assertIn(field, contract)
+        for field in decompose.OPTIONAL_ITEM_FIELDS:
+            self.assertIn(field, contract)
+        self.assertIn(", ".join(core.STRUCTURE_ITEM_FIELDS) + ".", contract)
+        self.assertNotIn(", ".join(core.REQUIRED_ITEM_FIELDS) + ".", contract)
+        self.assertEqual(contract.count(sentence), 1)
+
+    def a_structure_return_carrying_a_task_is_an_error(self):
+        reply = {
+            "items": [bare("clean"), bare("prosy", task="a whole brief"), bare("also", task="x")],
+            "assumptions": [],
+            "constraints": [],
+        }
+        with tempfile.TemporaryDirectory() as root:
+            result = run_structure(root, "# One\n\nbody\n", reply)
+        self.assertEqual([step["name"] for step in result["items"]], ["clean", "prosy", "also"])
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertIn("prosy", result["errors"][0])
+        self.assertIn("also", result["errors"][0])
+        self.assertNotIn("clean", result["errors"][0])
+        self.assertIn("task", result["errors"][0])
+        self.assertIn(result["errors"][0], decompose.report(result))
+
+    def a_structure_return_without_a_task_validates(self):
+        text = "# 1. One\n\nbody\n\n# 2. Two\n\nmore\n"
+        reply = {
+            "items": [
+                bare("first", spec_ref=["1"], task=""),
+                bare("second", after=["first"], spec_ref=["2"]),
+            ],
+            "assumptions": [{"step": "second", "text": "a reading"}],
+            "constraints": ["one global"],
+        }
+        with tempfile.TemporaryDirectory() as root:
+            result = run_structure(root, text, reply)
+            prompt = received(root, "prompt.txt")
+            document = os.path.join(root, "docs", "spec.md")
+        self.assertEqual(result["errors"], [])
+        expected = {"path": document, "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()}
+        self.assertEqual(result["source"], expected)
+        for step in result["items"]:
+            self.assertEqual(step["source"], expected)
+        by_name = {step["name"]: step for step in result["items"]}
+        self.assertEqual(by_name["second"]["assumptions"], ["a reading"])
+        self.assertEqual(by_name["second"]["after"], ["first"])
+        self.assertEqual(result["constraints"], ["one global"])
+        self.assertEqual(result["coverage"]["uncovered"], [])
+        self.assertEqual(result["exit"], 0)
+        self.assertIn(decompose.STRUCTURE_CONTRACT, prompt)
+        self.assertNotIn(decompose.CONTRACT, prompt)
+        self.assertEqual(
+            core.validate(result["items"], required=core.STRUCTURE_ITEM_FIELDS)["errors"], []
+        )
+
+    def a_structure_result_has_the_shape_a_decompose_result_has(self):
+        reply = {"items": [bare("a")], "assumptions": [], "constraints": []}
+        with tempfile.TemporaryDirectory() as root:
+            structured = run_structure(root, "# One\n\nbody\n", reply)
+        with tempfile.TemporaryDirectory() as root:
+            decomposed = run(root, "# One\n\nbody\n", {**reply, "items": [item("a")]})
+        self.assertEqual(sorted(structured), sorted(decomposed))
+        self.assertEqual(structured["counts"], decomposed["counts"])
+
+    def a_structure_prompt_omits_the_decisions_block_when_there_are_none(self):
+        document = frozen("docs/specs/change.md", "# Alpha\n\ntext\n\n# Omega\n\nmore\n")
+        codebase = {"root": "/repo", "paths": ["core.py"], "overflow": 0}
+        expected = decompose.render_prompt(
+            document, codebase, graph="graph.json", charter="CHARTER.md"
+        ).replace(decompose.CONTRACT, decompose.STRUCTURE_CONTRACT)
+        self.assertNotEqual(expected, decompose.render_prompt(document, codebase))
+        for decisions in (None, "", {"path": "d.md", "text": "", "count": 0}):
+            for prior in (None, [], ()):
+                rendered = decompose.render_structure_prompt(
+                    document,
+                    codebase,
+                    graph="graph.json",
+                    charter="CHARTER.md",
+                    decisions=decisions,
+                    prior=prior,
+                )
+                self.assertEqual(rendered, expected)
+        self.assertEqual(decompose.render_structure_prompt(document, codebase), expected.replace(
+            "\n\nImport graph: graph.json (adjacency from each path to its neighbours)", ""
+        ).replace(
+            "\nCharter: CHARTER.md (binding on every Step; every Worker receives it unchanged)", ""
+        ))
+        self.assertNotIn("settled", expected.lower())
+        self.assertNotIn("revis", expected.lower())
+
+    def a_structure_prompt_renders_its_blocks_in_order(self):
+        document = frozen("docs/specs/change.md", "# Alpha\n\ntext\n")
+        codebase = {"root": "/repo", "paths": ["core.py"], "overflow": 0}
+        prior = [bare("kept", task="its brief")]
+        rendered = decompose.render_structure_prompt(
+            document,
+            codebase,
+            graph={"core.py": ["shape.py"]},
+            charter="CHARTER.md",
+            decisions={"path": "d.md", "text": "- the registry is owned by core\n", "count": 1},
+            prior=prior,
+        )
+        compact = json.dumps(prior, separators=(",", ":"))
+        self.assertIn(compact, rendered)
+        self.assertIn("- the registry is owned by core", rendered)
+        positions = [
+            rendered.index("Document: docs/specs/change.md"),
+            rendered.index("CHARTER.md"),
+            rendered.index("Codebase root"),
+            rendered.index("Import graph"),
+            rendered.index("- the registry is owned by core"),
+            rendered.index(compact),
+            rendered.index(decompose.DOCUMENT_OPEN),
+            rendered.index("Sections you may claim"),
+            rendered.index(decompose.STRUCTURE_CONTRACT),
+        ]
+        self.assertEqual(positions, sorted(positions))
+        heading = rendered[: rendered.index(compact)].rstrip("\n").splitlines()[-1].lower()
+        self.assertIn("revis", heading)
+
+
+class SpawnMany(unittest.TestCase):
+    def spawn_many_returns_results_in_the_order_it_was_given_them(self):
+        jobs = [
+            job(delayed(0.4, {"n": 0})),
+            job(delayed(0.0, {"n": 1})),
+            job(delayed(0.2, {"n": 2})),
+            job(delayed(0.0, {"n": 3})),
+        ]
+        results = decompose.spawn_many(jobs, timeout=20, concurrency=4)
+        self.assertEqual([json.loads(r["line"])["n"] for r in results], [0, 1, 2, 3])
+        self.assertEqual([r["exit"] for r in results], [0, 0, 0, 0])
+        self.assertEqual([r["reason"] for r in results], [None] * 4)
+        self.assertEqual(decompose.spawn_many([], timeout=1, concurrency=4), [])
+
+    def spawn_many_runs_jobs_concurrently(self):
+        jobs = [job(delayed(0.5, {"n": n})) for n in range(4)]
+        started = time.monotonic()
+        results = decompose.spawn_many(jobs, timeout=20, concurrency=4)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 2.0)
+        self.assertEqual([json.loads(r["line"])["n"] for r in results], [0, 1, 2, 3])
+
+    def a_concurrency_at_or_below_zero_runs_one_at_a_time(self):
+        for concurrency in (0, -3):
+            jobs = [job(delayed(0.3, {"n": n})) for n in range(2)]
+            started = time.monotonic()
+            results = decompose.spawn_many(jobs, timeout=20, concurrency=concurrency)
+            elapsed = time.monotonic() - started
+            self.assertGreaterEqual(elapsed, 0.6)
+            self.assertEqual([json.loads(r["line"])["n"] for r in results], [0, 1])
+
+    def each_job_reads_its_own_prompt_and_writes_its_own_log(self):
+        echo = [
+            sys.executable,
+            "-c",
+            "import sys, json; print(json.dumps({'got': sys.stdin.read()}))",
+        ]
+        with tempfile.TemporaryDirectory() as root:
+            jobs = [
+                job(echo, "first", os.path.join(root, "a", "one.log")),
+                job(echo, "second", os.path.join(root, "two.log")),
+            ]
+            results = decompose.spawn_many(jobs, timeout=20, concurrency=2, cwd=root)
+            self.assertEqual([json.loads(r["line"])["got"] for r in results], ["first", "second"])
+            with open(jobs[0]["log"], encoding="utf-8") as handle:
+                self.assertIn("first", handle.read())
+            with open(jobs[1]["log"], encoding="utf-8") as handle:
+                self.assertIn("second", handle.read())
+        self.assertEqual(jobs[0], job(echo, "first", os.path.join(root, "a", "one.log")))
+
+    def a_job_that_times_out_does_not_hold_the_others(self):
+        jobs = [
+            job([sys.executable, "-c", "import time; time.sleep(60)"]),
+            job(delayed(0.0, {"n": 1})),
+        ]
+        results = decompose.spawn_many(jobs, timeout=0.5, concurrency=2)
+        self.assertIn("timeout", results[0]["reason"])
+        self.assertIsNone(results[0]["line"])
+        self.assertEqual(json.loads(results[1]["line"])["n"], 1)
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -547,7 +768,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Contract, Run, Coverage, ReturnLine, EmptyReturn):
+    for case in (Contract, Run, Coverage, ReturnLine, EmptyReturn, Structure, SpawnMany):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

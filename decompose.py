@@ -1,3 +1,4 @@
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -28,36 +29,69 @@ RETURN_SHAPE = (
     '"constraints":["<global statement>",...]}'
 )
 
-CONTRACT = "\n".join(
-    (
-        "When finished, print one line of JSON and nothing after it:",
-        RETURN_SHAPE,
-        "Every entry of \"items\" is one Step, and every Step must carry each of these fields: "
-        + ", ".join(core.REQUIRED_ITEM_FIELDS)
-        + ".",
-        "  name: kebab-case, unique within this return",
-        "  task: the Step's entire brief; the Worker that builds it receives nothing else",
-        "  files: the write-set, a non-empty list of paths relative to the codebase root",
-        "  source: null; the document path and hash are stamped in for you",
-        '  acceptance: a list of {"%s": "<test file>", "%s": "<test identifier>"} objects,'
-        % core.ACCEPTANCE_KEYS
-        + " never prose; an empty list declares that the Step proves nothing mechanically",
-        "A Step may also carry: " + ", ".join(OPTIONAL_ITEM_FIELDS) + ".",
-        "  after: names of Steps that must be built first; these edges join parts of the document"
-        " that may be far apart, and they can only be seen from the whole of it",
-        "  contract_group: one shared id for the halves of one interface",
-        "  type: one of " + ", ".join(core.STEP_TYPES),
-        "  complexity: one of " + ", ".join(core.COMPLEXITY_VALUES),
-        "  file_notes: {path: what changes there}",
-        "  msp: a tag forcing Steps to ship as one pull request",
-        "  spec_ref: the sections this Step came from, each as its number or its exact heading"
-        " text, or as a line number or a range like 12-20 when the document has no headings",
-        "  assumptions: the readings you chose where the document was underdetermined",
-        '"assumptions" at the top level lists every such reading with the "step" it belongs to;'
-        " a Step with any assumption is never rated simple",
-        '"constraints" lists the document\'s global statements that belong to no single Step,'
-        " one string each; return an empty list when there are none",
+REQUIRED_FIELD_LINES = {
+    "name": "  name: kebab-case, unique within this return",
+    "task": "  task: the Step's entire brief; the Worker that builds it receives nothing else",
+    "files": "  files: the write-set, a non-empty list of paths relative to the codebase root",
+    "source": "  source: null; the document path and hash are stamped in for you",
+    "acceptance": '  acceptance: a list of {"%s": "<test file>", "%s": "<test identifier>"} objects,'
+    % core.ACCEPTANCE_KEYS
+    + " never prose; an empty list declares that the Step proves nothing mechanically",
+}
+
+OPTIONAL_FIELD_LINES = (
+    "  after: names of Steps that must be built first; these edges join parts of the document"
+    " that may be far apart, and they can only be seen from the whole of it",
+    "  contract_group: one shared id for the halves of one interface",
+    "  type: one of " + ", ".join(core.STEP_TYPES),
+    "  complexity: one of " + ", ".join(core.COMPLEXITY_VALUES),
+    "  file_notes: {path: what changes there}",
+    "  msp: a tag forcing Steps to ship as one pull request",
+    "  spec_ref: the sections this Step came from, each as its number or its exact heading"
+    " text, or as a line number or a range like 12-20 when the document has no headings",
+    "  assumptions: the readings you chose where the document was underdetermined",
+)
+
+TOP_LEVEL_LINES = (
+    '"assumptions" at the top level lists every such reading with the "step" it belongs to;'
+    " a Step with any assumption is never rated simple",
+    '"constraints" lists the document\'s global statements that belong to no single Step,'
+    " one string each; return an empty list when there are none",
+)
+
+TASK_FORBIDDEN = (
+    "A Step must not carry a task; a return in which any Step carries one will be rejected."
+)
+
+
+def _contract(required, tail=()):
+    return "\n".join(
+        (
+            "When finished, print one line of JSON and nothing after it:",
+            RETURN_SHAPE,
+            'Every entry of "items" is one Step, and every Step must carry each of these fields: '
+            + ", ".join(required)
+            + ".",
+        )
+        + tuple(REQUIRED_FIELD_LINES[field] for field in required)
+        + ("A Step may also carry: " + ", ".join(OPTIONAL_ITEM_FIELDS) + ".",)
+        + OPTIONAL_FIELD_LINES
+        + TOP_LEVEL_LINES
+        + tuple(tail)
     )
+
+
+CONTRACT = _contract(core.REQUIRED_ITEM_FIELDS)
+
+STRUCTURE_CONTRACT = _contract(core.STRUCTURE_ITEM_FIELDS, (TASK_FORBIDDEN,))
+
+DECISIONS_HEADING = (
+    "The following questions are already settled. They are binding on every Step and"
+    " must not be re-opened; do not restate them as assumptions."
+)
+
+PRIOR_HEADING = (
+    "The structure being revised follows, as JSON. Treat it as the base for this return."
 )
 
 
@@ -298,7 +332,7 @@ def _claimable_lines(document):
     return ["Coverage is not computable for this document: %s." % found["reason"]]
 
 
-def render_prompt(document, codebase, graph=None, charter=None):
+def _header_lines(document, charter):
     header = [
         "Decompose the document into Steps: one logical pass over the whole of it.",
         "Document: %s" % document["path"],
@@ -307,18 +341,47 @@ def render_prompt(document, codebase, graph=None, charter=None):
         " of the document that may be far apart, and only the whole document shows them.",
     ]
     if charter:
-        header.append(
+        return header + [
             "Charter: %s (binding on every Step; every Worker receives it unchanged)" % charter
-        )
+        ]
+    return header
+
+
+def _decisions_lines(decisions):
+    text = decisions.get("text") if isinstance(decisions, dict) else decisions
+    if not isinstance(text, str) or not text.strip():
+        return []
+    return [DECISIONS_HEADING, text.rstrip("\n")]
+
+
+def _prior_lines(prior):
+    if not prior:
+        return []
+    return [PRIOR_HEADING, json.dumps(list(prior), separators=(",", ":"))]
+
+
+def _render(document, codebase, graph, charter, decisions, prior, contract):
     parts = [
-        header,
+        _header_lines(document, charter),
         _codebase_lines(codebase),
         _graph_lines(graph),
+        _decisions_lines(decisions),
+        _prior_lines(prior),
         _document_lines(document),
         _claimable_lines(document),
-        ["Return contract:", CONTRACT],
+        ["Return contract:", contract],
     ]
     return "\n\n".join("\n".join(part) for part in parts if part) + "\n"
+
+
+def render_prompt(document, codebase, graph=None, charter=None):
+    return _render(document, codebase, graph, charter, None, None, CONTRACT)
+
+
+def render_structure_prompt(
+    document, codebase, graph=None, charter=None, decisions=None, prior=None
+):
+    return _render(document, codebase, graph, charter, decisions, prior, STRUCTURE_CONTRACT)
 
 
 def build_argv(template, substitutions):
@@ -347,9 +410,9 @@ def _stamp(item, source):
     return {**item, "source": source}
 
 
-def check_items(items, source, root=None):
+def check_items(items, source, root=None, required=None):
     stamped = [_stamp(item, source) for item in items]
-    checked = core.validate(stamped, root=root)
+    checked = core.validate(stamped, root=root, required=required)
     return {"items": stamped, "errors": checked["errors"], "counts": checked["counts"]}
 
 
@@ -411,6 +474,16 @@ def spawn(argv, prompt, timeout, cwd=None, log=None):
         "line": last_return(lines) if reason is None else None,
         "reason": reason,
     }
+
+
+def spawn_many(jobs, timeout, concurrency, cwd=None):
+    workers = concurrency if isinstance(concurrency, int) and concurrency > 0 else 1
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        pending = [
+            pool.submit(spawn, job["argv"], job["prompt"], timeout, cwd=cwd, log=job.get("log"))
+            for job in jobs
+        ]
+        return [future.result() for future in pending]
 
 
 def _clip(text, limit=200):
@@ -495,11 +568,11 @@ def _raise_vague(item):
     return item
 
 
-def collect(parsed, source, root=None):
+def collect(parsed, source, root=None, required=None):
     folded, fold_errors = fold_assumptions(parsed["items"], parsed["assumptions"])
     lifted = [_raise_vague(item) for item in folded]
     raised = [after["name"] for before, after in zip(folded, lifted) if after is not before]
-    checked = check_items(lifted, source, root)
+    checked = check_items(lifted, source, root, required)
     return {
         "items": checked["items"],
         "constraints": parsed["constraints"],
@@ -524,6 +597,35 @@ def _empty_errors(frozen, items):
     return ["the decompose Worker returned no Steps for a document that has content"]
 
 
+def _argv_for(frozen, template, prompt, model):
+    substitutions = {PROMPT_PLACEHOLDER: prompt, DOCUMENT_PLACEHOLDER: frozen["path"]}
+    if model is not None:
+        substitutions = {**substitutions, MODEL_PLACEHOLDER: model}
+    return build_argv(template, substitutions)
+
+
+def _assemble(frozen, spawned, log, root, required=None):
+    source = source_of(frozen)
+    spawn_errors = _spawn_errors(spawned)
+    parsed = (
+        parse_return(spawned["line"])
+        if spawned["line"] is not None or not spawn_errors
+        else _empty_return([])
+    )
+    collected = collect(parsed, source, root, required)
+    return {
+        "source": source,
+        "items": collected["items"],
+        "constraints": collected["constraints"],
+        "errors": spawn_errors + collected["errors"] + _empty_errors(frozen, collected["items"]),
+        "counts": collected["counts"],
+        "raised": collected["raised"],
+        "coverage": coverage(frozen["text"], collected["items"]),
+        "exit": spawned["exit"],
+        "log": log,
+    }
+
+
 def decompose(
     document,
     template,
@@ -536,31 +638,51 @@ def decompose(
     log=None,
 ):
     frozen = freeze(document)
-    source = source_of(frozen)
     prompt = render_prompt(frozen, inventory(root, cap), graph, charter)
-    substitutions = {PROMPT_PLACEHOLDER: prompt, DOCUMENT_PLACEHOLDER: frozen["path"]}
-    if model is not None:
-        substitutions = {**substitutions, MODEL_PLACEHOLDER: model}
-    argv = build_argv(template, substitutions)
+    argv = _argv_for(frozen, template, prompt, model)
     spawned = spawn(argv, prompt, timeout, cwd=root, log=log)
-    spawn_errors = _spawn_errors(spawned)
-    parsed = (
-        parse_return(spawned["line"])
-        if spawned["line"] is not None or not spawn_errors
-        else _empty_return([])
+    return _assemble(frozen, spawned, log, root)
+
+
+def _task_errors(items):
+    named = [
+        _step_label(item, index)
+        for index, item in enumerate(items)
+        if isinstance(item, dict) and item.get("task") not in (None, "")
+    ]
+    if not named:
+        return []
+    return [
+        "%d Steps carry a task, which a structure return must not: %s"
+        % (len(named), ", ".join(named))
+    ]
+
+
+def _assemble_structure(frozen, spawned, log, root):
+    assembled = _assemble(frozen, spawned, log, root, core.STRUCTURE_ITEM_FIELDS)
+    return {**assembled, "errors": assembled["errors"] + _task_errors(assembled["items"])}
+
+
+def structure(
+    document,
+    template,
+    root,
+    timeout,
+    model=None,
+    graph=None,
+    charter=None,
+    cap=None,
+    log=None,
+    decisions=None,
+    prior=None,
+):
+    frozen = freeze(document)
+    prompt = render_structure_prompt(
+        frozen, inventory(root, cap), graph, charter, decisions, prior
     )
-    collected = collect(parsed, source, root)
-    return {
-        "source": source,
-        "items": collected["items"],
-        "constraints": collected["constraints"],
-        "errors": spawn_errors + collected["errors"] + _empty_errors(frozen, collected["items"]),
-        "counts": collected["counts"],
-        "raised": collected["raised"],
-        "coverage": coverage(frozen["text"], collected["items"]),
-        "exit": spawned["exit"],
-        "log": log,
-    }
+    argv = _argv_for(frozen, template, prompt, model)
+    spawned = spawn(argv, prompt, timeout, cwd=root, log=log)
+    return _assemble_structure(frozen, spawned, log, root)
 
 
 def _coverage_lines(covered):
