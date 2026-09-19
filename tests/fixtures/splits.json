@@ -1,0 +1,303 @@
+{
+ "pass-1": [
+  {
+   "complexity": "complex",
+   "contract_group": "effect-factories",
+   "files": [
+    "bleep/effects/delay.py",
+    "tests/test_delay.py"
+   ],
+   "name": "delay",
+   "type": "feature"
+  },
+  {
+   "complexity": "simple",
+   "contract_group": "effect-factories",
+   "files": [
+    "bleep/effects/tremolo.py",
+    "tests/test_tremolo.py"
+   ],
+   "name": "tremolo",
+   "type": "feature"
+  },
+  {
+   "after": [
+    "delay",
+    "tremolo"
+   ],
+   "complexity": "complex",
+   "contract_group": "effect-factories",
+   "files": [
+    "bleep/effects/__init__.py",
+    "tests/test_effects.py"
+   ],
+   "name": "effects-registry",
+   "type": "contract"
+  },
+  {
+   "complexity": "complex",
+   "files": [
+    "bleep/notation.py",
+    "tests/test_notation.py"
+   ],
+   "name": "notation-repeat",
+   "type": "feature"
+  },
+  {
+   "after": [
+    "effects-registry",
+    "notation-repeat"
+   ],
+   "complexity": "complex",
+   "contract_group": "declared-effects",
+   "files": [
+    "bleep/notation.py",
+    "tests/test_notation.py"
+   ],
+   "name": "notation-effects",
+   "type": "feature"
+  },
+  {
+   "after": [
+    "notation-effects"
+   ],
+   "complexity": "complex",
+   "contract_group": "declared-effects",
+   "files": [
+    "bleep/render.py",
+    "tests/test_render.py"
+   ],
+   "name": "render-effects",
+   "type": "feature"
+  },
+  {
+   "after": [
+    "render-effects"
+   ],
+   "complexity": "complex",
+   "contract_group": "declared-effects",
+   "files": [
+    "bleep/__main__.py",
+    "tests/test_cli.py"
+   ],
+   "name": "cli-info",
+   "type": "feature"
+  },
+  {
+   "after": [
+    "cli-info"
+   ],
+   "complexity": "complex",
+   "files": [
+    "demo/echoes.blp",
+    "demo/README.md",
+    "tests/test_demo.py"
+   ],
+   "name": "demo-expression",
+   "type": "design"
+  }
+ ],
+ "pass-2": [
+  {
+   "complexity": "simple",
+   "contract_group": "effects-registry",
+   "files": [
+    "bleep/effects/__init__.py",
+    "tests/test_effects.py"
+   ],
+   "name": "effects-registry",
+   "type": "contract"
+  },
+  {
+   "after": [
+    "effects-registry"
+   ],
+   "complexity": "complex",
+   "contract_group": "effects-registry",
+   "files": [
+    "bleep/effects/delay.py",
+    "bleep/effects/__init__.py",
+    "tests/test_delay.py"
+   ],
+   "name": "delay",
+   "type": "feature"
+  },
+  {
+   "after": [
+    "delay"
+   ],
+   "complexity": "simple",
+   "contract_group": "effects-registry",
+   "files": [
+    "bleep/effects/tremolo.py",
+    "bleep/effects/__init__.py",
+    "tests/test_tremolo.py"
+   ],
+   "name": "tremolo",
+   "type": "feature"
+  },
+  {
+   "after": [
+    "delay",
+    "tremolo"
+   ],
+   "complexity": "complex",
+   "files": [
+    "bleep/notation.py",
+    "tests/test_notation.py"
+   ],
+   "name": "effect-lines",
+   "type": "feature"
+  },
+  {
+   "after": [
+    "effect-lines"
+   ],
+   "complexity": "complex",
+   "files": [
+    "bleep/notation.py",
+    "tests/test_notation.py"
+   ],
+   "name": "repeat-syntax",
+   "type": "feature"
+  },
+  {
+   "after": [
+    "effect-lines",
+    "repeat-syntax"
+   ],
+   "complexity": "complex",
+   "files": [
+    "bleep/render.py",
+    "tests/test_render.py"
+   ],
+   "name": "render-effects",
+   "type": "feature"
+  },
+  {
+   "after": [
+    "render-effects"
+   ],
+   "complexity": "complex",
+   "files": [
+    "bleep/__main__.py",
+    "tests/test_cli.py"
+   ],
+   "name": "info-effects",
+   "type": "feature"
+  },
+  {
+   "after": [
+    "info-effects"
+   ],
+   "complexity": "complex",
+   "files": [
+    "demo/canyon.blp",
+    "demo/README.md",
+    "tests/test_demo.py"
+   ],
+   "name": "expression-demo",
+   "type": "design"
+  }
+ ],
+ "pass-3": [
+  {
+   "complexity": "complex",
+   "contract_group": "effects",
+   "files": [
+    "bleep/effects/delay.py",
+    "tests/test_delay.py"
+   ],
+   "name": "delay",
+   "type": "feature"
+  },
+  {
+   "complexity": "simple",
+   "contract_group": "effects",
+   "files": [
+    "bleep/effects/tremolo.py",
+    "tests/test_tremolo.py"
+   ],
+   "name": "tremolo",
+   "type": "feature"
+  },
+  {
+   "after": [
+    "delay",
+    "tremolo"
+   ],
+   "complexity": "simple",
+   "contract_group": "effects",
+   "files": [
+    "bleep/effects/__init__.py",
+    "tests/test_effects.py"
+   ],
+   "name": "effects-registry",
+   "type": "contract"
+  },
+  {
+   "after": [
+    "effects-registry"
+   ],
+   "complexity": "complex",
+   "contract_group": "effects",
+   "files": [
+    "bleep/notation.py",
+    "tests/test_notation.py"
+   ],
+   "name": "notation-effects",
+   "type": "feature"
+  },
+  {
+   "after": [
+    "notation-effects"
+   ],
+   "complexity": "complex",
+   "files": [
+    "bleep/notation.py",
+    "tests/test_notation.py"
+   ],
+   "name": "notation-repeat",
+   "type": "feature"
+  },
+  {
+   "after": [
+    "notation-repeat"
+   ],
+   "complexity": "simple",
+   "contract_group": "effects",
+   "files": [
+    "bleep/render.py",
+    "tests/test_render.py"
+   ],
+   "name": "render-effects",
+   "type": "feature"
+  },
+  {
+   "after": [
+    "render-effects"
+   ],
+   "complexity": "complex",
+   "contract_group": "effects",
+   "files": [
+    "bleep/__main__.py",
+    "tests/test_cli.py"
+   ],
+   "name": "cli-info",
+   "type": "feature"
+  },
+  {
+   "after": [
+    "cli-info"
+   ],
+   "complexity": "complex",
+   "files": [
+    "demo/echoes.blp",
+    "demo/README.md",
+    "tests/test_demo.py"
+   ],
+   "name": "demo-expression",
+   "type": "design"
+  }
+ ]
+}
