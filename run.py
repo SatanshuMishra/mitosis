@@ -60,6 +60,10 @@ class ResumeError(RuntimeError):
     pass
 
 
+class ShipError(RuntimeError):
+    pass
+
+
 def git_run(args, cwd):
     return subprocess.run(
         ["git", *args], cwd=cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL
@@ -165,6 +169,15 @@ def build_argv(template, values):
     return [PLACEHOLDER.sub(fill, argument) for argument in shlex.split(template)]
 
 
+def check_template(name, template):
+    if not isinstance(template, str) or not template.strip():
+        raise ConfigError("the %s command is empty" % name)
+    try:
+        shlex.split(template)
+    except ValueError as error:
+        raise ConfigError("the %s command does not split into argv: %s" % (name, error))
+
+
 def check_models(plan, template, models):
     if "{model}" not in template:
         return
@@ -208,7 +221,9 @@ def parse_return(line):
     bounded = {
         "item": parsed.get("item") if isinstance(parsed.get("item"), str) else None,
         "status": parsed.get("status") if isinstance(parsed.get("status"), str) else None,
-        "files_changed": [f for f in files if isinstance(f, str)] if isinstance(files, list) else [],
+        "files_changed": (
+            [f for f in files if isinstance(f, str)] if isinstance(files, list) else []
+        ),
         "notes": (notes if isinstance(notes, str) else "")[: core.NOTES_CAP],
     }
     return {key: bounded[key] for key in core.RETURN_KEYS}
@@ -236,7 +251,7 @@ def kill_tree(proc):
         proc.kill()
 
 
-def run_worker(argv, cwd, timeout, stdout_path, stderr_path):
+def run_command(argv, cwd, timeout, stdout_path, stderr_path):
     with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
         proc = subprocess.Popen(
             argv,
@@ -351,7 +366,8 @@ def _finish(plan, lane, tree, started, merged, out, err, code, timed_out):
         commit = commit_paths(
             tree["path"],
             plan["briefs"][lane]["write_set"],
-            "chore(%s): land Lane %d (%s)" % (tree.get("label") or tree["msp"], lane, ", ".join(steps)),
+            "chore(%s): land Lane %d (%s)"
+            % (tree.get("label") or tree["msp"], lane, ", ".join(steps)),
         )
     return lane_record(
         lane,
@@ -370,7 +386,18 @@ def _finish(plan, lane, tree, started, merged, out, err, code, timed_out):
     )
 
 
-def dispatch(plan, trees, command, timeout, concurrency, run_dir, base, models=None, prior=None, on_lane=None):
+def dispatch(
+    plan,
+    trees,
+    command,
+    timeout,
+    concurrency,
+    run_dir,
+    base,
+    models=None,
+    prior=None,
+    on_lane=None,
+):
     if timeout is None:
         raise ConfigError("a per-Lane timeout is required; mitosis has no default")
     check_models(plan, command, models)
@@ -385,14 +412,15 @@ def dispatch(plan, trees, command, timeout, concurrency, run_dir, base, models=N
         if isinstance(record, dict) and record.get("state") == "ok"
     }
     ordered = [int(i) for i in plan.get("lane_order") or range(len(lanes))]
-    pending = [i for i in ordered + [i for i in range(len(lanes)) if i not in ordered] if i not in records]
+    every = ordered + [i for i in range(len(lanes)) if i not in ordered]
+    pending = [i for i in every if i not in records]
     running = {}
     cap = max(1, int(concurrency))
 
-    def settle(lane, record):
+    def settle(known, lane, record):
         if on_lane is not None:
             on_lane(lane, record)
-        return {**records, lane: record}
+        return {**known, lane: record}
 
     with ThreadPoolExecutor(max_workers=cap) as pool:
         while pending or running:
@@ -403,13 +431,20 @@ def dispatch(plan, trees, command, timeout, concurrency, run_dir, base, models=N
                 producers = edges.get(lane, ())
                 unfinished = [p for p in producers if p not in records]
                 if unfinished:
-                    live = [p for p in unfinished if p in pending or p in running.values()]
+                    active = {entry[0] for entry in running.values()}
+                    live = [p for p in unfinished if p in pending or p in active]
                     if live:
                         waiting = waiting + (lane,)
                         continue
                     records = settle(
+                        records,
                         lane,
-                        lane_record(lane, msp, "blocked", reason="producer Lane %d never ran" % unfinished[0]),
+                        lane_record(
+                            lane,
+                            msp,
+                            "blocked",
+                            reason="producer Lane %d never ran" % unfinished[0],
+                        ),
                     )
                     progressed = True
                     continue
@@ -419,12 +454,14 @@ def dispatch(plan, trees, command, timeout, concurrency, run_dir, base, models=N
                 bad = [p for p in producers if records[p].get("state") != "ok"]
                 if bad:
                     records = settle(
+                        records,
                         lane,
                         lane_record(
                             lane,
                             msp,
                             "blocked",
-                            reason="producer Lane %d is %s" % (bad[0], records[bad[0]].get("state")),
+                            reason="producer Lane %d is %s"
+                            % (bad[0], records[bad[0]].get("state")),
                         ),
                     )
                     progressed = True
@@ -433,13 +470,17 @@ def dispatch(plan, trees, command, timeout, concurrency, run_dir, base, models=N
                 cross = _cross_producers(plan, lane, producers, tree_of, records)
                 merged, error = merge_producers(tree["path"], tree["branch"], cross, base)
                 if error is not None:
-                    records = settle(lane, lane_record(lane, msp, "merge-blocked", reason=error, merged=merged))
+                    records = settle(
+                        records,
+                        lane,
+                        lane_record(lane, msp, "merge-blocked", reason=error, merged=merged),
+                    )
                     progressed = True
                     continue
                 out = os.path.join(lane_dir, "%d.out" % lane)
                 err = os.path.join(lane_dir, "%d.err" % lane)
                 argv = build_argv(command, _worker_values(plan, lane, tree, models, run_dir))
-                future = pool.submit(run_worker, argv, tree["path"], timeout, out, err)
+                future = pool.submit(run_command, argv, tree["path"], timeout, out, err)
                 running = {**running, future: (lane, now(), merged, out, err)}
                 progressed = True
             pending = list(waiting)
@@ -450,12 +491,16 @@ def dispatch(plan, trees, command, timeout, concurrency, run_dir, base, models=N
                     running = {f: v for f, v in running.items() if f is not future}
                     code, timed_out = future.result()
                     tree = tree_of[lanes[lane]["msp"]]
-                    records = settle(lane, _finish(plan, lane, tree, started, merged, out, err, code, timed_out))
+                    finished = _finish(plan, lane, tree, started, merged, out, err, code, timed_out)
+                    records = settle(records, lane, finished)
             elif pending and not progressed:
                 for lane in pending:
                     records = settle(
+                        records,
                         lane,
-                        lane_record(lane, lanes[lane]["msp"], "blocked", reason="no producer can finish"),
+                        lane_record(
+                            lane, lanes[lane]["msp"], "blocked", reason="no producer can finish"
+                        ),
                     )
                 pending = []
     return records
@@ -519,8 +564,8 @@ def prior_state(run_dir, plan, resume):
         return None
     if state.get("plan_id") != plan.get("plan_id"):
         raise ResumeError(
-            "%s holds a run of plan %s, not plan %s; the work-set changed, so prior results do not apply"
-            % (run_dir, state.get("plan_id"), plan.get("plan_id"))
+            "%s holds a run of plan %s, not plan %s; the work-set changed, "
+            "so prior results do not apply" % (run_dir, state.get("plan_id"), plan.get("plan_id"))
         )
     return state
 
@@ -556,6 +601,10 @@ def _norm(path):
 
 def _steps_by_name(plan):
     return {item["name"]: item for item in plan.get("items") or []}
+
+
+def _label(plan, msp):
+    return plan["msps"][msp].get("label") or str(msp)
 
 
 def acceptance_files(plan, msp):
@@ -600,7 +649,9 @@ def msp_properties(plan, msp):
                     "file": entry["file"],
                     "test": entry["test"],
                     "outcome": "not-applicable" if serial else None,
-                    "reason": "serial surface; the probe cannot run it headlessly" if serial else None,
+                    "reason": (
+                        "serial surface; the probe cannot run it headlessly" if serial else None
+                    ),
                 },
             )
     return found
@@ -631,7 +682,7 @@ def revert_implementation(tree, base, paths):
 
 def run_acceptance(command, tree, entry, log_path, timeout):
     argv = build_argv(command, {"file": entry["file"], "test": entry["test"], "worktree": tree})
-    return run_worker(argv, tree, timeout, log_path, log_path + ".err")
+    return run_command(argv, tree, timeout, log_path, log_path + ".err")
 
 
 def probe_outcome(with_work, reverted):
@@ -639,8 +690,6 @@ def probe_outcome(with_work, reverted):
         return "inconclusive", "timed out with the work present"
     if with_work[0] != 0:
         return "inconclusive", "exit %d with the work present" % with_work[0]
-    if reverted is None:
-        return "inconclusive", "the probe did not run"
     if reverted[1]:
         return "inconclusive", "timed out with the implementation reverted"
     if reverted[0] == 0:
@@ -682,14 +731,17 @@ def _gate_result(properties, implementation, commit, reverted):
         "properties": resolved,
         "implementation": list(implementation),
         "reverted": list(reverted),
-        "counts": {key: sum(1 for e in resolved if e["outcome"] == key) for key in core.GATE_OUTCOMES},
+        "counts": {
+            key: sum(1 for e in resolved if e["outcome"] == key) for key in core.GATE_OUTCOMES
+        },
         "commit": commit,
     }
 
 
 def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None):
-    label = plan["msps"][msp].get("label") or str(msp)
-    commit = commit_all(tree, "chore(%s): commit the MSP's work before the gate" % label)
+    commit = commit_all(
+        tree, "chore(%s): commit the MSP's work before the gate" % _label(plan, msp)
+    )
     properties = msp_properties(plan, msp)
     implementation = implementation_paths(plan, msp)
     runnable = [index for index, entry in enumerate(properties) if entry["outcome"] is None]
@@ -698,7 +750,11 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None):
     os.makedirs(log_dir, exist_ok=True)
     with_work = {
         index: run_acceptance(
-            command, tree, properties[index], os.path.join(log_dir, "%d-with-work.log" % index), timeout
+            command,
+            tree,
+            properties[index],
+            os.path.join(log_dir, "%d-with-work.log" % index),
+            timeout,
         )
         for index in runnable
     }
@@ -708,7 +764,11 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None):
         reverted = revert_implementation(tree, base, implementation)
         without = {
             index: run_acceptance(
-                command, tree, properties[index], os.path.join(log_dir, "%d-reverted.log" % index), timeout
+                command,
+                tree,
+                properties[index],
+                os.path.join(log_dir, "%d-reverted.log" % index),
+                timeout,
             )
             for index in runnable
             if with_work[index] == (0, False)
@@ -721,7 +781,7 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None):
         if index not in with_work:
             judged = judged + (entry,)
             continue
-        outcome, reason = probe_outcome(with_work[index], without.get(index))
+        outcome, reason = probe_outcome(with_work[index], without.get(index, (None, False)))
         judged = judged + (
             {
                 **entry,
@@ -736,7 +796,9 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None):
 
 def changed_files(tree, branch, base, exclude=()):
     excluded = ["^" + ref for ref in exclude if branch_exists(tree, ref)]
-    out = git(["log", "--format=", "--name-only", "--no-renames", branch, "^" + base, *excluded], tree)
+    out = git(
+        ["log", "--format=", "--name-only", "--no-renames", branch, "^" + base, *excluded], tree
+    )
     found = ()
     for line in out.splitlines():
         path = line.strip()
@@ -762,9 +824,7 @@ def reconcile(plan, msp, tree, branch, base, producer_branches=()):
     for path in undeclared:
         owner = msp_owner_of(plan, path)
         if owner is not None and owner != msp:
-            crossing = crossing + (
-                {"path": path, "msp": owner, "label": plan["msps"][owner].get("label") or str(owner)},
-            )
+            crossing = crossing + ({"path": path, "msp": owner, "label": _label(plan, owner)},)
     return {
         "changed": changed,
         "declared": declared,
@@ -775,6 +835,154 @@ def reconcile(plan, msp, tree, branch, base, producer_branches=()):
     }
 
 
+def pr_base(plan, msp, feature_branch, trees, repo):
+    producers = msp_producers(plan).get(msp, ())
+    if len(producers) > 1:
+        return feature_branch, {
+            "msp": msp,
+            "label": _label(plan, msp),
+            "producers": list(producers),
+            "reason": "a pull request can stack on one predecessor; this MSP has %d"
+            % len(producers),
+        }
+    if len(producers) == 1 and branch_exists(repo, trees[producers[0]]["branch"]):
+        return trees[producers[0]]["branch"], None
+    return feature_branch, None
+
+
+def _property_lines(plan, msp):
+    steps = _steps_by_name(plan)
+    lines = ()
+    for name in plan["msps"][msp]["steps"]:
+        for entry in steps[name].get("acceptance") or []:
+            lines = lines + ("- %s::%s (%s)" % (entry["file"], entry["test"], name),)
+    return lines
+
+
+def _first_line(text):
+    stripped = (text or "").strip()
+    return stripped.splitlines()[0] if stripped else ""
+
+
+def pull_request_title(plan, msp):
+    label = _label(plan, msp)
+    steps = plan["msps"][msp]["steps"]
+    if steps == [label]:
+        return label
+    return "%s: %s" % (label, ", ".join(steps))
+
+
+def pull_request_body(plan, msp, base, acceptance_command, gate_result, findings, exception):
+    steps = _steps_by_name(plan)
+    names = plan["msps"][msp]["steps"]
+    lines = [
+        "Draft pull request opened by mitosis. mitosis never merges; a human does.",
+        "",
+        "MSP: %s" % _label(plan, msp),
+        "Base: %s" % base,
+        "Plan: %s" % plan.get("plan_id"),
+        "",
+        "Steps:",
+    ]
+    lines = lines + [
+        "- %s: %s" % (name, _first_line(steps[name].get("task")) or name) for name in names
+    ]
+    properties = _property_lines(plan, msp)
+    lines = lines + ["", "Acceptance properties, re-runnable by a reviewer:"]
+    lines = lines + (list(properties) if properties else ["- none declared"])
+    lines = lines + ["", "Run each property with: %s" % acceptance_command]
+    silent = sum(1 for name in names if not steps[name].get("acceptance"))
+    lines = lines + ["", "Steps with no acceptance property: %d of %d" % (silent, len(names))]
+    if gate_result:
+        counts = gate_result.get("counts") or {}
+        tally = ", ".join("%d %s" % (counts.get(key, 0), key) for key in core.GATE_OUTCOMES)
+        lines = lines + ["Gate: %s (%s)" % (gate_result.get("outcome"), tally)]
+    if findings:
+        undeclared = ", ".join(findings.get("undeclared") or []) or "none"
+        unwritten = ", ".join(findings.get("unwritten") or []) or "none"
+        lines = lines + ["Reconcile: undeclared %s; unwritten %s" % (undeclared, unwritten)]
+    if exception:
+        producers = ", ".join(_label(plan, p) for p in exception["producers"])
+        lines = lines + [
+            "",
+            "Stacking exception: this MSP has %d producers (%s), so its base is the feature "
+            "branch and its diff includes their work." % (len(exception["producers"]), producers),
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def ship(
+    plan,
+    msp,
+    tree,
+    branch,
+    base,
+    pr_command,
+    remote,
+    log_dir,
+    acceptance_command="",
+    gate_result=None,
+    findings=None,
+    exception=None,
+    timeout=None,
+):
+    label = _label(plan, msp)
+    head = commit_all(tree, "chore(%s): commit the MSP's work before shipping" % label)
+    git(["push", "-q", "-u", remote, branch], tree)
+    title = pull_request_title(plan, msp)
+    body = pull_request_body(plan, msp, base, acceptance_command, gate_result, findings, exception)
+    os.makedirs(log_dir, exist_ok=True)
+    out = os.path.join(log_dir, "pull-request.out")
+    err = os.path.join(log_dir, "pull-request.err")
+    argv = build_argv(
+        pr_command,
+        {
+            "branch": branch,
+            "base": base,
+            "title": title,
+            "body": body,
+            "worktree": tree,
+            "msp": label,
+            "remote": remote,
+        },
+    )
+    code, timed_out = run_command(argv, tree, timeout, out, err)
+    if timed_out:
+        raise ShipError("the pull-request command timed out for %s" % branch)
+    if code != 0:
+        detail = last_line(err) or last_line(out) or ""
+        raise ShipError("the pull-request command exited %d for %s: %s" % (code, branch, detail))
+    return {
+        "branch": branch,
+        "base": base,
+        "remote": remote,
+        "pushed": head,
+        "title": title,
+        "pull_request": last_line(out) or "",
+        "stacking_exception": exception is not None,
+    }
+
+
+def _reconcile_clean(findings):
+    return isinstance(findings, dict) and not (
+        findings.get("undeclared")
+        or findings.get("unwritten")
+        or findings.get("crossing")
+        or findings.get("fatal")
+    )
+
+
+def succeeded(state):
+    msps = state.get("msps") or {}
+    lanes = state.get("lanes") or {}
+    if not msps:
+        return False
+    return all(record.get("state") == "ok" for record in lanes.values()) and all(
+        record.get("state") == "shipped" and _reconcile_clean(record.get("reconcile"))
+        for record in msps.values()
+    )
+
+
 def _lane_indexes(plan, msp):
     return [index for index, lane in enumerate(plan.get("lanes") or []) if lane["msp"] == msp]
 
@@ -782,6 +990,108 @@ def _lane_indexes(plan, msp):
 def _msp_record(run_state, msp, **fields):
     current = run_state["msps"].get(str(msp)) or {}
     return {**run_state, "msps": {**run_state["msps"], str(msp): {**current, **fields}}}
+
+
+def _lane_block(plan, msp, state):
+    for index in _lane_indexes(plan, msp):
+        lane_state = (state["lanes"].get(str(index)) or {}).get("state")
+        if lane_state != "ok":
+            return {"state": MSP_BLOCKED, "reason": "Lane %d is %s" % (index, lane_state)}
+    return None
+
+
+def _producer_block(plan, msp, state, producers):
+    for producer in producers:
+        producer_state = (state["msps"].get(str(producer)) or {}).get("state")
+        if producer_state != "shipped":
+            return {
+                "state": MSP_BLOCKED,
+                "reason": "MSP %s is %s" % (_label(plan, producer), producer_state),
+                "blocked_by": [producer],
+            }
+    return None
+
+
+def _gate_stage(plan, msp, tree, settings):
+    try:
+        result = gate(
+            plan,
+            msp,
+            tree["path"],
+            tree["branch"],
+            settings["feature_branch"],
+            settings["acceptance_command"],
+            os.path.join(settings["run_dir"], "gate", "msp-%d" % msp),
+            settings["timeout"],
+        )
+    except (OSError, GitError, subprocess.SubprocessError) as error:
+        return {"state": "gate-inconclusive", "reason": str(error), "gate": None}
+    return {"state": gate_state(result), "reason": None, "gate": result}
+
+
+def _reconcile_stage(plan, msp, tree, producers, trees, settings):
+    findings = reconcile(
+        plan,
+        msp,
+        tree["path"],
+        tree["branch"],
+        settings["feature_branch"],
+        tuple(trees[p]["branch"] for p in producers),
+    )
+    if not findings["fatal"]:
+        return {"reconcile": findings}
+    crossed = ", ".join(
+        "%s belongs to MSP %s" % (entry["path"], entry["label"]) for entry in findings["crossing"]
+    )
+    return {
+        "reconcile": findings,
+        "state": MSP_BLOCKED,
+        "reason": "a write crossed an MSP boundary: " + crossed,
+    }
+
+
+def _ship_stage(plan, msp, tree, base, exception, record, settings):
+    try:
+        shipped = ship(
+            plan,
+            msp,
+            tree["path"],
+            tree["branch"],
+            base,
+            settings["pr_command"],
+            settings["remote"],
+            os.path.join(settings["run_dir"], "ship", "msp-%d" % msp),
+            settings["acceptance_command"],
+            record.get("gate"),
+            record.get("reconcile"),
+            exception,
+            settings["timeout"],
+        )
+    except (OSError, GitError, ShipError, subprocess.SubprocessError, ValueError) as error:
+        return {"state": "ship-failed", "reason": str(error), "ship": None}
+    return {"state": "shipped", "reason": None, "ship": shipped}
+
+
+def _finish_msp(plan, msp, trees, producers, state, settings):
+    run_dir = settings["run_dir"]
+    tree = trees[msp]
+    block = _lane_block(plan, msp, state) or _producer_block(plan, msp, state, producers)
+    if block is not None:
+        return write_state(run_dir, _msp_record(state, msp, **block))
+    gated = _gate_stage(plan, msp, tree, settings)
+    state = write_state(run_dir, _msp_record(state, msp, **gated))
+    if gated["gate"] is None or gated["gate"]["blocks"]:
+        return state
+    reconciled = _reconcile_stage(plan, msp, tree, producers, trees, settings)
+    state = write_state(run_dir, _msp_record(state, msp, **reconciled))
+    if reconciled.get("state") == MSP_BLOCKED:
+        return state
+    base, exception = pr_base(plan, msp, settings["feature_branch"], trees, settings["repo"])
+    if exception is not None:
+        kept = [entry for entry in state["stacking_exceptions"] if entry.get("msp") != msp]
+        state = write_state(run_dir, {**state, "stacking_exceptions": kept + [exception]})
+    shipped = _ship_stage(plan, msp, tree, base, exception, state["msps"][str(msp)], settings)
+    return write_state(run_dir, _msp_record(state, msp, **shipped))
 
 
 def execute(
@@ -802,31 +1112,45 @@ def execute(
     prefix=BRANCH_PREFIX,
 ):
     prior = prior_state(run_dir, plan, resume)
+    check_template("dispatch", worker_command)
+    check_template("acceptance", acceptance_command)
+    check_template("pull-request", pr_command)
     check_models(plan, worker_command, models)
+    if timeout is None:
+        raise ConfigError("a per-Lane timeout is required; mitosis has no default")
+    settings = {
+        "repo": repo,
+        "feature_branch": feature_branch,
+        "run_dir": run_dir,
+        "acceptance_command": acceptance_command,
+        "pr_command": pr_command,
+        "timeout": timeout,
+        "remote": remote,
+    }
     os.makedirs(run_dir, exist_ok=True)
     write_json(os.path.join(run_dir, PLAN_FILE), plan)
-    state = {
-        "version": core.__version__,
-        "plan_id": plan.get("plan_id"),
-        "feature_branch": feature_branch,
-        "started": now(),
-        "drift": document_drift(plan, root or repo),
-        "worktrees": [],
-        "lanes": dict((prior or {}).get("lanes") or {}),
-        "msps": dict((prior or {}).get("msps") or {}),
-        "stacking_exceptions": list((prior or {}).get("stacking_exceptions") or []),
-    }
-    write_state(run_dir, state)
+    state = write_state(
+        run_dir,
+        {
+            "version": core.__version__,
+            "plan_id": plan.get("plan_id"),
+            "feature_branch": feature_branch,
+            "started": now(),
+            "drift": document_drift(plan, root or repo),
+            "worktrees": [],
+            "lanes": dict((prior or {}).get("lanes") or {}),
+            "msps": dict((prior or {}).get("msps") or {}),
+            "stacking_exceptions": list((prior or {}).get("stacking_exceptions") or []),
+        },
+    )
     trees = prepare_worktrees(
         plan["msps"], feature_branch, trees_root or os.path.join(run_dir, "trees"), repo, prefix
     )
     state = write_state(run_dir, {**state, "worktrees": trees})
-    holder = [state]
 
     def on_lane(lane, record):
-        holder[0] = write_state(
-            run_dir, {**holder[0], "lanes": {**holder[0]["lanes"], str(lane): record}}
-        )
+        nonlocal state
+        state = write_state(run_dir, {**state, "lanes": {**state["lanes"], str(lane): record}})
 
     dispatch(
         plan,
@@ -840,86 +1164,9 @@ def execute(
         prior=state["lanes"],
         on_lane=on_lane,
     )
-    state = holder[0]
     producers = msp_producers(plan)
     for msp in msp_order(plan):
-        current = state["msps"].get(str(msp)) or {}
-        if current.get("state") == "shipped":
+        if (state["msps"].get(str(msp)) or {}).get("state") == "shipped":
             continue
-        label = plan["msps"][msp].get("label") or str(msp)
-        tree = trees[msp]
-        not_ok = [
-            index
-            for index in _lane_indexes(plan, msp)
-            if (state["lanes"].get(str(index)) or {}).get("state") != "ok"
-        ]
-        if not_ok:
-            lane_state = (state["lanes"].get(str(not_ok[0])) or {}).get("state")
-            state = write_state(
-                run_dir,
-                _msp_record(
-                    state, msp, state=MSP_BLOCKED, reason="Lane %d is %s" % (not_ok[0], lane_state)
-                ),
-            )
-            continue
-        unshipped = [
-            p for p in producers[msp] if (state["msps"].get(str(p)) or {}).get("state") != "shipped"
-        ]
-        if unshipped:
-            blocker = unshipped[0]
-            state = write_state(
-                run_dir,
-                _msp_record(
-                    state,
-                    msp,
-                    state=MSP_BLOCKED,
-                    reason="MSP %s is %s"
-                    % (
-                        plan["msps"][blocker].get("label") or str(blocker),
-                        (state["msps"].get(str(blocker)) or {}).get("state"),
-                    ),
-                    blocked_by=[blocker],
-                ),
-            )
-            continue
-        try:
-            result = gate(
-                plan,
-                msp,
-                tree["path"],
-                tree["branch"],
-                feature_branch,
-                acceptance_command,
-                os.path.join(run_dir, "gate", "msp-%d" % msp),
-                timeout,
-            )
-        except (OSError, GitError, subprocess.SubprocessError) as error:
-            state = write_state(
-                run_dir,
-                _msp_record(state, msp, state="gate-inconclusive", reason=str(error), gate=None),
-            )
-            continue
-        state = write_state(
-            run_dir, _msp_record(state, msp, state=gate_state(result), reason=None, gate=result)
-        )
-        if result["blocks"]:
-            continue
-        findings = reconcile(
-            plan,
-            msp,
-            tree["path"],
-            tree["branch"],
-            feature_branch,
-            tuple(trees[p]["branch"] for p in producers[msp]),
-        )
-        state = write_state(run_dir, _msp_record(state, msp, reconcile=findings))
-        if findings["fatal"]:
-            crossed = ", ".join(
-                "%s belongs to MSP %s" % (entry["path"], entry["label"]) for entry in findings["crossing"]
-            )
-            state = write_state(
-                run_dir,
-                _msp_record(state, msp, state=MSP_BLOCKED, reason="a write crossed an MSP boundary: " + crossed),
-            )
-            continue
+        state = _finish_msp(plan, msp, trees, producers[msp], state, settings)
     return state
