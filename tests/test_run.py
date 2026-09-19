@@ -61,8 +61,11 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 mode, marker_dir, lane, task = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+if mode == "slow-" + lane:
+    time.sleep(1.5)
 prefix = "Write-set for this Lane, the only files you may edit: "
 write_set = []
 for line in task.splitlines():
@@ -200,7 +203,7 @@ class RepoCase(unittest.TestCase):
             self.run_dir,
             self.worker_command(mode),
             self.acceptance_command(accept),
-            pr,
+            pr or self.pr_command(),
             timeout,
             2,
             trees_root=self.trees,
@@ -263,6 +266,16 @@ class RepoCase(unittest.TestCase):
         if not os.path.exists(path):
             return []
         return [json.loads(line) for line in read(path).splitlines()]
+
+    def add_remote(self):
+        remote = os.path.join(self.tmp, "remote.git")
+        sh(["git", "init", "-q", "--bare", remote], self.tmp)
+        sh(["git", "remote", "add", "origin", remote], self.repo)
+        return remote
+
+    def remote_heads(self):
+        out = sh(["git", "ls-remote", "--heads", "origin"], self.repo)
+        return sorted(line.split("refs/heads/", 1)[1] for line in out.splitlines() if "refs/heads/" in line)
 
     def branches(self):
         out = sh(["git", "for-each-ref", "--format=%(refname:short)", "refs/heads"], self.repo)
@@ -429,6 +442,19 @@ class Dispatch(RepoCase):
         self.assertIn("a.txt", self.marker(1))
         self.assertEqual(records[1]["merged"], [trees[0]["branch"]])
         self.assertTrue(os.path.isfile(os.path.join(trees[1]["path"], "a.txt")))
+
+    def a_consumer_waits_for_a_producer_that_is_still_running(self):
+        plan = core.plan(
+            [step("a", ["a.txt"]), step("b", ["b.txt"]), step("c", ["c.txt"], after=["a", "b"])]
+        )
+        slow = lane_named(plan, "b")
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        records = self.dispatch(plan, trees, mode="slow-%d" % slow, concurrency=2)
+        self.assertEqual({r["state"] for r in records.values()}, {"ok"})
+        consumer = lane_named(plan, "c")
+        self.assertEqual(len(records[consumer]["merged"]), 2)
+        self.assertIn("a.txt", self.marker(consumer))
+        self.assertIn("b.txt", self.marker(consumer))
 
     def a_failed_lane_blocks_only_its_dependents(self):
         plan = core.plan(
@@ -704,7 +730,7 @@ class Gate(RepoCase):
             self.run_dir,
             self.worker_command("ok"),
             os.path.join(self.tmp, "no-such-runner") + " {file} {test}",
-            None,
+            self.pr_command(),
             60,
             2,
             trees_root=self.trees,
@@ -713,9 +739,7 @@ class Gate(RepoCase):
         self.assertIn("no-such-runner", state["msps"]["0"]["reason"])
 
     def nothing_is_pushed_before_the_gate_passes(self):
-        remote = os.path.join(self.tmp, "remote.git")
-        sh(["git", "init", "-q", "--bare", remote], self.tmp)
-        sh(["git", "remote", "add", "origin", remote], self.repo)
+        self.add_remote()
         plan = core.plan([gated_step()])
         state = self.execute(plan, accept="inert", pr=self.pr_command())
         self.assertEqual(state["msps"]["0"]["state"], "gate-failed")
@@ -784,6 +808,117 @@ class Reconcile(RepoCase):
         self.assertFalse(findings["fatal"])
 
 
+class Ship(RepoCase):
+    def a_dependent_pull_request_targets_its_predecessor(self):
+        self.add_remote()
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"])])
+        state = self.execute(plan, pr=self.pr_command())
+        self.assertEqual(state["msps"]["0"]["state"], "shipped")
+        self.assertEqual(state["msps"]["1"]["state"], "shipped")
+        trees = state["worktrees"]
+        opened = {pr[0]: pr for pr in self.pull_requests()}
+        self.assertEqual(opened[trees[0]["branch"]][1], "main")
+        self.assertEqual(opened[trees[1]["branch"]][1], trees[0]["branch"])
+        self.assertEqual(state["msps"]["1"]["ship"]["base"], trees[0]["branch"])
+        self.assertEqual(self.remote_heads(), sorted(t["branch"] for t in trees))
+        self.assertEqual(state["stacking_exceptions"], [])
+        self.assertTrue(state["msps"]["0"]["ship"]["pull_request"].startswith("https://example.invalid/pull/"))
+
+    def an_msp_with_two_producers_targets_the_feature_branch_and_is_reported(self):
+        self.add_remote()
+        plan = core.plan(
+            [step("a", ["a.txt"]), step("b", ["b.txt"]), step("c", ["c.txt"], after=["a", "b"])]
+        )
+        state = self.execute(plan, pr=self.pr_command())
+        self.assertEqual({m["state"] for m in state["msps"].values()}, {"shipped"})
+        consumer = lane_named(plan, "c")
+        msp = plan["lanes"][consumer]["msp"]
+        trees = state["worktrees"]
+        opened = {pr[0]: pr for pr in self.pull_requests()}
+        self.assertEqual(opened[trees[msp]["branch"]][1], "main")
+        self.assertEqual(len(state["stacking_exceptions"]), 1)
+        exception = state["stacking_exceptions"][0]
+        self.assertEqual(exception["msp"], msp)
+        self.assertEqual(sorted(exception["producers"]), sorted(p for p in range(3) if p != msp))
+        self.assertEqual(sorted(state["lanes"][str(consumer)]["merged"]), sorted(trees[p]["branch"] for p in exception["producers"]))
+        self.assertTrue(os.path.isfile(os.path.join(trees[msp]["path"], "a.txt")))
+        self.assertTrue(os.path.isfile(os.path.join(trees[msp]["path"], "b.txt")))
+        self.assertIn("producers", opened[trees[msp]["branch"]][3])
+
+    def the_pull_request_body_carries_the_acceptance_properties(self):
+        self.add_remote()
+        plan = core.plan([gated_step()])
+        state = self.execute(plan, pr=self.pr_command())
+        self.assertEqual(state["msps"]["0"]["state"], "shipped")
+        branch, base, title, body = self.pull_requests()[0]
+        self.assertEqual(base, "main")
+        self.assertIn("tests/t_impl.txt::property", body)
+        self.assertIn("impl", title)
+        self.assertIn(self.acceptance_command("real"), body)
+        self.assertIn("draft", body.lower())
+        self.assertIn("pass", body)
+
+    def a_gate_failure_blocks_the_cluster_below_it(self):
+        self.add_remote()
+        plan = core.plan([gated_step(), step("b", ["b.txt"], after=["impl"])])
+        state = self.execute(plan, accept="inert", pr=self.pr_command())
+        self.assertEqual(state["msps"]["0"]["state"], "gate-failed")
+        self.assertEqual(state["msps"]["1"]["state"], run.MSP_BLOCKED)
+        self.assertEqual(state["msps"]["1"]["blocked_by"], [0])
+        self.assertIn("gate-failed", state["msps"]["1"]["reason"])
+        self.assertEqual(state["lanes"]["1"]["state"], "ok")
+        self.assertEqual(self.pull_requests(), [])
+        self.assertEqual(self.remote_heads(), [])
+
+    def mitosis_never_merges(self):
+        self.add_remote()
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"])])
+        before = sh(["git", "rev-parse", "main"], self.repo)
+        state = self.execute(plan, pr=self.pr_command())
+        self.assertEqual({m["state"] for m in state["msps"].values()}, {"shipped"})
+        self.assertEqual(sh(["git", "rev-parse", "main"], self.repo), before)
+        self.assertNotIn("main", self.remote_heads())
+        for opened in self.pull_requests():
+            self.assertFalse(any("merge" in arg.lower() for arg in opened[:3]))
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "a.txt")))
+
+    def a_ship_failure_is_recorded_not_raised(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        state = self.execute(plan, pr=self.pr_command())
+        self.assertEqual(state["msps"]["0"]["state"], "ship-failed")
+        self.assertIn("origin", state["msps"]["0"]["reason"])
+        self.assertEqual(self.pull_requests(), [])
+
+    def a_failing_pull_request_command_is_ship_failed(self):
+        self.add_remote()
+        plan = core.plan([step("a", ["a.txt"])])
+        state = self.execute(plan, pr=os.path.join(self.tmp, "no-such-pr-tool") + " {branch} {base}")
+        self.assertEqual(state["msps"]["0"]["state"], "ship-failed")
+        self.assertIn("no-such-pr-tool", state["msps"]["0"]["reason"])
+
+    def every_terminal_status_maps_to_an_exit_code(self):
+        def state_with(msp_state, lane_state="ok", findings=None):
+            return {
+                "lanes": {"0": {"state": lane_state}},
+                "msps": {"0": {"state": msp_state, "reconcile": findings}},
+            }
+
+        clean = {"undeclared": [], "unwritten": [], "crossing": [], "fatal": False}
+        self.assertTrue(run.succeeded(state_with("shipped", findings=clean)))
+        for msp_state in core.MSP_STATES:
+            if msp_state != "shipped":
+                self.assertFalse(run.succeeded(state_with(msp_state, findings=clean)), msp_state)
+        self.assertFalse(run.succeeded(state_with(run.MSP_BLOCKED, findings=clean)))
+        self.assertFalse(run.succeeded(state_with(None, findings=clean)))
+        for lane_state in core.LANE_STATES:
+            if lane_state != "ok":
+                self.assertFalse(run.succeeded(state_with("shipped", lane_state, clean)), lane_state)
+        self.assertFalse(run.succeeded(state_with("shipped", findings={**clean, "undeclared": ["x"]})))
+        self.assertFalse(run.succeeded(state_with("shipped", findings={**clean, "unwritten": ["x"]})))
+        self.assertFalse(run.succeeded(state_with("shipped", findings=None)))
+        self.assertFalse(run.succeeded({"lanes": {}, "msps": {}}))
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -795,7 +930,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Worktrees, Dispatch, Resume, Gate, Reconcile):
+    for case in (Worktrees, Dispatch, Resume, Gate, Reconcile, Ship):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 
