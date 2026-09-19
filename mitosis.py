@@ -547,6 +547,7 @@ def refuse_unbriefable(args, pending):
 def brief_structure(args, items, root, run_dir, models, charter, graph, decisions, document):
     pending = briefs.pending(items)
     if not pending:
+        _print(brief_lines({"written": [], "reused": [step["name"] for step in items], "errors": []}))
         return items
     refuse_unbriefable(args, pending)
     if args.timeout is None:

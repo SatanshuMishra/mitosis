@@ -229,6 +229,15 @@ is binding on every later structure dispatch and every brief for this
 document, nothing in mitosis merges or rewords an entry, and the list only
 ever grows: a question answered once is never re-asked.
 
+Where a document is soft, one dispatch will not tell you so. `--structure-
+samples N` runs N structure dispatches at once over the same prompt, scores
+each with the same scalars, and prints them ranked with the points on which
+they disagree: which file they split differently, and where they differ on
+MSP count or parallelism. The best-scoring sample is persisted, `--pick K`
+persists the Kth instead, and the default of 1 behaves exactly as a single
+dispatch. A disagreement over a file is the document being underdetermined
+about who owns it, which is the cheapest way to find that out.
+
 Revise the structure once the decisions file has grown, without paying to
 rebuild every Step:
 

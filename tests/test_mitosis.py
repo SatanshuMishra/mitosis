@@ -728,6 +728,13 @@ class ReportSections(unittest.TestCase):
         self.assertEqual(mitosis.lane_width({}), 0)
 
 
+class BriefStageReport(unittest.TestCase):
+    def a_run_with_nothing_to_brief_still_reports_what_it_reused(self):
+        lines = mitosis.brief_lines({"written": [], "reused": ["a", "b"], "errors": []})
+        self.assertIn("2 briefs reused", lines[0])
+        self.assertIn("0 briefs written", lines[0])
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -749,6 +756,7 @@ def load_tests(loader, tests, pattern):
         Flags,
         Staging,
         ReportSections,
+        BriefStageReport,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
