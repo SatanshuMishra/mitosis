@@ -689,11 +689,13 @@ class Structure(unittest.TestCase):
             rendered.index(compact),
             rendered.index(decompose.DOCUMENT_OPEN),
             rendered.index("Sections you may claim"),
-            rendered.index(decompose.STRUCTURE_CONTRACT),
+            rendered.index("Return contract:"),
         ]
         self.assertEqual(positions, sorted(positions))
         heading = rendered[: rendered.index(compact)].rstrip("\n").splitlines()[-1].lower()
         self.assertIn("revis", heading)
+        self.assertIn(decompose.DELTA_CONTRACT, rendered)
+        self.assertNotIn(decompose.STRUCTURE_CONTRACT, rendered)
 
 
 class Decisions(unittest.TestCase):
@@ -778,6 +780,173 @@ class Decisions(unittest.TestCase):
             self.assertEqual(decompose.load_decisions(root, path="d.md")["count"], 4)
 
 
+def delta(**parts):
+    return {
+        "keep": [],
+        "change": [],
+        "add": [],
+        "remove": [],
+        "assumptions": [],
+        "constraints": [],
+        **parts,
+    }
+
+
+class Delta(unittest.TestCase):
+    def the_delta_contract_names_every_key_and_the_step_fields(self):
+        for key in decompose.DELTA_KEYS:
+            self.assertIn('"%s"' % key, decompose.DELTA_CONTRACT)
+        self.assertEqual(
+            decompose.DELTA_KEYS,
+            ("keep", "change", "add", "remove", "assumptions", "constraints"),
+        )
+        for field in core.STRUCTURE_ITEM_FIELDS:
+            self.assertIn(field, decompose.DELTA_CONTRACT)
+        self.assertNotIn("  task:", decompose.DELTA_CONTRACT)
+
+    def parse_delta_reports_a_missing_or_mistyped_key_instead_of_raising(self):
+        parsed = decompose.parse_delta(json.dumps({"keep": "a", "add": []}))
+        self.assertEqual(sorted(parsed), sorted(decompose.DELTA_KEYS + ("errors",)))
+        self.assertEqual(parsed["keep"], [])
+        self.assertEqual(parsed["add"], [])
+        self.assertTrue(any("keep" in error and "list" in error for error in parsed["errors"]))
+        for key in ("change", "remove", "assumptions", "constraints"):
+            self.assertTrue(any("missing '%s'" % key in error for error in parsed["errors"]))
+            self.assertEqual(parsed[key], [])
+        self.assertEqual(decompose.parse_delta(None)["errors"], ["the decompose Worker printed no return line"])
+        self.assertTrue(any("JSON" in e for e in decompose.parse_delta("not json")["errors"]))
+        self.assertTrue(any("object" in e for e in decompose.parse_delta("[1]")["errors"]))
+        whole = decompose.parse_delta(json.dumps(delta(keep=["a"], remove=["b"])))
+        self.assertEqual(whole["errors"], [])
+        self.assertEqual(whole["keep"], ["a"])
+        self.assertEqual(whole["remove"], ["b"])
+
+    def a_kept_step_is_copied_verbatim_including_its_brief(self):
+        kept = bare("kept", task="the whole brief", after=["other"], file_notes={"kept.py": "x"})
+        prior = [bare("other"), kept, bare("gone")]
+        changed = bare("other", files=["other.py", "extra.py"])
+        added = bare("fresh", after=["kept"])
+        items, errors = decompose.apply_delta(
+            prior, delta(keep=["kept"], change=[changed], add=[added], remove=["gone"])
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual([step["name"] for step in items], ["other", "kept", "fresh"])
+        self.assertEqual(items[1], kept)
+        self.assertIsNot(items[1], kept)
+        self.assertEqual(items[1]["task"], "the whole brief")
+        self.assertEqual(items[0], changed)
+        self.assertNotIn("task", items[0])
+        self.assertEqual(items[2], added)
+
+    def a_delta_that_does_not_partition_the_prior_is_rejected_whole(self):
+        prior = [bare("a"), bare("b"), bare("c"), bare("d")]
+        items, errors = decompose.apply_delta(
+            prior, delta(keep=["a", "b"], change=[bare("b")], remove=["c"])
+        )
+        self.assertEqual(items, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("b", errors[0])
+        self.assertIn("d", errors[0])
+        self.assertNotIn("'a'", errors[0])
+        self.assertNotIn("'c'", errors[0])
+        items, errors = decompose.apply_delta(prior, delta(keep=["a", "a", "b", "c", "d"]))
+        self.assertEqual(items, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("a", errors[0])
+        items, errors = decompose.apply_delta(prior, delta(keep=["a", "b", "c", "d"]))
+        self.assertEqual(errors, [])
+        self.assertEqual(items, prior)
+
+    def a_missing_keep_or_remove_name_is_named(self):
+        prior = [bare("a"), bare("b")]
+        items, errors = decompose.apply_delta(prior, delta(keep=["a", "ghost"], remove=["b", "phantom"]))
+        self.assertEqual(items, [])
+        self.assertTrue(any("keep" in e and "ghost" in e for e in errors))
+        self.assertTrue(any("remove" in e and "phantom" in e for e in errors))
+        self.assertFalse(any("'a'" in e or "'b'" in e for e in errors))
+
+    def a_changed_step_that_is_not_in_the_prior_is_an_error(self):
+        prior = [bare("a"), bare("b")]
+        items, errors = decompose.apply_delta(prior, delta(keep=["a", "b"], change=[bare("zed")]))
+        self.assertEqual(items, [])
+        self.assertTrue(any("change" in e and "zed" in e for e in errors))
+        self.assertEqual(len(errors), 1)
+
+    def an_added_step_whose_name_already_exists_is_an_error(self):
+        prior = [bare("a"), bare("b")]
+        items, errors = decompose.apply_delta(prior, delta(keep=["a", "b"], add=[bare("a")]))
+        self.assertEqual(items, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("add", errors[0])
+        self.assertIn("a", errors[0])
+        items, errors = decompose.apply_delta(
+            prior, delta(keep=["a"], remove=["b"], add=[bare("b", files=["new.py"])])
+        )
+        self.assertEqual(items, [])
+        self.assertTrue(any("add" in e and "b" in e for e in errors))
+
+    def a_duplicate_name_in_the_result_is_an_error(self):
+        prior = [bare("a")]
+        items, errors = decompose.apply_delta(prior, delta(keep=["a"], add=[bare("n"), bare("n")]))
+        self.assertEqual(items, [])
+        self.assertTrue(any("duplicate" in e and "n" in e for e in errors))
+        items, errors = decompose.apply_delta(prior, delta(change=[bare("a"), bare("a")]))
+        self.assertEqual(items, [])
+        self.assertTrue(any("a" in e for e in errors))
+
+    def a_delta_never_mutates_the_prior_it_was_given(self):
+        prior = [bare("a", task="brief a", after=["b"]), bare("b", file_notes={"b.py": "x"})]
+        before = json.dumps(prior, sort_keys=True)
+        given = delta(keep=["a"], change=[bare("b", files=["b.py", "c.py"])], add=[bare("n")])
+        given_before = json.dumps(given, sort_keys=True)
+        items, errors = decompose.apply_delta(prior, given)
+        self.assertEqual(errors, [])
+        items[0]["after"].append("n")
+        items[0]["task"] = "rewritten"
+        items[1]["files"].append("d.py")
+        items[2]["name"] = "renamed"
+        self.assertEqual(json.dumps(prior, sort_keys=True), before)
+        self.assertEqual(json.dumps(given, sort_keys=True), given_before)
+        rejected, errors = decompose.apply_delta(prior, delta(keep=["a"]))
+        self.assertEqual(rejected, [])
+        self.assertTrue(errors)
+        self.assertEqual(json.dumps(prior, sort_keys=True), before)
+
+    def a_wrongly_shaped_delta_entry_is_reported_not_raised(self):
+        prior = [bare("a")]
+        items, errors = decompose.apply_delta(
+            prior, delta(keep=[1], change=["a"], add=[{"files": []}], remove=[None])
+        )
+        self.assertEqual(items, [])
+        self.assertTrue(any("keep" in e for e in errors))
+        self.assertTrue(any("change" in e for e in errors))
+        self.assertTrue(any("add" in e for e in errors))
+        self.assertTrue(any("remove" in e for e in errors))
+
+    def a_structure_given_a_prior_asks_for_and_applies_a_delta(self):
+        prior = [bare("kept", task="its brief"), bare("gone")]
+        reply = delta(keep=["kept"], remove=["gone"], add=[bare("fresh")], constraints=["global"])
+        with tempfile.TemporaryDirectory() as root:
+            result = run_structure(root, "# One\n\nbody\n", reply, prior=prior)
+            prompt = received(root, "prompt.txt")
+        self.assertIn(decompose.DELTA_CONTRACT, prompt)
+        self.assertNotIn(decompose.STRUCTURE_CONTRACT, prompt)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual([step["name"] for step in result["items"]], ["kept", "fresh"])
+        self.assertEqual(result["items"][0]["task"], "its brief")
+        self.assertEqual(result["constraints"], ["global"])
+        self.assertEqual(result["counts"]["no_acceptance"], 2)
+        self.assertEqual(result["coverage"]["mode"], "headings")
+        with tempfile.TemporaryDirectory() as root:
+            result = run_structure(root, "# One\n\nbody\n", delta(keep=["kept"]), prior=prior)
+        self.assertEqual(result["items"], [])
+        self.assertTrue(any("gone" in e for e in result["errors"]))
+        with tempfile.TemporaryDirectory() as root:
+            result = run_structure(root, "# One\n\nbody\n", {"items": []}, prior=prior)
+        self.assertEqual(result["items"], [])
+        self.assertTrue(any("missing 'keep'" in e for e in result["errors"]))
+
+
 class SpawnMany(unittest.TestCase):
     def spawn_many_returns_results_in_the_order_it_was_given_them(self):
         jobs = [
@@ -858,6 +1027,7 @@ def load_tests(loader, tests, pattern):
         EmptyReturn,
         Structure,
         Decisions,
+        Delta,
         SpawnMany,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))

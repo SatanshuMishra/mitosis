@@ -1,4 +1,5 @@
 import concurrent.futures
+import copy
 import hashlib
 import json
 import os
@@ -64,14 +65,37 @@ TASK_FORBIDDEN = (
 )
 
 
-def _contract(required, tail=()):
+DELTA_KEYS = ("keep", "change", "add", "remove", "assumptions", "constraints")
+
+DELTA_SHAPE = (
+    '{"keep":["<name>",...],"change":[{...},...],"add":[{...},...],"remove":["<name>",...],'
+    '"assumptions":[{"step":"<name>","text":"<reading chosen>"},...],'
+    '"constraints":["<global statement>",...]}'
+)
+
+DELTA_RULES = (
+    '"keep" and "remove" list names of Steps in the structure being revised; "change" and'
+    ' "add" list whole Steps',
+    'every Step in the structure being revised must appear in exactly one of "keep", "change"'
+    ' or "remove"; a kept Step is carried over unchanged, a changed Step replaces the one of'
+    " that name, and an added Step's name must not already exist",
+    "a return breaking any of these rules is rejected whole",
+)
+
+ITEMS_LEAD = 'Every entry of "items" is one Step, and every Step must carry each of these fields: '
+
+DELTA_LEAD = (
+    'Every entry of "change" and "add" is one whole Step, and every Step must carry each of'
+    " these fields: "
+)
+
+
+def _contract(shape, lead, required, tail=()):
     return "\n".join(
         (
             "When finished, print one line of JSON and nothing after it:",
-            RETURN_SHAPE,
-            'Every entry of "items" is one Step, and every Step must carry each of these fields: '
-            + ", ".join(required)
-            + ".",
+            shape,
+            lead + ", ".join(required) + ".",
         )
         + tuple(REQUIRED_FIELD_LINES[field] for field in required)
         + ("A Step may also carry: " + ", ".join(OPTIONAL_ITEM_FIELDS) + ".",)
@@ -81,9 +105,15 @@ def _contract(required, tail=()):
     )
 
 
-CONTRACT = _contract(core.REQUIRED_ITEM_FIELDS)
+CONTRACT = _contract(RETURN_SHAPE, ITEMS_LEAD, core.REQUIRED_ITEM_FIELDS)
 
-STRUCTURE_CONTRACT = _contract(core.STRUCTURE_ITEM_FIELDS, (TASK_FORBIDDEN,))
+STRUCTURE_CONTRACT = _contract(
+    RETURN_SHAPE, ITEMS_LEAD, core.STRUCTURE_ITEM_FIELDS, (TASK_FORBIDDEN,)
+)
+
+DELTA_CONTRACT = _contract(
+    DELTA_SHAPE, DELTA_LEAD, core.STRUCTURE_ITEM_FIELDS, (TASK_FORBIDDEN,) + DELTA_RULES
+)
 
 DECISIONS_HEADING = (
     "The following questions are already settled. They are binding on every Step and"
@@ -91,7 +121,8 @@ DECISIONS_HEADING = (
 )
 
 PRIOR_HEADING = (
-    "The structure being revised follows, as JSON. Treat it as the base for this return."
+    "The structure being revised follows, as JSON. Return a delta against it, never a fresh"
+    " structure."
 )
 
 
@@ -408,7 +439,8 @@ def render_prompt(document, codebase, graph=None, charter=None):
 def render_structure_prompt(
     document, codebase, graph=None, charter=None, decisions=None, prior=None
 ):
-    return _render(document, codebase, graph, charter, decisions, prior, STRUCTURE_CONTRACT)
+    contract = DELTA_CONTRACT if prior else STRUCTURE_CONTRACT
+    return _render(document, codebase, graph, charter, decisions, prior, contract)
 
 
 def build_argv(template, substitutions):
@@ -517,24 +549,28 @@ def _clip(text, limit=200):
     return text if len(text) <= limit else text[:limit] + "..."
 
 
+def _empty_lists(keys, errors):
+    return {**dict.fromkeys(keys, []), "errors": list(errors)}
+
+
 def _empty_return(errors):
-    return {**dict.fromkeys(RETURN_KEYS, []), "errors": list(errors)}
+    return _empty_lists(RETURN_KEYS, errors)
 
 
-def parse_return(line):
+def _parse_lists(line, keys):
     if line is None:
-        return _empty_return(["the decompose Worker printed no return line"])
+        return _empty_lists(keys, ["the decompose Worker printed no return line"])
     try:
         value = json.loads(line)
     except ValueError:
-        return _empty_return(["the decompose Worker's last line is not JSON: " + _clip(line)])
+        return _empty_lists(keys, ["the decompose Worker's last line is not JSON: " + _clip(line)])
     if not isinstance(value, dict):
-        return _empty_return(
-            ["the return must be a JSON object with keys %s" % ", ".join(RETURN_KEYS)]
+        return _empty_lists(
+            keys, ["the return must be a JSON object with keys %s" % ", ".join(keys)]
         )
     parsed = {}
     errors = []
-    for key in RETURN_KEYS:
+    for key in keys:
         if key not in value:
             errors.append("the return is missing '%s'" % key)
             parsed = {**parsed, key: []}
@@ -544,6 +580,109 @@ def parse_return(line):
         else:
             parsed = {**parsed, key: value[key]}
     return {**parsed, "errors": errors}
+
+
+def parse_return(line):
+    return _parse_lists(line, RETURN_KEYS)
+
+
+def parse_delta(line):
+    return _parse_lists(line, DELTA_KEYS)
+
+
+def _step_name(step):
+    name = step.get("name") if isinstance(step, dict) else None
+    return name if isinstance(name, str) and name else None
+
+
+def _named_entries(delta, key, wanted):
+    entries = delta.get(key) or []
+    if wanted == "name":
+        errors = [
+            "%s[%d] must be a Step name, got %s" % (key, position, type(entry).__name__)
+            for position, entry in enumerate(entries)
+            if not isinstance(entry, str)
+        ]
+        names = tuple(entry for entry in entries if isinstance(entry, str))
+        return names, errors
+    errors = [
+        "%s[%d] must be a whole Step object with a name" % (key, position)
+        for position, entry in enumerate(entries)
+        if _step_name(entry) is None
+    ]
+    steps = tuple(entry for entry in entries if _step_name(entry) is not None)
+    return steps, errors
+
+
+def _membership_errors(key, names, prior_names, present):
+    verb = "carries" if key in ("change", "add") else "names"
+    if present:
+        return [
+            "%s %s '%s', which is not in the structure being revised" % (key, verb, name)
+            for name in names
+            if name not in prior_names
+        ]
+    return [
+        "%s %s '%s', which already exists in the structure being revised" % (key, verb, name)
+        for name in names
+        if name in prior_names
+    ]
+
+
+def _partition_errors(prior_names, mentioned):
+    twice = [name for name in prior_names if mentioned.count(name) > 1]
+    absent = [name for name in prior_names if mentioned.count(name) == 0]
+    if not twice and not absent:
+        return []
+    parts = []
+    if twice:
+        parts.append("%s appears more than once" % ", ".join("'%s'" % n for n in twice))
+    if absent:
+        parts.append("%s does not appear" % ", ".join("'%s'" % n for n in absent))
+    return ["keep, change and remove must name every prior Step exactly once: " + "; ".join(parts)]
+
+
+def _duplicate_errors(names):
+    seen = ()
+    found = ()
+    for name in names:
+        if name in seen and name not in found:
+            found = found + (name,)
+        seen = seen + (name,)
+    return ["duplicate name in the result: '%s'" % name for name in found]
+
+
+def apply_delta(prior, delta):
+    prior_names = tuple(_step_name(step) or "item #%d" % i for i, step in enumerate(prior))
+    keep, errors = _named_entries(delta, "keep", "name")
+    change, change_errors = _named_entries(delta, "change", "step")
+    add, add_errors = _named_entries(delta, "add", "step")
+    remove, remove_errors = _named_entries(delta, "remove", "name")
+    change_names = tuple(_step_name(step) for step in change)
+    add_names = tuple(_step_name(step) for step in add)
+    errors = (
+        errors
+        + change_errors
+        + add_errors
+        + remove_errors
+        + _membership_errors("keep", keep, prior_names, True)
+        + _membership_errors("change", change_names, prior_names, True)
+        + _membership_errors("remove", remove, prior_names, True)
+        + _membership_errors("add", add_names, prior_names, False)
+        + _partition_errors(prior_names, list(keep + change_names + remove))
+    )
+    if errors:
+        return [], errors
+    replacements = {_step_name(step): step for step in change}
+    carried = [
+        replacements[name] if name in replacements else step
+        for name, step in zip(prior_names, prior)
+        if name not in remove
+    ]
+    duplicates = _duplicate_errors([_step_name(s) for s in carried] + list(add_names))
+    if duplicates:
+        return [], duplicates
+    return [copy.deepcopy(step) for step in carried + list(add)], []
 
 
 def _own_assumptions(item):
@@ -631,11 +770,11 @@ def _argv_for(frozen, template, prompt, model):
     return build_argv(template, substitutions)
 
 
-def _assemble(frozen, spawned, log, root, required=None):
+def _assemble(frozen, spawned, log, root, required=None, parse=parse_return):
     source = source_of(frozen)
     spawn_errors = _spawn_errors(spawned)
     parsed = (
-        parse_return(spawned["line"])
+        parse(spawned["line"])
         if spawned["line"] is not None or not spawn_errors
         else _empty_return([])
     )
@@ -685,7 +824,28 @@ def _task_errors(items):
     ]
 
 
-def _assemble_structure(frozen, spawned, log, root):
+def _delta_return(prior, line):
+    parsed = parse_delta(line)
+    carried = {key: parsed[key] for key in ("assumptions", "constraints")}
+    if parsed["errors"]:
+        return {"items": [], **carried, "errors": parsed["errors"]}
+    task_errors = _task_errors(list(parsed["change"]) + list(parsed["add"]))
+    items, errors = apply_delta(prior, parsed)
+    if task_errors:
+        return {"items": [], **carried, "errors": task_errors + errors}
+    return {"items": items, **carried, "errors": errors}
+
+
+def _assemble_structure(frozen, spawned, log, root, prior=None):
+    if prior:
+        return _assemble(
+            frozen,
+            spawned,
+            log,
+            root,
+            core.STRUCTURE_ITEM_FIELDS,
+            parse=lambda line: _delta_return(prior, line),
+        )
     assembled = _assemble(frozen, spawned, log, root, core.STRUCTURE_ITEM_FIELDS)
     return {**assembled, "errors": assembled["errors"] + _task_errors(assembled["items"])}
 
@@ -709,7 +869,7 @@ def structure(
     )
     argv = _argv_for(frozen, template, prompt, model)
     spawned = spawn(argv, prompt, timeout, cwd=root, log=log)
-    return _assemble_structure(frozen, spawned, log, root)
+    return _assemble_structure(frozen, spawned, log, root, prior)
 
 
 def _coverage_lines(covered):
