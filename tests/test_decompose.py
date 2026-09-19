@@ -696,6 +696,88 @@ class Structure(unittest.TestCase):
         self.assertIn("revis", heading)
 
 
+class Decisions(unittest.TestCase):
+    def the_default_decisions_path_sits_beside_the_document(self):
+        self.assertEqual(
+            decompose.default_decisions_path("docs/specs/change.md"),
+            "docs/specs/change.decisions.md",
+        )
+        self.assertEqual(decompose.default_decisions_path("/a/b/spec.txt"), "/a/b/spec.decisions.md")
+        self.assertEqual(decompose.default_decisions_path("plain"), "plain.decisions.md")
+        self.assertEqual(
+            decompose.default_decisions_path("docs/v1.2/spec.md"), "docs/v1.2/spec.decisions.md"
+        )
+
+    def decisions_reach_the_structure_prompt(self):
+        text = "- the registry is owned by core\n- the CLI stays single-threaded\n\nprose\n"
+        reply = {"items": [bare("a")], "assumptions": [], "constraints": []}
+        with tempfile.TemporaryDirectory() as root:
+            write(root, "docs/spec.decisions.md", text)
+            result = run_structure(root, "# One\n\nbody\n", reply)
+            prompt = received(root, "prompt.txt")
+        self.assertEqual(result["errors"], [])
+        self.assertNotIn("registry is owned by core", prompt)
+        with tempfile.TemporaryDirectory() as root:
+            path = write(root, "docs/settled.md", text)
+            loaded = decompose.load_decisions(root, path="docs/settled.md")
+            self.assertEqual(loaded, {"path": path, "text": text, "count": 2})
+            result = run_structure(root, "# One\n\nbody\n", reply, decisions=loaded)
+            prompt = received(root, "prompt.txt")
+        self.assertEqual(result["errors"], [])
+        self.assertIn(text.rstrip("\n"), prompt)
+        block = prompt[: prompt.index("- the registry is owned by core")]
+        heading = block.rstrip("\n").splitlines()[-1].lower()
+        self.assertIn("settled", heading)
+        self.assertIn("binding", heading)
+        self.assertIn("not be re-opened", heading)
+        self.assertLess(prompt.index("Codebase root"), prompt.index("registry"))
+        self.assertLess(prompt.index("registry"), prompt.index(decompose.DOCUMENT_OPEN))
+
+    def a_named_decisions_file_that_does_not_exist_is_refused(self):
+        with tempfile.TemporaryDirectory() as root:
+            with self.assertRaises(ValueError) as caught:
+                decompose.load_decisions(root, path="docs/missing.md")
+            self.assertIn("docs/missing.md", str(caught.exception))
+            absolute = os.path.join(root, "elsewhere.md")
+            with self.assertRaises(ValueError) as caught:
+                decompose.load_decisions(root, path=absolute, document="docs/spec.md")
+            self.assertIn(absolute, str(caught.exception))
+
+    def a_default_decisions_file_that_does_not_exist_is_not_an_error(self):
+        with tempfile.TemporaryDirectory() as root:
+            document = write(root, "docs/spec.md", "# One\n\nbody\n")
+            self.assertIsNone(decompose.load_decisions(root, document=document))
+            self.assertIsNone(decompose.load_decisions(root))
+            written = write(root, "docs/spec.decisions.md", "- settled\n")
+            loaded = decompose.load_decisions(root, document=document)
+            self.assertEqual(loaded, {"path": written, "text": "- settled\n", "count": 1})
+            relative = decompose.load_decisions(root, document="docs/spec.md")
+            self.assertEqual(relative["count"], 1)
+            self.assertEqual(os.path.abspath(relative["path"]), os.path.abspath(written))
+
+    def a_decisions_file_with_no_list_items_counts_zero_and_still_loads(self):
+        text = "﻿The registry belongs to core.\n  * not a dash item\n-not spaced\n"
+        with tempfile.TemporaryDirectory() as root:
+            path = write(root, "docs/settled.md", text)
+            loaded = decompose.load_decisions(root, path="docs/settled.md")
+            self.assertEqual(loaded["count"], 0)
+            self.assertEqual(loaded["text"], text.lstrip("﻿"))
+            self.assertEqual(loaded["path"], path)
+            empty = write(root, "docs/empty.md", "")
+            self.assertEqual(
+                decompose.load_decisions(root, path=empty), {"path": empty, "text": "", "count": 0}
+            )
+        document = frozen("docs/spec.md")
+        prompt = decompose.render_structure_prompt(document, None, decisions=loaded)
+        self.assertIn("The registry belongs to core.", prompt)
+
+    def the_count_is_of_dash_items_after_leading_whitespace(self):
+        text = "- one\n  - two nested\n\t- three tabbed\n-- not one\n- \n"
+        with tempfile.TemporaryDirectory() as root:
+            write(root, "d.md", text)
+            self.assertEqual(decompose.load_decisions(root, path="d.md")["count"], 4)
+
+
 class SpawnMany(unittest.TestCase):
     def spawn_many_returns_results_in_the_order_it_was_given_them(self):
         jobs = [
@@ -768,7 +850,16 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Contract, Run, Coverage, ReturnLine, EmptyReturn, Structure, SpawnMany):
+    for case in (
+        Contract,
+        Run,
+        Coverage,
+        ReturnLine,
+        EmptyReturn,
+        Structure,
+        Decisions,
+        SpawnMany,
+    ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

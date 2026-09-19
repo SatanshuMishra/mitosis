@@ -256,6 +256,33 @@ def source_of(document):
     return {key: document[key] for key in core.SOURCE_KEYS}
 
 
+DECISIONS_SUFFIX = ".decisions.md"
+
+
+def default_decisions_path(document):
+    return os.path.splitext(document)[0] + DECISIONS_SUFFIX
+
+
+def _decision_count(text):
+    return sum(1 for line in text.splitlines() if line.lstrip().startswith("- "))
+
+
+def load_decisions(root, path=None, document=None):
+    if path is not None:
+        resolved = os.path.join(root, path)
+        if not os.path.isfile(resolved):
+            raise ValueError("the decisions file %s does not exist" % resolved)
+    elif document is not None:
+        resolved = os.path.join(root, default_decisions_path(document))
+        if not os.path.isfile(resolved):
+            return None
+    else:
+        return None
+    with open(resolved, "rb") as handle:
+        text = handle.read().decode("utf-8-sig")
+    return {"path": resolved, "text": text, "count": _decision_count(text)}
+
+
 def _walk(base, relative=""):
     try:
         entries = sorted(os.scandir(os.path.join(base, relative)), key=lambda e: e.name)
