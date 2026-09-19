@@ -169,6 +169,25 @@ def build_argv(template, values):
     return [PLACEHOLDER.sub(fill, argument) for argument in shlex.split(template)]
 
 
+TEMPLATE_PLACEHOLDERS = {
+    "dispatch": (
+        "task",
+        "model",
+        "tier",
+        "worktree",
+        "branch",
+        "lane",
+        "msp",
+        "charter",
+        "document",
+        "run_dir",
+    ),
+    "decompose": ("prompt", "model", "document"),
+    "acceptance": ("file", "test", "worktree"),
+    "pull-request": ("branch", "base", "title", "body", "worktree", "msp", "remote"),
+}
+
+
 def check_template(name, template):
     if not isinstance(template, str) or not template.strip():
         raise ConfigError("the %s command is empty" % name)
@@ -176,6 +195,19 @@ def check_template(name, template):
         shlex.split(template)
     except ValueError as error:
         raise ConfigError("the %s command does not split into argv: %s" % (name, error))
+    offered = TEMPLATE_PLACEHOLDERS.get(name)
+    if offered is None:
+        return
+    unknown = sorted({m.group(1) for m in PLACEHOLDER.finditer(template)} - set(offered))
+    if unknown:
+        raise ConfigError(
+            "the %s command uses %s, which it is never given; it offers %s"
+            % (
+                name,
+                ", ".join("{%s}" % key for key in unknown),
+                ", ".join("{%s}" % key for key in offered),
+            )
+        )
 
 
 def check_models(plan, template, models):
@@ -205,6 +237,21 @@ def last_line(path):
         return None
     lines = [line for line in data.decode("utf-8", "replace").splitlines() if line.strip()]
     return lines[-1] if lines else None
+
+
+def last_return(path):
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except OSError:
+        return None
+    for line in reversed(data.decode("utf-8", "replace").splitlines()):
+        if not line.strip():
+            continue
+        returned = parse_return(line.strip())
+        if returned is not None:
+            return returned
+    return None
 
 
 def parse_return(line):
@@ -358,7 +405,7 @@ def _worker_values(plan, lane, tree, models, run_dir):
 
 
 def _finish(plan, lane, tree, started, merged, out, err, code, timed_out):
-    returned = parse_return(last_line(out))
+    returned = last_return(out)
     state, reason = lane_verdict(code, returned, timed_out)
     commit = None
     if state == "ok":
