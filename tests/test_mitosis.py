@@ -145,6 +145,17 @@ class TemplatePlaceholders(unittest.TestCase):
         run.check_template("acceptance", "runner {file} {test} {worktree}")
 
 
+class CoverageReport(unittest.TestCase):
+    def a_decompose_record_supplies_coverage_when_no_Step_carries_a_source(self):
+        record = {"coverage": {"mode": "headings", "sections": [{"id": "1", "title": "A", "heading": "1. A", "line": 1}], "uncovered": [{"id": "1", "title": "A", "heading": "1. A", "line": 1}], "unmatched_claims": []}}
+        lines = mitosis.coverage_lines({"items": [], "source": None}, record, ".")
+        self.assertIn("by headings: 0 of 1 section claimed, 1 unclaimed", lines[0])
+
+    def coverage_is_unavailable_only_when_there_is_no_record_and_no_source(self):
+        lines = mitosis.coverage_lines({"items": [], "source": None}, None, ".")
+        self.assertTrue(lines[0].startswith("unavailable: the Steps declare no source document"))
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -157,7 +168,7 @@ def load_tests(loader, tests, pattern):
             )
 
     suite = unittest.TestSuite()
-    for case in (AchievedParallelism, ReturnParsing, RiskMarkers, TemplatePlaceholders):
+    for case in (AchievedParallelism, ReturnParsing, RiskMarkers, TemplatePlaceholders, CoverageReport):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

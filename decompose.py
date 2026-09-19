@@ -360,6 +360,21 @@ def _kill_tree(process):
         process.kill()
 
 
+def _is_object(line):
+    try:
+        value = json.loads(line)
+    except ValueError:
+        return False
+    return isinstance(value, dict)
+
+
+def last_return(lines):
+    for line in reversed(lines):
+        if _is_object(line):
+            return line
+    return lines[-1] if lines else None
+
+
 def _write_log(log, out, err):
     if not log:
         return
@@ -390,10 +405,10 @@ def spawn(argv, prompt, timeout, cwd=None, log=None):
         out, err = process.communicate()
         reason = "timeout after %s seconds" % timeout
     _write_log(log, out, err)
-    lines = [line for line in out.decode("utf-8", "replace").splitlines() if line.strip()]
+    lines = [line.strip() for line in out.decode("utf-8", "replace").splitlines() if line.strip()]
     return {
         "exit": process.returncode,
-        "line": lines[-1] if lines and reason is None else None,
+        "line": last_return(lines) if reason is None else None,
         "reason": reason,
     }
 
@@ -503,6 +518,12 @@ def _spawn_errors(spawned):
     return errors
 
 
+def _empty_errors(frozen, items):
+    if items or not (frozen.get("text") or "").strip():
+        return []
+    return ["the decompose Worker returned no Steps for a document that has content"]
+
+
 def decompose(
     document,
     template,
@@ -533,7 +554,7 @@ def decompose(
         "source": source,
         "items": collected["items"],
         "constraints": collected["constraints"],
-        "errors": spawn_errors + collected["errors"],
+        "errors": spawn_errors + collected["errors"] + _empty_errors(frozen, collected["items"]),
         "counts": collected["counts"],
         "raised": collected["raised"],
         "coverage": coverage(frozen["text"], collected["items"]),

@@ -491,6 +491,51 @@ class Coverage(unittest.TestCase):
         self.assertTrue(any("3 Three" in line for line in decompose.report(result)))
 
 
+class ReturnLine(unittest.TestCase):
+    def a_bare_json_line_is_the_return(self):
+        self.assertEqual(decompose.last_return(['{"items": []}']), '{"items": []}')
+
+    def a_fence_around_the_return_is_stepped_over(self):
+        lines = ["```json", '{"items": []}', "```"]
+        self.assertEqual(decompose.last_return(lines), '{"items": []}')
+
+    def narration_after_the_return_is_stepped_over(self):
+        lines = ['{"items": []}', "That completes the decomposition."]
+        self.assertEqual(decompose.last_return(lines), '{"items": []}')
+
+    def the_latest_json_object_wins_over_an_earlier_one(self):
+        lines = ['{"items": ["first"]}', "then I revised it", '{"items": ["second"]}']
+        self.assertEqual(decompose.last_return(lines), '{"items": ["second"]}')
+
+    def a_json_array_is_not_a_return(self):
+        self.assertEqual(decompose.last_return(['{"items": []}', "[1, 2]"]), '{"items": []}')
+
+    def output_with_no_json_reports_the_last_line_it_saw(self):
+        self.assertEqual(decompose.last_return(["I could not", "do it"]), "do it")
+
+    def empty_output_has_no_return(self):
+        self.assertIsNone(decompose.last_return([]))
+
+    def a_fenced_return_survives_the_whole_spawn(self):
+        payload = '```json\n{"items": [], "assumptions": [], "constraints": []}\n```'
+        spawned = decompose.spawn(
+            [sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])", payload], "", 30
+        )
+        self.assertEqual(decompose.parse_return(spawned["line"])["errors"], [])
+
+
+class EmptyReturn(unittest.TestCase):
+    def no_Steps_from_a_document_with_content_is_a_contract_error(self):
+        errors = decompose._empty_errors({"text": "# A\n\nbody\n"}, [])
+        self.assertEqual(errors, ["the decompose Worker returned no Steps for a document that has content"])
+
+    def no_Steps_from_an_empty_document_is_not_an_error(self):
+        self.assertEqual(decompose._empty_errors({"text": "   \n"}, []), [])
+
+    def Steps_returned_is_never_an_error(self):
+        self.assertEqual(decompose._empty_errors({"text": "# A\n"}, [{"name": "a"}]), [])
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -502,7 +547,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Contract, Run, Coverage):
+    for case in (Contract, Run, Coverage, ReturnLine, EmptyReturn):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

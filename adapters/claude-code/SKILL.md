@@ -206,8 +206,11 @@ decompose report followed by the plan-stage report. Read three things there:
 the coverage map, which lists the document's sections no Step claimed; the
 assumptions, each a reading the decomposer chose where the document was
 underdetermined, and a Step carrying one is never rated `simple`; and the
-count of global constraints it extracted, where zero on a document that has
-binding rules means the Workers will not be told them.
+count of global constraints it extracted, which is a reading of the document
+and not a thing that is delivered. No Worker is handed that list; the charter
+binds and the document is what a Worker reads. A zero on a document that does
+state binding rules means the decomposer could not separate them from any one
+Step, and a Worker reading only its own section will miss them too.
 
 A section nobody claimed, or an assumption you would have made differently,
 is fixed in the document, not in the Steps. Edit the document and plan again.

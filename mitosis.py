@@ -456,11 +456,11 @@ def section_label(section):
 
 
 def coverage_lines(plan, decomposed, root):
-    source = plan.get("source")
-    if not isinstance(source, dict) or not source.get("path"):
-        return ("unavailable: the Steps declare no source document, so there are no sections to claim",)
     covered = (decomposed or {}).get("coverage")
     if not isinstance(covered, dict):
+        source = plan.get("source")
+        if not isinstance(source, dict) or not source.get("path"):
+            return ("unavailable: the Steps declare no source document, so there are no sections to claim",)
         readable, text = read_document(os.path.join(root, source["path"]))
         if not readable:
             return ("unavailable: %s could not be read (%s)" % (source["path"], text),)
