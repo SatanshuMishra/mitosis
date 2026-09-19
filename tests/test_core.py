@@ -201,6 +201,40 @@ class Validation(unittest.TestCase):
         self.assertEqual(result["errors"], [])
         self.assertEqual(result["counts"], {"missing_paths": 2, "no_acceptance": 2, "assumptions": 1})
 
+    def a_structure_item_validates_without_a_task(self):
+        self.assertEqual(
+            core.STRUCTURE_ITEM_FIELDS,
+            tuple(field for field in core.REQUIRED_ITEM_FIELDS if field != "task"),
+        )
+        without_task = {"name": "a", "files": ["a.py"], "source": None, "acceptance": []}
+        result = core.validate([without_task], required=core.STRUCTURE_ITEM_FIELDS)
+        self.assertEqual(result["errors"], [])
+        with_task = {**without_task, "task": "do a"}
+        result = core.validate([with_task], required=core.STRUCTURE_ITEM_FIELDS)
+        self.assertEqual(result["errors"], [])
+
+    def a_full_item_still_requires_a_task(self):
+        without_task = {"name": "a", "files": ["a.py"], "source": None, "acceptance": []}
+        errors = core.validate([without_task])["errors"]
+        self.assertTrue(any("task" in e for e in errors))
+        errors = core.validate([without_task], required=core.REQUIRED_ITEM_FIELDS)["errors"]
+        self.assertTrue(any("task" in e for e in errors))
+
+    def an_after_edge_to_a_missing_step_is_reported_in_structure_mode(self):
+        broken = [
+            {
+                "name": "a",
+                "files": ["a.py"],
+                "source": None,
+                "acceptance": [],
+                "after": ["zz"],
+            }
+        ]
+        errors = core.validate(broken, required=core.STRUCTURE_ITEM_FIELDS)["errors"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("zz", errors[0])
+        self.assertIn("a", errors[0])
+
     def a_missing_required_field_is_a_message_not_a_traceback(self):
         missing = [{"name": "a", "task": "t", "source": None, "acceptance": []}]
         errors = core.validate(missing)["errors"]

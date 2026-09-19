@@ -4,12 +4,14 @@ import os
 import shlex
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import core
 import decompose
+import shape
 
 
 def frozen(path="docs/spec.md", text="# One\n\nbody\n"):
@@ -77,6 +79,35 @@ def item(name, **extra):
 def run(root, document_text, reply, **extra):
     document = write(root, "docs/spec.md", document_text)
     return decompose.decompose(document, worker(root, reply), root, timeout=20, **extra)
+
+
+def bare(name, **extra):
+    return {
+        "name": name,
+        "files": [name + ".py"],
+        "source": None,
+        "acceptance": [],
+        **extra,
+    }
+
+
+def run_structure(root, document_text, reply, **extra):
+    document = write(root, "docs/spec.md", document_text)
+    return decompose.structure(document, worker(root, reply), root, timeout=20, **extra)
+
+
+def delayed(seconds, reply):
+    return [
+        sys.executable,
+        "-c",
+        "import sys, time; time.sleep(float(sys.argv[1])); print(sys.argv[2])",
+        str(seconds),
+        json.dumps(reply),
+    ]
+
+
+def job(argv, prompt="", log=None):
+    return {"argv": argv, "prompt": prompt, "log": log}
 
 
 class Contract(unittest.TestCase):
@@ -491,6 +522,675 @@ class Coverage(unittest.TestCase):
         self.assertTrue(any("3 Three" in line for line in decompose.report(result)))
 
 
+class ReturnLine(unittest.TestCase):
+    def a_bare_json_line_is_the_return(self):
+        self.assertEqual(decompose.last_return(['{"items": []}']), '{"items": []}')
+
+    def a_fence_around_the_return_is_stepped_over(self):
+        lines = ["```json", '{"items": []}', "```"]
+        self.assertEqual(decompose.last_return(lines), '{"items": []}')
+
+    def narration_after_the_return_is_stepped_over(self):
+        lines = ['{"items": []}', "That completes the decomposition."]
+        self.assertEqual(decompose.last_return(lines), '{"items": []}')
+
+    def the_latest_json_object_wins_over_an_earlier_one(self):
+        lines = ['{"items": ["first"]}', "then I revised it", '{"items": ["second"]}']
+        self.assertEqual(decompose.last_return(lines), '{"items": ["second"]}')
+
+    def a_json_array_is_not_a_return(self):
+        self.assertEqual(decompose.last_return(['{"items": []}', "[1, 2]"]), '{"items": []}')
+
+    def output_with_no_json_reports_the_last_line_it_saw(self):
+        self.assertEqual(decompose.last_return(["I could not", "do it"]), "do it")
+
+    def empty_output_has_no_return(self):
+        self.assertIsNone(decompose.last_return([]))
+
+    def a_fenced_return_survives_the_whole_spawn(self):
+        payload = '```json\n{"items": [], "assumptions": [], "constraints": []}\n```'
+        spawned = decompose.spawn(
+            [sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])", payload], "", 30
+        )
+        self.assertEqual(decompose.parse_return(spawned["line"])["errors"], [])
+
+
+class EmptyReturn(unittest.TestCase):
+    def no_Steps_from_a_document_with_content_is_a_contract_error(self):
+        errors = decompose._empty_errors({"text": "# A\n\nbody\n"}, [])
+        self.assertEqual(errors, ["the decompose Worker returned no Steps for a document that has content"])
+
+    def no_Steps_from_an_empty_document_is_not_an_error(self):
+        self.assertEqual(decompose._empty_errors({"text": "   \n"}, []), [])
+
+    def Steps_returned_is_never_an_error(self):
+        self.assertEqual(decompose._empty_errors({"text": "# A\n"}, [{"name": "a"}]), [])
+
+
+class Structure(unittest.TestCase):
+    def the_structure_contract_forbids_a_task(self):
+        contract = decompose.STRUCTURE_CONTRACT
+        sentence = "A Step must not carry a task"
+        self.assertIn(sentence, contract)
+        forbidding = [line for line in contract.splitlines() if sentence in line]
+        self.assertEqual(len(forbidding), 1)
+        self.assertIn("rejected", forbidding[0])
+        self.assertNotIn("task", contract.replace(forbidding[0], ""))
+        for field in core.STRUCTURE_ITEM_FIELDS:
+            self.assertIn(field, contract)
+        for field in decompose.OPTIONAL_ITEM_FIELDS:
+            self.assertIn(field, contract)
+        self.assertIn(", ".join(core.STRUCTURE_ITEM_FIELDS) + ".", contract)
+        self.assertNotIn(", ".join(core.REQUIRED_ITEM_FIELDS) + ".", contract)
+        self.assertEqual(contract.count(sentence), 1)
+
+    def a_structure_return_carrying_a_task_is_an_error(self):
+        reply = {
+            "items": [bare("clean"), bare("prosy", task="a whole brief"), bare("also", task="x")],
+            "assumptions": [],
+            "constraints": [],
+        }
+        with tempfile.TemporaryDirectory() as root:
+            result = run_structure(root, "# One\n\nbody\n", reply)
+        self.assertEqual([step["name"] for step in result["items"]], ["clean", "prosy", "also"])
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertIn("prosy", result["errors"][0])
+        self.assertIn("also", result["errors"][0])
+        self.assertNotIn("clean", result["errors"][0])
+        self.assertIn("task", result["errors"][0])
+        self.assertIn(result["errors"][0], decompose.report(result))
+
+    def a_structure_return_without_a_task_validates(self):
+        text = "# 1. One\n\nbody\n\n# 2. Two\n\nmore\n"
+        reply = {
+            "items": [
+                bare("first", spec_ref=["1"], task=""),
+                bare("second", after=["first"], spec_ref=["2"]),
+            ],
+            "assumptions": [{"step": "second", "text": "a reading"}],
+            "constraints": ["one global"],
+        }
+        with tempfile.TemporaryDirectory() as root:
+            result = run_structure(root, text, reply)
+            prompt = received(root, "prompt.txt")
+            document = os.path.join(root, "docs", "spec.md")
+        self.assertEqual(result["errors"], [])
+        expected = {"path": document, "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()}
+        self.assertEqual(result["source"], expected)
+        for step in result["items"]:
+            self.assertEqual(step["source"], expected)
+        by_name = {step["name"]: step for step in result["items"]}
+        self.assertEqual(by_name["second"]["assumptions"], ["a reading"])
+        self.assertEqual(by_name["second"]["after"], ["first"])
+        self.assertEqual(result["constraints"], ["one global"])
+        self.assertEqual(result["coverage"]["uncovered"], [])
+        self.assertEqual(result["exit"], 0)
+        self.assertIn(decompose.STRUCTURE_CONTRACT, prompt)
+        self.assertNotIn(decompose.CONTRACT, prompt)
+        self.assertEqual(
+            core.validate(result["items"], required=core.STRUCTURE_ITEM_FIELDS)["errors"], []
+        )
+
+    def a_structure_result_has_the_shape_a_decompose_result_has(self):
+        reply = {"items": [bare("a")], "assumptions": [], "constraints": []}
+        with tempfile.TemporaryDirectory() as root:
+            structured = run_structure(root, "# One\n\nbody\n", reply)
+        with tempfile.TemporaryDirectory() as root:
+            decomposed = run(root, "# One\n\nbody\n", {**reply, "items": [item("a")]})
+        self.assertEqual(sorted(structured), sorted(decomposed))
+        self.assertEqual(structured["counts"], decomposed["counts"])
+
+    def a_structure_prompt_omits_the_decisions_block_when_there_are_none(self):
+        document = frozen("docs/specs/change.md", "# Alpha\n\ntext\n\n# Omega\n\nmore\n")
+        codebase = {"root": "/repo", "paths": ["core.py"], "overflow": 0}
+        expected = decompose.render_prompt(
+            document, codebase, graph="graph.json", charter="CHARTER.md"
+        ).replace(decompose.CONTRACT, decompose.STRUCTURE_CONTRACT)
+        self.assertNotEqual(expected, decompose.render_prompt(document, codebase))
+        for decisions in (None, "", {"path": "d.md", "text": "", "count": 0}):
+            for prior in (None, [], ()):
+                rendered = decompose.render_structure_prompt(
+                    document,
+                    codebase,
+                    graph="graph.json",
+                    charter="CHARTER.md",
+                    decisions=decisions,
+                    prior=prior,
+                )
+                self.assertEqual(rendered, expected)
+        self.assertEqual(decompose.render_structure_prompt(document, codebase), expected.replace(
+            "\n\nImport graph: graph.json (adjacency from each path to its neighbours)", ""
+        ).replace(
+            "\nCharter: CHARTER.md (binding on every Step; every Worker receives it unchanged)", ""
+        ))
+        self.assertNotIn("settled", expected.lower())
+        self.assertNotIn("revis", expected.lower())
+
+    def a_structure_prompt_renders_its_blocks_in_order(self):
+        document = frozen("docs/specs/change.md", "# Alpha\n\ntext\n")
+        codebase = {"root": "/repo", "paths": ["core.py"], "overflow": 0}
+        prior = [bare("kept", task="its brief")]
+        rendered = decompose.render_structure_prompt(
+            document,
+            codebase,
+            graph={"core.py": ["shape.py"]},
+            charter="CHARTER.md",
+            decisions={"path": "d.md", "text": "- the registry is owned by core\n", "count": 1},
+            prior=prior,
+        )
+        compact = json.dumps(prior, separators=(",", ":"))
+        self.assertIn(compact, rendered)
+        self.assertIn("- the registry is owned by core", rendered)
+        positions = [
+            rendered.index("Document: docs/specs/change.md"),
+            rendered.index("CHARTER.md"),
+            rendered.index("Codebase root"),
+            rendered.index("Import graph"),
+            rendered.index("- the registry is owned by core"),
+            rendered.index(compact),
+            rendered.index(decompose.DOCUMENT_OPEN),
+            rendered.index("Sections you may claim"),
+            rendered.index("Return contract:"),
+        ]
+        self.assertEqual(positions, sorted(positions))
+        heading = rendered[: rendered.index(compact)].rstrip("\n").splitlines()[-1].lower()
+        self.assertIn("revis", heading)
+        self.assertIn(decompose.DELTA_CONTRACT, rendered)
+        self.assertNotIn(decompose.STRUCTURE_CONTRACT, rendered)
+
+
+class Decisions(unittest.TestCase):
+    def the_default_decisions_path_sits_beside_the_document(self):
+        self.assertEqual(
+            decompose.default_decisions_path("docs/specs/change.md"),
+            "docs/specs/change.decisions.md",
+        )
+        self.assertEqual(decompose.default_decisions_path("/a/b/spec.txt"), "/a/b/spec.decisions.md")
+        self.assertEqual(decompose.default_decisions_path("plain"), "plain.decisions.md")
+        self.assertEqual(
+            decompose.default_decisions_path("docs/v1.2/spec.md"), "docs/v1.2/spec.decisions.md"
+        )
+
+    def decisions_reach_the_structure_prompt(self):
+        text = "- the registry is owned by core\n- the CLI stays single-threaded\n\nprose\n"
+        reply = {"items": [bare("a")], "assumptions": [], "constraints": []}
+        with tempfile.TemporaryDirectory() as root:
+            write(root, "docs/spec.decisions.md", text)
+            result = run_structure(root, "# One\n\nbody\n", reply)
+            prompt = received(root, "prompt.txt")
+        self.assertEqual(result["errors"], [])
+        self.assertNotIn("registry is owned by core", prompt)
+        with tempfile.TemporaryDirectory() as root:
+            path = write(root, "docs/settled.md", text)
+            loaded = decompose.load_decisions(root, path="docs/settled.md")
+            self.assertEqual(loaded, {"path": path, "text": text, "count": 2})
+            result = run_structure(root, "# One\n\nbody\n", reply, decisions=loaded)
+            prompt = received(root, "prompt.txt")
+        self.assertEqual(result["errors"], [])
+        self.assertIn(text.rstrip("\n"), prompt)
+        block = prompt[: prompt.index("- the registry is owned by core")]
+        heading = block.rstrip("\n").splitlines()[-1].lower()
+        self.assertIn("settled", heading)
+        self.assertIn("binding", heading)
+        self.assertIn("not be re-opened", heading)
+        self.assertLess(prompt.index("Codebase root"), prompt.index("registry"))
+        self.assertLess(prompt.index("registry"), prompt.index(decompose.DOCUMENT_OPEN))
+
+    def a_named_decisions_file_that_does_not_exist_is_refused(self):
+        with tempfile.TemporaryDirectory() as root:
+            with self.assertRaises(ValueError) as caught:
+                decompose.load_decisions(root, path="docs/missing.md")
+            self.assertIn("docs/missing.md", str(caught.exception))
+            absolute = os.path.join(root, "elsewhere.md")
+            with self.assertRaises(ValueError) as caught:
+                decompose.load_decisions(root, path=absolute, document="docs/spec.md")
+            self.assertIn(absolute, str(caught.exception))
+
+    def a_default_decisions_file_that_does_not_exist_is_not_an_error(self):
+        with tempfile.TemporaryDirectory() as root:
+            document = write(root, "docs/spec.md", "# One\n\nbody\n")
+            self.assertIsNone(decompose.load_decisions(root, document=document))
+            self.assertIsNone(decompose.load_decisions(root))
+            written = write(root, "docs/spec.decisions.md", "- settled\n")
+            loaded = decompose.load_decisions(root, document=document)
+            self.assertEqual(loaded, {"path": written, "text": "- settled\n", "count": 1})
+            relative = decompose.load_decisions(root, document="docs/spec.md")
+            self.assertEqual(relative["count"], 1)
+            self.assertEqual(os.path.abspath(relative["path"]), os.path.abspath(written))
+
+    def a_decisions_file_with_no_list_items_counts_zero_and_still_loads(self):
+        text = "﻿The registry belongs to core.\n  * not a dash item\n-not spaced\n"
+        with tempfile.TemporaryDirectory() as root:
+            path = write(root, "docs/settled.md", text)
+            loaded = decompose.load_decisions(root, path="docs/settled.md")
+            self.assertEqual(loaded["count"], 0)
+            self.assertEqual(loaded["text"], text.lstrip("﻿"))
+            self.assertEqual(loaded["path"], path)
+            empty = write(root, "docs/empty.md", "")
+            self.assertEqual(
+                decompose.load_decisions(root, path=empty), {"path": empty, "text": "", "count": 0}
+            )
+        document = frozen("docs/spec.md")
+        prompt = decompose.render_structure_prompt(document, None, decisions=loaded)
+        self.assertIn("The registry belongs to core.", prompt)
+
+    def the_count_is_of_dash_items_after_leading_whitespace(self):
+        text = "- one\n  - two nested\n\t- three tabbed\n-- not one\n- \n"
+        with tempfile.TemporaryDirectory() as root:
+            write(root, "d.md", text)
+            self.assertEqual(decompose.load_decisions(root, path="d.md")["count"], 4)
+
+
+def delta(**parts):
+    return {
+        "keep": [],
+        "change": [],
+        "add": [],
+        "remove": [],
+        "assumptions": [],
+        "constraints": [],
+        **parts,
+    }
+
+
+class Delta(unittest.TestCase):
+    def the_delta_contract_names_every_key_and_the_step_fields(self):
+        for key in decompose.DELTA_KEYS:
+            self.assertIn('"%s"' % key, decompose.DELTA_CONTRACT)
+        self.assertEqual(
+            decompose.DELTA_KEYS,
+            ("keep", "change", "add", "remove", "assumptions", "constraints"),
+        )
+        for field in core.STRUCTURE_ITEM_FIELDS:
+            self.assertIn(field, decompose.DELTA_CONTRACT)
+        self.assertNotIn("  task:", decompose.DELTA_CONTRACT)
+
+    def parse_delta_reports_a_missing_or_mistyped_key_instead_of_raising(self):
+        parsed = decompose.parse_delta(json.dumps({"keep": "a", "add": []}))
+        self.assertEqual(sorted(parsed), sorted(decompose.DELTA_KEYS + ("errors",)))
+        self.assertEqual(parsed["keep"], [])
+        self.assertEqual(parsed["add"], [])
+        self.assertTrue(any("keep" in error and "list" in error for error in parsed["errors"]))
+        for key in ("change", "remove", "assumptions", "constraints"):
+            self.assertTrue(any("missing '%s'" % key in error for error in parsed["errors"]))
+            self.assertEqual(parsed[key], [])
+        self.assertEqual(decompose.parse_delta(None)["errors"], ["the decompose Worker printed no return line"])
+        self.assertTrue(any("JSON" in e for e in decompose.parse_delta("not json")["errors"]))
+        self.assertTrue(any("object" in e for e in decompose.parse_delta("[1]")["errors"]))
+        whole = decompose.parse_delta(json.dumps(delta(keep=["a"], remove=["b"])))
+        self.assertEqual(whole["errors"], [])
+        self.assertEqual(whole["keep"], ["a"])
+        self.assertEqual(whole["remove"], ["b"])
+
+    def a_kept_step_is_copied_verbatim_including_its_brief(self):
+        kept = bare("kept", task="the whole brief", after=["other"], file_notes={"kept.py": "x"})
+        prior = [bare("other"), kept, bare("gone")]
+        changed = bare("other", files=["other.py", "extra.py"])
+        added = bare("fresh", after=["kept"])
+        items, errors = decompose.apply_delta(
+            prior, delta(keep=["kept"], change=[changed], add=[added], remove=["gone"])
+        )
+        self.assertEqual(errors, [])
+        self.assertEqual([step["name"] for step in items], ["other", "kept", "fresh"])
+        self.assertEqual(items[1], kept)
+        self.assertIsNot(items[1], kept)
+        self.assertEqual(items[1]["task"], "the whole brief")
+        self.assertEqual(items[0], changed)
+        self.assertNotIn("task", items[0])
+        self.assertEqual(items[2], added)
+
+    def a_delta_that_does_not_partition_the_prior_is_rejected_whole(self):
+        prior = [bare("a"), bare("b"), bare("c"), bare("d")]
+        items, errors = decompose.apply_delta(
+            prior, delta(keep=["a", "b"], change=[bare("b")], remove=["c"])
+        )
+        self.assertEqual(items, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("b", errors[0])
+        self.assertIn("d", errors[0])
+        self.assertNotIn("'a'", errors[0])
+        self.assertNotIn("'c'", errors[0])
+        items, errors = decompose.apply_delta(prior, delta(keep=["a", "a", "b", "c", "d"]))
+        self.assertEqual(items, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("a", errors[0])
+        items, errors = decompose.apply_delta(prior, delta(keep=["a", "b", "c", "d"]))
+        self.assertEqual(errors, [])
+        self.assertEqual(items, prior)
+
+    def a_missing_keep_or_remove_name_is_named(self):
+        prior = [bare("a"), bare("b")]
+        items, errors = decompose.apply_delta(prior, delta(keep=["a", "ghost"], remove=["b", "phantom"]))
+        self.assertEqual(items, [])
+        self.assertTrue(any("keep" in e and "ghost" in e for e in errors))
+        self.assertTrue(any("remove" in e and "phantom" in e for e in errors))
+        self.assertFalse(any("'a'" in e or "'b'" in e for e in errors))
+
+    def a_changed_step_that_is_not_in_the_prior_is_an_error(self):
+        prior = [bare("a"), bare("b")]
+        items, errors = decompose.apply_delta(prior, delta(keep=["a", "b"], change=[bare("zed")]))
+        self.assertEqual(items, [])
+        self.assertTrue(any("change" in e and "zed" in e for e in errors))
+        self.assertEqual(len(errors), 1)
+
+    def an_added_step_whose_name_already_exists_is_an_error(self):
+        prior = [bare("a"), bare("b")]
+        items, errors = decompose.apply_delta(prior, delta(keep=["a", "b"], add=[bare("a")]))
+        self.assertEqual(items, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("add", errors[0])
+        self.assertIn("a", errors[0])
+        items, errors = decompose.apply_delta(
+            prior, delta(keep=["a"], remove=["b"], add=[bare("b", files=["new.py"])])
+        )
+        self.assertEqual(items, [])
+        self.assertTrue(any("add" in e and "b" in e for e in errors))
+
+    def a_duplicate_name_in_the_result_is_an_error(self):
+        prior = [bare("a")]
+        items, errors = decompose.apply_delta(prior, delta(keep=["a"], add=[bare("n"), bare("n")]))
+        self.assertEqual(items, [])
+        self.assertTrue(any("duplicate" in e and "n" in e for e in errors))
+        items, errors = decompose.apply_delta(prior, delta(change=[bare("a"), bare("a")]))
+        self.assertEqual(items, [])
+        self.assertTrue(any("a" in e for e in errors))
+
+    def a_delta_never_mutates_the_prior_it_was_given(self):
+        prior = [bare("a", task="brief a", after=["b"]), bare("b", file_notes={"b.py": "x"})]
+        before = json.dumps(prior, sort_keys=True)
+        given = delta(keep=["a"], change=[bare("b", files=["b.py", "c.py"])], add=[bare("n")])
+        given_before = json.dumps(given, sort_keys=True)
+        items, errors = decompose.apply_delta(prior, given)
+        self.assertEqual(errors, [])
+        items[0]["after"].append("n")
+        items[0]["task"] = "rewritten"
+        items[1]["files"].append("d.py")
+        items[2]["name"] = "renamed"
+        self.assertEqual(json.dumps(prior, sort_keys=True), before)
+        self.assertEqual(json.dumps(given, sort_keys=True), given_before)
+        rejected, errors = decompose.apply_delta(prior, delta(keep=["a"]))
+        self.assertEqual(rejected, [])
+        self.assertTrue(errors)
+        self.assertEqual(json.dumps(prior, sort_keys=True), before)
+
+    def a_wrongly_shaped_delta_entry_is_reported_not_raised(self):
+        prior = [bare("a")]
+        items, errors = decompose.apply_delta(
+            prior, delta(keep=[1], change=["a"], add=[{"files": []}], remove=[None])
+        )
+        self.assertEqual(items, [])
+        self.assertTrue(any("keep" in e for e in errors))
+        self.assertTrue(any("change" in e for e in errors))
+        self.assertTrue(any("add" in e for e in errors))
+        self.assertTrue(any("remove" in e for e in errors))
+
+    def a_structure_given_a_prior_asks_for_and_applies_a_delta(self):
+        prior = [bare("kept", task="its brief"), bare("gone")]
+        reply = delta(keep=["kept"], remove=["gone"], add=[bare("fresh")], constraints=["global"])
+        with tempfile.TemporaryDirectory() as root:
+            result = run_structure(root, "# One\n\nbody\n", reply, prior=prior)
+            prompt = received(root, "prompt.txt")
+        self.assertIn(decompose.DELTA_CONTRACT, prompt)
+        self.assertNotIn(decompose.STRUCTURE_CONTRACT, prompt)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual([step["name"] for step in result["items"]], ["kept", "fresh"])
+        self.assertEqual(result["items"][0]["task"], "its brief")
+        self.assertEqual(result["constraints"], ["global"])
+        self.assertEqual(result["counts"]["no_acceptance"], 2)
+        self.assertEqual(result["coverage"]["mode"], "headings")
+        with tempfile.TemporaryDirectory() as root:
+            result = run_structure(root, "# One\n\nbody\n", delta(keep=["kept"]), prior=prior)
+        self.assertEqual(result["items"], [])
+        self.assertTrue(any("gone" in e for e in result["errors"]))
+        with tempfile.TemporaryDirectory() as root:
+            result = run_structure(root, "# One\n\nbody\n", {"items": []}, prior=prior)
+        self.assertEqual(result["items"], [])
+        self.assertTrue(any("missing 'keep'" in e for e in result["errors"]))
+
+
+SAMPLER = """
+import json
+import os
+import sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+prompt = sys.stdin.read()
+with open(os.path.join(here, "prompt-%d.txt" % os.getpid()), "w", encoding="utf-8") as handle:
+    handle.write(prompt)
+print(json.dumps({
+    "items": [{"name": "step-%d" % os.getpid(), "files": ["a.py"], "source": None, "acceptance": []}],
+    "assumptions": [],
+    "constraints": [],
+}))
+"""
+
+
+def structured(items, errors=()):
+    return {"items": items, "errors": list(errors)}
+
+
+def recorded_splits():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "tests", "fixtures", "splits.json"), encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+class Sampling(unittest.TestCase):
+    def samples_are_ranked_by_scalar_and_none_is_chosen_by_a_model(self):
+        wide = structured([bare("a"), bare("b")])
+        chained = structured([bare("a"), bare("b", after=["a"], files=["a.py"])])
+        fused = structured(
+            [bare("a"), bare("b", contract_group="g"), bare("c", contract_group="g")]
+        )
+        results = [chained, wide, fused]
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("a model was consulted")
+
+        kept = decompose.spawn, decompose.spawn_many
+        decompose.spawn = refuse
+        decompose.spawn_many = refuse
+        try:
+            order = decompose.rank(results)
+            self.assertEqual(decompose.rank([wide, wide, wide]), [0, 1, 2])
+            self.assertEqual(decompose.rank([]), [])
+            self.assertEqual(decompose.rank([fused]), [0])
+        finally:
+            decompose.spawn, decompose.spawn_many = kept
+        self.assertEqual(order, [1, 2, 0])
+        self.assertEqual(results, [chained, wide, fused])
+
+    def ranking_compares_the_scalars_in_priority_order(self):
+        two_lanes = [bare("a"), bare("b")]
+        self.assertEqual(shape.scalars(two_lanes)["parallelism"], 2)
+        fused_once = [bare("a"), bare("b", contract_group="g"), bare("c", contract_group="g")]
+        fused_twice = [
+            bare("a"),
+            bare("b", contract_group="g"),
+            bare("c", contract_group="g"),
+            bare("d", contract_group="g"),
+        ]
+        self.assertEqual(shape.scalars(fused_once)["fused_without_overlap"], 1)
+        self.assertEqual(shape.scalars(fused_twice)["fused_without_overlap"], 3)
+        self.assertEqual(
+            decompose.rank([structured(fused_twice), structured(fused_once)]), [1, 0]
+        )
+        denser = [bare("a"), bare("b")]
+        sparser = [bare("a"), bare("b"), bare("c", files=["b.py", "c.py"])]
+        self.assertEqual(shape.scalars(sparser)["fused_without_overlap"], 0)
+        self.assertGreater(
+            shape.scalars(denser)["msps_per_step"], shape.scalars(sparser)["msps_per_step"]
+        )
+        self.assertEqual(decompose.rank([structured(sparser), structured(denser)]), [1, 0])
+        self.assertEqual(decompose.rank([structured(denser), structured(sparser)]), [0, 1])
+
+    def a_sample_with_contract_errors_ranks_last(self):
+        wide = structured([bare("a"), bare("b")], errors=["a: missing required field 'files'"])
+        chained = structured([bare("a"), bare("b", after=["a"], files=["a.py"])])
+        self.assertEqual(decompose.rank([wide, chained]), [1, 0])
+        also_wide = structured([bare("a"), bare("b")], errors=["x"])
+        self.assertEqual(decompose.rank([wide, also_wide, chained]), [2, 0, 1])
+        broken = {"items": [bare("a"), "not a step"], "errors": ["item #1: a Step must be an object"]}
+        self.assertEqual(decompose.rank([broken, chained]), [1, 0])
+
+    def the_recorded_splits_rank_by_parallelism_first(self):
+        splits = recorded_splits()
+        names = ["pass-1", "pass-2", "pass-3"]
+        results = [structured(splits[name]) for name in names]
+        order = decompose.rank(results)
+        self.assertEqual([names[i] for i in order], ["pass-1", "pass-3", "pass-2"])
+        self.assertLess(order.index(0), order.index(1))
+        self.assertLess(order.index(2), order.index(1))
+        sentences = decompose.disagreements(results)
+        self.assertTrue(any("bleep/effects/__init__.py" in s for s in sentences))
+        self.assertTrue(any("demo/canyon.blp" in s for s in sentences))
+        self.assertFalse(any("bleep/notation.py" in s for s in sentences))
+        self.assertTrue(any("MSP" in s for s in sentences))
+        self.assertTrue(any("parallelism" in s for s in sentences))
+
+    def samples_that_split_a_file_differently_are_reported_as_a_disagreement(self):
+        one_owner = structured([bare("a", files=["a.py", "shared.py"]), bare("b")])
+        two_owners = structured(
+            [bare("a", files=["a.py", "shared.py"]), bare("b", files=["b.py", "shared.py"])]
+        )
+        sentences = decompose.disagreements([one_owner, two_owners])
+        self.assertEqual(len(sentences), 3)
+        for sentence in sentences:
+            self.assertTrue(sentence.endswith("."))
+            self.assertEqual(sentence.count(". "), 0)
+        self.assertTrue(any("shared.py" in s and "own" in s for s in sentences))
+        self.assertFalse(any("a.py" in s for s in sentences))
+        self.assertFalse(any("b.py" in s for s in sentences))
+        self.assertTrue(any("MSP" in s for s in sentences))
+        self.assertTrue(any("parallelism" in s for s in sentences))
+        self.assertEqual(decompose.disagreements([one_owner, one_owner]), [])
+        self.assertEqual(decompose.disagreements([one_owner]), [])
+        self.assertEqual(decompose.disagreements([]), [])
+        only_in_one = structured([bare("a", files=["a.py", "shared.py"]), bare("b"), bare("c")])
+        sentences = decompose.disagreements([one_owner, only_in_one])
+        self.assertTrue(any("c.py" in s for s in sentences))
+        self.assertFalse(any("shared.py" in s for s in sentences))
+
+    def one_sample_takes_the_same_path_as_a_single_structure_call(self):
+        reply = {"items": [bare("a", spec_ref=["1"])], "assumptions": [], "constraints": []}
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as home:
+            document = write(root, "docs/spec.md", "# 1. One\n\nbody\n")
+            template = worker(home, reply) + " --model {model}"
+            log = os.path.join(home, "run", "structure.log")
+            single = decompose.structure(
+                document, template, root, timeout=20, model="m", charter="C.md", log=log
+            )
+            single_prompt = received(home, "prompt.txt")
+            single_argv = received(home, "argv.json")
+            sampled = decompose.sample_structures(
+                1, document, template, root, timeout=20, model="m", charter="C.md", log=log
+            )
+            self.assertEqual(received(home, "prompt.txt"), single_prompt)
+            self.assertEqual(received(home, "argv.json"), single_argv)
+            self.assertTrue(os.path.isfile(log))
+        self.assertEqual(sampled, [single])
+        self.assertEqual(sampled[0]["log"], log)
+        self.assertEqual(single["errors"], [])
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as home:
+            document = write(root, "docs/spec.md", "# 1. One\n\nbody\n")
+            template = worker(home, reply)
+            for samples in (0, -1, None):
+                self.assertEqual(
+                    decompose.sample_structures(samples, document, template, root, timeout=20),
+                    [decompose.structure(document, template, root, timeout=20)],
+                )
+
+    def several_samples_run_concurrently_against_one_prompt(self):
+        with tempfile.TemporaryDirectory() as root:
+            document = write(root, "docs/spec.md", "# 1. One\n\nbody\n")
+            template = worker(root, "", script=SAMPLER)
+            log = os.path.join(root, "run", "structure.log")
+            results = decompose.sample_structures(3, document, template, root, timeout=20, log=log)
+            prompts = sorted(
+                name for name in os.listdir(os.path.join(root, "worker")) if name.startswith("prompt-")
+            )
+            self.assertEqual(len(prompts), 3)
+            texts = {received(root, name) for name in prompts}
+            self.assertEqual(len(texts), 1)
+            self.assertIn(decompose.STRUCTURE_CONTRACT, texts.pop())
+            logs = [result["log"] for result in results]
+            self.assertEqual(len(set(logs)), 3)
+            for path in logs:
+                self.assertTrue(os.path.isfile(path), path)
+                self.assertTrue(path.startswith(os.path.join(root, "run", "structure")), path)
+                self.assertTrue(path.endswith(".log"), path)
+            self.assertFalse(os.path.exists(log))
+        self.assertEqual(len(results), 3)
+        names = [result["items"][0]["name"] for result in results]
+        self.assertEqual(len(set(names)), 3)
+        for result in results:
+            self.assertEqual(result["errors"], [])
+            self.assertEqual(sorted(result), sorted(results[0]))
+        self.assertEqual(decompose.rank(results), [0, 1, 2])
+        self.assertEqual(decompose.disagreements(results), [])
+
+
+class SpawnMany(unittest.TestCase):
+    def spawn_many_returns_results_in_the_order_it_was_given_them(self):
+        jobs = [
+            job(delayed(0.4, {"n": 0})),
+            job(delayed(0.0, {"n": 1})),
+            job(delayed(0.2, {"n": 2})),
+            job(delayed(0.0, {"n": 3})),
+        ]
+        results = decompose.spawn_many(jobs, timeout=20, concurrency=4)
+        self.assertEqual([json.loads(r["line"])["n"] for r in results], [0, 1, 2, 3])
+        self.assertEqual([r["exit"] for r in results], [0, 0, 0, 0])
+        self.assertEqual([r["reason"] for r in results], [None] * 4)
+        self.assertEqual(decompose.spawn_many([], timeout=1, concurrency=4), [])
+
+    def spawn_many_runs_jobs_concurrently(self):
+        jobs = [job(delayed(0.5, {"n": n})) for n in range(4)]
+        started = time.monotonic()
+        results = decompose.spawn_many(jobs, timeout=20, concurrency=4)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 2.0)
+        self.assertEqual([json.loads(r["line"])["n"] for r in results], [0, 1, 2, 3])
+
+    def a_concurrency_at_or_below_zero_runs_one_at_a_time(self):
+        for concurrency in (0, -3):
+            jobs = [job(delayed(0.3, {"n": n})) for n in range(2)]
+            started = time.monotonic()
+            results = decompose.spawn_many(jobs, timeout=20, concurrency=concurrency)
+            elapsed = time.monotonic() - started
+            self.assertGreaterEqual(elapsed, 0.6)
+            self.assertEqual([json.loads(r["line"])["n"] for r in results], [0, 1])
+
+    def each_job_reads_its_own_prompt_and_writes_its_own_log(self):
+        echo = [
+            sys.executable,
+            "-c",
+            "import sys, json; print(json.dumps({'got': sys.stdin.read()}))",
+        ]
+        with tempfile.TemporaryDirectory() as root:
+            jobs = [
+                job(echo, "first", os.path.join(root, "a", "one.log")),
+                job(echo, "second", os.path.join(root, "two.log")),
+            ]
+            results = decompose.spawn_many(jobs, timeout=20, concurrency=2, cwd=root)
+            self.assertEqual([json.loads(r["line"])["got"] for r in results], ["first", "second"])
+            with open(jobs[0]["log"], encoding="utf-8") as handle:
+                self.assertIn("first", handle.read())
+            with open(jobs[1]["log"], encoding="utf-8") as handle:
+                self.assertIn("second", handle.read())
+        self.assertEqual(jobs[0], job(echo, "first", os.path.join(root, "a", "one.log")))
+
+    def a_job_that_times_out_does_not_hold_the_others(self):
+        jobs = [
+            job([sys.executable, "-c", "import time; time.sleep(60)"]),
+            job(delayed(0.0, {"n": 1})),
+        ]
+        results = decompose.spawn_many(jobs, timeout=0.5, concurrency=2)
+        self.assertIn("timeout", results[0]["reason"])
+        self.assertIsNone(results[0]["line"])
+        self.assertEqual(json.loads(results[1]["line"])["n"], 1)
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -502,7 +1202,18 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Contract, Run, Coverage):
+    for case in (
+        Contract,
+        Run,
+        Coverage,
+        ReturnLine,
+        EmptyReturn,
+        Structure,
+        Decisions,
+        Delta,
+        Sampling,
+        SpawnMany,
+    ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

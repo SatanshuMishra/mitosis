@@ -49,6 +49,8 @@ REQUIRED_ITEM_FIELDS = (
     "acceptance",
 )
 
+STRUCTURE_ITEM_FIELDS = tuple(field for field in REQUIRED_ITEM_FIELDS if field != "task")
+
 ACCEPTANCE_KEYS = ("file", "test")
 
 SOURCE_KEYS = ("path", "sha256")
@@ -301,14 +303,14 @@ def _label(item, index):
     return name if isinstance(name, str) and name else "item #%d" % index
 
 
-def _shape_errors(items):
+def _shape_errors(items, required):
     errors = []
     for index, item in enumerate(items):
         label = _label(item, index)
         if not isinstance(item, dict):
             errors.append("%s: a Step must be an object, got %s" % (label, type(item).__name__))
             continue
-        for field in REQUIRED_ITEM_FIELDS:
+        for field in required:
             if field not in item:
                 errors.append("%s: missing required field '%s'" % (label, field))
         if "name" in item and not (isinstance(item["name"], str) and item["name"]):
@@ -448,13 +450,13 @@ def _counts(items, root):
     }
 
 
-def validate(items, root=None):
+def validate(items, root=None, required=None):
     if not isinstance(items, list):
         return {
             "errors": ["the items file must be a JSON array at the top level"],
             "counts": dict.fromkeys(COUNT_KEYS, 0),
         }
-    errors = _shape_errors(items)
+    errors = _shape_errors(items, REQUIRED_ITEM_FIELDS if required is None else required)
     if errors:
         return {"errors": errors, "counts": dict.fromkeys(COUNT_KEYS, 0)}
     errors = _duplicate_errors(items)

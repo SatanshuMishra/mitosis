@@ -1,3 +1,5 @@
+import concurrent.futures
+import copy
 import hashlib
 import json
 import os
@@ -7,6 +9,7 @@ import signal
 import subprocess
 
 import core
+import shape
 
 RETURN_KEYS = ("items", "assumptions", "constraints")
 
@@ -28,36 +31,99 @@ RETURN_SHAPE = (
     '"constraints":["<global statement>",...]}'
 )
 
-CONTRACT = "\n".join(
-    (
-        "When finished, print one line of JSON and nothing after it:",
-        RETURN_SHAPE,
-        "Every entry of \"items\" is one Step, and every Step must carry each of these fields: "
-        + ", ".join(core.REQUIRED_ITEM_FIELDS)
-        + ".",
-        "  name: kebab-case, unique within this return",
-        "  task: the Step's entire brief; the Worker that builds it receives nothing else",
-        "  files: the write-set, a non-empty list of paths relative to the codebase root",
-        "  source: null; the document path and hash are stamped in for you",
-        '  acceptance: a list of {"%s": "<test file>", "%s": "<test identifier>"} objects,'
-        % core.ACCEPTANCE_KEYS
-        + " never prose; an empty list declares that the Step proves nothing mechanically",
-        "A Step may also carry: " + ", ".join(OPTIONAL_ITEM_FIELDS) + ".",
-        "  after: names of Steps that must be built first; these edges join parts of the document"
-        " that may be far apart, and they can only be seen from the whole of it",
-        "  contract_group: one shared id for the halves of one interface",
-        "  type: one of " + ", ".join(core.STEP_TYPES),
-        "  complexity: one of " + ", ".join(core.COMPLEXITY_VALUES),
-        "  file_notes: {path: what changes there}",
-        "  msp: a tag forcing Steps to ship as one pull request",
-        "  spec_ref: the sections this Step came from, each as its number or its exact heading"
-        " text, or as a line number or a range like 12-20 when the document has no headings",
-        "  assumptions: the readings you chose where the document was underdetermined",
-        '"assumptions" at the top level lists every such reading with the "step" it belongs to;'
-        " a Step with any assumption is never rated simple",
-        '"constraints" lists the document\'s global statements that belong to no single Step,'
-        " one string each; return an empty list when there are none",
+REQUIRED_FIELD_LINES = {
+    "name": "  name: kebab-case, unique within this return",
+    "task": "  task: the Step's entire brief; the Worker that builds it receives nothing else",
+    "files": "  files: the write-set, a non-empty list of paths relative to the codebase root",
+    "source": "  source: null; the document path and hash are stamped in for you",
+    "acceptance": '  acceptance: a list of {"%s": "<test file>", "%s": "<test identifier>"} objects,'
+    % core.ACCEPTANCE_KEYS
+    + " never prose; an empty list declares that the Step proves nothing mechanically",
+}
+
+OPTIONAL_FIELD_LINES = (
+    "  after: names of Steps that must be built first; these edges join parts of the document"
+    " that may be far apart, and they can only be seen from the whole of it",
+    "  contract_group: one shared id for the halves of one interface",
+    "  type: one of " + ", ".join(core.STEP_TYPES),
+    "  complexity: one of " + ", ".join(core.COMPLEXITY_VALUES),
+    "  file_notes: {path: what changes there}",
+    "  msp: a tag forcing Steps to ship as one pull request",
+    "  spec_ref: the sections this Step came from, each as its number or its exact heading"
+    " text, or as a line number or a range like 12-20 when the document has no headings",
+    "  assumptions: the readings you chose where the document was underdetermined",
+)
+
+TOP_LEVEL_LINES = (
+    '"assumptions" at the top level lists every such reading with the "step" it belongs to;'
+    " a Step with any assumption is never rated simple",
+    '"constraints" lists the document\'s global statements that belong to no single Step,'
+    " one string each; return an empty list when there are none",
+)
+
+TASK_FORBIDDEN = (
+    "A Step must not carry a task; a return in which any Step carries one will be rejected."
+)
+
+
+DELTA_KEYS = ("keep", "change", "add", "remove", "assumptions", "constraints")
+
+DELTA_SHAPE = (
+    '{"keep":["<name>",...],"change":[{...},...],"add":[{...},...],"remove":["<name>",...],'
+    '"assumptions":[{"step":"<name>","text":"<reading chosen>"},...],'
+    '"constraints":["<global statement>",...]}'
+)
+
+DELTA_RULES = (
+    '"keep" and "remove" list names of Steps in the structure being revised; "change" and'
+    ' "add" list whole Steps',
+    'every Step in the structure being revised must appear in exactly one of "keep", "change"'
+    ' or "remove"; a kept Step is carried over unchanged, a changed Step replaces the one of'
+    " that name, and an added Step's name must not already exist",
+    "a return breaking any of these rules is rejected whole",
+)
+
+ITEMS_LEAD = 'Every entry of "items" is one Step, and every Step must carry each of these fields: '
+
+DELTA_LEAD = (
+    'Every entry of "change" and "add" is one whole Step, and every Step must carry each of'
+    " these fields: "
+)
+
+
+def _contract(shape, lead, required, tail=()):
+    return "\n".join(
+        (
+            "When finished, print one line of JSON and nothing after it:",
+            shape,
+            lead + ", ".join(required) + ".",
+        )
+        + tuple(REQUIRED_FIELD_LINES[field] for field in required)
+        + ("A Step may also carry: " + ", ".join(OPTIONAL_ITEM_FIELDS) + ".",)
+        + OPTIONAL_FIELD_LINES
+        + TOP_LEVEL_LINES
+        + tuple(tail)
     )
+
+
+CONTRACT = _contract(RETURN_SHAPE, ITEMS_LEAD, core.REQUIRED_ITEM_FIELDS)
+
+STRUCTURE_CONTRACT = _contract(
+    RETURN_SHAPE, ITEMS_LEAD, core.STRUCTURE_ITEM_FIELDS, (TASK_FORBIDDEN,)
+)
+
+DELTA_CONTRACT = _contract(
+    DELTA_SHAPE, DELTA_LEAD, core.STRUCTURE_ITEM_FIELDS, (TASK_FORBIDDEN,) + DELTA_RULES
+)
+
+DECISIONS_HEADING = (
+    "The following questions are already settled. They are binding on every Step and"
+    " must not be re-opened; do not restate them as assumptions."
+)
+
+PRIOR_HEADING = (
+    "The structure being revised follows, as JSON. Return a delta against it, never a fresh"
+    " structure."
 )
 
 
@@ -222,6 +288,33 @@ def source_of(document):
     return {key: document[key] for key in core.SOURCE_KEYS}
 
 
+DECISIONS_SUFFIX = ".decisions.md"
+
+
+def default_decisions_path(document):
+    return os.path.splitext(document)[0] + DECISIONS_SUFFIX
+
+
+def _decision_count(text):
+    return sum(1 for line in text.splitlines() if line.lstrip().startswith("- "))
+
+
+def load_decisions(root, path=None, document=None):
+    if path is not None:
+        resolved = os.path.join(root, path)
+        if not os.path.isfile(resolved):
+            raise ValueError("the decisions file %s does not exist" % resolved)
+    elif document is not None:
+        resolved = os.path.join(root, default_decisions_path(document))
+        if not os.path.isfile(resolved):
+            return None
+    else:
+        return None
+    with open(resolved, "rb") as handle:
+        text = handle.read().decode("utf-8-sig")
+    return {"path": resolved, "text": text, "count": _decision_count(text)}
+
+
 def _walk(base, relative=""):
     try:
         entries = sorted(os.scandir(os.path.join(base, relative)), key=lambda e: e.name)
@@ -298,7 +391,7 @@ def _claimable_lines(document):
     return ["Coverage is not computable for this document: %s." % found["reason"]]
 
 
-def render_prompt(document, codebase, graph=None, charter=None):
+def _header_lines(document, charter):
     header = [
         "Decompose the document into Steps: one logical pass over the whole of it.",
         "Document: %s" % document["path"],
@@ -307,18 +400,48 @@ def render_prompt(document, codebase, graph=None, charter=None):
         " of the document that may be far apart, and only the whole document shows them.",
     ]
     if charter:
-        header.append(
+        return header + [
             "Charter: %s (binding on every Step; every Worker receives it unchanged)" % charter
-        )
+        ]
+    return header
+
+
+def _decisions_lines(decisions):
+    text = decisions.get("text") if isinstance(decisions, dict) else decisions
+    if not isinstance(text, str) or not text.strip():
+        return []
+    return [DECISIONS_HEADING, text.rstrip("\n")]
+
+
+def _prior_lines(prior):
+    if not prior:
+        return []
+    return [PRIOR_HEADING, json.dumps(list(prior), separators=(",", ":"))]
+
+
+def _render(document, codebase, graph, charter, decisions, prior, contract):
     parts = [
-        header,
+        _header_lines(document, charter),
         _codebase_lines(codebase),
         _graph_lines(graph),
+        _decisions_lines(decisions),
+        _prior_lines(prior),
         _document_lines(document),
         _claimable_lines(document),
-        ["Return contract:", CONTRACT],
+        ["Return contract:", contract],
     ]
     return "\n\n".join("\n".join(part) for part in parts if part) + "\n"
+
+
+def render_prompt(document, codebase, graph=None, charter=None):
+    return _render(document, codebase, graph, charter, None, None, CONTRACT)
+
+
+def render_structure_prompt(
+    document, codebase, graph=None, charter=None, decisions=None, prior=None
+):
+    contract = DELTA_CONTRACT if prior else STRUCTURE_CONTRACT
+    return _render(document, codebase, graph, charter, decisions, prior, contract)
 
 
 def build_argv(template, substitutions):
@@ -347,9 +470,9 @@ def _stamp(item, source):
     return {**item, "source": source}
 
 
-def check_items(items, source, root=None):
+def check_items(items, source, root=None, required=None):
     stamped = [_stamp(item, source) for item in items]
-    checked = core.validate(stamped, root=root)
+    checked = core.validate(stamped, root=root, required=required)
     return {"items": stamped, "errors": checked["errors"], "counts": checked["counts"]}
 
 
@@ -358,6 +481,21 @@ def _kill_tree(process):
         os.killpg(os.getpgid(process.pid), signal.SIGKILL)
     except (ProcessLookupError, PermissionError):
         process.kill()
+
+
+def _is_object(line):
+    try:
+        value = json.loads(line)
+    except ValueError:
+        return False
+    return isinstance(value, dict)
+
+
+def last_return(lines):
+    for line in reversed(lines):
+        if _is_object(line):
+            return line
+    return lines[-1] if lines else None
 
 
 def _write_log(log, out, err):
@@ -390,36 +528,50 @@ def spawn(argv, prompt, timeout, cwd=None, log=None):
         out, err = process.communicate()
         reason = "timeout after %s seconds" % timeout
     _write_log(log, out, err)
-    lines = [line for line in out.decode("utf-8", "replace").splitlines() if line.strip()]
+    lines = [line.strip() for line in out.decode("utf-8", "replace").splitlines() if line.strip()]
     return {
         "exit": process.returncode,
-        "line": lines[-1] if lines and reason is None else None,
+        "line": last_return(lines) if reason is None else None,
         "reason": reason,
     }
+
+
+def spawn_many(jobs, timeout, concurrency, cwd=None):
+    workers = concurrency if isinstance(concurrency, int) and concurrency > 0 else 1
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        pending = [
+            pool.submit(spawn, job["argv"], job["prompt"], timeout, cwd=cwd, log=job.get("log"))
+            for job in jobs
+        ]
+        return [future.result() for future in pending]
 
 
 def _clip(text, limit=200):
     return text if len(text) <= limit else text[:limit] + "..."
 
 
+def _empty_lists(keys, errors):
+    return {**dict.fromkeys(keys, []), "errors": list(errors)}
+
+
 def _empty_return(errors):
-    return {**dict.fromkeys(RETURN_KEYS, []), "errors": list(errors)}
+    return _empty_lists(RETURN_KEYS, errors)
 
 
-def parse_return(line):
+def _parse_lists(line, keys):
     if line is None:
-        return _empty_return(["the decompose Worker printed no return line"])
+        return _empty_lists(keys, ["the decompose Worker printed no return line"])
     try:
         value = json.loads(line)
     except ValueError:
-        return _empty_return(["the decompose Worker's last line is not JSON: " + _clip(line)])
+        return _empty_lists(keys, ["the decompose Worker's last line is not JSON: " + _clip(line)])
     if not isinstance(value, dict):
-        return _empty_return(
-            ["the return must be a JSON object with keys %s" % ", ".join(RETURN_KEYS)]
+        return _empty_lists(
+            keys, ["the return must be a JSON object with keys %s" % ", ".join(keys)]
         )
     parsed = {}
     errors = []
-    for key in RETURN_KEYS:
+    for key in keys:
         if key not in value:
             errors.append("the return is missing '%s'" % key)
             parsed = {**parsed, key: []}
@@ -429,6 +581,109 @@ def parse_return(line):
         else:
             parsed = {**parsed, key: value[key]}
     return {**parsed, "errors": errors}
+
+
+def parse_return(line):
+    return _parse_lists(line, RETURN_KEYS)
+
+
+def parse_delta(line):
+    return _parse_lists(line, DELTA_KEYS)
+
+
+def _step_name(step):
+    name = step.get("name") if isinstance(step, dict) else None
+    return name if isinstance(name, str) and name else None
+
+
+def _named_entries(delta, key, wanted):
+    entries = delta.get(key) or []
+    if wanted == "name":
+        errors = [
+            "%s[%d] must be a Step name, got %s" % (key, position, type(entry).__name__)
+            for position, entry in enumerate(entries)
+            if not isinstance(entry, str)
+        ]
+        names = tuple(entry for entry in entries if isinstance(entry, str))
+        return names, errors
+    errors = [
+        "%s[%d] must be a whole Step object with a name" % (key, position)
+        for position, entry in enumerate(entries)
+        if _step_name(entry) is None
+    ]
+    steps = tuple(entry for entry in entries if _step_name(entry) is not None)
+    return steps, errors
+
+
+def _membership_errors(key, names, prior_names, present):
+    verb = "carries" if key in ("change", "add") else "names"
+    if present:
+        return [
+            "%s %s '%s', which is not in the structure being revised" % (key, verb, name)
+            for name in names
+            if name not in prior_names
+        ]
+    return [
+        "%s %s '%s', which already exists in the structure being revised" % (key, verb, name)
+        for name in names
+        if name in prior_names
+    ]
+
+
+def _partition_errors(prior_names, mentioned):
+    twice = [name for name in prior_names if mentioned.count(name) > 1]
+    absent = [name for name in prior_names if mentioned.count(name) == 0]
+    if not twice and not absent:
+        return []
+    parts = []
+    if twice:
+        parts.append("%s appears more than once" % ", ".join("'%s'" % n for n in twice))
+    if absent:
+        parts.append("%s does not appear" % ", ".join("'%s'" % n for n in absent))
+    return ["keep, change and remove must name every prior Step exactly once: " + "; ".join(parts)]
+
+
+def _duplicate_errors(names):
+    seen = ()
+    found = ()
+    for name in names:
+        if name in seen and name not in found:
+            found = found + (name,)
+        seen = seen + (name,)
+    return ["duplicate name in the result: '%s'" % name for name in found]
+
+
+def apply_delta(prior, delta):
+    prior_names = tuple(_step_name(step) or "item #%d" % i for i, step in enumerate(prior))
+    keep, errors = _named_entries(delta, "keep", "name")
+    change, change_errors = _named_entries(delta, "change", "step")
+    add, add_errors = _named_entries(delta, "add", "step")
+    remove, remove_errors = _named_entries(delta, "remove", "name")
+    change_names = tuple(_step_name(step) for step in change)
+    add_names = tuple(_step_name(step) for step in add)
+    errors = (
+        errors
+        + change_errors
+        + add_errors
+        + remove_errors
+        + _membership_errors("keep", keep, prior_names, True)
+        + _membership_errors("change", change_names, prior_names, True)
+        + _membership_errors("remove", remove, prior_names, True)
+        + _membership_errors("add", add_names, prior_names, False)
+        + _partition_errors(prior_names, list(keep + change_names + remove))
+    )
+    if errors:
+        return [], errors
+    replacements = {_step_name(step): step for step in change}
+    carried = [
+        replacements[name] if name in replacements else step
+        for name, step in zip(prior_names, prior)
+        if name not in remove
+    ]
+    duplicates = _duplicate_errors([_step_name(s) for s in carried] + list(add_names))
+    if duplicates:
+        return [], duplicates
+    return [copy.deepcopy(step) for step in carried + list(add)], []
 
 
 def _own_assumptions(item):
@@ -480,11 +735,11 @@ def _raise_vague(item):
     return item
 
 
-def collect(parsed, source, root=None):
+def collect(parsed, source, root=None, required=None):
     folded, fold_errors = fold_assumptions(parsed["items"], parsed["assumptions"])
     lifted = [_raise_vague(item) for item in folded]
     raised = [after["name"] for before, after in zip(folded, lifted) if after is not before]
-    checked = check_items(lifted, source, root)
+    checked = check_items(lifted, source, root, required)
     return {
         "items": checked["items"],
         "constraints": parsed["constraints"],
@@ -503,6 +758,41 @@ def _spawn_errors(spawned):
     return errors
 
 
+def _empty_errors(frozen, items):
+    if items or not (frozen.get("text") or "").strip():
+        return []
+    return ["the decompose Worker returned no Steps for a document that has content"]
+
+
+def _argv_for(frozen, template, prompt, model):
+    substitutions = {PROMPT_PLACEHOLDER: prompt, DOCUMENT_PLACEHOLDER: frozen["path"]}
+    if model is not None:
+        substitutions = {**substitutions, MODEL_PLACEHOLDER: model}
+    return build_argv(template, substitutions)
+
+
+def _assemble(frozen, spawned, log, root, required=None, parse=parse_return):
+    source = source_of(frozen)
+    spawn_errors = _spawn_errors(spawned)
+    parsed = (
+        parse(spawned["line"])
+        if spawned["line"] is not None or not spawn_errors
+        else _empty_return([])
+    )
+    collected = collect(parsed, source, root, required)
+    return {
+        "source": source,
+        "items": collected["items"],
+        "constraints": collected["constraints"],
+        "errors": spawn_errors + collected["errors"] + _empty_errors(frozen, collected["items"]),
+        "counts": collected["counts"],
+        "raised": collected["raised"],
+        "coverage": coverage(frozen["text"], collected["items"]),
+        "exit": spawned["exit"],
+        "log": log,
+    }
+
+
 def decompose(
     document,
     template,
@@ -515,31 +805,170 @@ def decompose(
     log=None,
 ):
     frozen = freeze(document)
-    source = source_of(frozen)
     prompt = render_prompt(frozen, inventory(root, cap), graph, charter)
-    substitutions = {PROMPT_PLACEHOLDER: prompt, DOCUMENT_PLACEHOLDER: frozen["path"]}
-    if model is not None:
-        substitutions = {**substitutions, MODEL_PLACEHOLDER: model}
-    argv = build_argv(template, substitutions)
+    argv = _argv_for(frozen, template, prompt, model)
     spawned = spawn(argv, prompt, timeout, cwd=root, log=log)
-    spawn_errors = _spawn_errors(spawned)
-    parsed = (
-        parse_return(spawned["line"])
-        if spawned["line"] is not None or not spawn_errors
-        else _empty_return([])
+    return _assemble(frozen, spawned, log, root)
+
+
+def _task_errors(items):
+    named = [
+        _step_label(item, index)
+        for index, item in enumerate(items)
+        if isinstance(item, dict) and item.get("task") not in (None, "")
+    ]
+    if not named:
+        return []
+    return [
+        "%d Steps carry a task, which a structure return must not: %s"
+        % (len(named), ", ".join(named))
+    ]
+
+
+def _delta_return(prior, line):
+    parsed = parse_delta(line)
+    carried = {key: parsed[key] for key in ("assumptions", "constraints")}
+    if parsed["errors"]:
+        return {"items": [], **carried, "errors": parsed["errors"]}
+    task_errors = _task_errors(list(parsed["change"]) + list(parsed["add"]))
+    items, errors = apply_delta(prior, parsed)
+    if task_errors:
+        return {"items": [], **carried, "errors": task_errors + errors}
+    return {"items": items, **carried, "errors": errors}
+
+
+def _assemble_structure(frozen, spawned, log, root, prior=None):
+    if prior:
+        return _assemble(
+            frozen,
+            spawned,
+            log,
+            root,
+            core.STRUCTURE_ITEM_FIELDS,
+            parse=lambda line: _delta_return(prior, line),
+        )
+    assembled = _assemble(frozen, spawned, log, root, core.STRUCTURE_ITEM_FIELDS)
+    return {**assembled, "errors": assembled["errors"] + _task_errors(assembled["items"])}
+
+
+def _sample_logs(log, count):
+    if log is None or count == 1:
+        return [log] * count
+    stem, extension = os.path.splitext(log)
+    return ["%s-%d%s" % (stem, number, extension) for number in range(1, count + 1)]
+
+
+def sample_structures(
+    samples,
+    document,
+    template,
+    root,
+    timeout,
+    model=None,
+    graph=None,
+    charter=None,
+    cap=None,
+    log=None,
+    decisions=None,
+    prior=None,
+):
+    count = samples if isinstance(samples, int) and samples > 0 else 1
+    frozen = freeze(document)
+    prompt = render_structure_prompt(
+        frozen, inventory(root, cap), graph, charter, decisions, prior
     )
-    collected = collect(parsed, source, root)
-    return {
-        "source": source,
-        "items": collected["items"],
-        "constraints": collected["constraints"],
-        "errors": spawn_errors + collected["errors"],
-        "counts": collected["counts"],
-        "raised": collected["raised"],
-        "coverage": coverage(frozen["text"], collected["items"]),
-        "exit": spawned["exit"],
-        "log": log,
-    }
+    argv = _argv_for(frozen, template, prompt, model)
+    logs = _sample_logs(log, count)
+    jobs = [{"argv": argv, "prompt": prompt, "log": sample_log} for sample_log in logs]
+    spawned = spawn_many(jobs, timeout, count, cwd=root)
+    return [
+        _assemble_structure(frozen, one, sample_log, root, prior)
+        for one, sample_log in zip(spawned, logs)
+    ]
+
+
+def structure(
+    document,
+    template,
+    root,
+    timeout,
+    model=None,
+    graph=None,
+    charter=None,
+    cap=None,
+    log=None,
+    decisions=None,
+    prior=None,
+):
+    return sample_structures(
+        1,
+        document,
+        template,
+        root,
+        timeout,
+        model=model,
+        graph=graph,
+        charter=charter,
+        cap=cap,
+        log=log,
+        decisions=decisions,
+        prior=prior,
+    )[0]
+
+
+def _scorable(result):
+    return [item for item in result.get("items") or [] if isinstance(item, dict)]
+
+
+def _rank_key(result, index):
+    scored = shape.scalars(_scorable(result))
+    return (
+        1 if result.get("errors") else 0,
+        -scored["parallelism"],
+        scored["fused_without_overlap"],
+        -scored["msps_per_step"],
+        scored["largest_lane"],
+        index,
+    )
+
+
+def rank(results):
+    return sorted(range(len(results)), key=lambda index: _rank_key(results[index], index))
+
+
+def _owner_counts(items):
+    counts = {}
+    for item in items:
+        files = item.get("files")
+        paths = {path for path in files if isinstance(path, str)} if isinstance(files, list) else ()
+        for path in paths:
+            counts = {**counts, path: counts.get(path, 0) + 1}
+    return counts
+
+
+def _per_sample(values):
+    return ", ".join("sample %d has %d" % (number, value) for number, value in enumerate(values, 1))
+
+
+def disagreements(results):
+    if len(results) < 2:
+        return []
+    structures = [_scorable(result) for result in results]
+    owners = [_owner_counts(items) for items in structures]
+    paths = sorted(set().union(*owners))
+    found = []
+    for path in paths:
+        counts = [owned.get(path, 0) for owned in owners]
+        if len(set(counts)) > 1:
+            found.append(
+                "The samples do not agree on how many Steps own %s: %s." % (path, _per_sample(counts))
+            )
+    scored = [shape.scalars(items) for items in structures]
+    for key, label in (("msps", "the number of MSPs"), ("parallelism", "the parallelism")):
+        values = [one[key] for one in scored]
+        if len(set(values)) > 1:
+            found.append("The samples do not agree on %s: %s." % (label, _per_sample(values)))
+    return found
 
 
 def _coverage_lines(covered):

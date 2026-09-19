@@ -6,6 +6,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import core
+import mitosis
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -77,7 +78,7 @@ def _unknown_identifiers(text):
             if not _looks_like_identifier(token, has_trigger_word):
                 continue
             if FLAG_SHAPE.match(token):
-                if token not in core.FLAG_NAMES:
+                if token not in mitosis.flag_names():
                     unknown.append(token)
             elif token not in VOCABULARY_WORDS:
                 unknown.append(token)
@@ -110,6 +111,21 @@ class Docs(unittest.TestCase):
             if unknown:
                 offenses[os.path.relpath(path, ROOT)] = unknown
         self.assertEqual(offenses, {})
+
+    def every_flag_the_adapter_names_exists_in_the_cli(self):
+        path = os.path.join(ROOT, "adapters", "claude-code", "SKILL.md")
+        if not os.path.isfile(path):
+            self.skipTest("adapters/claude-code/SKILL.md does not exist yet")
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        named = {
+            token
+            for line in FENCE.sub("", text).splitlines()
+            for token in INLINE_CODE.findall(line)
+            if FLAG_SHAPE.match(token)
+        }
+        declared = set(mitosis.flag_names())
+        self.assertEqual(sorted(named - declared), [])
 
     def the_skill_file_is_within_its_size_cap(self):
         path = os.path.join(ROOT, "adapters", "claude-code", "SKILL.md")
