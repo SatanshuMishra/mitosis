@@ -64,9 +64,10 @@ claude -p {task} --model {model} --permission-mode bypassPermissions
 
 The brief already carries the charter path, the document path, the Steps in
 order, the write-set, the read-set and the return contract; the Worker needs
-nothing else. Its last stdout line must be the one-line JSON return the brief
-ends with, and a Claude Code Worker prints its final message last, so this
-template satisfies that without wrapping.
+nothing else. It must print the one-line JSON return the brief ends with, and
+a Claude Code Worker prints its final message last, so this template satisfies
+that. Narration after it, or a code fence around it, is tolerated: the last
+line that parses as a JSON object is the return.
 
 Tiers are labels, not models. When the dispatch template uses the model
 placeholder, every tier the plan assigns must be mapped, or mitosis refuses
@@ -96,7 +97,10 @@ not a test failure. Left alone that reads as inconclusive, and a Step that
 creates a new module can then never reach `pass`. Decide it in the wrapper: a
 module missing because it was reverted means the behaviour does not exist,
 which is the property failing and exit 1. Any other load error is still
-inconclusive. A wrapper that maps every load error to the same code either
+inconclusive. Catch the whole import family, not the missing-module case
+alone: importing a name out of a package that survives raises the general
+error, not the specific one, so a wrapper that catches only the specific one
+reports inconclusive on exactly the Steps it was written to judge. A wrapper that maps every load error to the same code either
 blocks honest work or passes work that proves nothing.
 
 Whatever else writes into a worktree is yours to exclude. Editor state, build

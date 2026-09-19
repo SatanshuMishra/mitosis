@@ -467,11 +467,30 @@ def validate(items, root=None):
     return {"errors": errors, "counts": _counts(items, root)}
 
 
+GLOB_CHARACTERS = "*?["
+
+WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
+
+
+def path_words(path):
+    return {
+        word.lower()
+        for part in re.split(r"[^A-Za-z0-9]+", path)
+        if part
+        for word in WORD.findall(part)
+    }
+
+
 def marker_matches(path, marker):
-    if not isinstance(marker, str) or not marker:
+    if not isinstance(marker, str) or not marker.strip():
         return False
     normalized = _norm(path)
-    return fnmatch.fnmatch(normalized, marker) or marker in normalized
+    candidate = marker.strip().lower()
+    if any(character in candidate for character in GLOB_CHARACTERS):
+        return fnmatch.fnmatch(normalized, candidate)
+    if not candidate.isalnum():
+        return candidate in normalized
+    return candidate in path_words(normalized)
 
 
 def _marker_hits(paths, markers):
