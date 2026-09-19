@@ -572,7 +572,7 @@ def achieved_parallelism(records):
     )
     spans = tuple((a, b) for a, b in spans if a is not None and b is not None)
     events = sorted(
-        [(a, 1) for a, _ in spans] + [(b, -1) for _, b in spans], key=lambda e: (e[0], -e[1])
+        [(a, 1) for a, _ in spans] + [(b, -1) for _, b in spans], key=lambda e: (e[0], e[1])
     )
     peak = 0
     live = 0
