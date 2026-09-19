@@ -53,7 +53,8 @@ quotes or newlines lands as one argument and is never reinterpreted by a shell.
 | `--dispatch-command` | one Worker per Lane, in its worktree | listed under --help |
 | `--acceptance-command` | one acceptance property, in a worktree | file, test, worktree |
 | `--pr-command` | one draft pull request per MSP | listed under --help |
-| `--decompose-command` | the one pass that turns a document into Steps | prompt, model, document |
+| `--decompose-command` | the structure pass that turns a document into unbriefed Steps | prompt, model, document |
+| `--brief-command` | one Worker per unbriefed Step, writing its task | prompt, model, step, document |
 
 A Worker spawned from this adapter, with the Lane brief as its whole prompt
 and the model chosen by tier:
@@ -115,6 +116,13 @@ what every MSP branches from; `--timeout` in seconds, applied to every Worker,
 acceptance run and pull-request command; and the repository root as the
 working directory, because every Step path and the document path are relative
 to it. mitosis refuses to run from anywhere else.
+
+`--timeout` is measured on a monotonic clock, so time the machine spends
+asleep is never counted against it. A Worker dispatched before a laptop
+sleeps is not killed the moment the laptop wakes; a run left overnight on a
+machine that sleeps will sit there until its connection drops, not until
+`--timeout` elapses. Only a machine that never sleeps enforces the timeout
+the way wall-clock time would suggest.
 
 ## The two inputs
 
@@ -187,11 +195,14 @@ request; the one above prints the URL there.
 
 ### Spec: a document
 
-`--spec` takes a document in any format. One decompose pass over the whole of
-it produces the Steps, because the two fields that join distant parts of a
-document, `after` and `contract_group`, cannot be seen from any one section.
-The pass needs `--decompose-command`, and its prompt is large, so let it
-arrive on stdin:
+`--spec` takes a document in any format and reaches the plan in stages, so
+you can read a document's split before any brief is bought.
+
+`--plan-only` runs one structure dispatch over the whole of the document,
+because the two fields that join distant parts of it, `after` and
+`contract_group`, cannot be seen from any one section. The stage needs
+`--decompose-command`, and its prompt is large, so let it arrive on stdin.
+No Step returned here carries a `task`; nothing is briefed yet:
 
 ```
 python3 /path/to/mitosis.py --spec docs/specs/search.md --plan-only \
@@ -201,27 +212,49 @@ python3 /path/to/mitosis.py --spec docs/specs/search.md --plan-only \
 ```
 
 Decompose uses the top mapping. This run spawns exactly one model process,
-persists the Steps it returned into the run directory, and prints the
-decompose report followed by the plan-stage report. Read three things there:
-the coverage map, which lists the document's sections no Step claimed; the
-assumptions, each a reading the decomposer chose where the document was
-underdetermined, and a Step carrying one is never rated `simple`; and the
-count of global constraints it extracted, which is a reading of the document
-and not a thing that is delivered. No Worker is handed that list; the charter
-binds and the document is what a Worker reads. A zero on a document that does
-state binding rules means the decomposer could not separate them from any one
-Step, and a Worker reading only its own section will miss them too.
+persists the Steps it returned into the run directory, and prints a report
+with a Split shape section and a Decisions section. Read four things there:
+the scalars in Split shape, which score the split itself before any brief
+exists; the findings under them, which name what caused a bad scalar; the
+coverage map, which lists the document's sections no Step claimed; and the
+assumptions, each a reading chosen where the document was underdetermined,
+and a Step carrying one is never rated `simple`.
 
-A section nobody claimed, or an assumption you would have made differently,
-is fixed in the document, not in the Steps. Edit the document and plan again.
-When the plan reads right, run it with `--resume`, which reads the persisted
-Steps instead of decomposing a second time:
+An assumption you would have decided differently does not go back into the
+document. Write it into the decisions file, in your own words, and name it
+with `--decisions PATH` (default: `<document without extension>.decisions.md`
+when that file exists). The Decisions section of the report then names the
+file and counts its settled questions, or says none was supplied. That file
+is binding on every later structure dispatch and every brief for this
+document, nothing in mitosis merges or rewords an entry, and the list only
+ever grows: a question answered once is never re-asked.
+
+Revise the structure once the decisions file has grown, without paying to
+rebuild every Step:
+
+```
+python3 /path/to/mitosis.py --spec docs/specs/search.md --plan-only --revise \
+  --decompose-command "claude -p --model {model} --permission-mode bypassPermissions" \
+  --tier-model top=claude-opus-5 \
+  --timeout 900
+```
+
+`--revise` hands the persisted structure back to one small dispatch, which
+returns only a delta against it. Every Step you did not complain about is
+kept exactly as it was, brief included; only the Steps the delta names as
+changed, added or removed cost anything at the brief stage that follows.
+
+When the plan reads right, run it with `--resume`. This writes a brief for
+every Step still unbriefed, in parallel, and then plans and builds; a
+revision that touched three Steps buys three brief dispatches, not a rebuild
+of all of them:
 
 ```
 python3 /path/to/mitosis.py --spec docs/specs/search.md --resume \
   --charter docs/CHARTER.md \
   --feature-branch main \
   --dispatch-command "claude -p {task} --model {model} --permission-mode bypassPermissions" \
+  --brief-command "claude -p --model {model} --permission-mode bypassPermissions" \
   --acceptance-command "python3 -m pytest {file} -k {test} -q" \
   --pr-command "gh pr create --draft --head {branch} --base {base} --title {title} --body {body}" \
   --tier-model top=claude-opus-5 --tier-model cheap=claude-sonnet-5 \
