@@ -132,7 +132,7 @@ trial runs and listed here in full, so the set cannot be pruned afterwards.
 
 | # | Document | Source | External oracle | Expected difficulty |
 |---|---|---|---|---|
-| D1 | RFC 4648 §4-§8 | IETF | test vectors in §10 | low; five near-independent codecs |
+| D1 | RFC 4648, whole | IETF | test vectors in §10 | low; five near-independent codecs |
 | D2 | RFC 6902 | IETF | Appendix A plus the public json-patch-tests corpus | medium; six operations over one document model |
 | D3 | RFC 4180 | IETF | hand-derived from the text, plus a public CSV edge-case corpus | high; famously underspecified |
 | D4 | Semantic Versioning 2.0.0 | semver.org | the published precedence examples | low; small and precise |
@@ -264,3 +264,11 @@ is reported but excluded from every hypothesis if any harness change follows
 it, because a trial that caused a change to the apparatus cannot also measure
 the apparatus. Reason: running eight documents through an unproven harness
 risks spending the whole budget on a scripting fault.
+
+**2026-09-19, before stage A.** Every document is handed to mitosis whole and
+byte-for-byte as its publisher issued it. No section is trimmed, including
+front matter, security considerations and references. Reason: trimming is
+authoring, and the point of this corpus is that no part of it was shaped here.
+The consequence is that coverage will honestly report boilerplate sections as
+unclaimed, and that is read as a property of the document rather than a fault
+in the split.
