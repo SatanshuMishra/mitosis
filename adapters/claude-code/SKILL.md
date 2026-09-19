@@ -89,6 +89,23 @@ reported as inconclusive, not as a pass. Where the project's runner selects
 tests differently, point the template at a small wrapper script that maps its
 exit codes to those three.
 
+The wrapper carries one obligation the runner alone will not meet. Reverting
+the implementation deletes whatever the work created, so in a language that
+imports by module the property's own test stops loading, and a load error is
+not a test failure. Left alone that reads as inconclusive, and a Step that
+creates a new module can then never reach `pass`. Decide it in the wrapper: a
+module missing because it was reverted means the behaviour does not exist,
+which is the property failing and exit 1. Any other load error is still
+inconclusive. A wrapper that maps every load error to the same code either
+blocks honest work or passes work that proves nothing.
+
+Whatever else writes into a worktree is yours to exclude. Editor state, build
+caches and hooks that fire on a spawned Worker all land in the tree, and the
+commit before the gate stages everything not ignored, so they arrive as
+undeclared writes against every MSP at once. Ignore them in the repository
+before the run. Reconcile will report them either way, and two MSPs that both
+picked up the same cache will conflict when a human merges them.
+
 Three more things every run needs: `--feature-branch`, which must exist and is
 what every MSP branches from; `--timeout` in seconds, applied to every Worker,
 acceptance run and pull-request command; and the repository root as the
