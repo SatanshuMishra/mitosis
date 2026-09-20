@@ -497,3 +497,65 @@ about whether mitosis costs more than the alternative a user actually has.
 Recorded because the flaw is in the pre-registration, not in the data: the
 control was chosen as the previous version of the tool rather than as the
 alternative to using the tool, and the previous version's plans do not run.
+
+---
+
+## 13. Results of the brownfield and language trials
+
+**H7, brownfield: the work succeeded and the gate refused it.** All 14 Lanes
+ran. Every one of the 14 MSPs was gate-failed or blocked, and nothing shipped,
+so the run ended at exit 20 and H7's exit-0 clause did not hold. Its stated
+falsification condition did not trigger: the plan's Steps edit only existing
+files, 28 of 28, and conformance rose.
+
+Merging the refused work by hand and measuring it: **698 of 709 before, 707 of
+709 after**, zero merge conflicts, and the integrated suite grew from 152 tests
+to 171, so the rise was not bought by deleting tests. Nine of the eleven
+baseline defects are fixed. The two survivors are `++99` and `--99`, which
+raise the wrong error type from the float module while being an integer
+concern; the plan gave integers and floats to different Steps with disjoint
+write-sets, and that split was recorded as a risk before the build ran.
+
+**Why the gate refused it, which is not what it looks like.** 46 of 50
+acceptance properties were judged inert. The gate reverts a Step's files to
+the base branch and requires the property to fail. In an empty repository the
+file disappears and the property fails. In a repository with code, reverting
+restores the working previous implementation, and a property describing
+behaviour that already worked still passes.
+
+The gate is right. The source-encoding Step and the arrays Step changed
+nothing at all, because the two revisions of the document agree on those
+modules, and `booleans` changed one line. Those Steps named properties
+describing their module's whole behaviour, nearly all of it pre-existing, and
+the gate correctly reported that none depends on the new work.
+
+The defect is that mitosis has no way for a Step to say the document requires
+no change here. In an empty repository that case cannot arise, because every
+Step creates something. Against existing code it arises immediately, since a
+revision leaves most modules untouched. The tool cannot distinguish a Worker
+that wrote a worthless test from a Worker that correctly had nothing to do,
+and it treats both as a reason to stop. The failure direction is safe: it
+refused rather than shipping.
+
+**H8, language: held.** The JavaScript package scores **46 of 46** on the same
+frozen vectors as D4's Python package, which also scored 46 of 46. Five MSPs
+shipped, the five branches merge with zero conflicts in `src/` and `test/`,
+and the merged suite runs 50 tests green. The split was 5 Lanes against D4's
+7, well clear of the one-Lane collapse that would have falsified it. The
+charter's language was honoured exactly: every write-set path is `.mjs` under
+`src/` or `test/`, with no Python anywhere.
+
+D10's run reported exit 6, reconcile finding 71 undeclared writes. Every one
+is `graphify-out/`, a knowledge-graph directory a hook in the operator's own
+environment wrote into the trial repository while the build ran. No other
+undeclared path appears, D9 and the four corpus builds are untouched, and the
+same directory is the only cause of the four apparent merge conflicts.
+Reconcile behaved correctly on files no Worker wrote; the contamination is the
+operator's and the exit code is not attributed to mitosis.
+
+**The conformance adapters were proven able to fail.** The JavaScript adapter
+reports 0 failures against the real package, 8 when `isValid` always returns
+true, and 7 when `compare` always returns 0. The first probe written for it
+reported 0 in all three cases, because an ES module cache keeps the original
+dependency loaded when only the entry point carries a cache-busting query;
+each variant now runs in a fresh process.
