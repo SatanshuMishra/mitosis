@@ -73,10 +73,14 @@ SCHEDULING_LINES = (
     " and give that Step an after edge reaching every Step whose modules it exports, directly"
     " or through another. A Step that merely needs the file to exist will create it empty, every"
     " test will still pass, and the package will export nothing.",
-    "  When the codebase already holds an implementation, a Step may find the document asks"
-    " for nothing its files do not already do. Say so: keep the Step, and return an empty"
-    " acceptance list. Do NOT invent a property describing behaviour that already works, because"
-    " a property that holds before your Step runs proves nothing about it and stops the run.",
+    "  When the codebase already holds an implementation, every acceptance property is judged"
+    " against the code as it stands TODAY, not against an empty file. A property describing"
+    " behaviour the existing code already has proves nothing about the Step and stops the run.",
+    "  So for each Step over existing code, ask what the document requires that the code does"
+    " not already do. Name acceptance properties that FAIL against the current code and pass"
+    " only once the Step has changed it. If the answer is that the code already satisfies this"
+    " part of the document, keep the Step and return an EMPTY acceptance list, which records"
+    " that nothing was required here. Never pad a Step with properties that already hold.",
 )
 
 TOP_LEVEL_LINES = (

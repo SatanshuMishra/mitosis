@@ -1298,7 +1298,8 @@ class SchedulingGuidance(unittest.TestCase):
         text = " ".join(decompose.SCHEDULING_LINES)
         self.assertIn("same file in their write-sets", text)
         self.assertIn("public surface, not a formality", text)
-        self.assertIn("empty acceptance list", text)
+        self.assertIn("EMPTY acceptance list", text)
+        self.assertIn("FAIL against the current code", text)
 
 
 class SpawnUntil(unittest.TestCase):
