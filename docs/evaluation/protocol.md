@@ -282,3 +282,40 @@ authoring, and the point of this corpus is that no part of it was shaped here.
 The consequence is that coverage will honestly report boilerplate sections as
 unclaimed, and that is read as a property of the document rather than a fault
 in the split.
+
+**2026-09-20, after corpus run 3 and before stage D.** Corpus run 3 is
+discarded and stage D is built from corpus run 4 instead. Two sessions held the
+same output paths open at once, forty-four seconds apart, and the second
+truncated files the first was still writing at its own offset. The reports are
+blends: `contaminated-reports-b3/D6-B3.txt` carries a complete clean run ending
+`exit 0: the structure was written` followed by a second writer's output ending
+`exit 3: refused to start`. Every run-3 report is therefore unusable. The eight
+run-3 structures were checked individually against the raw model output stored
+beside them and each matches one dispatch name for name, so the structures were
+single-writer even though the reports were not; they are kept under
+`contaminated-runs3/` and are not used for any claim here. Run 4 takes a
+per-document atomic lock and records `SKIPPED` rather than interleaving. Reason:
+a result that needs an argument about which bytes came from which writer is not
+a result, and the four builds drawn in §7 are the most expensive arm in this
+protocol.
+
+**2026-09-20, before stage E.** One of the five frozen oracle digests does not
+verify what it appears to verify. `FROZEN.json` records `1bbab111e8d0dfb4` for
+the 777-file toml-test corpus. That value is reproducible, by hashing the sorted
+file path strings and never opening a file, so it moves only when a file is
+added, removed or renamed. Rewriting the entire body of any of the 777 cases,
+including turning an expected failure into an expected success, leaves it
+unchanged; this was demonstrated on a throwaway copy, where the path digest held
+at `1bbab111e8d0dfb4` while a content digest moved. The four single-file digests
+are genuine content hashes and all reproduce exactly. The TOML corpus is pinned
+instead by its git commit `ff49d10` with a clean working tree and the counts 266
+valid and 511 invalid, which reproduces and pins contents exactly, since git
+content-hashes every file in the tree. `FROZEN.json` is left exactly as written;
+the recipe, the demonstration of its blindness and the replacement check are
+recorded beside it in `oracles/FROZEN-RECIPE.md`, with `verify-oracles.py`
+running the check. The earlier stage E figure of 932 of 945 was measured against
+this corpus under this digest, so it was pinned by the clone being untouched
+rather than by any check. Reason: a pre-registered hash that cannot detect the
+tampering it exists to detect is worse than no hash, because it is reported as
+assurance, and stage E's whole purpose is to be checkable by someone who does
+not trust the people who ran it.

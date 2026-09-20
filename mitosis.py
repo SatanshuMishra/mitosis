@@ -530,10 +530,16 @@ def refuse_unmapped_briefs(template, pending, models):
 
 
 def brief_lines(written):
+    retried = written.get("retried") or []
     lines = (
         "brief stage: %s written, %s reused"
         % (_n(len(written["written"]), "brief"), _n(len(written["reused"]), "brief")),
     )
+    if retried:
+        lines = lines + (
+            "%s re-dispatched after a return that broke the contract: %s"
+            % (_n(len(retried), "brief"), ", ".join(retried)),
+        )
     return lines + tuple(written["errors"])
 
 

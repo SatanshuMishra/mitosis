@@ -736,6 +736,18 @@ class BriefStageReport(unittest.TestCase):
         self.assertIn("2 briefs reused", lines[0])
         self.assertIn("0 briefs written", lines[0])
 
+    def a_brief_that_had_to_be_asked_again_is_named_in_the_report(self):
+        lines = mitosis.brief_lines(
+            {"written": ["a", "b"], "reused": [], "retried": ["b"], "errors": []}
+        )
+        self.assertIn("1 brief re-dispatched after a return that broke the contract: b", lines)
+
+    def a_run_where_every_brief_returned_cleanly_says_nothing_about_retries(self):
+        lines = mitosis.brief_lines(
+            {"written": ["a"], "reused": [], "retried": [], "errors": []}
+        )
+        self.assertTrue(all("re-dispatched" not in line for line in lines))
+
 
 class CoverageRendering(unittest.TestCase):
     def the_coverage_map_is_rendered_exactly_once_in_a_report(self):

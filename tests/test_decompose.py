@@ -1207,6 +1207,165 @@ class SpawnMany(unittest.TestCase):
         self.assertEqual(json.loads(results[1]["line"])["n"], 1)
 
 
+FLAKY = """
+import json
+import os
+import sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+tally = os.path.join(here, "tally-%s.txt" % sys.argv[1])
+seen = 0
+if os.path.isfile(tally):
+    with open(tally, encoding="utf-8") as handle:
+        seen = int(handle.read())
+with open(tally, "w", encoding="utf-8") as handle:
+    handle.write(str(seen + 1))
+sys.stdin.read()
+if seen < int(sys.argv[2]):
+    print(sys.argv[3])
+else:
+    print(json.dumps({"ok": True, "attempt": seen + 1}))
+"""
+
+
+def flaky(root, label, bad_rounds, bad_line="not a json object at all"):
+    path = write(root, "flaky.py", FLAKY)
+    return [sys.executable, path, label, str(bad_rounds), bad_line]
+
+
+def tally(root, label):
+    path = os.path.join(root, "tally-%s.txt" % label)
+    if not os.path.isfile(path):
+        return 0
+    with open(path, encoding="utf-8") as handle:
+        return int(handle.read())
+
+
+def _is_json_object(spawned):
+    line = spawned["line"]
+    if line is None:
+        return False
+    try:
+        return isinstance(json.loads(line), dict)
+    except ValueError:
+        return False
+
+
+class StructureRetry(unittest.TestCase):
+    def a_structure_dispatch_that_returns_no_json_object_is_asked_again(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(root, "docs/spec.md", "# One\n\nbody\n")
+            good = json.dumps({
+                "items": [{
+                    "name": "only", "type": "feature", "files": ["pkg/only.py"],
+                    "acceptance": [{"file": "tests/test_only.py", "test": "a_thing_holds"}],
+                    "spec_ref": "1", "complexity": "low", "source": "1",
+                }],
+                "assumptions": [], "constraints": [],
+            })
+            argv = flaky(root, "structure", 1, bad_line="chatter, no object")
+            template = " ".join(shlex.quote(part) for part in argv)
+            write(root, "flaky.py", FLAKY.replace(
+                'print(json.dumps({"ok": True, "attempt": seen + 1}))',
+                "print(%r)" % good,
+            ))
+            result = decompose.structure(
+                os.path.join(root, "docs/spec.md"), template, root, timeout=20,
+            )
+            self.assertEqual(result["errors"], [])
+            self.assertEqual([item["name"] for item in result["items"]], ["only"])
+            self.assertEqual(tally(root, "structure"), 2)
+
+    def a_structure_dispatch_that_never_returns_an_object_stops_at_the_bound(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(root, "docs/spec.md", "# One\n\nbody\n")
+            argv = flaky(root, "structure", 99, bad_line="chatter, no object")
+            template = " ".join(shlex.quote(part) for part in argv)
+            result = decompose.structure(
+                os.path.join(root, "docs/spec.md"), template, root, timeout=20,
+            )
+            self.assertTrue(result["errors"])
+            self.assertEqual(tally(root, "structure"), decompose.DISPATCH_ATTEMPTS)
+
+
+class SpawnUntil(unittest.TestCase):
+    def a_result_the_predicate_rejects_is_dispatched_again(self):
+        with tempfile.TemporaryDirectory() as root:
+            jobs = [job(flaky(root, "a", 1))]
+            results = decompose.spawn_until(
+                jobs, timeout=20, concurrency=1, cwd=root,
+                accepts=lambda index, spawned: _is_json_object(spawned),
+            )
+            self.assertTrue(_is_json_object(results[0]))
+            self.assertEqual(json.loads(results[0]["line"])["attempt"], 2)
+            self.assertEqual(tally(root, "a"), 2)
+
+    def a_result_the_predicate_accepts_is_never_dispatched_twice(self):
+        with tempfile.TemporaryDirectory() as root:
+            jobs = [job(flaky(root, "a", 0))]
+            decompose.spawn_until(
+                jobs, timeout=20, concurrency=1, cwd=root,
+                accepts=lambda index, spawned: _is_json_object(spawned),
+            )
+            self.assertEqual(tally(root, "a"), 1)
+
+    def only_the_rejected_job_is_dispatched_again(self):
+        with tempfile.TemporaryDirectory() as root:
+            jobs = [job(flaky(root, "good", 0)), job(flaky(root, "bad", 1))]
+            results = decompose.spawn_until(
+                jobs, timeout=20, concurrency=2, cwd=root,
+                accepts=lambda index, spawned: _is_json_object(spawned),
+            )
+            self.assertEqual(tally(root, "good"), 1)
+            self.assertEqual(tally(root, "bad"), 2)
+            self.assertEqual([_is_json_object(one) for one in results], [True, True])
+
+    def a_result_that_never_satisfies_the_predicate_stops_at_the_bound(self):
+        with tempfile.TemporaryDirectory() as root:
+            jobs = [job(flaky(root, "a", 99))]
+            results = decompose.spawn_until(
+                jobs, timeout=20, concurrency=1, cwd=root,
+                accepts=lambda index, spawned: _is_json_object(spawned),
+            )
+            self.assertEqual(tally(root, "a"), decompose.DISPATCH_ATTEMPTS)
+            self.assertFalse(_is_json_object(results[0]))
+
+    def the_bound_is_at_least_one_attempt(self):
+        with tempfile.TemporaryDirectory() as root:
+            jobs = [job(flaky(root, "a", 99))]
+            decompose.spawn_until(
+                jobs, timeout=20, concurrency=1, cwd=root,
+                accepts=lambda index, spawned: _is_json_object(spawned),
+                attempts=0,
+            )
+            self.assertEqual(tally(root, "a"), 1)
+
+    def results_come_back_in_the_order_the_jobs_were_given(self):
+        with tempfile.TemporaryDirectory() as root:
+            jobs = [job(delayed(0.3, {"n": 0})), job(delayed(0.0, {"n": 1}))]
+            results = decompose.spawn_until(
+                jobs, timeout=20, concurrency=2, cwd=root,
+                accepts=lambda index, spawned: True,
+            )
+            self.assertEqual([json.loads(one["line"])["n"] for one in results], [0, 1])
+
+    def each_result_carries_how_many_attempts_it_took(self):
+        with tempfile.TemporaryDirectory() as root:
+            jobs = [job(flaky(root, "good", 0)), job(flaky(root, "bad", 1))]
+            results = decompose.spawn_until(
+                jobs, timeout=20, concurrency=2, cwd=root,
+                accepts=lambda index, spawned: _is_json_object(spawned),
+            )
+            self.assertEqual([one["attempts"] for one in results], [1, 2])
+
+    def no_jobs_is_no_results(self):
+        self.assertEqual(
+            decompose.spawn_until([], timeout=1, concurrency=2, cwd=None,
+                                  accepts=lambda index, spawned: True),
+            (),
+        )
+
+
 class PlainNumberedSections(unittest.TestCase):
     RFC = (
         "1.  Introduction\n\nbody\n\n"
@@ -1285,7 +1444,11 @@ def load_tests(loader, tests, pattern):
         Decisions,
         Delta,
         Sampling,
-        SpawnMany, PlainNumberedSections):
+        SpawnMany,
+        SpawnUntil,
+        StructureRetry,
+        PlainNumberedSections,
+    ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

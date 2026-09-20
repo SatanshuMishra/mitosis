@@ -346,7 +346,7 @@ class Write(unittest.TestCase):
         self.assertEqual(
             [item["task"] for item in result["items"]], ["do alpha", "build beta", "build gamma"]
         )
-        self.assertEqual(sorted(result), ["errors", "items", "reused", "written"])
+        self.assertEqual(sorted(result), ["errors", "items", "retried", "reused", "written"])
         self.assertEqual(items, before)
         for original, returned in zip(items, result["items"]):
             self.assertIsNot(original, returned)
@@ -513,7 +513,79 @@ class Write(unittest.TestCase):
             template = briefer(root, {})
             result = briefs.write(items, template, root, timeout=20, models={"top": "big"})
             self.assertFalse(os.path.isdir(os.path.join(root, "worker", "prompt-alpha.txt")))
-        self.assertEqual(result, {"items": items, "written": [], "reused": ["alpha", "beta"], "errors": []})
+        self.assertEqual(
+            result,
+            {"items": items, "written": [], "reused": ["alpha", "beta"], "retried": [], "errors": []},
+        )
+
+
+FLAKY_BRIEFER = """
+import json
+import os
+import sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+step = sys.argv[1]
+sys.stdin.read()
+tally = os.path.join(here, "tally-%s.txt" % step)
+seen = 0
+if os.path.isfile(tally):
+    with open(tally, encoding="utf-8") as handle:
+        seen = int(handle.read())
+with open(tally, "w", encoding="utf-8") as handle:
+    handle.write(str(seen + 1))
+bad = int(sys.argv[2])
+if seen < bad:
+    print("- `a_thing_holds` - a bullet, which is not a JSON object")
+else:
+    print(json.dumps({"name": step, "task": "do the thing for " + step}))
+"""
+
+
+def flaky_briefer(root, bad_rounds):
+    path = write(root, "worker/flaky.py", FLAKY_BRIEFER)
+    return "%s %s {step} %d" % (shlex.quote(sys.executable), shlex.quote(path), bad_rounds)
+
+
+def attempts(root, name):
+    path = os.path.join(root, "worker", "tally-%s.txt" % name)
+    if not os.path.isfile(path):
+        return 0
+    with open(path, encoding="utf-8") as handle:
+        return int(handle.read())
+
+
+class WriteRetry(unittest.TestCase):
+    def a_brief_whose_last_line_is_not_a_json_object_is_asked_again(self):
+        items = [bare("beta"), bare("gamma")]
+        with tempfile.TemporaryDirectory() as root:
+            template = flaky_briefer(root, 1)
+            result = briefs.write(items, template, root, timeout=20, concurrency=2)
+            self.assertEqual(attempts(root, "beta"), 2)
+            self.assertEqual(attempts(root, "gamma"), 2)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["written"], ["beta", "gamma"])
+        self.assertEqual(result["items"][0]["task"], "do the thing for beta")
+        self.assertEqual(result["retried"], ["beta", "gamma"])
+
+    def a_brief_that_returns_cleanly_is_never_asked_twice(self):
+        items = [bare("beta")]
+        with tempfile.TemporaryDirectory() as root:
+            template = flaky_briefer(root, 0)
+            result = briefs.write(items, template, root, timeout=20)
+            self.assertEqual(attempts(root, "beta"), 1)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["retried"], [])
+
+    def a_brief_that_never_returns_an_object_stops_at_the_bound_and_refuses(self):
+        items = [bare("beta")]
+        with tempfile.TemporaryDirectory() as root:
+            template = flaky_briefer(root, 99)
+            result = briefs.write(items, template, root, timeout=20)
+            self.assertEqual(attempts(root, "beta"), decompose.DISPATCH_ATTEMPTS)
+        self.assertTrue(result["errors"])
+        self.assertEqual(result["written"], [])
+        self.assertEqual(briefs.pending(result["items"]), [items[0]])
 
 
 def load_tests(loader, tests, pattern):
@@ -527,7 +599,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Contract, Pending, Tier, Prompt, Return, Write):
+    for case in (Contract, Pending, Tier, Prompt, Return, Write, WriteRetry):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

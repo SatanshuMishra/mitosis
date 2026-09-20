@@ -273,11 +273,18 @@ def write(
         _job(step, template, frozen, whole, models, packs, charter, decisions, log_dir)
         for step in todo
     ]
-    spawned = decompose.spawn_many(jobs, timeout, concurrency, cwd=root)
+    spawned = decompose.spawn_until(
+        jobs,
+        timeout,
+        concurrency,
+        root,
+        lambda index, one: not _outcome(todo[index]["name"], one)["errors"],
+    )
     outcomes = {step["name"]: _outcome(step["name"], one) for step, one in zip(todo, spawned)}
     return {
         "items": [_rebuild(item, outcomes) for item in items],
         "written": [step["name"] for step in todo if not outcomes[step["name"]]["errors"]],
         "reused": [item["name"] for item in items if _briefed(item)],
+        "retried": [step["name"] for step, one in zip(todo, spawned) if one.get("attempts", 1) > 1],
         "errors": [error for step in todo for error in outcomes[step["name"]]["errors"]],
     }
