@@ -240,9 +240,8 @@ def _contract_within_msp(items, lanes, owner, by_name):
         lanes = tuple(kept + rebuilt)
 
 
-def lane_items(items):
-    msps = msp_items(items)
-    owner = _owners(msps, len(items))
+def lane_pairs(items):
+    owner = _owners(msp_items(items), len(items))
     by_name = _by_name(items)
     consumers = {}
     for consumer, item in enumerate(items):
@@ -262,10 +261,22 @@ def lane_items(items):
         producer = producers[0]
         if owner[producer] == owner[consumer] and consumers.get(producer) == 1:
             chain_pairs.append((producer, consumer))
-    pairs = _shared(items, _files) + tuple(chain_pairs)
-    groups = union_find(len(items), pairs)
+    return _shared(items, _files), tuple(chain_pairs)
+
+
+def uncontracted_lanes(items):
+    owner = _owners(msp_items(items), len(items))
+    by_name = _by_name(items)
+    shared, chained = lane_pairs(items)
+    groups = union_find(len(items), shared + chained)
     lanes = tuple(_walk_order(items, group, by_name) for group in groups)
-    lanes = _contract_within_msp(items, lanes, owner, by_name)
+    return tuple(sorted(lanes, key=lambda lane: (owner[lane[0]], min(lane))))
+
+
+def lane_items(items):
+    owner = _owners(msp_items(items), len(items))
+    by_name = _by_name(items)
+    lanes = _contract_within_msp(items, uncontracted_lanes(items), owner, by_name)
     return tuple(sorted(lanes, key=lambda lane: (owner[lane[0]], min(lane))))
 
 

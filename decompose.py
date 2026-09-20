@@ -986,6 +986,7 @@ def _rank_key(result, index):
     return (
         1 if result.get("errors") else 0,
         1 if scored["lane_cycles"] else 0,
+        1 if shape.manifest_gaps(_scorable(result)) else 0,
         -scored["parallelism"],
         scored["fused_without_overlap"],
         -scored["msps_per_step"],

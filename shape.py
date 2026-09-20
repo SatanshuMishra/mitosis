@@ -150,16 +150,19 @@ def _chain_findings(items, groups, by_name):
     return found
 
 
+def _same_uncontracted_lane(items, a, b):
+    return any(a in lane and b in lane for lane in core.uncontracted_lanes(items))
+
+
 def _joined_by(items, a, b, by_name):
-    parts = ()
-    group_a, group_b = _group(items[a]), _group(items[b])
-    if group_a is not None and group_a == group_b:
-        parts = parts + ("contract_group '%s'" % group_a,)
+    if not _same_uncontracted_lane(items, a, b):
+        return "joined only because a cycle forced their Lanes to be merged"
+    shared, chained = core.lane_pairs(items)
+    if (a, b) in chained or (b, a) in chained:
+        return "joined by a chain of after edges"
     if a in _producers(items, b, by_name) or b in _producers(items, a, by_name):
-        parts = parts + ("an after edge",)
-    if parts:
-        return "joined by " + " and ".join(parts)
-    return "joined by neither a contract_group nor an after edge directly"
+        return "joined by an after edge through a Step they both touch"
+    return "joined by a run of shared files through other Steps in the Lane"
 
 
 def _fused_findings(items, lanes, by_name):
@@ -196,13 +199,19 @@ def _reaches(items, index, by_name):
     return seen
 
 
+def _in_package(path, package):
+    if package:
+        return path.startswith(package + "/")
+    return "/" not in path
+
+
 def _module_owners(items, package, owners):
     return {
         index
         for index, item in enumerate(items)
         if index not in owners
         and any(
-            path.startswith(package + "/") and path.rpartition("/")[2] not in MANIFEST_NAMES
+            _in_package(path, package) and path.rpartition("/")[2] not in MANIFEST_NAMES
             for path in core._files(item)
         )
     }

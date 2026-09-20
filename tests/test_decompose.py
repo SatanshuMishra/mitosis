@@ -997,6 +997,25 @@ class Sampling(unittest.TestCase):
         self.assertEqual(order, [1, 2, 0])
         self.assertEqual(results, [chained, wide, fused])
 
+    def a_sample_mitosis_would_refuse_never_ranks_first(self):
+        broken = structured([
+            bare("skeleton", files=["pkg/__init__.py"]),
+            bare("x", files=["pkg/x.py"], after=["skeleton"]),
+            bare("y", files=["pkg/y.py"], after=["skeleton"]),
+        ])
+        clean = structured([
+            bare("x", files=["pkg/x.py"]),
+            bare("y", files=["pkg/y.py"], after=["x"]),
+            bare("surface", files=["pkg/__init__.py"], after=["y"]),
+        ])
+        self.assertTrue(shape.manifest_gaps(broken["items"]))
+        self.assertEqual(shape.manifest_gaps(clean["items"]), [])
+        self.assertGreater(
+            shape.scalars(broken["items"])["parallelism"],
+            shape.scalars(clean["items"])["parallelism"],
+        )
+        self.assertEqual(decompose.rank([broken, clean]), [1, 0])
+
     def ranking_compares_the_scalars_in_priority_order(self):
         two_lanes = [bare("a"), bare("b")]
         self.assertEqual(shape.scalars(two_lanes)["parallelism"], 2)

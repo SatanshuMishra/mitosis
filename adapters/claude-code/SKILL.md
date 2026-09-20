@@ -221,7 +221,15 @@ document's sections no Step claimed; and the assumptions, each a reading
 chosen where the document was underdetermined, and a Step carrying one is
 never rated `simple`.
 
-One finding stops the run. `lane-cycle` means two Lanes each wait on the
+Two findings stop the run, both with exit 3.
+
+`manifest-exports-nothing` means the file that declares what a package exports
+is written by a Step built before the modules it must export, so it would ship
+empty and the package would have no public interface. Every test still passes
+when this happens, which is why a program has to catch it. Give that file to a
+Step with an `after` edge reaching every Step whose modules it exports.
+
+`lane-cycle` means two Lanes each wait on the
 other, so neither can start and their pull requests would each have to merge
 before the other. mitosis prints the report and then refuses with exit 3,
 before a single brief is bought. It happens when two Steps share a file,

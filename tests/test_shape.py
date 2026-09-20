@@ -247,7 +247,20 @@ class Findings(unittest.TestCase):
         self.assertEqual(len(fused), 1)
         self.assertIn("a", fused[0]["detail"])
         self.assertIn("b", fused[0]["detail"])
-        self.assertIn("after edge", fused[0]["detail"])
+        self.assertIn("after edges", fused[0]["detail"])
+
+    def a_fusion_caused_by_cycle_contraction_says_so_and_never_blames_a_group(self):
+        items = [
+            step("core", ["core.py", "shared.py"], msp="m", contract_group="g"),
+            step("p1", ["p1.py"], msp="m", contract_group="g", after=["core"]),
+            step("p2", ["p2.py"], msp="m", contract_group="g", after=["core"]),
+            step("tail", ["tail.py", "shared.py"], msp="m", after=["p1", "p2"]),
+        ]
+        fused = of_kind(shape.findings(items), "fused-without-overlap")
+        self.assertTrue(fused)
+        for entry in fused:
+            self.assertNotIn("contract_group", entry["detail"])
+        self.assertTrue(any("cycle forced" in entry["detail"] for entry in fused))
 
     def an_unpinned_contract_group_does_not_fuse_its_steps(self):
         items = [
@@ -288,7 +301,8 @@ class Findings(unittest.TestCase):
         fused = of_kind(shape.findings(items), "fused-without-overlap")
         self.assertEqual(len(fused), 1)
         self.assertTrue(fused[0]["detail"].startswith("a and c"))
-        self.assertIn("neither", fused[0]["detail"])
+        self.assertIn("run of shared files", fused[0]["detail"])
+        self.assertNotIn("contract_group", fused[0]["detail"])
     def a_pair_sharing_a_file_is_not_a_fused_finding(self):
         items = [
             step("a", ["a.py", "x.py"]),
@@ -453,6 +467,23 @@ class ManifestExport(unittest.TestCase):
             step("mod", ["pkg/mod.py"], after=["a"]),
         ]
         self.assertEqual(len(of_kind(shape.findings(items), "manifest-exports-nothing")), 1)
+
+    def a_manifest_at_the_repository_root_still_finds_its_siblings(self):
+        items = [
+            step("skeleton", ["index.ts"]),
+            step("parser", ["parser.ts"], after=["skeleton"]),
+            step("writer", ["writer.ts"], after=["skeleton"]),
+        ]
+        found = of_kind(shape.findings(items), "manifest-exports-nothing")
+        self.assertEqual(len(found), 1)
+        self.assertIn("index.ts", found[0]["detail"])
+
+    def a_root_manifest_does_not_claim_files_in_subdirectories(self):
+        items = [
+            step("skeleton", ["index.ts"]),
+            step("nested", ["src/deep.ts"], after=["skeleton"]),
+        ]
+        self.assertEqual(of_kind(shape.findings(items), "manifest-exports-nothing"), [])
 
     def a_manifest_owner_that_owns_the_modules_itself_is_not_reported(self):
         items = [step("all", ["pkg/__init__.py", "pkg/a.py", "pkg/b.py"])]

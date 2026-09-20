@@ -506,6 +506,7 @@ def structure_document(args, root, run_dir, models, charter, graph, decisions, p
     result = results[chosen]
     _print(decompose.report(result))
     if result["errors"]:
+        _print(("Coverage map:",) + tuple("  " + line for line in coverage_lines({}, result, root)))
         raise Refusal(
             "the structure stage returned %s; the log is %s"
             % (_n(len(result["errors"]), "contract error"), result["log"])

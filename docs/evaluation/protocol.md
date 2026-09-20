@@ -265,6 +265,16 @@ it, because a trial that caused a change to the apparatus cannot also measure
 the apparatus. Reason: running eight documents through an unproven harness
 risks spending the whole budget on a scripting fault.
 
+**2026-09-20, after stage B and stage D.** The scalar set changed mid-protocol.
+`lane_cycles` was added as an eighth scalar when cycle detection was written, so
+corpus run 1 and corpus run 2 do not record the same set, and §6's promise to
+record "every scalar" means a different thing in each. Run 1's structures are
+still on disk and can be rescored with any later scalar, which is how the
+comparison in this report was made; no run-1 number was restated from memory.
+Recorded because a pre-registered metric that changes mid-evaluation is exactly
+what pre-registration exists to expose, and two earlier amendments to this file
+were prompted by a documentation lint rather than by the science.
+
 **2026-09-19, before stage A.** Every document is handed to mitosis whole and
 byte-for-byte as its publisher issued it. No section is trimmed, including
 front matter, security considerations and references. Reason: trimming is
