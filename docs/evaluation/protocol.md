@@ -138,7 +138,7 @@ trial runs and listed here in full, so the set cannot be pruned afterwards.
 | D4 | Semantic Versioning 2.0.0 | semver.org | the published precedence examples | low; small and precise |
 | D5 | RFC 3339 | IETF | the grammar's own examples plus boundary cases | medium; one tightly coupled grammar |
 | D6 | bencode | BitTorrent BEP 3 | round-trip vectors from the spec | low; four types, tiny |
-| D7 | TOML v1.0.0, a named subset | toml.io | the toml-test suite valid and invalid cases | high; large and interdependent |
+| D7 | TOML, the toml.io main-branch text | toml.io | the toml-test suite valid and invalid cases | high; large and interdependent |
 | D8 | `.gitignore` pattern semantics | git documentation | behaviour compared against `git check-ignore` | high; ambiguous and stateful |
 
 **Selection rules, fixed now.** A document qualifies only if it was published
@@ -319,3 +319,42 @@ rather than by any check. Reason: a pre-registered hash that cannot detect the
 tampering it exists to detect is worse than no hash, because it is reported as
 assurance, and stage E's whole purpose is to be checkable by someone who does
 not trust the people who ran it.
+
+**2026-09-20, after stage E.** §3 named D7 "TOML v1.0.0, a named subset" and
+both halves of that are wrong. The fetched file is the toml.io main-branch
+text, which is the unreleased 1.1.0 draft: it states that seconds may be
+omitted and its own worked example shows a multi-line inline table with a
+trailing comma, neither of which 1.0.0 permits. It was also handed over whole,
+not as a subset, per the amendment above. The mislabel had a direct cost:
+D7's conformance was first scored against `files-toml-1.0.0`, which reported
+eleven failures, nine of which are cases 1.1.0 deliberately makes valid.
+Scored against `files-toml-1.1.0` the result is 710 of 712. The row is
+corrected and the three scopes are reported side by side rather than one
+being chosen. Reason: the corpus entry is the only record of what a document
+actually was, and an oracle chosen from a wrong label measures a different
+specification than the one the Workers were given.
+
+**2026-09-20, after stage B run 4.** H3 is unevaluable on this corpus and is
+closed rather than left pending. Its metric is the precision of
+`fused_without_overlap`, which requires at least one non-zero value to judge
+blindly. The scalar reads **0 on all eight documents** in run 4, as it did in
+runs 2 and 3, because the contract change that stopped Steps being fused
+without a shared file removed the behaviour the scalar detects. Precision
+over zero positives is undefined, so the pre-registered blind pairing has
+nothing to pair. This is recorded as a hypothesis the corpus cannot test, not
+as one that passed: the scalar may still be right and may still be wrong, and
+nothing here distinguishes those. A corpus that still produced needless
+fusion would be needed to settle it.
+
+**2026-09-20, before stage C.** H2's clean arm is D1, D3, D6 and D8 only. The
+control in §2 requires the decisions file to be written from trial 1's
+printed report alone, with no inspection of the resulting split. That holds
+for those four. It does not hold for D2, D4, D5 and D7, whose structures were
+built in stage D and whose source code the author read in stage E before the
+decisions files were written. D7's file also carries one rule that did not
+come from its report at all: that every error escaping the parser must be the
+package's own decode error, which comes from a defect stage E found. All
+eight are run and reported; the four built documents are reported separately
+and are not pooled with the clean four. The decisions files were committed at
+2026-09-20T12:43:04-06:00, before any stage C trial executed, and every file
+except D7's settles exactly the readings its trial-1 report printed.

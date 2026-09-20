@@ -16,6 +16,7 @@ EXCLUDED_DIR_NAMES = frozenset(
         "__pycache__",
         "graphify-out",
         "specs",
+        "decisions",
         "node_modules",
         ".pytest_cache",
         ".venv",
@@ -118,6 +119,19 @@ class Docs(unittest.TestCase):
             if unknown:
                 offenses[os.path.relpath(path, ROOT)] = unknown
         self.assertEqual(offenses, {})
+
+    def a_corpus_decisions_file_is_not_linted_for_mitosis_identifiers(self):
+        directory = os.path.join(ROOT, "docs", "evaluation", "decisions")
+        if not os.path.isdir(directory):
+            self.skipTest("no decisions file exists yet")
+        self.assertTrue(
+            [name for name in os.listdir(directory) if name.endswith(".md")],
+            "the decisions directory holds no markdown to exclude",
+        )
+        self.assertEqual(
+            [path for path in _markdown_files(ROOT) if os.path.dirname(path) == directory],
+            [],
+        )
 
     def every_flag_the_adapter_names_exists_in_the_cli(self):
         path = os.path.join(ROOT, "adapters", "claude-code", "SKILL.md")
