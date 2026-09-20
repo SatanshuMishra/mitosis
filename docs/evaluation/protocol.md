@@ -470,3 +470,30 @@ This is the fifth check found this day that produced a plausible value while
 verifying nothing, after inert acceptance tests, a manifest rule that could
 not fire on its corpus, `pgrep -fc`, and an integrity digest blind to file
 contents. The common shape is that none was visible in its own output.
+
+**2026-09-20, after stage A.** H1 is withdrawn as unmeasurable, for the same
+reason H3 was. It compares the cost of one structure stage against the cost of
+one combined structure-and-brief dispatch at commit `261681c`. That commit
+contains no plan-validity check of any kind: zero references to a lane-cycle
+refusal or a manifest refusal, against five today. Four of its eight plans are
+refused by today's tool, three for cycles where every Lane waits on another so
+nothing can start, and one for a package whose public interface would ship
+empty. A fifth put ten Steps in a single Lane and a sixth put seven in two.
+
+The control is therefore cheaper in part because it does not check, and its
+output is not the same deliverable. A ratio between the cost of a plan that
+runs and the cost of a plan that does not is not a cost comparison, and the
+median of 0.52 recorded against the pre-registered metric, and the 3.59 median
+recorded for the full staged pipeline, are both withdrawn rather than
+reported as findings.
+
+The measurement that would answer the underlying question, whether the split
+costs more than not splitting, was never in this protocol. It requires a third
+arm: one agent handed the same document and the same charter, implementing it
+serially in one repository with no decomposition, measured to the same
+external conformance suite. Until that arm runs, this protocol says nothing
+about whether mitosis costs more than the alternative a user actually has.
+
+Recorded because the flaw is in the pre-registration, not in the data: the
+control was chosen as the previous version of the tool rather than as the
+alternative to using the tool, and the previous version's plans do not run.

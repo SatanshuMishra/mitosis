@@ -673,6 +673,51 @@ class Staging(unittest.TestCase):
             self.assertIn("parallelism", out.split("Coverage map:")[0])
 
 
+class ItemsEntryPointRefusals(unittest.TestCase):
+    CYCLIC = [
+        {"name": "x", "task": "t", "files": ["pkg/shared.py"], "source": None, "acceptance": []},
+        {"name": "y", "task": "t", "files": ["pkg/y.py"], "source": None,
+         "acceptance": [], "after": ["x"]},
+        {"name": "z", "task": "t", "files": ["pkg/shared.py"], "source": None,
+         "acceptance": [], "after": ["y"]},
+    ]
+    EMPTY_MANIFEST = [
+        {"name": "surface", "task": "t", "files": ["pkg/__init__.py", "pkg/g.py"],
+         "source": None, "acceptance": []},
+        {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None,
+         "acceptance": [], "after": ["surface"]},
+    ]
+
+    def _run(self, items):
+        with tempfile.TemporaryDirectory() as root:
+            write(root, "items.json", json.dumps(items))
+            return invoke(
+                root,
+                ["--items", "items.json", "--plan-only", "--run-dir", os.path.join(root, "run")],
+            )
+
+    def a_plan_supplied_as_items_that_cannot_run_is_refused(self):
+        code, out, err = self._run(self.CYCLIC)
+        self.assertEqual(code, mitosis.EXIT_REFUSED, out)
+        self.assertIn("each have to merge before", err + out)
+
+    def a_package_supplied_as_items_that_would_ship_empty_is_refused(self):
+        code, out, err = self._run(self.EMPTY_MANIFEST)
+        self.assertEqual(code, mitosis.EXIT_REFUSED, out)
+        self.assertIn("would ship empty", err + out)
+
+    def a_sound_plan_supplied_as_items_still_ships(self):
+        code, out, err = self._run(
+            [
+                {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None,
+                 "acceptance": []},
+                {"name": "surface", "task": "t", "files": ["pkg/__init__.py"], "source": None,
+                 "acceptance": [], "after": ["parse"]},
+            ]
+        )
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, err)
+
+
 class ReportSections(unittest.TestCase):
     def the_split_shape_section_prints_every_scalar(self):
         with tempfile.TemporaryDirectory() as root:
@@ -859,6 +904,7 @@ def load_tests(loader, tests, pattern):
         CoverageReport,
         Flags,
         Staging,
+        ItemsEntryPointRefusals,
         ReportSections,
         BriefStageReport,
         CoverageRendering,
