@@ -404,3 +404,44 @@ and after, and a drop is reported.
 repository, and a repository whose existing code mitosis itself wrote. A
 codebase written by other people, with conventions mitosis has never seen,
 remains untested.
+
+---
+
+## 12. Language trial, pre-registered 2026-09-20 before it runs
+
+Every trial so far is Python. §8 says this protocol cannot speak to a
+language mitosis has never built in. This trial addresses that and holds
+everything else fixed.
+
+**D10.** An empty repository whose `docs/spec.md` is the same Semantic
+Versioning 2.0.0 document as D4, byte for byte. Its charter is the corpus
+charter with the language clauses replaced: JavaScript against the Node
+standard library alone, ES modules only, no build step and no transpiler,
+source under `src/`, tests under `test/` using `node:test` and
+`node:assert/strict`. Its acceptance runner is `acceptance.mjs`, which
+selects one test by its exact top-level name and returns the same three
+verdicts the Python runner returns.
+
+D4 is therefore the control for D10 in the strictest sense available: one
+document, one model, one charter shape, one oracle, and language as the only
+deliberate difference.
+
+**The acceptance runner was proven able to fail before use.** A passing test
+returns 0, a failing property returns 1, a test whose module does not exist
+returns 1, a missing file returns 4, and a test name that does not exist
+returns 4. The first draft returned 0 for a name that did not exist, because
+Node's TAP summary counts the file itself as a passing subtest; that draft
+would have marked every unwritten property as satisfied. The runner now
+matches the named test's own result line.
+
+**H8 — the pipeline is not Python-specific.** Predict D10 reaches exit 0,
+merges with zero conflicts, keeps its suite green, and scores at or above 44
+of the 46 frozen semver cases, which is D4's 46 less a two-case margin.
+
+**Falsified if** the run cannot produce a plan, or conformance falls below 40
+of 46, or the split collapses to one Lane where D4 produced seven.
+
+**What it still cannot establish.** One language, one document, one model,
+and a language whose conventions are close to Python's. It says nothing
+about a language with a compile step, a package manifest that Steps must
+share, or a test runner that cannot select a single test by name.
