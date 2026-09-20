@@ -439,9 +439,7 @@ class Coverage(unittest.TestCase):
         self.assertEqual([s["id"] for s in covered["uncovered"]], ["Setext title"])
         self.assertEqual(covered["claimed"], ["1", "1.1", "2", "Unnumbered heading"])
         self.assertEqual(covered["unmatched_claims"], [])
-        lines = decompose.report({"items": items, "coverage": covered})
-        self.assertTrue(any("1 of 5 sections unclaimed" in line for line in lines))
-        self.assertTrue(any("Setext title" in line for line in lines))
+        self.assertEqual(len(covered["sections"]), 5)
 
     def a_claim_matching_no_section_is_reported(self):
         items = [item("intro", spec_ref=["1", "99"]), item("none")]
@@ -461,8 +459,7 @@ class Coverage(unittest.TestCase):
             [("2", "second ask"), ("5", "fourth ask")],
         )
         self.assertEqual(covered["claimed"], ["1", "4"])
-        lines = decompose.report({"items": items, "coverage": covered})
-        self.assertTrue(any("by lines" in line for line in lines))
+        self.assertEqual(covered["unmatched_claims"], [])
 
     def an_uncomputable_coverage_says_why(self):
         empty = decompose.coverage("", [item("a", spec_ref=["1"])])
@@ -519,7 +516,7 @@ class Coverage(unittest.TestCase):
         self.assertIn("  3 Three", prompt)
         self.assertEqual(result["coverage"]["mode"], "headings")
         self.assertEqual([s["id"] for s in result["coverage"]["uncovered"]], ["3"])
-        self.assertTrue(any("3 Three" in line for line in decompose.report(result)))
+        self.assertEqual(result["coverage"]["uncovered"][0]["title"], "Three")
 
 
 class ReturnLine(unittest.TestCase):
@@ -980,7 +977,7 @@ class Sampling(unittest.TestCase):
         wide = structured([bare("a"), bare("b")])
         chained = structured([bare("a"), bare("b", after=["a"], files=["a.py"])])
         fused = structured(
-            [bare("a"), bare("b", contract_group="g"), bare("c", contract_group="g")]
+            [bare("a"), bare("b", msp="m"), bare("c", msp="m", after=["b"])]
         )
         results = [chained, wide, fused]
 
@@ -1000,15 +997,34 @@ class Sampling(unittest.TestCase):
         self.assertEqual(order, [1, 2, 0])
         self.assertEqual(results, [chained, wide, fused])
 
+    def a_sample_mitosis_would_refuse_never_ranks_first(self):
+        broken = structured([
+            bare("skeleton", files=["pkg/__init__.py"]),
+            bare("x", files=["pkg/x.py"], after=["skeleton"]),
+            bare("y", files=["pkg/y.py"], after=["skeleton"]),
+        ])
+        clean = structured([
+            bare("x", files=["pkg/x.py"]),
+            bare("y", files=["pkg/y.py"], after=["x"]),
+            bare("surface", files=["pkg/__init__.py"], after=["y"]),
+        ])
+        self.assertTrue(shape.manifest_gaps(broken["items"]))
+        self.assertEqual(shape.manifest_gaps(clean["items"]), [])
+        self.assertGreater(
+            shape.scalars(broken["items"])["parallelism"],
+            shape.scalars(clean["items"])["parallelism"],
+        )
+        self.assertEqual(decompose.rank([broken, clean]), [1, 0])
+
     def ranking_compares_the_scalars_in_priority_order(self):
         two_lanes = [bare("a"), bare("b")]
         self.assertEqual(shape.scalars(two_lanes)["parallelism"], 2)
-        fused_once = [bare("a"), bare("b", contract_group="g"), bare("c", contract_group="g")]
+        fused_once = [bare("a"), bare("b", msp="m"), bare("c", msp="m", after=["b"])]
         fused_twice = [
             bare("a"),
-            bare("b", contract_group="g"),
-            bare("c", contract_group="g"),
-            bare("d", contract_group="g"),
+            bare("b", msp="m"),
+            bare("c", msp="m", after=["b"]),
+            bare("d", msp="m", after=["c"]),
         ]
         self.assertEqual(shape.scalars(fused_once)["fused_without_overlap"], 1)
         self.assertEqual(shape.scalars(fused_twice)["fused_without_overlap"], 3)
@@ -1191,6 +1207,63 @@ class SpawnMany(unittest.TestCase):
         self.assertEqual(json.loads(results[1]["line"])["n"], 1)
 
 
+class PlainNumberedSections(unittest.TestCase):
+    RFC = (
+        "1.  Introduction\n\nbody\n\n"
+        "2.  Conventions\n\nbody\n\n"
+        "3.  Encoding\n\nbody\n\n"
+        "3.1.  Padding\n\nbody\n"
+    )
+
+    def a_numbered_plain_text_document_parses_as_real_sections(self):
+        found = decompose.sections(self.RFC)
+        self.assertEqual(found["mode"], "headings")
+        self.assertEqual([s["id"] for s in found["sections"]], ["1", "2", "3", "3.1"])
+        self.assertEqual(found["sections"][3]["title"], "Padding")
+
+    def a_number_without_a_period_is_not_a_heading(self):
+        text = "1  Introduction\n\n2  Conventions\n\n3  Encoding\n"
+        self.assertEqual(decompose.sections(text)["mode"], "lines")
+
+    def wrapped_prose_beginning_with_a_number_is_not_a_heading(self):
+        text = (
+            "256 K is the block size used by clients before version 3.2 and it\n"
+            "is subdivided further.\n\n"
+            "20 It is to be subdivided into strings of length 20, each of which\n"
+            "is the SHA1 hash.\n\n"
+            "99 Another wrapped line that happens to start with a number here.\n"
+        )
+        self.assertEqual(decompose.sections(text)["mode"], "lines")
+
+    def a_numbering_that_does_not_start_at_one_is_not_a_heading_run(self):
+        text = "4.  Fourth\n\n5.  Fifth\n\n6.  Sixth\n"
+        self.assertEqual(decompose.sections(text)["mode"], "lines")
+
+    def a_numbering_that_runs_backwards_is_not_a_heading_run(self):
+        text = "1.  One\n\n5.  Five\n\n3.  Three\n"
+        self.assertEqual(decompose.sections(text)["mode"], "lines")
+
+    def fewer_than_three_numbered_lines_is_not_a_heading_run(self):
+        text = "1.  One\n\n2.  Two\n"
+        self.assertEqual(decompose.sections(text)["mode"], "lines")
+
+    def an_indented_numbered_line_is_not_a_heading(self):
+        text = "1.  One\n\n    2.  Indented\n\n3.  Three\n\n4.  Four\n"
+        found = decompose.sections(text)
+        self.assertEqual([s["id"] for s in found["sections"]], ["1", "3", "4"])
+
+    def a_markdown_document_still_parses_by_its_markdown_headings(self):
+        text = "# 1. One\n\nbody\n\n## 2. Two\n\nbody\n\n## 3. Three\n\nbody\n"
+        found = decompose.sections(text)
+        self.assertEqual(found["mode"], "headings")
+        self.assertEqual([s["id"] for s in found["sections"]], ["1", "2", "3"])
+
+    def a_claim_against_a_numbered_plain_text_section_matches(self):
+        covered = decompose.coverage(self.RFC, [item("one", spec_ref=["3.1"])])
+        self.assertEqual(covered["unmatched_claims"], [])
+        self.assertEqual(covered["claimed"], ["3.1"])
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -1212,8 +1285,7 @@ def load_tests(loader, tests, pattern):
         Decisions,
         Delta,
         Sampling,
-        SpawnMany,
-    ):
+        SpawnMany, PlainNumberedSections):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

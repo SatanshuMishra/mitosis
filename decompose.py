@@ -44,7 +44,9 @@ REQUIRED_FIELD_LINES = {
 OPTIONAL_FIELD_LINES = (
     "  after: names of Steps that must be built first; these edges join parts of the document"
     " that may be far apart, and they can only be seen from the whole of it",
-    "  contract_group: one shared id for the halves of one interface",
+    "  contract_group: one shared id for Steps that ship as ONE pull request because they"
+    " are parts of one interface. It does not order them; after edges do that. Use it when"
+    " two halves of an interface must be reviewed and merged together",
     "  type: one of " + ", ".join(core.STEP_TYPES),
     "  complexity: one of " + ", ".join(core.COMPLEXITY_VALUES),
     "  file_notes: {path: what changes there}",
@@ -52,6 +54,23 @@ OPTIONAL_FIELD_LINES = (
     "  spec_ref: the sections this Step came from, each as its number or its exact heading"
     " text, or as a line number or a range like 12-20 when the document has no headings",
     "  assumptions: the readings you chose where the document was underdetermined",
+)
+
+SCHEDULING_LINES = (
+    "How a plan is built from what you return, so you can avoid returning one that cannot run:",
+    "  Two Steps that list the same file in their write-sets are built by ONE agent, in one"
+    " sitting, one after the other. That agent cannot pause in the middle.",
+    "  It follows that no Step outside such a pair may sit between them in the after order."
+    " If X and Z share a file, do not write X -> Y -> Z with Y owning different files: X and Z"
+    " must both wait for Y while Y waits for X, nothing can start, and the plan is refused.",
+    "  When two Steps must run at different times, give them different files. When two Steps"
+    " genuinely edit the same file, put every Step between them in that same write-set, or"
+    " drop the ordering that forces one between them.",
+    "  A file that declares what a package exports - __init__.py, index.ts, mod.rs - is the"
+    " package's public surface, not a formality. Give it to a Step whose job IS that surface,"
+    " and give that Step an after edge reaching every Step whose modules it exports, directly"
+    " or through another. A Step that merely needs the file to exist will create it empty, every"
+    " test will still pass, and the package will export nothing.",
 )
 
 TOP_LEVEL_LINES = (
@@ -101,6 +120,7 @@ def _contract(shape, lead, required, tail=()):
         + tuple(REQUIRED_FIELD_LINES[field] for field in required)
         + ("A Step may also carry: " + ", ".join(OPTIONAL_ITEM_FIELDS) + ".",)
         + OPTIONAL_FIELD_LINES
+        + SCHEDULING_LINES
         + TOP_LEVEL_LINES
         + tuple(tail)
     )
@@ -176,6 +196,46 @@ def _headings(lines):
     return found
 
 
+_PLAIN_NUMBERED = re.compile(r"^(\d+(?:\.\d+)*)\.[ \t]+(\S.*?)[ \t]*$")
+
+PLAIN_HEADING_MAX = 80
+PLAIN_HEADING_MINIMUM = 3
+
+
+def _ordinal(identifier):
+    return tuple(int(part) for part in identifier.split("."))
+
+
+def _plain_numbered_candidates(lines):
+    found = ()
+    fenced = False
+    for number, line in enumerate(lines, 1):
+        if _FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced or line[:1] in (" ", "\t") or not line.strip():
+            continue
+        match = _PLAIN_NUMBERED.match(line)
+        if not match or len(match.group(2)) > PLAIN_HEADING_MAX:
+            continue
+        found = found + ((_ordinal(match.group(1)), line.strip(), number),)
+    return found
+
+
+def _plain_numbered_headings(lines):
+    found = _plain_numbered_candidates(lines)
+    if len(found) < PLAIN_HEADING_MINIMUM:
+        return ()
+    if found[0][0] != (1,):
+        return ()
+    ordinals = [entry[0] for entry in found]
+    if ordinals != sorted(ordinals):
+        return ()
+    return tuple(
+        _heading(text, len(ordinal), number) for ordinal, text, number in found
+    )
+
+
 def sections(text):
     if text is None:
         return {
@@ -184,7 +244,7 @@ def sections(text):
             "reason": "the document is not decodable as UTF-8 text",
         }
     lines = text.splitlines()
-    found = _headings(lines)
+    found = _headings(lines) or _plain_numbered_headings(lines)
     if found:
         return {"mode": "headings", "sections": list(found), "reason": None}
     found = tuple(
@@ -385,8 +445,9 @@ def _claimable_lines(document):
         ] + ["  " + _section_label(section) for section in found["sections"]]
     if found["mode"] == "lines":
         return [
-            "The document has no headings; claim spec_ref by line number or range"
-            " across its %d non-blank lines." % len(found["sections"])
+            "The document has no headings. Claim spec_ref by the document's own line"
+            " number, counting every line including blank ones from 1, or by a range"
+            " like 12-20. The document has %d lines." % len(document.get("text", "").splitlines())
         ]
     return ["Coverage is not computable for this document: %s." % found["reason"]]
 
@@ -924,6 +985,8 @@ def _rank_key(result, index):
     scored = shape.scalars(_scorable(result))
     return (
         1 if result.get("errors") else 0,
+        1 if scored["lane_cycles"] else 0,
+        1 if shape.manifest_gaps(_scorable(result)) else 0,
         -scored["parallelism"],
         scored["fused_without_overlap"],
         -scored["msps_per_step"],
@@ -971,23 +1034,6 @@ def disagreements(results):
     return found
 
 
-def _coverage_lines(covered):
-    if not covered:
-        return []
-    if covered["mode"] == "none":
-        return ["coverage not computable: %s" % covered["reason"]]
-    lines = [
-        "coverage by %s: %d of %d sections unclaimed"
-        % (covered["mode"], len(covered["uncovered"]), len(covered["sections"]))
-    ]
-    lines.extend("  unclaimed: " + _section_label(section) for section in covered["uncovered"])
-    if covered["unmatched_claims"]:
-        lines.append(
-            "spec_ref claims matching no section: " + "; ".join(covered["unmatched_claims"])
-        )
-    return lines
-
-
 def report(result):
     source = result.get("source") or {}
     counts = result.get("counts") or {}
@@ -1005,7 +1051,9 @@ def report(result):
             "%d Steps raised from simple for carrying assumptions: %s"
             % (len(raised), ", ".join(raised))
         )
-    lines.extend(_coverage_lines(result.get("coverage")))
+    covered = result.get("coverage") or {}
+    if covered.get("mode") == "none":
+        lines.append("coverage not computable: %s" % covered.get("reason"))
     errors = result.get("errors") or []
     if errors:
         lines.append("%d contract errors:" % len(errors))

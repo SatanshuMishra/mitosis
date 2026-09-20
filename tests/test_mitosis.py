@@ -12,6 +12,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import core
+import decompose
 import mitosis
 import run
 import shape
@@ -695,7 +696,7 @@ class ReportSections(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(root, "run", mitosis.ITEMS_FILE)))
             self.assertTrue(os.path.isfile(os.path.join(root, "run", run.PLAN_FILE)))
 
-    def each_finding_follows_the_scalars_on_its_own_line(self):
+    def every_finding_precedes_the_scalars_so_a_cause_is_read_first(self):
         items = [
             briefed("a", contract_group="g", type="contract"),
             briefed("b", contract_group="g", after=["a"]),
@@ -704,9 +705,10 @@ class ReportSections(unittest.TestCase):
         lines = mitosis.shape_lines(items)
         found = shape.findings(items)
         self.assertTrue(found)
-        self.assertEqual(len(lines), 1 + len(found))
-        for finding, line in zip(found, lines[1:]):
+        self.assertEqual(len(lines), len(found) + 1)
+        for finding, line in zip(found, lines[:-1]):
             self.assertEqual(line, "%s: %s" % (finding["kind"], finding["detail"]))
+        self.assertTrue(lines[-1].startswith("steps "))
 
     def the_report_order_places_the_new_sections(self):
         self.assertEqual(
@@ -735,6 +737,96 @@ class BriefStageReport(unittest.TestCase):
         self.assertIn("0 briefs written", lines[0])
 
 
+class CoverageRendering(unittest.TestCase):
+    def the_coverage_map_is_rendered_exactly_once_in_a_report(self):
+        record = {
+            "coverage": {
+                "mode": "headings",
+                "sections": [
+                    {"id": "1", "title": "One", "heading": "1. One", "line": 1},
+                    {"id": "2", "title": "Two", "heading": "2. Two", "line": 9},
+                ],
+                "uncovered": [{"id": "2", "title": "Two", "heading": "2. Two", "line": 9}],
+                "unmatched_claims": [],
+            },
+            "source": {"path": "docs/spec.md", "sha256": "0" * 64},
+            "constraints": [],
+            "errors": [],
+            "counts": {},
+        }
+        lines = mitosis.coverage_lines({"items": [], "source": None}, record, ".")
+        self.assertIn("1 unclaimed", lines[0])
+        self.assertEqual(sum(1 for line in lines if "unclaimed: 2 Two" in line), 1)
+        printed = decompose.report(record)
+        self.assertEqual([line for line in printed if "unclaimed" in line], [])
+
+
+class LaneCycleRefusal(unittest.TestCase):
+    CYCLIC = [
+        {"name": "core", "task": "t", "files": ["core.py", "shared.py"], "source": None,
+         "acceptance": []},
+        {"name": "mid", "task": "t", "files": ["mid.py"], "source": None, "acceptance": [],
+         "after": ["core"]},
+        {"name": "tail", "task": "t", "files": ["tail.py", "shared.py"], "source": None,
+         "acceptance": [], "after": ["mid"]},
+    ]
+    CLEAN = [
+        {"name": "a", "task": "t", "files": ["a.py"], "source": None, "acceptance": []},
+        {"name": "b", "task": "t", "files": ["b.py"], "source": None, "acceptance": [],
+         "after": ["a"]},
+    ]
+
+    def a_cycle_spanning_msps_refuses_before_anything_is_spawned(self):
+        with self.assertRaises(mitosis.Refusal) as raised:
+            mitosis.refuse_lane_cycles(self.CYCLIC)
+        self.assertIn("more than one MSP", str(raised.exception))
+        self.assertIn("pull requests", str(raised.exception))
+
+    def a_plan_without_a_cycle_is_never_refused(self):
+        self.assertIsNone(mitosis.refuse_lane_cycles(self.CLEAN))
+        self.assertEqual(mitosis.planned_code(self.CLEAN), mitosis.EXIT_SHIPPED)
+
+    def the_reported_exit_code_matches_the_refusal(self):
+        self.assertEqual(mitosis.planned_code(self.CYCLIC), mitosis.EXIT_REFUSED)
+
+    def a_manifest_that_can_export_nothing_refuses(self):
+        items = [
+            {"name": "gregorian", "task": "t", "files": ["pkg/__init__.py", "pkg/g.py"],
+             "source": None, "acceptance": []},
+            {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None,
+             "acceptance": [], "after": ["gregorian"]},
+        ]
+        with self.assertRaises(mitosis.Refusal) as raised:
+            mitosis.refuse_lane_cycles(items)
+        self.assertIn("would ship empty", str(raised.exception))
+        self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_REFUSED)
+
+    def a_manifest_written_last_is_never_refused(self):
+        items = [
+            {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None,
+             "acceptance": []},
+            {"name": "surface", "task": "t", "files": ["pkg/__init__.py"], "source": None,
+             "acceptance": [], "after": ["parse"]},
+        ]
+        self.assertIsNone(mitosis.refuse_lane_cycles(items))
+        self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_SHIPPED)
+
+    def a_cycle_inside_one_msp_is_contracted_and_never_refused(self):
+        items = [{**step, "msp": "m"} for step in self.CYCLIC]
+        self.assertIsNone(mitosis.refuse_lane_cycles(items))
+        self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_SHIPPED)
+
+    def an_outcome_line_states_the_meaning_of_every_exit_code(self):
+        for code, meaning in mitosis.EXIT_MEANING.items():
+            with self.subTest(code=code):
+                lines = mitosis.outcome_lines(None, None, "/run", code)
+                if code == mitosis.EXIT_SHIPPED:
+                    self.assertIn("no brief was bought", lines[-1])
+                else:
+                    self.assertIn(meaning, lines[-1])
+                self.assertTrue(lines[-1].startswith("exit %d:" % code))
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -757,6 +849,8 @@ def load_tests(loader, tests, pattern):
         Staging,
         ReportSections,
         BriefStageReport,
+        CoverageRendering,
+        LaneCycleRefusal,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite

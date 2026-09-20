@@ -194,14 +194,6 @@ def msp_items(items):
     return union_find(len(items), pairs)
 
 
-def _pinned_groups(items):
-    return frozenset(
-        str(item.get("contract_group"))
-        for item in items
-        if item.get("type") == "contract" and item.get("contract_group") not in (None, "")
-    )
-
-
 def _walk_order(items, members, by_name):
     member_set = frozenset(members)
     indegree = {i: 0 for i in members}
@@ -225,11 +217,32 @@ def _walk_order(items, members, by_name):
     return tuple(order + remaining)
 
 
-def lane_items(items):
-    msps = msp_items(items)
-    owner = _owners(msps, len(items))
+def _within_one_msp(component, lanes, owner):
+    return len({owner[lanes[lane][0]] for lane in component}) == 1
+
+
+def _contract_within_msp(items, lanes, owner, by_name):
+    while True:
+        components = [
+            component
+            for component in lane_cycles(items, lanes)
+            if len(component) > 1 and _within_one_msp(component, lanes, owner)
+        ]
+        if not components:
+            return lanes
+        merged = set()
+        rebuilt = []
+        for component in components:
+            members = tuple(index for lane in component for index in lanes[lane])
+            rebuilt.append(_walk_order(items, members, by_name))
+            merged.update(component)
+        kept = [lane for index, lane in enumerate(lanes) if index not in merged]
+        lanes = tuple(kept + rebuilt)
+
+
+def lane_pairs(items):
+    owner = _owners(msp_items(items), len(items))
     by_name = _by_name(items)
-    pinned = _pinned_groups(items)
     consumers = {}
     for consumer, item in enumerate(items):
         for name in _after(item):
@@ -248,18 +261,22 @@ def lane_items(items):
         producer = producers[0]
         if owner[producer] == owner[consumer] and consumers.get(producer) == 1:
             chain_pairs.append((producer, consumer))
-    pairs = (
-        _shared(items, _files)
-        + _shared(
-            items,
-            lambda item: tuple(
-                key for key in _tag(item, "contract_group") if key[1] not in pinned
-            ),
-        )
-        + tuple(chain_pairs)
-    )
-    groups = union_find(len(items), pairs)
+    return _shared(items, _files), tuple(chain_pairs)
+
+
+def uncontracted_lanes(items):
+    owner = _owners(msp_items(items), len(items))
+    by_name = _by_name(items)
+    shared, chained = lane_pairs(items)
+    groups = union_find(len(items), shared + chained)
     lanes = tuple(_walk_order(items, group, by_name) for group in groups)
+    return tuple(sorted(lanes, key=lambda lane: (owner[lane[0]], min(lane))))
+
+
+def lane_items(items):
+    owner = _owners(msp_items(items), len(items))
+    by_name = _by_name(items)
+    lanes = _contract_within_msp(items, uncontracted_lanes(items), owner, by_name)
     return tuple(sorted(lanes, key=lambda lane: (owner[lane[0]], min(lane))))
 
 
@@ -420,6 +437,31 @@ def cycles(items):
         placed.update(component)
         groups.append(tuple(items[j]["name"] for j in component))
     return tuple(groups)
+
+
+def lane_cycles(items, lanes):
+    edges = lane_after(items, lanes)
+    successors = {}
+    for consumer, producers in edges.items():
+        for producer in producers:
+            successors[producer] = successors.get(producer, ()) + (consumer,)
+    reach = {index: _reachable(index, successors) for index in range(len(lanes))}
+    on_cycle = sorted(index for index in range(len(lanes)) if index in reach[index])
+    found = []
+    placed = set()
+    for member in on_cycle:
+        if member in placed:
+            continue
+        component = tuple(
+            sorted(
+                other
+                for other in on_cycle
+                if other == member or (other in reach[member] and member in reach[other])
+            )
+        )
+        placed.update(component)
+        found.append(component)
+    return tuple(found)
 
 
 def _source_errors(items):

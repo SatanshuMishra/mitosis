@@ -73,7 +73,80 @@ class Grouping(unittest.TestCase):
             step("client", ["client.py"], contract_group="g"),
         ]
         self.assertEqual(len(core.msp_items(unpinned)), 1)
-        self.assertEqual(len(core.lane_items(unpinned)), 1)
+        self.assertEqual(len(core.lane_items(unpinned)), 2)
+        self.assertEqual(core.lane_after(unpinned, core.lane_items(unpinned)), {})
+
+    def an_unpinned_contract_group_ships_as_one_msp_without_serialising_its_steps(self):
+        items = [
+            step("server", ["server.py"], contract_group="g"),
+            step("client", ["client.py"], contract_group="g"),
+            step("docs", ["docs.py"], contract_group="g"),
+        ]
+        self.assertEqual(len(core.msp_items(items)), 1)
+        self.assertEqual(len(core.lane_items(items)), 3)
+
+    def a_cycle_inside_one_msp_is_contracted_so_the_plan_can_still_run(self):
+        items = [
+            step("core", ["core.py", "shared.py"], msp="m"),
+            step("p1", ["p1.py"], msp="m", after=["core"]),
+            step("p2", ["p2.py"], msp="m", after=["core"]),
+            step("tail", ["tail.py", "shared.py"], msp="m", after=["p1", "p2"]),
+        ]
+        by_name = core._by_name(items)
+        uncontracted = tuple(
+            core._walk_order(items, group, by_name)
+            for group in core.union_find(len(items), core._shared(items, core._files))
+        )
+        self.assertEqual(len(uncontracted), 3)
+        self.assertEqual(len(core.lane_cycles(items, uncontracted)), 1)
+
+        lanes = core.lane_items(items)
+        self.assertEqual(len(lanes), 1)
+        self.assertEqual(core.lane_cycles(items, lanes), ())
+        walked = [items[index]["name"] for index in lanes[0]]
+        self.assertLess(walked.index("core"), walked.index("p1"))
+        self.assertLess(walked.index("p1"), walked.index("tail"))
+        self.assertLess(walked.index("p2"), walked.index("tail"))
+
+    def a_cycle_spanning_two_msps_survives_because_contracting_it_would_span_msps(self):
+        items = [
+            step("core", ["core.py", "shared.py"]),
+            step("mid", ["mid.py"], after=["core"]),
+            step("tail", ["tail.py", "shared.py"], after=["mid"]),
+        ]
+        lanes = core.lane_items(items)
+        owner = core.lane_msps(items, lanes)
+        found = core.lane_cycles(items, lanes)
+        self.assertEqual(len(found), 1)
+        self.assertGreater(len({owner[lane] for lane in found[0]}), 1)
+
+    def contraction_never_puts_two_msps_in_one_lane(self):
+        items = [
+            step("a", ["a.py", "x.py"]),
+            step("b", ["b.py"], after=["a"]),
+            step("c", ["c.py", "x.py"], after=["b"]),
+            step("d", ["d.py"], msp="w"),
+        ]
+        msps = core.msp_items(items)
+        owner = core._owners(msps, len(items))
+        for lane in core.lane_items(items):
+            self.assertEqual(len({owner[index] for index in lane}), 1)
+
+    def a_lane_cycle_is_reported_when_fusion_turns_a_step_dag_into_a_loop(self):
+        items = [
+            step("core", ["core.py", "shared.py"]),
+            step("mid", ["mid.py"], after=["core"]),
+            step("tail", ["tail.py", "shared.py"], after=["mid"]),
+        ]
+        self.assertEqual(core.cycles(items), ())
+        lanes = core.lane_items(items)
+        found = core.lane_cycles(items, lanes)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(len(found[0]), 2)
+
+    def a_plan_without_a_loop_reports_no_lane_cycle(self):
+        items = [step("a", ["a.py"]), step("b", ["b.py"], after=["a"])]
+        self.assertEqual(core.lane_cycles(items, core.lane_items(items)), ())
 
     def a_branching_after_edge_does_not_fuse(self):
         branching = [

@@ -8,6 +8,7 @@ SCALAR_KEYS = (
     "msps_per_step",
     "parallelism",
     "fused_without_overlap",
+    "lane_cycles",
 )
 
 
@@ -68,15 +69,19 @@ def scalars(items):
         "msps_per_step": len(msps) / steps if steps else 0.0,
         "parallelism": _widest_layer(depths),
         "fused_without_overlap": len(_fused_pairs(items, lanes)),
+        "lane_cycles": sum(len(group) for group in core.lane_cycles(items, lanes)),
     }
 
 
 FINDING_KINDS = (
-    "group-is-a-chain",
-    "group-has-no-producer",
-    "fused-without-overlap",
+    "lane-cycle",
+    "manifest-exports-nothing",
     "shared-directory-manifest",
+    "group-is-a-chain",
+    "fused-without-overlap",
 )
+
+FUSED_SHOWN = 8
 
 
 def _name(items, index):
@@ -145,28 +150,19 @@ def _chain_findings(items, groups, by_name):
     return found
 
 
-def _producer_findings(items, groups):
-    return [
-        {
-            "kind": "group-has-no-producer",
-            "detail": "contract_group '%s' has no member of type contract, so nothing pins it"
-            % group,
-        }
-        for group, members in groups.items()
-        if not any(items[i].get("type") == "contract" for i in members)
-    ]
+def _same_uncontracted_lane(items, a, b):
+    return any(a in lane and b in lane for lane in core.uncontracted_lanes(items))
 
 
 def _joined_by(items, a, b, by_name):
-    parts = ()
-    group_a, group_b = _group(items[a]), _group(items[b])
-    if group_a is not None and group_a == group_b:
-        parts = parts + ("contract_group '%s'" % group_a,)
+    if not _same_uncontracted_lane(items, a, b):
+        return "joined only because a cycle forced their Lanes to be merged"
+    shared, chained = core.lane_pairs(items)
+    if (a, b) in chained or (b, a) in chained:
+        return "joined by a chain of after edges"
     if a in _producers(items, b, by_name) or b in _producers(items, a, by_name):
-        parts = parts + ("an after edge",)
-    if parts:
-        return "joined by " + " and ".join(parts)
-    return "joined by neither a contract_group nor an after edge directly"
+        return "joined by an after edge through a Step they both touch"
+    return "joined by a run of shared files through other Steps in the Lane"
 
 
 def _fused_findings(items, lanes, by_name):
@@ -177,6 +173,98 @@ def _fused_findings(items, lanes, by_name):
             % (_name(items, a), _name(items, b), _joined_by(items, a, b, by_name)),
         }
         for a, b in _fused_pairs(items, lanes)
+    ]
+
+
+MANIFEST_NAMES = ("__init__.py", "index.ts", "index.js", "mod.rs", "index.d.ts")
+
+
+def _manifests(item):
+    return tuple(
+        path
+        for path in core._files(item)
+        if path.rpartition("/")[2] in MANIFEST_NAMES
+    )
+
+
+def _reaches(items, index, by_name):
+    seen = set()
+    frontier = list(_producers(items, index, by_name))
+    while frontier:
+        current = frontier.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        frontier.extend(_producers(items, current, by_name))
+    return seen
+
+
+def _in_package(path, package):
+    if package:
+        return path.startswith(package + "/")
+    return "/" not in path
+
+
+def _module_owners(items, package, owners):
+    return {
+        index
+        for index, item in enumerate(items)
+        if index not in owners
+        and any(
+            _in_package(path, package) and path.rpartition("/")[2] not in MANIFEST_NAMES
+            for path in core._files(item)
+        )
+    }
+
+
+def _manifest_owners(items):
+    owners = {}
+    for index, item in enumerate(items):
+        for manifest in _manifests(item):
+            owners[manifest] = owners.get(manifest, ()) + (index,)
+    return owners
+
+
+def manifest_gaps(items):
+    by_name = core._by_name(items)
+    found = []
+    for manifest, owners in _manifest_owners(items).items():
+        package = manifest.rpartition("/")[0]
+        siblings = _module_owners(items, package, frozenset(owners))
+        if not siblings:
+            continue
+        best = max(owners, key=lambda owner: len(_reaches(items, owner, by_name) & siblings))
+        reached = _reaches(items, best, by_name) & siblings
+        if len(reached) == len(siblings):
+            continue
+        found.append(
+            {
+                "owner": best,
+                "manifest": manifest,
+                "siblings": len(siblings),
+                "reached": len(reached),
+                "missing": sorted(_name(items, other) for other in siblings - reached),
+            }
+        )
+    return found
+
+
+def _manifest_findings_export(items):
+    return [
+        {
+            "kind": "manifest-exports-nothing",
+            "detail": "%s owns %s but is built before %d of the %d Steps whose modules it must "
+            "export, so it cannot export them: %s"
+            % (
+                _name(items, gap["owner"]),
+                gap["manifest"],
+                gap["siblings"] - gap["reached"],
+                gap["siblings"],
+                ", ".join(gap["missing"][:4])
+                + ("" if len(gap["missing"]) <= 4 else " and %d more" % (len(gap["missing"]) - 4)),
+            ),
+        }
+        for gap in manifest_gaps(items)
     ]
 
 
@@ -209,6 +297,47 @@ def _manifest_findings(items):
     return found
 
 
+def _cycle_findings(items, lanes):
+    return [
+        {
+            "kind": "lane-cycle",
+            "detail": "%d Lanes wait on each other and none of them can start; the first"
+            " three are %s%s"
+            % (
+                len(component),
+                "; ".join(
+                    "Lane %d holds %s"
+                    % (lane, ", ".join(_name(items, i) for i in lanes[lane]))
+                    for lane in component[:3]
+                ),
+                "" if len(component) <= 3 else ", and %d more are not listed" % (len(component) - 3),
+            ),
+        }
+        for component in core.lane_cycles(items, lanes)
+    ]
+
+
+def _capped(found):
+    fused = [entry for entry in found if entry["kind"] == "fused-without-overlap"]
+    if len(fused) <= FUSED_SHOWN:
+        return found
+    kept = [entry for entry in found if entry["kind"] != "fused-without-overlap"]
+    return (
+        kept
+        + fused[:FUSED_SHOWN]
+        + [
+            {
+                "kind": "fused-without-overlap",
+                "detail": "%d further fused %s not listed"
+                % (
+                    len(fused) - FUSED_SHOWN,
+                    "pair is" if len(fused) - FUSED_SHOWN == 1 else "pairs are",
+                ),
+            }
+        ]
+    )
+
+
 def _readable(items):
     return isinstance(items, list) and all(isinstance(item, dict) for item in items)
 
@@ -223,9 +352,13 @@ def findings(items):
         return []
     groups = _groups(items)
     found = (
-        _chain_findings(items, groups, by_name)
-        + _producer_findings(items, groups)
+        _cycle_findings(items, lanes)
+        + _manifest_findings_export(items)
+        + _chain_findings(items, groups, by_name)
         + _fused_findings(items, lanes, by_name)
         + _manifest_findings(items)
     )
-    return sorted(found, key=lambda finding: (finding["kind"], finding["detail"]))
+    ranked = sorted(
+        found, key=lambda finding: (FINDING_KINDS.index(finding["kind"]), finding["detail"])
+    )
+    return _capped(ranked)

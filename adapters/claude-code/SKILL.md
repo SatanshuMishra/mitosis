@@ -214,11 +214,31 @@ python3 /path/to/mitosis.py --spec docs/specs/search.md --plan-only \
 Decompose uses the top mapping. This run spawns exactly one model process,
 persists the Steps it returned into the run directory, and prints a report
 with a Split shape section and a Decisions section. Read four things there:
-the scalars in Split shape, which score the split itself before any brief
-exists; the findings under them, which name what caused a bad scalar; the
-coverage map, which lists the document's sections no Step claimed; and the
-assumptions, each a reading chosen where the document was underdetermined,
-and a Step carrying one is never rated `simple`.
+the findings at the top of Split shape, which name what is wrong and are
+ordered worst first; the scalars on the line below them, which score the
+split itself before any brief exists; the coverage map, which lists the
+document's sections no Step claimed; and the assumptions, each a reading
+chosen where the document was underdetermined, and a Step carrying one is
+never rated `simple`.
+
+Two findings stop the run, both with exit 3.
+
+`manifest-exports-nothing` means the file that declares what a package exports
+is written by a Step built before the modules it must export, so it would ship
+empty and the package would have no public interface. Every test still passes
+when this happens, which is why a program has to catch it. Give that file to a
+Step with an `after` edge reaching every Step whose modules it exports.
+
+`lane-cycle` means two Lanes each wait on the
+other, so neither can start and their pull requests would each have to merge
+before the other. mitosis prints the report and then refuses with exit 3,
+before a single brief is bought. It happens when two Steps share a file,
+which makes one Worker build both in one sitting, and a third Step sits
+between them in the `after` order. Fix it in the Steps: take the shared file
+off one of them, or drop the ordering that puts a Step in between. Where the
+same knot sits inside one pull request, mitosis merges those Lanes instead of
+refusing, which costs parallelism rather than the run, and
+`fused_without_overlap` counts what that cost.
 
 An assumption you would have decided differently does not go back into the
 document. Write it into the decisions file, in your own words, and name it

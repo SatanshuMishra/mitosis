@@ -506,6 +506,7 @@ def structure_document(args, root, run_dir, models, charter, graph, decisions, p
     result = results[chosen]
     _print(decompose.report(result))
     if result["errors"]:
+        _print(("Coverage map:",) + tuple("  " + line for line in coverage_lines({}, result, root)))
         raise Refusal(
             "the structure stage returned %s; the log is %s"
             % (_n(len(result["errors"]), "contract error"), result["log"])
@@ -623,6 +624,7 @@ def resolve_input(args, root, repo, models, charter, graph):
         )
         if args.plan_only:
             return staged(items, decomposed, run_dir, decisions, False)
+    refuse_lane_cycles(items)
     items = brief_structure(args, items, root, run_dir, models, charter, graph, decisions, document)
     run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
     return staged(items, decomposed, run_dir, decisions, True)
@@ -800,8 +802,53 @@ def lane_width(plan):
 
 
 def shape_lines(items):
-    return (scalar_text(shape.scalars(items)),) + tuple(
+    return tuple(
         "%s: %s" % (finding["kind"], finding["detail"]) for finding in shape.findings(items)
+    ) + (scalar_text(shape.scalars(items)),)
+
+
+def lane_cycle_findings(items):
+    return [finding for finding in shape.findings(items) if finding["kind"] == "lane-cycle"]
+
+
+def empty_manifests(items):
+    return [gap for gap in shape.manifest_gaps(items) if gap["reached"] == 0]
+
+
+def planned_code(items):
+    blocked = lane_cycle_findings(items) or empty_manifests(items)
+    return EXIT_REFUSED if blocked else EXIT_SHIPPED
+
+
+def refuse_empty_manifests(items):
+    gaps = empty_manifests(items)
+    if not gaps:
+        return
+    raise Refusal(
+        "%s would ship empty: %s. A file that declares what a package exports must be written "
+        "by a Step that is built after every Step whose modules it exports, or there is nothing "
+        "to export when it runs"
+        % (
+            _n(len(gaps), "package manifest"),
+            "; ".join(
+                "%s owns %s and is built before all %d of them"
+                % (items[gap["owner"]].get("name"), gap["manifest"], gap["siblings"])
+                for gap in gaps
+            ),
+        )
+    )
+
+
+def refuse_lane_cycles(items):
+    refuse_empty_manifests(items)
+    cycles = lane_cycle_findings(items)
+    if not cycles:
+        return
+    raise Refusal(
+        "%s spans more than one MSP, so their pull requests would each have to merge before "
+        "the other: %s. Two Steps that share a file are built by one Worker in one sitting, so "
+        "no Step outside that pair may sit between them in the after order"
+        % (_n(len(cycles), "Lane cycle"), "; ".join(entry["detail"] for entry in cycles))
     )
 
 
@@ -1039,11 +1086,25 @@ def outcome_lines(plan, state, run_dir, code):
     if plan is None:
         return (
             "run directory: %s" % run_dir,
-            "exit %d: the structure was written and no brief was bought" % code,
+            "exit %d: %s"
+            % (
+                code,
+                EXIT_MEANING[code]
+                if code != EXIT_SHIPPED
+                else "the structure was written and no brief was bought",
+            ),
         )
     lines = ("run directory: %s" % run_dir, "plan id: %s" % plan.get("plan_id"))
     if state is None:
-        return lines + ("exit %d: the plan was written and nothing was spawned" % code,)
+        return lines + (
+            "exit %d: %s"
+            % (
+                code,
+                EXIT_MEANING[code]
+                if code != EXIT_SHIPPED
+                else "the plan was written and nothing was spawned",
+            ),
+        )
     lane_records = state.get("lanes") or {}
     for index in range(len(plan.get("lanes") or [])):
         record = lane_records.get(str(index)) or {}
@@ -1151,15 +1212,23 @@ def run_pipeline(args):
     from_items = bool(args.items)
     if not resolved["briefed"]:
         _print(
-            report(None, None, decomposed, root, run_dir, EXIT_SHIPPED, from_items, decisions, items)
+            report(
+                None, None, decomposed, root, run_dir, planned_code(items), from_items,
+                decisions, items,
+            )
         )
+        refuse_lane_cycles(items)
         return EXIT_SHIPPED
     plan = build_plan(args, items, root, charter, graph)
     if args.plan_only:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
         run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
-        _print(report(plan, None, decomposed, root, run_dir, EXIT_SHIPPED, from_items, decisions))
+        _print(
+            report(plan, None, decomposed, root, run_dir, planned_code(items), from_items, decisions)
+        )
+        refuse_lane_cycles(items)
         return EXIT_SHIPPED
+    refuse_lane_cycles(items)
     refuse_run(args, plan, models, run_dir, repo)
     run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
     if plan.get("msps"):
