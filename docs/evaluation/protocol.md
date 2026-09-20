@@ -445,3 +445,28 @@ of 46, or the split collapses to one Lane where D4 produced seven.
 and a language whose conventions are close to Python's. It says nothing
 about a language with a compile step, a package manifest that Steps must
 share, or a test runner that cannot select a single test by name.
+
+**2026-09-20, D10 structure written, before its build.** The language trial
+found a check that cannot fire outside Python, and it is recorded here before
+the build so the finding is not shaped by the outcome. `shape.MANIFEST_NAMES`
+is `__init__.py`, `index.ts`, `index.js`, `mod.rs` and `index.d.ts`. D10's
+public interface is `src/index.mjs`, which is on none of those lists, so
+`manifest_gaps` returns empty for this package and the refusal that stops a
+package shipping an empty public interface cannot trigger. The empty result is
+a false negative, not a pass.
+
+The ownership happens to be correct without the check: the public-surface
+Step owns `src/index.mjs` and carries after edges reaching all four module
+Steps. So
+the model got right what the program could not have caught.
+
+The trial runs against the tool as it stands. `index.mjs` is not added to
+`MANIFEST_NAMES` before D10 builds, because changing the checker between
+registering a prediction and testing it is the fitting this protocol exists
+to prevent. It is fixed afterwards, with a test that goes red when reverted,
+and H8's result is reported knowing the manifest gate was inert for it.
+
+This is the fifth check found this day that produced a plausible value while
+verifying nothing, after inert acceptance tests, a manifest rule that could
+not fire on its corpus, `pgrep -fc`, and an integrity digest blind to file
+contents. The common shape is that none was visible in its own output.

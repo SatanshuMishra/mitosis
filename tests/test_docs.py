@@ -5,9 +5,11 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import briefs
 import core
-import shape
+import decompose
 import mitosis
+import shape
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -42,6 +44,15 @@ TRIGGER_WORDS = (
     "outcomes",
 )
 
+def _public_callables(*modules):
+    return tuple(
+        name
+        for module in modules
+        for name, value in vars(module).items()
+        if callable(value) and not name.startswith("_") and getattr(value, "__module__", None) == module.__name__
+    )
+
+
 VOCABULARY_WORDS = frozenset(
     core.PLAN_KEYS
     + core.ITEM_FIELDS
@@ -50,6 +61,7 @@ VOCABULARY_WORDS = frozenset(
     + core.GATE_OUTCOMES
     + shape.SCALAR_KEYS
     + shape.FINDING_KINDS
+    + _public_callables(core, shape, briefs, decompose, mitosis)
 )
 
 CHANGELOG_CANDIDATES = ("changelog.md", "changelog.rst", "changelog", "history.md")
@@ -119,6 +131,11 @@ class Docs(unittest.TestCase):
             if unknown:
                 offenses[os.path.relpath(path, ROOT)] = unknown
         self.assertEqual(offenses, {})
+
+    def a_document_may_name_a_function_the_code_defines_but_not_one_it_does_not(self):
+        self.assertEqual(_unknown_identifiers("the `manifest_gaps` check"), [])
+        self.assertEqual(_unknown_identifiers("the `lane_items` check"), [])
+        self.assertEqual(_unknown_identifiers("the `manifest_gapz` check"), ["manifest_gapz"])
 
     def a_corpus_decisions_file_is_not_linted_for_mitosis_identifiers(self):
         directory = os.path.join(ROOT, "docs", "evaluation", "decisions")
