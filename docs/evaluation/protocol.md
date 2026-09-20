@@ -358,3 +358,49 @@ eight are run and reported; the four built documents are reported separately
 and are not pooled with the clean four. The decisions files were committed at
 2026-09-20T12:43:04-06:00, before any stage C trial executed, and every file
 except D7's settles exactly the readings its trial-1 report printed.
+
+---
+
+## 11. Brownfield trial, pre-registered 2026-09-20 before it runs
+
+Every trial in §3 hands mitosis an empty repository. §8 says this protocol
+cannot speak to a repository with existing code that must be modified rather
+than created, and that is the gap that matters most for using the tool on a
+real project. This trial addresses it and nothing else.
+
+**D9.** A repository holding the implementation D7 produced: 33 tracked
+files, 29 Python modules, 152 passing tests. Its `docs/spec.md` is the TOML
+**v1.0.0** document from the `toml-lang/toml` tag `1.0.0`, fetched whole. The
+code was written against the toml.io main-branch text, which is the 1.1.0
+draft, so the repository already implements a different and later revision of
+the same specification. No Step can succeed by creating a new package; every
+Step must read and edit code it did not write.
+
+**The charter change.** D9's charter is the corpus charter with one section
+added, stating that the package already exists, that most work edits a file
+rather than creating one, that an existing test contradicting the document is
+wrong and must be changed by whichever Step owns its file, and that a test
+the document still requires must keep passing. Nothing else differs.
+
+**Starting point, measured before the run.** 698 of the 709 cases in
+`files-toml-1.0.0` pass. The eleven failures are recorded in
+`conformance/D9-baseline.json` and span at least four existing modules:
+six inline-table and datetime cases the 1.1.0 text permits and 1.0.0 forbids,
+three omitted-seconds cases, one hex string escape, and two integers that
+raise the wrong error type.
+
+**H7 — mitosis can change code it did not write.** Predict the run reaches
+exit 0, merges with zero conflicts, keeps the integrated suite green, and
+raises conformance above the 698 baseline.
+
+**Falsified if** conformance does not rise above 698, or the run cannot
+produce a plan whose Steps edit existing files.
+
+**Recorded as a separate failure** if it reaches 709 by deleting tests rather
+than changing behaviour. The integrated suite's test count is recorded before
+and after, and a drop is reported.
+
+**What it still cannot establish.** One document, one language, one
+repository, and a repository whose existing code mitosis itself wrote. A
+codebase written by other people, with conventions mitosis has never seen,
+remains untested.
