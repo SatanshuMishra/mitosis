@@ -196,11 +196,11 @@ def _reaches(items, index, by_name):
     return seen
 
 
-def _module_owners(items, package, owner):
+def _module_owners(items, package, owners):
     return {
         index
         for index, item in enumerate(items)
-        if index != owner
+        if index not in owners
         and any(
             path.startswith(package + "/") and path.rpartition("/")[2] not in MANIFEST_NAMES
             for path in core._files(item)
@@ -208,27 +208,35 @@ def _module_owners(items, package, owner):
     }
 
 
+def _manifest_owners(items):
+    owners = {}
+    for index, item in enumerate(items):
+        for manifest in _manifests(item):
+            owners[manifest] = owners.get(manifest, ()) + (index,)
+    return owners
+
+
 def manifest_gaps(items):
     by_name = core._by_name(items)
     found = []
-    for index, item in enumerate(items):
-        for manifest in _manifests(item):
-            package = manifest.rpartition("/")[0]
-            siblings = _module_owners(items, package, index)
-            if not siblings:
-                continue
-            reached = _reaches(items, index, by_name) & siblings
-            if len(reached) == len(siblings):
-                continue
-            found.append(
-                {
-                    "owner": index,
-                    "manifest": manifest,
-                    "siblings": len(siblings),
-                    "reached": len(reached),
-                    "missing": sorted(_name(items, other) for other in siblings - reached),
-                }
-            )
+    for manifest, owners in _manifest_owners(items).items():
+        package = manifest.rpartition("/")[0]
+        siblings = _module_owners(items, package, frozenset(owners))
+        if not siblings:
+            continue
+        best = max(owners, key=lambda owner: len(_reaches(items, owner, by_name) & siblings))
+        reached = _reaches(items, best, by_name) & siblings
+        if len(reached) == len(siblings):
+            continue
+        found.append(
+            {
+                "owner": best,
+                "manifest": manifest,
+                "siblings": len(siblings),
+                "reached": len(reached),
+                "missing": sorted(_name(items, other) for other in siblings - reached),
+            }
+        )
     return found
 
 

@@ -428,6 +428,32 @@ class ManifestExport(unittest.TestCase):
         items = [step("solo", ["pkg/__init__.py"]), step("other", ["elsewhere/thing.py"])]
         self.assertEqual(of_kind(shape.findings(items), "manifest-exports-nothing"), [])
 
+    def a_late_co_owner_repairs_an_early_one_and_nothing_is_reported(self):
+        items = [
+            step("skeleton", ["pkg/__init__.py", "pkg/base.py"]),
+            step("parse", ["pkg/parse.py"], after=["skeleton"]),
+            step("surface", ["pkg/__init__.py"], after=["parse"]),
+        ]
+        self.assertEqual(of_kind(shape.findings(items), "manifest-exports-nothing"), [])
+
+    def a_manifest_with_no_owner_that_reaches_its_modules_is_still_reported(self):
+        items = [
+            step("skeleton", ["pkg/__init__.py", "pkg/base.py"]),
+            step("also-early", ["pkg/__init__.py"]),
+            step("parse", ["pkg/parse.py"], after=["skeleton"]),
+        ]
+        found = of_kind(shape.findings(items), "manifest-exports-nothing")
+        self.assertEqual(len(found), 1)
+
+    def one_manifest_file_yields_at_most_one_finding(self):
+        items = [
+            step("a", ["pkg/__init__.py"]),
+            step("b", ["pkg/__init__.py"]),
+            step("c", ["pkg/__init__.py"]),
+            step("mod", ["pkg/mod.py"], after=["a"]),
+        ]
+        self.assertEqual(len(of_kind(shape.findings(items), "manifest-exports-nothing")), 1)
+
     def a_manifest_owner_that_owns_the_modules_itself_is_not_reported(self):
         items = [step("all", ["pkg/__init__.py", "pkg/a.py", "pkg/b.py"])]
         self.assertEqual(of_kind(shape.findings(items), "manifest-exports-nothing"), [])
