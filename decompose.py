@@ -73,6 +73,10 @@ SCHEDULING_LINES = (
     " and give that Step an after edge reaching every Step whose modules it exports, directly"
     " or through another. A Step that merely needs the file to exist will create it empty, every"
     " test will still pass, and the package will export nothing.",
+    "  When the codebase already holds an implementation, a Step may find the document asks"
+    " for nothing its files do not already do. Say so: keep the Step, and return an empty"
+    " acceptance list. Do NOT invent a property describing behaviour that already works, because"
+    " a property that holds before your Step runs proves nothing about it and stops the run.",
 )
 
 TOP_LEVEL_LINES = (

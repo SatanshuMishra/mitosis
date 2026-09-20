@@ -79,6 +79,10 @@ if mode == "hang":
         handle.write(str(child.pid))
     child.wait()
 written = write_set[:1] if mode == "partial" else write_set
+if mode == "tests-only":
+    written = [p for p in write_set if p.startswith("tests/")]
+if mode == "nothing":
+    written = []
 for path in written:
     if os.path.dirname(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -162,6 +166,11 @@ class RepoCase(unittest.TestCase):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+    def seed_existing(self, relative, content):
+        write(os.path.join(self.repo, relative), content)
+        sh(["git", "add", "-A"], self.repo)
+        sh(["git", "commit", "-q", "-m", "seed existing implementation"], self.repo)
 
     def worker_command(self, mode="ok"):
         script = os.path.join(self.tmp, "worker.py")
@@ -643,6 +652,52 @@ class Gate(RepoCase):
         self.assertEqual(state["msps"]["0"]["state"], "gate-failed")
         self.assertEqual(state["msps"]["0"]["gate"]["outcome"], "inert")
         self.assertEqual(self.pull_requests(), [])
+
+    def a_step_that_changed_no_implementation_does_not_block(self):
+        self.seed_existing("impl.txt", "already works\n")
+        plan = core.plan([gated_step()])
+        trees = self.build(plan, mode="tests-only")
+        result = self.gate(plan, trees, accept="inert")
+        self.assertEqual(result["outcome"], "not-applicable")
+        self.assertFalse(result["blocks"])
+        self.assertIsNone(run.gate_state(result))
+        self.assertEqual(result["counts"]["inert"], 0)
+        self.assertIn("changed no implementation", result["properties"][0]["reason"])
+
+    def a_step_that_is_only_a_test_file_is_never_excused(self):
+        self.seed_existing("impl.txt", "already works\n")
+        only_test = step(
+            "impl",
+            ["tests/t_impl.txt"],
+            acceptance=[{"file": "tests/t_impl.txt", "test": "property"}],
+        )
+        plan = core.plan([only_test])
+        self.assertEqual(run.step_implementation_paths(plan, 0, "impl"), [])
+        trees = self.build(plan)
+        result = self.gate(plan, trees, accept="inert")
+        self.assertEqual(result["outcome"], "inert")
+        self.assertTrue(result["blocks"])
+
+    def a_step_with_nothing_to_change_and_nothing_to_implement_still_blocks(self):
+        self.seed_existing("tests/t_impl.txt", "a property that already holds\n")
+        only_test = step(
+            "impl",
+            ["tests/t_impl.txt"],
+            acceptance=[{"file": "tests/t_impl.txt", "test": "property"}],
+        )
+        plan = core.plan([only_test])
+        trees = self.build(plan, mode="nothing")
+        result = self.gate(plan, trees, accept="inert")
+        self.assertEqual(result["outcome"], "inert")
+        self.assertTrue(result["blocks"])
+
+    def a_step_that_did_change_implementation_is_still_called_inert(self):
+        self.seed_existing("impl.txt", "already works\n")
+        plan = core.plan([gated_step()])
+        trees = self.build(plan, mode="ok")
+        result = self.gate(plan, trees, accept="inert")
+        self.assertEqual(result["outcome"], "inert")
+        self.assertTrue(result["blocks"])
 
     def a_reverted_build_error_is_inconclusive_not_a_pass(self):
         plan = core.plan([gated_step()])

@@ -1288,6 +1288,19 @@ class StructureRetry(unittest.TestCase):
             self.assertEqual(tally(root, "structure"), decompose.DISPATCH_ATTEMPTS)
 
 
+class SchedulingGuidance(unittest.TestCase):
+    def the_structure_prompt_carries_every_scheduling_rule(self):
+        prompt = decompose.render_structure_prompt(frozen(), [], None, None, None, None)
+        for line in decompose.SCHEDULING_LINES:
+            self.assertIn(line, prompt)
+
+    def the_guidance_names_each_hazard_a_returned_plan_can_carry(self):
+        text = " ".join(decompose.SCHEDULING_LINES)
+        self.assertIn("same file in their write-sets", text)
+        self.assertIn("public surface, not a formality", text)
+        self.assertIn("empty acceptance list", text)
+
+
 class SpawnUntil(unittest.TestCase):
     def a_result_the_predicate_rejects_is_dispatched_again(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1444,6 +1457,7 @@ def load_tests(loader, tests, pattern):
         Decisions,
         Delta,
         Sampling,
+        SchedulingGuidance,
         SpawnMany,
         SpawnUntil,
         StructureRetry,
