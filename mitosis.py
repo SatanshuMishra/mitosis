@@ -819,9 +819,10 @@ def refuse_lane_cycles(items):
     if not cycles:
         return
     raise Refusal(
-        "%s cannot be scheduled: %s. Steps that share a file are built by one Worker in one "
-        "sitting, so no Step outside that group may sit between them in the after order"
-        % (_n(len(cycles), "Lane group"), "; ".join(entry["detail"] for entry in cycles))
+        "%s spans more than one MSP, so their pull requests would each have to merge before "
+        "the other: %s. Two Steps that share a file are built by one Worker in one sitting, so "
+        "no Step outside that pair may sit between them in the after order"
+        % (_n(len(cycles), "Lane cycle"), "; ".join(entry["detail"] for entry in cycles))
     )
 
 

@@ -77,7 +77,6 @@ FINDING_KINDS = (
     "lane-cycle",
     "shared-directory-manifest",
     "group-is-a-chain",
-    "group-has-no-producer",
     "fused-without-overlap",
 )
 
@@ -150,19 +149,6 @@ def _chain_findings(items, groups, by_name):
     return found
 
 
-def _producer_findings(items, groups):
-    return [
-        {
-            "kind": "group-has-no-producer",
-            "detail": "contract_group '%s' has no member of type contract, so its Steps ship "
-            "as one pull request in whatever order their after edges give, with no producer first"
-            % group,
-        }
-        for group, members in groups.items()
-        if not any(items[i].get("type") == "contract" for i in members)
-    ]
-
-
 def _joined_by(items, a, b, by_name):
     parts = ()
     group_a, group_b = _group(items[a]), _group(items[b])
@@ -219,14 +205,16 @@ def _cycle_findings(items, lanes):
     return [
         {
             "kind": "lane-cycle",
-            "detail": "Lanes %s wait on each other and none of them can start: %s"
+            "detail": "%d Lanes wait on each other and none of them can start; the first"
+            " three are %s%s"
             % (
-                ", ".join(str(lane) for lane in component),
+                len(component),
                 "; ".join(
                     "Lane %d holds %s"
                     % (lane, ", ".join(_name(items, i) for i in lanes[lane]))
                     for lane in component[:3]
                 ),
+                "" if len(component) <= 3 else ", and %d more are not listed" % (len(component) - 3),
             ),
         }
         for component in core.lane_cycles(items, lanes)
@@ -244,8 +232,11 @@ def _capped(found):
         + [
             {
                 "kind": "fused-without-overlap",
-                "detail": "%d further fused pairs are not listed"
-                % (len(fused) - FUSED_SHOWN),
+                "detail": "%d further fused %s not listed"
+                % (
+                    len(fused) - FUSED_SHOWN,
+                    "pair is" if len(fused) - FUSED_SHOWN == 1 else "pairs are",
+                ),
             }
         ]
     )
@@ -267,7 +258,6 @@ def findings(items):
     found = (
         _cycle_findings(items, lanes)
         + _chain_findings(items, groups, by_name)
-        + _producer_findings(items, groups)
         + _fused_findings(items, lanes, by_name)
         + _manifest_findings(items)
     )

@@ -1188,6 +1188,63 @@ class SpawnMany(unittest.TestCase):
         self.assertEqual(json.loads(results[1]["line"])["n"], 1)
 
 
+class PlainNumberedSections(unittest.TestCase):
+    RFC = (
+        "1.  Introduction\n\nbody\n\n"
+        "2.  Conventions\n\nbody\n\n"
+        "3.  Encoding\n\nbody\n\n"
+        "3.1.  Padding\n\nbody\n"
+    )
+
+    def a_numbered_plain_text_document_parses_as_real_sections(self):
+        found = decompose.sections(self.RFC)
+        self.assertEqual(found["mode"], "headings")
+        self.assertEqual([s["id"] for s in found["sections"]], ["1", "2", "3", "3.1"])
+        self.assertEqual(found["sections"][3]["title"], "Padding")
+
+    def a_number_without_a_period_is_not_a_heading(self):
+        text = "1  Introduction\n\n2  Conventions\n\n3  Encoding\n"
+        self.assertEqual(decompose.sections(text)["mode"], "lines")
+
+    def wrapped_prose_beginning_with_a_number_is_not_a_heading(self):
+        text = (
+            "256 K is the block size used by clients before version 3.2 and it\n"
+            "is subdivided further.\n\n"
+            "20 It is to be subdivided into strings of length 20, each of which\n"
+            "is the SHA1 hash.\n\n"
+            "99 Another wrapped line that happens to start with a number here.\n"
+        )
+        self.assertEqual(decompose.sections(text)["mode"], "lines")
+
+    def a_numbering_that_does_not_start_at_one_is_not_a_heading_run(self):
+        text = "4.  Fourth\n\n5.  Fifth\n\n6.  Sixth\n"
+        self.assertEqual(decompose.sections(text)["mode"], "lines")
+
+    def a_numbering_that_runs_backwards_is_not_a_heading_run(self):
+        text = "1.  One\n\n5.  Five\n\n3.  Three\n"
+        self.assertEqual(decompose.sections(text)["mode"], "lines")
+
+    def fewer_than_three_numbered_lines_is_not_a_heading_run(self):
+        text = "1.  One\n\n2.  Two\n"
+        self.assertEqual(decompose.sections(text)["mode"], "lines")
+
+    def an_indented_numbered_line_is_not_a_heading(self):
+        text = "1.  One\n\n    2.  Indented\n\n3.  Three\n\n4.  Four\n"
+        found = decompose.sections(text)
+        self.assertEqual([s["id"] for s in found["sections"]], ["1", "3", "4"])
+
+    def a_markdown_document_still_parses_by_its_markdown_headings(self):
+        text = "# 1. One\n\nbody\n\n## 2. Two\n\nbody\n\n## 3. Three\n\nbody\n"
+        found = decompose.sections(text)
+        self.assertEqual(found["mode"], "headings")
+        self.assertEqual([s["id"] for s in found["sections"]], ["1", "2", "3"])
+
+    def a_claim_against_a_numbered_plain_text_section_matches(self):
+        covered = decompose.coverage(self.RFC, [item("one", spec_ref=["3.1"])])
+        self.assertEqual(covered["unmatched_claims"], [])
+        self.assertEqual(covered["claimed"], ["3.1"])
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -1209,8 +1266,7 @@ def load_tests(loader, tests, pattern):
         Decisions,
         Delta,
         Sampling,
-        SpawnMany,
-    ):
+        SpawnMany, PlainNumberedSections):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

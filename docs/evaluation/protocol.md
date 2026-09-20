@@ -196,7 +196,7 @@ well.
 ## 6. What is measured, per trial
 
 Structure stage: cost, wall time, turns, output tokens, cache reads, Step
-count, all seven scalars, every finding, assumption count and subjects,
+count, every scalar, every finding, assumption count and subjects,
 constraint count, coverage, decisions count.
 
 Build stage: brief count and cost, Lane and MSP outcomes, gate outcomes by

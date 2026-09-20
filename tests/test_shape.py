@@ -230,15 +230,6 @@ class Findings(unittest.TestCase):
         ]
         self.assertEqual(of_kind(shape.findings(items), "group-is-a-chain"), [])
 
-    def a_group_with_no_contract_member_is_reported(self):
-        items = [
-            step("a", ["a.py"], contract_group="g"),
-            step("b", ["b.py"], contract_group="g", after=["a"]),
-        ]
-        missing = of_kind(shape.findings(items), "group-has-no-producer")
-        self.assertEqual(len(missing), 1)
-        self.assertIn("g", missing[0]["detail"])
-
     def a_fan_out_contract_group_is_not_reported(self):
         items = [
             step("iface", ["iface.py"], type="contract", contract_group="g"),
@@ -342,11 +333,17 @@ class Findings(unittest.TestCase):
             step("core", ["core.py", "shared.py"]),
             step("mid", ["mid.py"], after=["core"]),
             step("tail", ["tail.py", "shared.py"], after=["mid"]),
+            step("x", ["x.py"], msp="w"),
+            step("y", ["y.py"], msp="w", after=["x"]),
         ]
         found = shape.findings(items)
+        listed = [entry["kind"] for entry in found]
+        self.assertEqual(
+            listed, ["lane-cycle", "shared-directory-manifest", "fused-without-overlap"]
+        )
+        self.assertNotEqual(listed, sorted(listed))
         order = [shape.FINDING_KINDS.index(entry["kind"]) for entry in found]
         self.assertEqual(order, sorted(order))
-        self.assertEqual(found[0]["kind"], "lane-cycle")
 
     def a_lane_cycle_names_the_lanes_that_wait_on_each_other(self):
         items = [
@@ -384,17 +381,14 @@ class Findings(unittest.TestCase):
             step("a", ["a.py"], contract_group=7),
             step("b", ["b.py"], contract_group=7, after=["a"]),
         ]
-        self.assertEqual(
-            kinds(shape.findings(items)),
-            ["fused-without-overlap", "group-has-no-producer"],
-        )
+        self.assertEqual(kinds(shape.findings(items)), ["fused-without-overlap"])
+        self.assertEqual(shape.scalars(items)["lane_cycles"], 0)
 
     def the_recorded_splits_produce_their_recorded_findings(self):
         splits = recorded_splits()
         for name in ("pass-1", "pass-3"):
             with self.subTest(split=name):
                 self.assertTrue(of_kind(shape.findings(splits[name]), "group-is-a-chain"))
-        self.assertTrue(of_kind(shape.findings(splits["pass-1"]), "group-has-no-producer"))
         self.assertTrue(of_kind(shape.findings(splits["pass-2"]), "shared-directory-manifest"))
         for name, expected in RECORDED.items():
             with self.subTest(split=name):

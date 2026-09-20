@@ -194,14 +194,6 @@ def msp_items(items):
     return union_find(len(items), pairs)
 
 
-def _pinned_groups(items):
-    return frozenset(
-        str(item.get("contract_group"))
-        for item in items
-        if item.get("type") == "contract" and item.get("contract_group") not in (None, "")
-    )
-
-
 def _walk_order(items, members, by_name):
     member_set = frozenset(members)
     indegree = {i: 0 for i in members}
@@ -223,6 +215,29 @@ def _walk_order(items, members, by_name):
                 ready = sorted(ready + [consumer])
     remaining = sorted(i for i in members if i not in order)
     return tuple(order + remaining)
+
+
+def _within_one_msp(component, lanes, owner):
+    return len({owner[lanes[lane][0]] for lane in component}) == 1
+
+
+def _contract_within_msp(items, lanes, owner, by_name):
+    while True:
+        components = [
+            component
+            for component in lane_cycles(items, lanes)
+            if len(component) > 1 and _within_one_msp(component, lanes, owner)
+        ]
+        if not components:
+            return lanes
+        merged = set()
+        rebuilt = []
+        for component in components:
+            members = tuple(index for lane in component for index in lanes[lane])
+            rebuilt.append(_walk_order(items, members, by_name))
+            merged.update(component)
+        kept = [lane for index, lane in enumerate(lanes) if index not in merged]
+        lanes = tuple(kept + rebuilt)
 
 
 def lane_items(items):
@@ -250,6 +265,7 @@ def lane_items(items):
     pairs = _shared(items, _files) + tuple(chain_pairs)
     groups = union_find(len(items), pairs)
     lanes = tuple(_walk_order(items, group, by_name) for group in groups)
+    lanes = _contract_within_msp(items, lanes, owner, by_name)
     return tuple(sorted(lanes, key=lambda lane: (owner[lane[0]], min(lane))))
 
 

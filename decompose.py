@@ -44,11 +44,9 @@ REQUIRED_FIELD_LINES = {
 OPTIONAL_FIELD_LINES = (
     "  after: names of Steps that must be built first; these edges join parts of the document"
     " that may be far apart, and they can only be seen from the whole of it",
-    "  contract_group: one shared id for Steps that must ship as one pull request because"
-    " they are parts of one interface. Give exactly one member type: contract when one of"
-    " them defines the interface the others build against; that member is built first and"
-    " the rest are then built at the same time. Without such a member the group still ships"
-    " as one pull request and the Steps are ordered only by their after edges",
+    "  contract_group: one shared id for Steps that ship as ONE pull request because they"
+    " are parts of one interface. It does not order them; after edges do that. Use it when"
+    " two halves of an interface must be reviewed and merged together",
     "  type: one of " + ", ".join(core.STEP_TYPES),
     "  complexity: one of " + ", ".join(core.COMPLEXITY_VALUES),
     "  file_notes: {path: what changes there}",
@@ -193,13 +191,17 @@ def _headings(lines):
     return found
 
 
-_PLAIN_NUMBERED = re.compile(r"^(\d+(?:\.\d+)*)\.?[ \t]+(\S.*?)[ \t]*$")
+_PLAIN_NUMBERED = re.compile(r"^(\d+(?:\.\d+)*)\.[ \t]+(\S.*?)[ \t]*$")
 
 PLAIN_HEADING_MAX = 80
-PLAIN_HEADING_MINIMUM = 2
+PLAIN_HEADING_MINIMUM = 3
 
 
-def _plain_numbered_headings(lines):
+def _ordinal(identifier):
+    return tuple(int(part) for part in identifier.split("."))
+
+
+def _plain_numbered_candidates(lines):
     found = ()
     fenced = False
     for number, line in enumerate(lines, 1):
@@ -211,11 +213,22 @@ def _plain_numbered_headings(lines):
         match = _PLAIN_NUMBERED.match(line)
         if not match or len(match.group(2)) > PLAIN_HEADING_MAX:
             continue
-        identifier = match.group(1)
-        found = found + (
-            _heading(line.strip(), identifier.count(".") + 1, number),
-        )
-    return found if len(found) >= PLAIN_HEADING_MINIMUM else ()
+        found = found + ((_ordinal(match.group(1)), line.strip(), number),)
+    return found
+
+
+def _plain_numbered_headings(lines):
+    found = _plain_numbered_candidates(lines)
+    if len(found) < PLAIN_HEADING_MINIMUM:
+        return ()
+    if found[0][0] != (1,):
+        return ()
+    ordinals = [entry[0] for entry in found]
+    if ordinals != sorted(ordinals):
+        return ()
+    return tuple(
+        _heading(text, len(ordinal), number) for ordinal, text, number in found
+    )
 
 
 def sections(text):
@@ -967,6 +980,7 @@ def _rank_key(result, index):
     scored = shape.scalars(_scorable(result))
     return (
         1 if result.get("errors") else 0,
+        1 if scored["lane_cycles"] else 0,
         -scored["parallelism"],
         scored["fused_without_overlap"],
         -scored["msps_per_step"],
@@ -1012,23 +1026,6 @@ def disagreements(results):
         if len(set(values)) > 1:
             found.append("The samples do not agree on %s: %s." % (label, _per_sample(values)))
     return found
-
-
-def _coverage_lines(covered):
-    if not covered:
-        return []
-    if covered["mode"] == "none":
-        return ["coverage not computable: %s" % covered["reason"]]
-    lines = [
-        "coverage by %s: %d of %d sections unclaimed"
-        % (covered["mode"], len(covered["uncovered"]), len(covered["sections"]))
-    ]
-    lines.extend("  unclaimed: " + _section_label(section) for section in covered["uncovered"])
-    if covered["unmatched_claims"]:
-        lines.append(
-            "spec_ref claims matching no section: " + "; ".join(covered["unmatched_claims"])
-        )
-    return lines
 
 
 def report(result):

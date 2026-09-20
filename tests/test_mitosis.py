@@ -761,6 +761,50 @@ class CoverageRendering(unittest.TestCase):
         self.assertEqual([line for line in printed if "unclaimed" in line], [])
 
 
+class LaneCycleRefusal(unittest.TestCase):
+    CYCLIC = [
+        {"name": "core", "task": "t", "files": ["core.py", "shared.py"], "source": None,
+         "acceptance": []},
+        {"name": "mid", "task": "t", "files": ["mid.py"], "source": None, "acceptance": [],
+         "after": ["core"]},
+        {"name": "tail", "task": "t", "files": ["tail.py", "shared.py"], "source": None,
+         "acceptance": [], "after": ["mid"]},
+    ]
+    CLEAN = [
+        {"name": "a", "task": "t", "files": ["a.py"], "source": None, "acceptance": []},
+        {"name": "b", "task": "t", "files": ["b.py"], "source": None, "acceptance": [],
+         "after": ["a"]},
+    ]
+
+    def a_cycle_spanning_msps_refuses_before_anything_is_spawned(self):
+        with self.assertRaises(mitosis.Refusal) as raised:
+            mitosis.refuse_lane_cycles(self.CYCLIC)
+        self.assertIn("more than one MSP", str(raised.exception))
+        self.assertIn("pull requests", str(raised.exception))
+
+    def a_plan_without_a_cycle_is_never_refused(self):
+        self.assertIsNone(mitosis.refuse_lane_cycles(self.CLEAN))
+        self.assertEqual(mitosis.planned_code(self.CLEAN), mitosis.EXIT_SHIPPED)
+
+    def the_reported_exit_code_matches_the_refusal(self):
+        self.assertEqual(mitosis.planned_code(self.CYCLIC), mitosis.EXIT_REFUSED)
+
+    def a_cycle_inside_one_msp_is_contracted_and_never_refused(self):
+        items = [{**step, "msp": "m"} for step in self.CYCLIC]
+        self.assertIsNone(mitosis.refuse_lane_cycles(items))
+        self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_SHIPPED)
+
+    def an_outcome_line_states_the_meaning_of_every_exit_code(self):
+        for code, meaning in mitosis.EXIT_MEANING.items():
+            with self.subTest(code=code):
+                lines = mitosis.outcome_lines(None, None, "/run", code)
+                if code == mitosis.EXIT_SHIPPED:
+                    self.assertIn("no brief was bought", lines[-1])
+                else:
+                    self.assertIn(meaning, lines[-1])
+                self.assertTrue(lines[-1].startswith("exit %d:" % code))
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -784,6 +828,7 @@ def load_tests(loader, tests, pattern):
         ReportSections,
         BriefStageReport,
         CoverageRendering,
+        LaneCycleRefusal,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
