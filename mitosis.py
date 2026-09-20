@@ -986,14 +986,23 @@ def reconcile_lines(plan, state):
             continue
         undeclared = found.get("undeclared") or []
         unwritten = found.get("unwritten") or []
+        untouched = found.get("untouched") or []
         crossing = found.get("crossing") or []
         findings = findings + len(undeclared) + len(unwritten)
         lines = lines + (
-            "MSP %s: %d undeclared, %d unwritten, %d crossing an MSP boundary"
-            % (_label(plan, index), len(undeclared), len(unwritten), len(crossing)),
+            "MSP %s: %d undeclared, %d unwritten, %d crossing an MSP boundary,"
+            " %d left unchanged on purpose"
+            % (
+                _label(plan, index),
+                len(undeclared),
+                len(unwritten),
+                len(crossing),
+                len(untouched),
+            ),
         )
         lines = lines + tuple("  undeclared: " + path for path in undeclared)
         lines = lines + tuple("  unwritten: " + path for path in unwritten)
+        lines = lines + tuple("  untouched: " + path for path in untouched)
         lines = lines + tuple(
             "  crossing: %s belongs to MSP %s" % (entry.get("path"), entry.get("label"))
             for entry in crossing

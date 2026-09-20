@@ -673,6 +673,29 @@ class Staging(unittest.TestCase):
             self.assertIn("parallelism", out.split("Coverage map:")[0])
 
 
+class ReconcileReporting(unittest.TestCase):
+    def _state(self, found):
+        return {"msps": {"0": {"state": "shipped", "reconcile": found}}}
+
+    PLAN = {"msps": [{"label": "alpha", "files": ["a.py"], "steps": ["a"]}]}
+
+    def a_path_left_alone_on_purpose_is_shown_but_is_not_a_finding(self):
+        found = {"undeclared": [], "unwritten": [], "untouched": ["a.py"],
+                 "crossing": [], "fatal": False}
+        lines = mitosis.reconcile_lines(self.PLAN, self._state(found))
+        self.assertIn("0 findings from the git log", lines[0])
+        self.assertTrue(any("1 left unchanged on purpose" in line for line in lines))
+        self.assertTrue(any("untouched: a.py" in line for line in lines))
+        self.assertFalse(mitosis.reconcile_dirty(found))
+
+    def a_path_that_should_have_been_written_is_still_a_finding(self):
+        found = {"undeclared": [], "unwritten": ["a.py"], "untouched": [],
+                 "crossing": [], "fatal": False}
+        lines = mitosis.reconcile_lines(self.PLAN, self._state(found))
+        self.assertIn("1 finding from the git log", lines[0])
+        self.assertTrue(mitosis.reconcile_dirty(found))
+
+
 class ItemsEntryPointRefusals(unittest.TestCase):
     CYCLIC = [
         {"name": "x", "task": "t", "files": ["pkg/shared.py"], "source": None, "acceptance": []},
@@ -905,6 +928,7 @@ def load_tests(loader, tests, pattern):
         Flags,
         Staging,
         ItemsEntryPointRefusals,
+        ReconcileReporting,
         ReportSections,
         BriefStageReport,
         CoverageRendering,

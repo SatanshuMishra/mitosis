@@ -892,11 +892,28 @@ def msp_owner_of(plan, path):
     return None
 
 
+def _unproven_paths(plan, msp):
+    steps = _steps_by_name(plan)
+    return {
+        _norm(path)
+        for name in plan["msps"][msp]["steps"]
+        if not (steps[name].get("acceptance") or [])
+        for path in (steps[name].get("files") or [])
+    }
+
+
 def reconcile(plan, msp, tree, branch, base, producer_branches=()):
     changed = changed_files(tree, branch, base, producer_branches)
     declared = sorted({_norm(f) for f in plan["msps"][msp].get("files") or ()})
     undeclared = [path for path in changed if _norm(path) not in declared]
-    unwritten = [path for path in declared if path not in {_norm(c) for c in changed}]
+    missing = [path for path in declared if path not in {_norm(c) for c in changed}]
+    unproven = _unproven_paths(plan, msp)
+    untouched = [
+        path
+        for path in missing
+        if path in unproven and git_ok(["cat-file", "-e", "%s:%s" % (base, path)], tree)
+    ]
+    unwritten = [path for path in missing if path not in untouched]
     crossing = ()
     for path in undeclared:
         owner = msp_owner_of(plan, path)
@@ -907,6 +924,7 @@ def reconcile(plan, msp, tree, branch, base, producer_branches=()):
         "declared": declared,
         "undeclared": undeclared,
         "unwritten": unwritten,
+        "untouched": untouched,
         "crossing": list(crossing),
         "fatal": bool(crossing),
     }

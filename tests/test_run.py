@@ -822,6 +822,38 @@ class Reconcile(RepoCase):
         self.assertEqual(findings["undeclared"], [])
         self.assertFalse(findings["fatal"])
 
+    def an_existing_file_a_step_was_never_asked_to_change_is_not_a_finding(self):
+        self.seed_existing("existing.txt", "already correct\n")
+        plan = core.plan([step("a", ["a.txt", "existing.txt"])])
+        trees = self.build(plan, mode="partial")
+        run.commit_all(trees[0]["path"], "everything")
+        findings = run.reconcile(plan, 0, trees[0]["path"], trees[0]["branch"], "main")
+        self.assertEqual(findings["unwritten"], [])
+        self.assertEqual(findings["untouched"], ["existing.txt"])
+        self.assertFalse(findings["fatal"])
+
+    def an_existing_file_a_step_did_promise_to_prove_is_still_a_finding(self):
+        self.seed_existing("existing.txt", "already correct\n")
+        gated = step(
+            "a",
+            ["a.txt", "existing.txt"],
+            acceptance=[{"file": "a.txt", "test": "property"}],
+        )
+        plan = core.plan([gated])
+        trees = self.build(plan, mode="partial")
+        run.commit_all(trees[0]["path"], "everything")
+        findings = run.reconcile(plan, 0, trees[0]["path"], trees[0]["branch"], "main")
+        self.assertEqual(findings["unwritten"], ["existing.txt"])
+        self.assertEqual(findings["untouched"], [])
+
+    def a_declared_file_that_never_existed_is_still_a_finding(self):
+        plan = core.plan([step("a", ["a.txt", "never.txt"])])
+        trees = self.build(plan, mode="partial")
+        run.commit_all(trees[0]["path"], "everything")
+        findings = run.reconcile(plan, 0, trees[0]["path"], trees[0]["branch"], "main")
+        self.assertEqual(findings["unwritten"], ["never.txt"])
+        self.assertEqual(findings["untouched"], [])
+
     def a_file_crossing_an_msp_boundary_is_fatal(self):
         plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], msp="beta")])
         trees = self.build(plan, mode="cross")
