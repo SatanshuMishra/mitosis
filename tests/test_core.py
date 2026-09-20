@@ -73,7 +73,33 @@ class Grouping(unittest.TestCase):
             step("client", ["client.py"], contract_group="g"),
         ]
         self.assertEqual(len(core.msp_items(unpinned)), 1)
-        self.assertEqual(len(core.lane_items(unpinned)), 1)
+        self.assertEqual(len(core.lane_items(unpinned)), 2)
+        self.assertEqual(core.lane_after(unpinned, core.lane_items(unpinned)), {})
+
+    def an_unpinned_contract_group_ships_as_one_msp_without_serialising_its_steps(self):
+        items = [
+            step("server", ["server.py"], contract_group="g"),
+            step("client", ["client.py"], contract_group="g"),
+            step("docs", ["docs.py"], contract_group="g"),
+        ]
+        self.assertEqual(len(core.msp_items(items)), 1)
+        self.assertEqual(len(core.lane_items(items)), 3)
+
+    def a_lane_cycle_is_reported_when_fusion_turns_a_step_dag_into_a_loop(self):
+        items = [
+            step("core", ["core.py", "shared.py"]),
+            step("mid", ["mid.py"], after=["core"]),
+            step("tail", ["tail.py", "shared.py"], after=["mid"]),
+        ]
+        self.assertEqual(core.cycles(items), ())
+        lanes = core.lane_items(items)
+        found = core.lane_cycles(items, lanes)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(len(found[0]), 2)
+
+    def a_plan_without_a_loop_reports_no_lane_cycle(self):
+        items = [step("a", ["a.py"]), step("b", ["b.py"], after=["a"])]
+        self.assertEqual(core.lane_cycles(items, core.lane_items(items)), ())
 
     def a_branching_after_edge_does_not_fuse(self):
         branching = [

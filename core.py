@@ -229,7 +229,6 @@ def lane_items(items):
     msps = msp_items(items)
     owner = _owners(msps, len(items))
     by_name = _by_name(items)
-    pinned = _pinned_groups(items)
     consumers = {}
     for consumer, item in enumerate(items):
         for name in _after(item):
@@ -248,16 +247,7 @@ def lane_items(items):
         producer = producers[0]
         if owner[producer] == owner[consumer] and consumers.get(producer) == 1:
             chain_pairs.append((producer, consumer))
-    pairs = (
-        _shared(items, _files)
-        + _shared(
-            items,
-            lambda item: tuple(
-                key for key in _tag(item, "contract_group") if key[1] not in pinned
-            ),
-        )
-        + tuple(chain_pairs)
-    )
+    pairs = _shared(items, _files) + tuple(chain_pairs)
     groups = union_find(len(items), pairs)
     lanes = tuple(_walk_order(items, group, by_name) for group in groups)
     return tuple(sorted(lanes, key=lambda lane: (owner[lane[0]], min(lane))))
@@ -420,6 +410,31 @@ def cycles(items):
         placed.update(component)
         groups.append(tuple(items[j]["name"] for j in component))
     return tuple(groups)
+
+
+def lane_cycles(items, lanes):
+    edges = lane_after(items, lanes)
+    successors = {}
+    for consumer, producers in edges.items():
+        for producer in producers:
+            successors[producer] = successors.get(producer, ()) + (consumer,)
+    reach = {index: _reachable(index, successors) for index in range(len(lanes))}
+    on_cycle = sorted(index for index in range(len(lanes)) if index in reach[index])
+    found = []
+    placed = set()
+    for member in on_cycle:
+        if member in placed:
+            continue
+        component = tuple(
+            sorted(
+                other
+                for other in on_cycle
+                if other == member or (other in reach[member] and member in reach[other])
+            )
+        )
+        placed.update(component)
+        found.append(component)
+    return tuple(found)
 
 
 def _source_errors(items):

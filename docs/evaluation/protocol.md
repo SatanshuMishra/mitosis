@@ -46,7 +46,7 @@ would falsify it.
 **Predict** median cost of one structure stage is below 50% of the median cost
 of one combined structure-and-brief dispatch on the same document.
 
-**Metric** `total_cost_usd` per dispatch, from the model's own envelope.
+**Metric** the dispatch's reported cost per dispatch, from the model's own envelope.
 
 **Falsified if** the ratio is above 0.75 on a majority of documents.
 
@@ -138,7 +138,7 @@ trial runs and listed here in full, so the set cannot be pruned afterwards.
 | D4 | Semantic Versioning 2.0.0 | semver.org | the published precedence examples | low; small and precise |
 | D5 | RFC 3339 | IETF | the grammar's own examples plus boundary cases | medium; one tightly coupled grammar |
 | D6 | bencode | BitTorrent BEP 3 | round-trip vectors from the spec | low; four types, tiny |
-| D7 | TOML v1.0.0, a named subset | toml.io | `toml-test` valid and invalid cases | high; large and interdependent |
+| D7 | TOML v1.0.0, a named subset | toml.io | the toml-test suite valid and invalid cases | high; large and interdependent |
 | D8 | `.gitignore` pattern semantics | git documentation | behaviour compared against `git check-ignore` | high; ambiguous and stateful |
 
 **Selection rules, fixed now.** A document qualifies only if it was published
@@ -242,7 +242,7 @@ The `--items` path is out of scope; it is unchanged and separately exercised.
 The four documents for stage D, drawn before stage A, recorded here with the
 seed so the draw is reproducible.
 
-Seed text `mitosis-spec-evaluation-2026-09-19`, taken as the first 16 hex
+Seed text "mitosis-spec-evaluation-2026-09-19", taken as the first 16 hex
 digits of its SHA-256, giving 9627601857392515639, fed to Python's
 `random.Random.sample` over the eight documents in §3 order.
 

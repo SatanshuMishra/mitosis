@@ -16,6 +16,7 @@ SCALAR_KEYS = (
     "msps_per_step",
     "parallelism",
     "fused_without_overlap",
+    "lane_cycles",
 )
 
 RECORDED = {
@@ -27,6 +28,7 @@ RECORDED = {
         "msps_per_step": 3 / 8,
         "parallelism": 2,
         "fused_without_overlap": 5,
+        "lane_cycles": 0,
     },
     "pass-2": {
         "steps": 8,
@@ -36,6 +38,7 @@ RECORDED = {
         "msps_per_step": 5 / 8,
         "parallelism": 1,
         "fused_without_overlap": 0,
+        "lane_cycles": 0,
     },
     "pass-3": {
         "steps": 8,
@@ -45,6 +48,7 @@ RECORDED = {
         "msps_per_step": 2 / 8,
         "parallelism": 2,
         "fused_without_overlap": 9,
+        "lane_cycles": 0,
     },
 }
 
@@ -66,9 +70,8 @@ def recorded_splits():
 
 
 class Scalars(unittest.TestCase):
-    def scalars_returns_exactly_the_seven_keys(self):
+    def scalars_returns_exactly_the_declared_keys(self):
         self.assertEqual(tuple(shape.scalars([step("a", ["a.py"])])), SCALAR_KEYS)
-
     def an_empty_structure_scores_zero_everywhere(self):
         self.assertEqual(
             shape.scalars([]),
@@ -80,19 +83,18 @@ class Scalars(unittest.TestCase):
                 "msps_per_step": 0.0,
                 "parallelism": 0,
                 "fused_without_overlap": 0,
+                "lane_cycles": 0,
             },
         )
-
     def fused_without_overlap_counts_a_lane_with_no_file_reason(self):
         items = [
-            step("a", ["a.py"], contract_group="g"),
-            step("b", ["b.py"], contract_group="g"),
+            step("a", ["a.py"], msp="m"),
+            step("b", ["b.py"], msp="m", after=["a"]),
             step("c", ["c.py"]),
         ]
         result = shape.scalars(items)
         self.assertEqual(result["lanes"], 2)
         self.assertEqual(result["fused_without_overlap"], 1)
-
     def fused_without_overlap_counts_a_pair_joined_by_an_after_edge(self):
         items = [
             step("a", ["a.py"], msp="m"),
@@ -245,18 +247,37 @@ class Findings(unittest.TestCase):
         ]
         self.assertEqual(shape.findings(items), [])
 
-    def a_fused_pair_names_both_steps_and_the_group_that_joined_them(self):
+    def a_fused_pair_names_both_steps_and_the_edge_that_joined_them(self):
         items = [
-            step("a", ["a.py"], contract_group="g"),
-            step("b", ["b.py"], contract_group="g"),
+            step("a", ["a.py"], msp="m"),
+            step("b", ["b.py"], msp="m", after=["a"]),
         ]
         fused = of_kind(shape.findings(items), "fused-without-overlap")
         self.assertEqual(len(fused), 1)
         self.assertIn("a", fused[0]["detail"])
         self.assertIn("b", fused[0]["detail"])
-        self.assertIn("contract_group", fused[0]["detail"])
-        self.assertNotIn("after", fused[0]["detail"])
+        self.assertIn("after edge", fused[0]["detail"])
 
+    def an_unpinned_contract_group_does_not_fuse_its_steps(self):
+        items = [
+            step("a", ["a.py"], contract_group="g"),
+            step("b", ["b.py"], contract_group="g"),
+        ]
+        result = shape.scalars(items)
+        self.assertEqual(result["lanes"], 2)
+        self.assertEqual(result["msps"], 1)
+        self.assertEqual(result["fused_without_overlap"], 0)
+
+    def a_pinned_contract_group_still_runs_its_consumers_in_parallel(self):
+        items = [
+            step("iface", ["iface.py"], type="contract", contract_group="g"),
+            step("a", ["a.py"], contract_group="g", after=["iface"]),
+            step("b", ["b.py"], contract_group="g", after=["iface"]),
+        ]
+        result = shape.scalars(items)
+        self.assertEqual(result["lanes"], 3)
+        self.assertEqual(result["msps"], 1)
+        self.assertEqual(result["parallelism"], 2)
     def a_fused_pair_names_the_after_edge_that_joined_them(self):
         items = [
             step("a", ["a.py"], msp="m"),
@@ -270,18 +291,13 @@ class Findings(unittest.TestCase):
     def a_fused_pair_says_when_neither_joined_them_directly(self):
         items = [
             step("a", ["a.py", "x.py"]),
-            step("b", ["b.py", "x.py"], contract_group="g"),
-            step("c", ["c.py"], contract_group="g"),
+            step("b", ["b.py", "x.py", "y.py"]),
+            step("c", ["c.py", "y.py"]),
         ]
         fused = of_kind(shape.findings(items), "fused-without-overlap")
-        self.assertEqual(len(fused), 2)
-        indirect = [f for f in fused if f["detail"].startswith("a and c")]
-        self.assertEqual(len(indirect), 1)
-        self.assertIn("neither", indirect[0]["detail"])
-        direct = [f for f in fused if f["detail"].startswith("b and c")]
-        self.assertEqual(len(direct), 1)
-        self.assertIn("contract_group 'g'", direct[0]["detail"])
-
+        self.assertEqual(len(fused), 1)
+        self.assertTrue(fused[0]["detail"].startswith("a and c"))
+        self.assertIn("neither", fused[0]["detail"])
     def a_pair_sharing_a_file_is_not_a_fused_finding(self):
         items = [
             step("a", ["a.py", "x.py"]),
@@ -321,17 +337,41 @@ class Findings(unittest.TestCase):
         ]
         self.assertEqual(of_kind(shape.findings(items), "shared-directory-manifest"), [])
 
-    def findings_are_ordered_by_kind_then_detail(self):
+    def findings_are_ordered_by_severity_so_a_cause_precedes_its_symptoms(self):
         items = [
-            step("z", ["z.py"], contract_group="late"),
-            step("y", ["y.py"], contract_group="late", after=["z"]),
-            step("b", ["b.py"], contract_group="early"),
-            step("a", ["a.py"], contract_group="early", after=["b"]),
+            step("core", ["core.py", "shared.py"]),
+            step("mid", ["mid.py"], after=["core"]),
+            step("tail", ["tail.py", "shared.py"], after=["mid"]),
         ]
         found = shape.findings(items)
-        self.assertEqual(found, sorted(found, key=lambda f: (f["kind"], f["detail"])))
-        self.assertEqual(kinds(found), ["fused-without-overlap"] * 2 + ["group-has-no-producer"] * 2)
+        order = [shape.FINDING_KINDS.index(entry["kind"]) for entry in found]
+        self.assertEqual(order, sorted(order))
+        self.assertEqual(found[0]["kind"], "lane-cycle")
 
+    def a_lane_cycle_names_the_lanes_that_wait_on_each_other(self):
+        items = [
+            step("core", ["core.py", "shared.py"]),
+            step("mid", ["mid.py"], after=["core"]),
+            step("tail", ["tail.py", "shared.py"], after=["mid"]),
+        ]
+        cycles = of_kind(shape.findings(items), "lane-cycle")
+        self.assertEqual(len(cycles), 1)
+        self.assertIn("none of them can start", cycles[0]["detail"])
+        self.assertEqual(shape.scalars(items)["lane_cycles"], 2)
+
+    def a_plan_with_no_cycle_scores_zero_lane_cycles(self):
+        items = [step("a", ["a.py"]), step("b", ["b.py"], after=["a"])]
+        self.assertEqual(shape.scalars(items)["lane_cycles"], 0)
+        self.assertEqual(of_kind(shape.findings(items), "lane-cycle"), [])
+
+    def a_long_list_of_fused_pairs_is_capped_and_says_how_many_are_hidden(self):
+        items = [
+            step("s%d" % i, ["own%d.py" % i, "link%d.py" % i, "link%d.py" % (i + 1)])
+            for i in range(8)
+        ]
+        fused = of_kind(shape.findings(items), "fused-without-overlap")
+        self.assertEqual(len(fused), shape.FUSED_SHOWN + 1)
+        self.assertIn("further fused pairs are not listed", fused[-1]["detail"])
     def a_malformed_item_produces_no_finding_rather_than_an_error(self):
         self.assertEqual(shape.findings(None), [])
         self.assertEqual(shape.findings("not a list"), [])

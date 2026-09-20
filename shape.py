@@ -8,6 +8,7 @@ SCALAR_KEYS = (
     "msps_per_step",
     "parallelism",
     "fused_without_overlap",
+    "lane_cycles",
 )
 
 
@@ -68,15 +69,19 @@ def scalars(items):
         "msps_per_step": len(msps) / steps if steps else 0.0,
         "parallelism": _widest_layer(depths),
         "fused_without_overlap": len(_fused_pairs(items, lanes)),
+        "lane_cycles": sum(len(group) for group in core.lane_cycles(items, lanes)),
     }
 
 
 FINDING_KINDS = (
+    "lane-cycle",
+    "shared-directory-manifest",
     "group-is-a-chain",
     "group-has-no-producer",
     "fused-without-overlap",
-    "shared-directory-manifest",
 )
+
+FUSED_SHOWN = 8
 
 
 def _name(items, index):
@@ -149,7 +154,8 @@ def _producer_findings(items, groups):
     return [
         {
             "kind": "group-has-no-producer",
-            "detail": "contract_group '%s' has no member of type contract, so nothing pins it"
+            "detail": "contract_group '%s' has no member of type contract, so its Steps ship "
+            "as one pull request in whatever order their after edges give, with no producer first"
             % group,
         }
         for group, members in groups.items()
@@ -209,6 +215,42 @@ def _manifest_findings(items):
     return found
 
 
+def _cycle_findings(items, lanes):
+    return [
+        {
+            "kind": "lane-cycle",
+            "detail": "Lanes %s wait on each other and none of them can start: %s"
+            % (
+                ", ".join(str(lane) for lane in component),
+                "; ".join(
+                    "Lane %d holds %s"
+                    % (lane, ", ".join(_name(items, i) for i in lanes[lane]))
+                    for lane in component[:3]
+                ),
+            ),
+        }
+        for component in core.lane_cycles(items, lanes)
+    ]
+
+
+def _capped(found):
+    fused = [entry for entry in found if entry["kind"] == "fused-without-overlap"]
+    if len(fused) <= FUSED_SHOWN:
+        return found
+    kept = [entry for entry in found if entry["kind"] != "fused-without-overlap"]
+    return (
+        kept
+        + fused[:FUSED_SHOWN]
+        + [
+            {
+                "kind": "fused-without-overlap",
+                "detail": "%d further fused pairs are not listed"
+                % (len(fused) - FUSED_SHOWN),
+            }
+        ]
+    )
+
+
 def _readable(items):
     return isinstance(items, list) and all(isinstance(item, dict) for item in items)
 
@@ -223,9 +265,13 @@ def findings(items):
         return []
     groups = _groups(items)
     found = (
-        _chain_findings(items, groups, by_name)
+        _cycle_findings(items, lanes)
+        + _chain_findings(items, groups, by_name)
         + _producer_findings(items, groups)
         + _fused_findings(items, lanes, by_name)
         + _manifest_findings(items)
     )
-    return sorted(found, key=lambda finding: (finding["kind"], finding["detail"]))
+    ranked = sorted(
+        found, key=lambda finding: (FINDING_KINDS.index(finding["kind"]), finding["detail"])
+    )
+    return _capped(ranked)

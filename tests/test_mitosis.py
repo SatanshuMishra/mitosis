@@ -12,6 +12,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import core
+import decompose
 import mitosis
 import run
 import shape
@@ -695,7 +696,7 @@ class ReportSections(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(root, "run", mitosis.ITEMS_FILE)))
             self.assertTrue(os.path.isfile(os.path.join(root, "run", run.PLAN_FILE)))
 
-    def each_finding_follows_the_scalars_on_its_own_line(self):
+    def every_finding_precedes_the_scalars_so_a_cause_is_read_first(self):
         items = [
             briefed("a", contract_group="g", type="contract"),
             briefed("b", contract_group="g", after=["a"]),
@@ -704,9 +705,10 @@ class ReportSections(unittest.TestCase):
         lines = mitosis.shape_lines(items)
         found = shape.findings(items)
         self.assertTrue(found)
-        self.assertEqual(len(lines), 1 + len(found))
-        for finding, line in zip(found, lines[1:]):
+        self.assertEqual(len(lines), len(found) + 1)
+        for finding, line in zip(found, lines[:-1]):
             self.assertEqual(line, "%s: %s" % (finding["kind"], finding["detail"]))
+        self.assertTrue(lines[-1].startswith("steps "))
 
     def the_report_order_places_the_new_sections(self):
         self.assertEqual(
@@ -735,6 +737,30 @@ class BriefStageReport(unittest.TestCase):
         self.assertIn("0 briefs written", lines[0])
 
 
+class CoverageRendering(unittest.TestCase):
+    def the_coverage_map_is_rendered_exactly_once_in_a_report(self):
+        record = {
+            "coverage": {
+                "mode": "headings",
+                "sections": [
+                    {"id": "1", "title": "One", "heading": "1. One", "line": 1},
+                    {"id": "2", "title": "Two", "heading": "2. Two", "line": 9},
+                ],
+                "uncovered": [{"id": "2", "title": "Two", "heading": "2. Two", "line": 9}],
+                "unmatched_claims": [],
+            },
+            "source": {"path": "docs/spec.md", "sha256": "0" * 64},
+            "constraints": [],
+            "errors": [],
+            "counts": {},
+        }
+        lines = mitosis.coverage_lines({"items": [], "source": None}, record, ".")
+        self.assertIn("1 unclaimed", lines[0])
+        self.assertEqual(sum(1 for line in lines if "unclaimed: 2 Two" in line), 1)
+        printed = decompose.report(record)
+        self.assertEqual([line for line in printed if "unclaimed" in line], [])
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -757,6 +783,7 @@ def load_tests(loader, tests, pattern):
         Staging,
         ReportSections,
         BriefStageReport,
+        CoverageRendering,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite

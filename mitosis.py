@@ -623,6 +623,7 @@ def resolve_input(args, root, repo, models, charter, graph):
         )
         if args.plan_only:
             return staged(items, decomposed, run_dir, decisions, False)
+    refuse_lane_cycles(items)
     items = brief_structure(args, items, root, run_dir, models, charter, graph, decisions, document)
     run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
     return staged(items, decomposed, run_dir, decisions, True)
@@ -800,8 +801,27 @@ def lane_width(plan):
 
 
 def shape_lines(items):
-    return (scalar_text(shape.scalars(items)),) + tuple(
+    return tuple(
         "%s: %s" % (finding["kind"], finding["detail"]) for finding in shape.findings(items)
+    ) + (scalar_text(shape.scalars(items)),)
+
+
+def lane_cycle_findings(items):
+    return [finding for finding in shape.findings(items) if finding["kind"] == "lane-cycle"]
+
+
+def planned_code(items):
+    return EXIT_REFUSED if lane_cycle_findings(items) else EXIT_SHIPPED
+
+
+def refuse_lane_cycles(items):
+    cycles = lane_cycle_findings(items)
+    if not cycles:
+        return
+    raise Refusal(
+        "%s cannot be scheduled: %s. Steps that share a file are built by one Worker in one "
+        "sitting, so no Step outside that group may sit between them in the after order"
+        % (_n(len(cycles), "Lane group"), "; ".join(entry["detail"] for entry in cycles))
     )
 
 
@@ -1039,11 +1059,25 @@ def outcome_lines(plan, state, run_dir, code):
     if plan is None:
         return (
             "run directory: %s" % run_dir,
-            "exit %d: the structure was written and no brief was bought" % code,
+            "exit %d: %s"
+            % (
+                code,
+                EXIT_MEANING[code]
+                if code != EXIT_SHIPPED
+                else "the structure was written and no brief was bought",
+            ),
         )
     lines = ("run directory: %s" % run_dir, "plan id: %s" % plan.get("plan_id"))
     if state is None:
-        return lines + ("exit %d: the plan was written and nothing was spawned" % code,)
+        return lines + (
+            "exit %d: %s"
+            % (
+                code,
+                EXIT_MEANING[code]
+                if code != EXIT_SHIPPED
+                else "the plan was written and nothing was spawned",
+            ),
+        )
     lane_records = state.get("lanes") or {}
     for index in range(len(plan.get("lanes") or [])):
         record = lane_records.get(str(index)) or {}
@@ -1151,15 +1185,23 @@ def run_pipeline(args):
     from_items = bool(args.items)
     if not resolved["briefed"]:
         _print(
-            report(None, None, decomposed, root, run_dir, EXIT_SHIPPED, from_items, decisions, items)
+            report(
+                None, None, decomposed, root, run_dir, planned_code(items), from_items,
+                decisions, items,
+            )
         )
+        refuse_lane_cycles(items)
         return EXIT_SHIPPED
     plan = build_plan(args, items, root, charter, graph)
     if args.plan_only:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
         run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
-        _print(report(plan, None, decomposed, root, run_dir, EXIT_SHIPPED, from_items, decisions))
+        _print(
+            report(plan, None, decomposed, root, run_dir, planned_code(items), from_items, decisions)
+        )
+        refuse_lane_cycles(items)
         return EXIT_SHIPPED
+    refuse_lane_cycles(items)
     refuse_run(args, plan, models, run_dir, repo)
     run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
     if plan.get("msps"):

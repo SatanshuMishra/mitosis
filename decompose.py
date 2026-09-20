@@ -44,7 +44,11 @@ REQUIRED_FIELD_LINES = {
 OPTIONAL_FIELD_LINES = (
     "  after: names of Steps that must be built first; these edges join parts of the document"
     " that may be far apart, and they can only be seen from the whole of it",
-    "  contract_group: one shared id for the halves of one interface",
+    "  contract_group: one shared id for Steps that must ship as one pull request because"
+    " they are parts of one interface. Give exactly one member type: contract when one of"
+    " them defines the interface the others build against; that member is built first and"
+    " the rest are then built at the same time. Without such a member the group still ships"
+    " as one pull request and the Steps are ordered only by their after edges",
     "  type: one of " + ", ".join(core.STEP_TYPES),
     "  complexity: one of " + ", ".join(core.COMPLEXITY_VALUES),
     "  file_notes: {path: what changes there}",
@@ -52,6 +56,18 @@ OPTIONAL_FIELD_LINES = (
     "  spec_ref: the sections this Step came from, each as its number or its exact heading"
     " text, or as a line number or a range like 12-20 when the document has no headings",
     "  assumptions: the readings you chose where the document was underdetermined",
+)
+
+SCHEDULING_LINES = (
+    "How a plan is built from what you return, so you can avoid returning one that cannot run:",
+    "  Two Steps that list the same file in their write-sets are built by ONE agent, in one"
+    " sitting, one after the other. That agent cannot pause in the middle.",
+    "  It follows that no Step outside such a pair may sit between them in the after order."
+    " If X and Z share a file, do not write X -> Y -> Z with Y owning different files: X and Z"
+    " must both wait for Y while Y waits for X, nothing can start, and the plan is refused.",
+    "  When two Steps must run at different times, give them different files. When two Steps"
+    " genuinely edit the same file, put every Step between them in that same write-set, or"
+    " drop the ordering that forces one between them.",
 )
 
 TOP_LEVEL_LINES = (
@@ -101,6 +117,7 @@ def _contract(shape, lead, required, tail=()):
         + tuple(REQUIRED_FIELD_LINES[field] for field in required)
         + ("A Step may also carry: " + ", ".join(OPTIONAL_ITEM_FIELDS) + ".",)
         + OPTIONAL_FIELD_LINES
+        + SCHEDULING_LINES
         + TOP_LEVEL_LINES
         + tuple(tail)
     )
@@ -176,6 +193,31 @@ def _headings(lines):
     return found
 
 
+_PLAIN_NUMBERED = re.compile(r"^(\d+(?:\.\d+)*)\.?[ \t]+(\S.*?)[ \t]*$")
+
+PLAIN_HEADING_MAX = 80
+PLAIN_HEADING_MINIMUM = 2
+
+
+def _plain_numbered_headings(lines):
+    found = ()
+    fenced = False
+    for number, line in enumerate(lines, 1):
+        if _FENCE.match(line):
+            fenced = not fenced
+            continue
+        if fenced or line[:1] in (" ", "\t") or not line.strip():
+            continue
+        match = _PLAIN_NUMBERED.match(line)
+        if not match or len(match.group(2)) > PLAIN_HEADING_MAX:
+            continue
+        identifier = match.group(1)
+        found = found + (
+            _heading(line.strip(), identifier.count(".") + 1, number),
+        )
+    return found if len(found) >= PLAIN_HEADING_MINIMUM else ()
+
+
 def sections(text):
     if text is None:
         return {
@@ -184,7 +226,7 @@ def sections(text):
             "reason": "the document is not decodable as UTF-8 text",
         }
     lines = text.splitlines()
-    found = _headings(lines)
+    found = _headings(lines) or _plain_numbered_headings(lines)
     if found:
         return {"mode": "headings", "sections": list(found), "reason": None}
     found = tuple(
@@ -385,8 +427,9 @@ def _claimable_lines(document):
         ] + ["  " + _section_label(section) for section in found["sections"]]
     if found["mode"] == "lines":
         return [
-            "The document has no headings; claim spec_ref by line number or range"
-            " across its %d non-blank lines." % len(found["sections"])
+            "The document has no headings. Claim spec_ref by the document's own line"
+            " number, counting every line including blank ones from 1, or by a range"
+            " like 12-20. The document has %d lines." % len(document.get("text", "").splitlines())
         ]
     return ["Coverage is not computable for this document: %s." % found["reason"]]
 
@@ -1005,7 +1048,9 @@ def report(result):
             "%d Steps raised from simple for carrying assumptions: %s"
             % (len(raised), ", ".join(raised))
         )
-    lines.extend(_coverage_lines(result.get("coverage")))
+    covered = result.get("coverage") or {}
+    if covered.get("mode") == "none":
+        lines.append("coverage not computable: %s" % covered.get("reason"))
     errors = result.get("errors") or []
     if errors:
         lines.append("%d contract errors:" % len(errors))

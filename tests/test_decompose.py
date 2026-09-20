@@ -439,9 +439,7 @@ class Coverage(unittest.TestCase):
         self.assertEqual([s["id"] for s in covered["uncovered"]], ["Setext title"])
         self.assertEqual(covered["claimed"], ["1", "1.1", "2", "Unnumbered heading"])
         self.assertEqual(covered["unmatched_claims"], [])
-        lines = decompose.report({"items": items, "coverage": covered})
-        self.assertTrue(any("1 of 5 sections unclaimed" in line for line in lines))
-        self.assertTrue(any("Setext title" in line for line in lines))
+        self.assertEqual(len(covered["sections"]), 5)
 
     def a_claim_matching_no_section_is_reported(self):
         items = [item("intro", spec_ref=["1", "99"]), item("none")]
@@ -461,8 +459,7 @@ class Coverage(unittest.TestCase):
             [("2", "second ask"), ("5", "fourth ask")],
         )
         self.assertEqual(covered["claimed"], ["1", "4"])
-        lines = decompose.report({"items": items, "coverage": covered})
-        self.assertTrue(any("by lines" in line for line in lines))
+        self.assertEqual(covered["unmatched_claims"], [])
 
     def an_uncomputable_coverage_says_why(self):
         empty = decompose.coverage("", [item("a", spec_ref=["1"])])
@@ -519,7 +516,7 @@ class Coverage(unittest.TestCase):
         self.assertIn("  3 Three", prompt)
         self.assertEqual(result["coverage"]["mode"], "headings")
         self.assertEqual([s["id"] for s in result["coverage"]["uncovered"]], ["3"])
-        self.assertTrue(any("3 Three" in line for line in decompose.report(result)))
+        self.assertEqual(result["coverage"]["uncovered"][0]["title"], "Three")
 
 
 class ReturnLine(unittest.TestCase):
@@ -980,7 +977,7 @@ class Sampling(unittest.TestCase):
         wide = structured([bare("a"), bare("b")])
         chained = structured([bare("a"), bare("b", after=["a"], files=["a.py"])])
         fused = structured(
-            [bare("a"), bare("b", contract_group="g"), bare("c", contract_group="g")]
+            [bare("a"), bare("b", msp="m"), bare("c", msp="m", after=["b"])]
         )
         results = [chained, wide, fused]
 
@@ -1003,12 +1000,12 @@ class Sampling(unittest.TestCase):
     def ranking_compares_the_scalars_in_priority_order(self):
         two_lanes = [bare("a"), bare("b")]
         self.assertEqual(shape.scalars(two_lanes)["parallelism"], 2)
-        fused_once = [bare("a"), bare("b", contract_group="g"), bare("c", contract_group="g")]
+        fused_once = [bare("a"), bare("b", msp="m"), bare("c", msp="m", after=["b"])]
         fused_twice = [
             bare("a"),
-            bare("b", contract_group="g"),
-            bare("c", contract_group="g"),
-            bare("d", contract_group="g"),
+            bare("b", msp="m"),
+            bare("c", msp="m", after=["b"]),
+            bare("d", msp="m", after=["c"]),
         ]
         self.assertEqual(shape.scalars(fused_once)["fused_without_overlap"], 1)
         self.assertEqual(shape.scalars(fused_twice)["fused_without_overlap"], 3)

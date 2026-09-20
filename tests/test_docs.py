@@ -6,6 +6,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import core
+import shape
 import mitosis
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -41,7 +42,13 @@ TRIGGER_WORDS = (
 )
 
 VOCABULARY_WORDS = frozenset(
-    core.PLAN_KEYS + core.ITEM_FIELDS + core.LANE_STATES + core.MSP_STATES + core.GATE_OUTCOMES
+    core.PLAN_KEYS
+    + core.ITEM_FIELDS
+    + core.LANE_STATES
+    + core.MSP_STATES
+    + core.GATE_OUTCOMES
+    + shape.SCALAR_KEYS
+    + shape.FINDING_KINDS
 )
 
 CHANGELOG_CANDIDATES = ("changelog.md", "changelog.rst", "changelog", "history.md")
