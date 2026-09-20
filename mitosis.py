@@ -810,11 +810,36 @@ def lane_cycle_findings(items):
     return [finding for finding in shape.findings(items) if finding["kind"] == "lane-cycle"]
 
 
+def empty_manifests(items):
+    return [gap for gap in shape.manifest_gaps(items) if gap["reached"] == 0]
+
+
 def planned_code(items):
-    return EXIT_REFUSED if lane_cycle_findings(items) else EXIT_SHIPPED
+    blocked = lane_cycle_findings(items) or empty_manifests(items)
+    return EXIT_REFUSED if blocked else EXIT_SHIPPED
+
+
+def refuse_empty_manifests(items):
+    gaps = empty_manifests(items)
+    if not gaps:
+        return
+    raise Refusal(
+        "%s would ship empty: %s. A file that declares what a package exports must be written "
+        "by a Step that is built after every Step whose modules it exports, or there is nothing "
+        "to export when it runs"
+        % (
+            _n(len(gaps), "package manifest"),
+            "; ".join(
+                "%s owns %s and is built before all %d of them"
+                % (items[gap["owner"]].get("name"), gap["manifest"], gap["siblings"])
+                for gap in gaps
+            ),
+        )
+    )
 
 
 def refuse_lane_cycles(items):
+    refuse_empty_manifests(items)
     cycles = lane_cycle_findings(items)
     if not cycles:
         return

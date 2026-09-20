@@ -789,6 +789,28 @@ class LaneCycleRefusal(unittest.TestCase):
     def the_reported_exit_code_matches_the_refusal(self):
         self.assertEqual(mitosis.planned_code(self.CYCLIC), mitosis.EXIT_REFUSED)
 
+    def a_manifest_that_can_export_nothing_refuses(self):
+        items = [
+            {"name": "gregorian", "task": "t", "files": ["pkg/__init__.py", "pkg/g.py"],
+             "source": None, "acceptance": []},
+            {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None,
+             "acceptance": [], "after": ["gregorian"]},
+        ]
+        with self.assertRaises(mitosis.Refusal) as raised:
+            mitosis.refuse_lane_cycles(items)
+        self.assertIn("would ship empty", str(raised.exception))
+        self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_REFUSED)
+
+    def a_manifest_written_last_is_never_refused(self):
+        items = [
+            {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None,
+             "acceptance": []},
+            {"name": "surface", "task": "t", "files": ["pkg/__init__.py"], "source": None,
+             "acceptance": [], "after": ["parse"]},
+        ]
+        self.assertIsNone(mitosis.refuse_lane_cycles(items))
+        self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_SHIPPED)
+
     def a_cycle_inside_one_msp_is_contracted_and_never_refused(self):
         items = [{**step, "msp": "m"} for step in self.CYCLIC]
         self.assertIsNone(mitosis.refuse_lane_cycles(items))

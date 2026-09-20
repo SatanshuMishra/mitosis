@@ -396,6 +396,63 @@ class Findings(unittest.TestCase):
                 self.assertEqual(len(fused), expected["fused_without_overlap"])
 
 
+class ManifestExport(unittest.TestCase):
+    def a_manifest_owner_built_before_its_modules_is_reported(self):
+        items = [
+            step("gregorian", ["pkg/__init__.py", "pkg/gregorian.py"]),
+            step("parse", ["pkg/parse.py"], after=["gregorian"]),
+            step("format", ["pkg/format.py"], after=["gregorian"]),
+        ]
+        found = of_kind(shape.findings(items), "manifest-exports-nothing")
+        self.assertEqual(len(found), 1)
+        self.assertIn("pkg/__init__.py", found[0]["detail"])
+        self.assertIn("parse", found[0]["detail"])
+
+    def a_manifest_owner_that_reaches_every_module_is_not_reported(self):
+        items = [
+            step("parse", ["pkg/parse.py"]),
+            step("format", ["pkg/format.py"]),
+            step("surface", ["pkg/__init__.py"], after=["parse", "format"]),
+        ]
+        self.assertEqual(of_kind(shape.findings(items), "manifest-exports-nothing"), [])
+
+    def reachability_through_another_step_counts(self):
+        items = [
+            step("lexer", ["pkg/lexer.py"]),
+            step("parser", ["pkg/parser.py"], after=["lexer"]),
+            step("surface", ["pkg/__init__.py"], after=["parser"]),
+        ]
+        self.assertEqual(of_kind(shape.findings(items), "manifest-exports-nothing"), [])
+
+    def a_package_whose_only_module_is_the_manifest_is_not_reported(self):
+        items = [step("solo", ["pkg/__init__.py"]), step("other", ["elsewhere/thing.py"])]
+        self.assertEqual(of_kind(shape.findings(items), "manifest-exports-nothing"), [])
+
+    def a_manifest_owner_that_owns_the_modules_itself_is_not_reported(self):
+        items = [step("all", ["pkg/__init__.py", "pkg/a.py", "pkg/b.py"])]
+        self.assertEqual(of_kind(shape.findings(items), "manifest-exports-nothing"), [])
+
+    def the_check_covers_other_ecosystems_manifest_names(self):
+        for manifest in ("index.ts", "mod.rs", "index.js"):
+            with self.subTest(manifest=manifest):
+                items = [
+                    step("root", ["pkg/" + manifest, "pkg/core.x"]),
+                    step("leaf", ["pkg/leaf.x"], after=["root"]),
+                ]
+                self.assertEqual(
+                    len(of_kind(shape.findings(items), "manifest-exports-nothing")), 1
+                )
+
+    def a_manifest_finding_outranks_the_symptoms_it_causes(self):
+        items = [
+            step("gregorian", ["pkg/__init__.py", "pkg/gregorian.py"]),
+            step("parse", ["pkg/parse.py"], after=["gregorian"]),
+            step("format", ["pkg/format.py"], after=["gregorian"]),
+        ]
+        listed = [entry["kind"] for entry in shape.findings(items)]
+        self.assertEqual(listed[0], "manifest-exports-nothing")
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -407,7 +464,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Scalars, Findings):
+    for case in (Scalars, Findings, ManifestExport):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

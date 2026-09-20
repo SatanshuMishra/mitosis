@@ -66,6 +66,11 @@ SCHEDULING_LINES = (
     "  When two Steps must run at different times, give them different files. When two Steps"
     " genuinely edit the same file, put every Step between them in that same write-set, or"
     " drop the ordering that forces one between them.",
+    "  A file that declares what a package exports - __init__.py, index.ts, mod.rs - is the"
+    " package's public surface, not a formality. Give it to a Step whose job IS that surface,"
+    " and give that Step an after edge reaching every Step whose modules it exports, directly"
+    " or through another. A Step that merely needs the file to exist will create it empty, every"
+    " test will still pass, and the package will export nothing.",
 )
 
 TOP_LEVEL_LINES = (

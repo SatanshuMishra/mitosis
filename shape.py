@@ -75,6 +75,7 @@ def scalars(items):
 
 FINDING_KINDS = (
     "lane-cycle",
+    "manifest-exports-nothing",
     "shared-directory-manifest",
     "group-is-a-chain",
     "fused-without-overlap",
@@ -172,6 +173,84 @@ def _fused_findings(items, lanes, by_name):
     ]
 
 
+MANIFEST_NAMES = ("__init__.py", "index.ts", "index.js", "mod.rs", "index.d.ts")
+
+
+def _manifests(item):
+    return tuple(
+        path
+        for path in core._files(item)
+        if path.rpartition("/")[2] in MANIFEST_NAMES
+    )
+
+
+def _reaches(items, index, by_name):
+    seen = set()
+    frontier = list(_producers(items, index, by_name))
+    while frontier:
+        current = frontier.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        frontier.extend(_producers(items, current, by_name))
+    return seen
+
+
+def _module_owners(items, package, owner):
+    return {
+        index
+        for index, item in enumerate(items)
+        if index != owner
+        and any(
+            path.startswith(package + "/") and path.rpartition("/")[2] not in MANIFEST_NAMES
+            for path in core._files(item)
+        )
+    }
+
+
+def manifest_gaps(items):
+    by_name = core._by_name(items)
+    found = []
+    for index, item in enumerate(items):
+        for manifest in _manifests(item):
+            package = manifest.rpartition("/")[0]
+            siblings = _module_owners(items, package, index)
+            if not siblings:
+                continue
+            reached = _reaches(items, index, by_name) & siblings
+            if len(reached) == len(siblings):
+                continue
+            found.append(
+                {
+                    "owner": index,
+                    "manifest": manifest,
+                    "siblings": len(siblings),
+                    "reached": len(reached),
+                    "missing": sorted(_name(items, other) for other in siblings - reached),
+                }
+            )
+    return found
+
+
+def _manifest_findings_export(items):
+    return [
+        {
+            "kind": "manifest-exports-nothing",
+            "detail": "%s owns %s but is built before %d of the %d Steps whose modules it must "
+            "export, so it cannot export them: %s"
+            % (
+                _name(items, gap["owner"]),
+                gap["manifest"],
+                gap["siblings"] - gap["reached"],
+                gap["siblings"],
+                ", ".join(gap["missing"][:4])
+                + ("" if len(gap["missing"]) <= 4 else " and %d more" % (len(gap["missing"]) - 4)),
+            ),
+        }
+        for gap in manifest_gaps(items)
+    ]
+
+
 def _directory(path):
     return path.rpartition("/")[0]
 
@@ -257,6 +336,7 @@ def findings(items):
     groups = _groups(items)
     found = (
         _cycle_findings(items, lanes)
+        + _manifest_findings_export(items)
         + _chain_findings(items, groups, by_name)
         + _fused_findings(items, lanes, by_name)
         + _manifest_findings(items)
