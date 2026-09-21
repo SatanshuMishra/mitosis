@@ -543,20 +543,98 @@ class Dispatch(RepoCase):
         m = next(int(i) for i, msp in enumerate(plan["msps"]) if "a" in msp["steps"])
         self.assertIn("is failed", final["msps"][str(m)]["reason"])
 
-    def a_repository_that_refuses_every_commit_stops_dispatching_after_two_refusals(self):
+    def a_commit_msg_hook_that_refuses_the_landing_message_is_refused_before_any_worker(self):
+        hook = os.path.join(self.repo, ".git", "hooks", "commit-msg")
+        write(hook, "#!/bin/sh\ngrep -q '^JIRA-' \"$1\" || { echo 'needs a ticket' >&2; exit 1; }\n")
+        os.chmod(hook, 0o755)
+        plan = core.plan([step(name, [name + ".txt"]) for name in "abc"])
+        with self.assertRaises(run.ConfigError) as caught:
+            self.execute(plan)
+        self.assertIn("commit-msg hook refuses", str(caught.exception))
+        self.assertIn("needs a ticket", str(caught.exception))
+        self.assertEqual([self.marker(i) for i in range(3)], [None, None, None])
+
+    def a_commit_msg_hook_that_accepts_the_landing_message_lets_the_run_go(self):
+        hook = os.path.join(self.repo, ".git", "hooks", "commit-msg")
+        write(hook, "#!/bin/sh\ngrep -q '^chore(' \"$1\"\n")
+        os.chmod(hook, 0o755)
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"])])
+        final = self.execute(plan)
+        self.assertEqual({r["state"] for r in final["lanes"].values()}, {"ok"})
+
+    def a_resume_with_nothing_left_to_dispatch_runs_no_commit_check(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        held = dict(
+            trees_root=self.trees,
+            no_push=True,
+        )
+        run.execute(plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command(), None, 60, 2, **held)
         hook = os.path.join(self.repo, ".git", "hooks", "commit-msg")
         write(hook, "#!/bin/sh\nexit 1\n")
         os.chmod(hook, 0o755)
-        plan = core.plan([step(name, [name + ".txt"]) for name in "abcdef"])
-        final = self.execute(plan)
-        ran = [i for i in range(len(plan["lanes"])) if self.marker(i) is not None]
-        self.assertGreaterEqual(len(ran), run.COMMIT_REFUSALS_TO_HALT)
-        self.assertLessEqual(len(ran), run.COMMIT_REFUSALS_TO_HALT + 1)
-        records = final["lanes"].values()
-        self.assertEqual(sum(1 for r in records if r["state"] == "failed"), len(ran))
-        halted = [r for r in records if r["state"] == "blocked"]
-        self.assertEqual(len(halted), len(plan["lanes"]) - len(ran))
-        self.assertTrue(all(r["reason"] == run.HALTED_REASON for r in halted))
+        again = run.execute(
+            plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command(), None, 60, 2,
+            resume=True, **held
+        )
+        self.assertEqual(again["msps"]["0"]["state"], run.MSP_COMMITTED)
+
+    def two_lane_specific_refusals_first_never_stop_the_lanes_after_them(self):
+        hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
+        write(hook, "#!/bin/sh\ngit diff --cached --name-only | grep -q '^refused' && exit 1\nexit 0\n")
+        os.chmod(hook, 0o755)
+        plan = core.plan(
+            [step("refused-%d" % n, ["refused-%d.txt" % n]) for n in range(2)]
+            + [step("fine-%d" % n, ["fine-%d.txt" % n]) for n in range(4)]
+        )
+        final = run.execute(
+            plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command(),
+            self.pr_command(), 60, 1, trees_root=self.trees, no_push=True,
+        )
+        by_step = {plan["lanes"][int(i)]["steps"][0]: r["state"] for i, r in final["lanes"].items()}
+        self.assertEqual(
+            by_step,
+            {**{"refused-%d" % n: "failed" for n in range(2)}, **{"fine-%d" % n: "ok" for n in range(4)}},
+        )
+
+    def a_lane_recorded_held_is_landed_on_resume_without_running_its_worker_again(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        write(os.path.join(trees[0]["path"], "a.txt"), "work left by a Worker before the run died\n")
+        prior = {0: {"lane": 0, "msp": 0, "state": run.LANE_HELD, "commit": None}}
+        records = self.dispatch(plan, trees, prior=prior)
+        self.assertEqual(records[0]["state"], "ok")
+        self.assertIsNotNone(records[0]["commit"])
+        self.assertIsNone(self.marker(0))
+        self.assertIn("a.txt", sh(["git", "show", "--name-only", "--format=", records[0]["commit"]], self.repo))
+
+    def a_lane_waiting_to_land_is_recorded_held_before_it_lands(self):
+        plan = core.plan([step("a", ["a.txt"], msp="m"), step("b", ["b.txt"], msp="m")])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        seen = []
+        self.dispatch(
+            plan,
+            trees,
+            mode="slow-%d" % lane_named(plan, "b"),
+            on_lane=lambda lane, record: seen.append((lane, record["state"])),
+        )
+        a = lane_named(plan, "a")
+        self.assertEqual([state for lane, state in seen if lane == a], [run.LANE_HELD, "ok"])
+
+    def a_producer_merge_skips_the_hooks_that_could_stash_a_siblings_work(self):
+        plan = core.plan([step("p", ["p.txt"]), step("c", ["c.txt"], after=["p"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        producer, consumer = trees[lane_named(plan, "p")], trees[lane_named(plan, "c")]
+        self.commit_file(producer["path"], "p.txt", "produced\n")
+        self.commit_file(consumer["path"], "early.txt", "diverged\n")
+        for name in ("pre-merge-commit", "commit-msg"):
+            hook = os.path.join(self.repo, ".git", "hooks", name)
+            write(hook, "#!/bin/sh\nexit 1\n")
+            os.chmod(hook, 0o755)
+        merged, error = run.merge_producers(
+            consumer["path"], consumer["branch"], [{"branch": producer["branch"], "commit": None}], "main"
+        )
+        self.assertIsNone(error)
+        self.assertEqual(merged, (producer["branch"],))
 
     def a_refused_lane_does_not_halt_a_run_whose_other_commits_land(self):
         hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
@@ -1179,6 +1257,34 @@ class Ship(RepoCase):
             by_step(resumed), {"a": "ship-failed", "b": run.MSP_BLOCKED, "c": run.MSP_BLOCKED}
         )
         self.assertNotIn("mitosis/c", self.remote_heads())
+
+    def a_rerun_msp_keeps_nothing_from_its_earlier_pass(self):
+        self.add_remote()
+        plan = core.plan([gated_step()])
+        held = run.execute(
+            plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command("real"),
+            None, 60, 2, trees_root=self.trees, no_push=True,
+        )
+        self.assertEqual(held["msps"]["0"]["state"], run.MSP_COMMITTED)
+        self.assertIn("ship", held["msps"]["0"])
+        again = self.execute(plan, accept="inert", resume=True)
+        self.assertEqual(again["msps"]["0"]["state"], "gate-failed")
+        self.assertIsNone(again["msps"]["0"].get("ship"))
+
+    def a_stacking_exception_from_an_earlier_pass_is_dropped_when_the_msp_stacks(self):
+        self.add_remote()
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"]), step("c", ["c.txt"], after=["a", "b"])])
+        index = {plan["msps"][m]["steps"][0]: m for m in range(len(plan["msps"]))}
+        held = run.execute(
+            plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command(),
+            None, 60, 2, trees_root=self.trees, no_push=True,
+        )
+        self.assertEqual([e["msp"] for e in held["stacking_exceptions"]], [index["c"]])
+        sh(["git", "merge", "-q", "--no-edit", held["msps"][str(index["b"])]["ship"]["branch"]], self.repo)
+        again = self.execute(plan, resume=True)
+        self.assertEqual(again["msps"][str(index["b"])]["state"], run.MSP_UNCHANGED)
+        self.assertEqual(again["stacking_exceptions"], [])
+        self.assertEqual(again["msps"][str(index["c"])]["ship"]["base"], "mitosis/a")
 
     def a_chain_of_unchanged_producers_is_followed_to_a_branch_that_ships(self):
         plan = core.plan(

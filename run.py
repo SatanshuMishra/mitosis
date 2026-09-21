@@ -24,13 +24,9 @@ MSP_BLOCKED = "blocked"
 
 LANE_COMMIT_FAILED = "the Lane's commit failed"
 
-COMMIT_REFUSALS_TO_HALT = 2
+LANE_HELD = "held"
 
-HALTED_REASON = (
-    "not dispatched: %d Lane commits were refused and none landed in this run, so the "
-    "repository is likely refusing every commit (a hook, the identity or signing); fix it and "
-    "resume" % COMMIT_REFUSALS_TO_HALT
-)
+MESSAGE_CHECK_FILE = "landing-message.txt"
 
 LOCK_MARKERS = (".lock': File exists", "Another git process seems to be running")
 
@@ -373,7 +369,7 @@ def merge_producers(tree, consumer_branch, producers, base):
                 "producer branch %s is missing and its commits are not reachable from %s"
                 % (producer["branch"], base)
             )
-        result = git_run(["merge", "--no-edit", target], tree)
+        result = git_run(["merge", "--no-edit", "--no-verify", target], tree)
         if result.returncode != 0:
             git_run(["merge", "--abort"], tree)
             detail = (result.stderr.strip() or result.stdout.strip()).splitlines()
@@ -444,14 +440,40 @@ def _worker_values(plan, lane, tree, models, run_dir):
     }
 
 
+def _landing_message(plan, lane, tree):
+    return "chore(%s): land Lane %d (%s)" % (
+        tree.get("label") or tree["msp"],
+        lane,
+        ", ".join(plan["lanes"][lane]["steps"]),
+    )
+
+
+def check_committable(tree, message, run_dir):
+    for ident in ("GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"):
+        found = git_run(["var", ident], tree["path"])
+        if found.returncode != 0:
+            raise ConfigError(
+                "git has no commit identity in %s, so no Lane could land: %s"
+                % (tree["path"], (found.stderr or "").strip() or "git var %s failed" % ident)
+            )
+    path = os.path.join(run_dir, MESSAGE_CHECK_FILE)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(message + "\n")
+    hooked = git_run(["hook", "run", "--ignore-missing", "commit-msg", "--", path], tree["path"])
+    detail = ((hooked.stderr or "") + (hooked.stdout or "")).strip()
+    if hooked.returncode != 0 and "'hook' is not a git command" not in detail:
+        raise ConfigError(
+            "the repository's commit-msg hook refuses mitosis's landing message %r, so no Lane "
+            "could land: %s" % (message, detail or "exit %d" % hooked.returncode)
+        )
+
+
 def _land(plan, lane, tree):
-    steps = plan["lanes"][lane]["steps"]
     try:
         commit = commit_paths(
             tree["path"],
             plan["briefs"][lane]["write_set"],
-            "chore(%s): land Lane %d (%s)"
-            % (tree.get("label") or tree["msp"], lane, ", ".join(steps)),
+            _landing_message(plan, lane, tree),
         )
     except GitError as error:
         write_set = plan["briefs"][lane]["write_set"]
@@ -488,15 +510,6 @@ def _landed(plan, lane, tree, record):
     return {**record, "commit": commit}
 
 
-def _refusing_every_commit(records, prior):
-    fresh = [record for lane, record in records.items() if lane not in prior]
-    refused = sum(
-        1 for record in fresh if str(record.get("reason") or "").startswith(LANE_COMMIT_FAILED)
-    )
-    landed = any(record.get("state") == "ok" for record in fresh)
-    return refused >= COMMIT_REFUSALS_TO_HALT and not landed
-
-
 def dispatch(
     plan,
     trees,
@@ -522,13 +535,19 @@ def dispatch(
         for index, record in (prior or {}).items()
         if isinstance(record, dict) and record.get("state") == "ok"
     }
+    held = {
+        int(index): {**record, "state": "ok"}
+        for index, record in (prior or {}).items()
+        if isinstance(record, dict) and record.get("state") == LANE_HELD
+    }
     ordered = [int(i) for i in plan.get("lane_order") or range(len(lanes))]
     every = ordered + [i for i in range(len(lanes)) if i not in ordered]
-    pending = [i for i in every if i not in records]
-    prior_lanes = frozenset(records)
+    pending = [i for i in every if i not in records and i not in held]
     running = {}
-    held = {}
     cap = max(1, int(concurrency))
+    if pending:
+        first = tree_of[lanes[pending[0]]["msp"]]
+        check_committable(first, _landing_message(plan, pending[0], first), run_dir)
 
     def settle(known, lane, record):
         if on_lane is not None:
@@ -543,15 +562,6 @@ def dispatch(
                 landed = _landed(plan, lane, tree_of[lanes[lane]["msp"]], held[lane])
                 held = {key: value for key, value in held.items() if key != lane}
                 records = settle(records, lane, landed)
-                progressed = True
-            if pending and _refusing_every_commit(records, prior_lanes):
-                for lane in pending:
-                    records = settle(
-                        records,
-                        lane,
-                        lane_record(lane, lanes[lane]["msp"], "blocked", reason=HALTED_REASON),
-                    )
-                pending = []
                 progressed = True
             waiting = ()
             holding = {lanes[lane]["msp"] for lane in held}
@@ -623,6 +633,8 @@ def dispatch(
                     judged = _verdict(lane, tree, started, merged, out, err, code, timed_out)
                     if judged["state"] == "ok":
                         held = {**held, lane: judged}
+                        if on_lane is not None:
+                            on_lane(lane, {**judged, "state": LANE_HELD})
                     else:
                         records = settle(records, lane, judged)
             elif pending and not progressed and not held:
@@ -1307,6 +1319,13 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings):
 def _finish_msp(plan, msp, trees, producers, state, settings):
     run_dir = settings["run_dir"]
     tree = trees[msp]
+    state = {
+        **state,
+        "msps": {**state["msps"], str(msp): {}},
+        "stacking_exceptions": [
+            entry for entry in state["stacking_exceptions"] if entry.get("msp") != msp
+        ],
+    }
     block = _lane_block(plan, msp, state) or _producer_block(plan, msp, state, producers)
     if block is not None:
         return write_state(run_dir, _msp_record(state, msp, **block))
@@ -1322,8 +1341,9 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
         plan, msp, settings["feature_branch"], trees, settings["repo"], state["msps"]
     )
     if exception is not None:
-        kept = [entry for entry in state["stacking_exceptions"] if entry.get("msp") != msp]
-        state = write_state(run_dir, {**state, "stacking_exceptions": kept + [exception]})
+        state = write_state(
+            run_dir, {**state, "stacking_exceptions": state["stacking_exceptions"] + [exception]}
+        )
     shipped = _ship_stage(plan, msp, tree, base, exception, state["msps"][str(msp)], settings)
     return write_state(run_dir, _msp_record(state, msp, **shipped))
 

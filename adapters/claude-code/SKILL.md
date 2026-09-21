@@ -312,16 +312,16 @@ predecessor, report.
 The Lanes of one MSP share its worktree, and `--concurrency` Workers run at
 once, four by default. Each brief tells its Worker that others are writing in
 the same tree, to change only its write-set and to leave the index and history
-alone. A finished Lane is committed only once no Worker is running in its
-worktree, so a commit hook that stashes unstaged files never touches a
-sibling's work in progress, and no new Lane starts in that MSP until it has
-landed. A git command that meets another process's lock is retried for a few
-seconds before it counts as a failure.
+alone. A finished Lane is `held` until no Worker is running in its worktree,
+then committed, so a commit hook that stashes unstaged files never touches a
+sibling's work; no new Lane starts in that MSP meanwhile, and a resume lands a
+`held` Lane without paying for it again. Merges of a producer's branch skip
+commit hooks. A git command that meets another process's lock is retried for
+a few seconds.
 
-A refused Lane commit fails that Lane alone. When the first two refusals of a
-run arrive before any Lane has landed, the repository is likely refusing every
-commit, through a hook, the identity or signing, so mitosis starts no further
-Lane and records the rest `blocked` for a resume.
+Before the first Worker, mitosis checks that git has a commit identity and
+that any commit-msg hook accepts its landing message, and refuses with exit 3
+if not. Any other refused Lane commit fails that Lane alone.
 
 The gate runs each acceptance property twice, with the work present and with
 the implementation reverted on a probe branch. `pass` means the property
