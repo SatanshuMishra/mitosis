@@ -57,7 +57,7 @@ ACCEPTANCE_KEYS = ("file", "test")
 
 SOURCE_KEYS = ("path", "sha256")
 
-LANE_STATES = ("ok", "failed", "blocked", "merge-blocked")
+LANE_STATES = ("ok", "failed", "blocked", "merge-blocked", "held")
 
 MSP_STATES = (
     "shipped",
@@ -767,7 +767,8 @@ def is_adjacency(graph):
         return False
     lists = [neighbours for neighbours in graph.values() if isinstance(neighbours, list)]
     nested = any(isinstance(n, (dict, list)) for neighbours in lists for n in neighbours)
-    return (not graph or bool(lists)) and not nested
+    named = any(isinstance(n, str) for neighbours in lists for n in neighbours)
+    return (not graph or bool(lists)) and (named or not nested)
 
 
 def clean_adjacency(graph):
