@@ -259,7 +259,7 @@ class Findings(unittest.TestCase):
         fused = of_kind(shape.findings(items), "fused-without-overlap")
         self.assertTrue(fused)
         for entry in fused:
-            self.assertNotIn("contract_group", entry["detail"])
+            self.assertNotIn("interface", entry["detail"])
         self.assertTrue(any("cycle forced" in entry["detail"] for entry in fused))
 
     def an_unpinned_contract_group_fuses_its_steps_and_says_why(self):
@@ -305,6 +305,18 @@ class Findings(unittest.TestCase):
         self.assertTrue(fused[0]["detail"].startswith("a and c"))
         self.assertIn("run of shared files", fused[0]["detail"])
         self.assertNotIn("contract_group", fused[0]["detail"])
+    def a_pair_joined_through_a_group_and_a_chain_names_both(self):
+        items = [
+            step("a", ["a.py"], contract_group="g"),
+            step("b", ["b.py"], contract_group="g", msp="m"),
+            step("c", ["c.py"], msp="m", after=["b"]),
+        ]
+        fused = of_kind(shape.findings(items), "fused-without-overlap")
+        through = [entry["detail"] for entry in fused if entry["detail"].startswith("a and c")]
+        self.assertEqual(len(through), 1)
+        self.assertIn("a chain of after edges and an interface no contract Step pins", through[0])
+        self.assertNotIn("shared files", through[0])
+
     def a_pair_sharing_a_file_is_not_a_fused_finding(self):
         items = [
             step("a", ["a.py", "x.py"]),

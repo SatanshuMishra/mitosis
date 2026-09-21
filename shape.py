@@ -154,6 +154,24 @@ def _same_uncontracted_lane(items, a, b):
     return any(a in lane and b in lane for lane in core.uncontracted_lanes(items))
 
 
+JOIN_KINDS = ("shared files", "a chain of after edges", "an interface no contract Step pins")
+
+
+def _join_kinds(items, a, b):
+    members = next(
+        frozenset(lane) for lane in core.uncontracted_lanes(items) if a in lane and b in lane
+    )
+    return [
+        kind
+        for kind, pairs in zip(JOIN_KINDS, core.lane_pairs(items))
+        if any(x in members and y in members for x, y in pairs)
+    ]
+
+
+def _listed(parts):
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
 def _joined_by(items, a, b, by_name):
     if not _same_uncontracted_lane(items, a, b):
         return "joined only because a cycle forced their Lanes to be merged"
@@ -169,7 +187,10 @@ def _joined_by(items, a, b, by_name):
         return "joined as two halves of one interface that no contract Step pins"
     if a in _producers(items, b, by_name) or b in _producers(items, a, by_name):
         return "joined by an after edge through a Step they both touch"
-    return "joined by a run of shared files through other Steps in the Lane"
+    kinds = _join_kinds(items, a, b)
+    if kinds == [JOIN_KINDS[0]]:
+        return "joined by a run of shared files through other Steps in the Lane"
+    return "joined through other Steps in the Lane by " + _listed(kinds)
 
 
 def _fused_findings(items, lanes, by_name):

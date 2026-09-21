@@ -730,6 +730,21 @@ class ItemsEntryPointRefusals(unittest.TestCase):
         self.assertEqual(code, mitosis.EXIT_REFUSED, out)
         self.assertIn("each have to merge before", err + out)
 
+    def a_cycle_through_an_unpinned_group_names_the_group_as_a_cause(self):
+        code, out, err = self._run(
+            [
+                {"name": "a", "task": "t", "files": ["a.py"], "source": None,
+                 "acceptance": [], "contract_group": "g"},
+                {"name": "x", "task": "t", "files": ["x.py"], "source": None,
+                 "acceptance": [], "after": ["a"]},
+                {"name": "b", "task": "t", "files": ["b.py"], "source": None,
+                 "acceptance": [], "contract_group": "g", "after": ["x"]},
+            ]
+        )
+        self.assertEqual(code, mitosis.EXIT_REFUSED, out)
+        self.assertIn("unpinned contract_group", err)
+        self.assertIn("take them out of the contract_group", err)
+
     def a_package_supplied_as_items_that_would_ship_empty_is_refused(self):
         code, out, err = self._run(self.EMPTY_MANIFEST)
         self.assertEqual(code, mitosis.EXIT_REFUSED, out)

@@ -883,8 +883,11 @@ def refuse_lane_cycles(items):
         return
     raise Refusal(
         "%s spans more than one MSP, so their pull requests would each have to merge before "
-        "the other: %s. Two Steps that share a file are built by one Worker in one sitting, so "
-        "no Step outside that pair may sit between them in the after order"
+        "the other: %s. One Worker builds a Lane in one sitting, and a Lane joins Steps that "
+        "share a file or belong to one unpinned contract_group, so no Step from another MSP "
+        "may sit between two of them in the after order. Take the shared file off one of "
+        "them, take them out of the contract_group, or drop the ordering that puts the other "
+        "Step between them"
         % (_n(len(cycles), "Lane cycle"), "; ".join(entry["detail"] for entry in cycles))
     )
 

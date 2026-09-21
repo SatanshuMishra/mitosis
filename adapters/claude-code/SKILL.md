@@ -239,10 +239,11 @@ Step with an `after` edge reaching every Step whose modules it exports.
 `lane-cycle` means two Lanes each wait on the
 other, so neither can start and their pull requests would each have to merge
 before the other. mitosis prints the report and then refuses with exit 3,
-before a single brief is bought. It happens when two Steps share a file,
-which makes one Worker build both in one sitting, and a third Step sits
-between them in the `after` order. Fix it in the Steps: take the shared file
-off one of them, or drop the ordering that puts a Step in between. Where the
+before a single brief is bought. It happens when two Steps land in one Lane,
+because they share a file or belong to one unpinned `contract_group`, and a
+Step from another MSP sits between them in the `after` order. Fix it in the
+Steps: take the shared file off one of them, take them out of the group, or
+drop the ordering that puts a Step in between. Where the
 same knot sits inside one pull request, mitosis merges those Lanes instead of
 refusing, which costs parallelism rather than the run, and
 `fused_without_overlap` counts what that cost.

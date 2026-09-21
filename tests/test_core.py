@@ -108,12 +108,14 @@ class Grouping(unittest.TestCase):
         items = [
             step("iface", ["iface.py"], type="contract", contract_group="g"),
             step("server", ["server.py"], contract_group="g", after=["iface"]),
-            step("adapter", ["adapter.py"], after=["iface"]),
+            step("adapter", ["adapter.py"], contract_group="g", after=["iface"]),
             step("client", ["client.py"], contract_group="g", after=["adapter"]),
         ]
         self.assertEqual(core.pinned_groups(items), frozenset({"g"}))
+        self.assertEqual(len(core.msp_items(items)), 1)
         lanes = core.lane_items(items)
         self.assertNotEqual(lane_of(lanes, items, "server"), lane_of(lanes, items, "client"))
+        self.assertEqual(core.lane_cycles(items, lanes), ())
 
     def a_cycle_inside_one_msp_is_contracted_so_the_plan_can_still_run(self):
         items = [
