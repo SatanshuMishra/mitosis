@@ -770,6 +770,10 @@ class GraphLoading(unittest.TestCase):
     def a_mapping_is_still_read_as_it_is(self):
         self.assertEqual(self._load({"a.py": ["b.py"]}), {"a.py": ["b.py"]})
 
+    def a_mapping_carrying_metadata_and_nulls_is_still_read(self):
+        graph = {"version": "1", "a.py": ["b.py", None], "b.py": None}
+        self.assertEqual(self._load(graph), graph)
+
     def an_object_that_is_neither_shape_is_refused_by_name(self):
         with self.assertRaises(mitosis.Refusal) as caught:
             self._load({"directed": False, "graph": {}, "nodes": "not a list"})

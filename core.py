@@ -761,10 +761,14 @@ def node_link_edges(graph):
 
 
 def is_adjacency(graph):
-    return isinstance(graph, dict) and all(
-        isinstance(neighbours, list) and all(isinstance(n, str) for n in neighbours)
-        for neighbours in graph.values()
+    return isinstance(graph, dict) and (
+        not graph or any(isinstance(neighbours, list) for neighbours in graph.values())
     )
+
+
+def _within(path, root):
+    relative = os.path.relpath(path, root)
+    return None if relative.split(os.sep)[0] == os.pardir else relative
 
 
 def _node_file(node, root):
@@ -774,14 +778,19 @@ def _node_file(node, root):
     if not isinstance(path, str) or not path:
         return None
     if os.path.isabs(path):
-        relative = os.path.relpath(path, root)
-        return None if relative.split(os.sep)[0] == os.pardir else _norm(relative)
-    return _norm(path)
+        relative = _within(path, root) or _within(os.path.realpath(path), os.path.realpath(root))
+    else:
+        relative = _within(os.path.join(root, path), root)
+    return None if relative is None else _norm(relative)
+
+
+def _node_key(value):
+    return json.dumps(value, sort_keys=True)
 
 
 def node_files(graph, root):
     return {
-        node["id"]: _node_file(node, root)
+        _node_key(node["id"]): _node_file(node, root)
         for node in graph["nodes"]
         if isinstance(node, dict) and "id" in node
     }
@@ -790,7 +799,8 @@ def node_files(graph, root):
 def _file_pairs(files, link, both):
     if not isinstance(link, dict):
         return ()
-    left, right = files.get(link.get("source")), files.get(link.get("target"))
+    left = files.get(_node_key(link.get("source")))
+    right = files.get(_node_key(link.get("target")))
     if not left or not right or left == right:
         return ()
     return ((left, right), (right, left)) if both else ((left, right),)

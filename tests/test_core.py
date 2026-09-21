@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -686,14 +687,51 @@ class GraphInput(unittest.TestCase):
         plan = core.plan([step("edit-a", ["pkg/a.py"])], graph=adjacency)
         self.assertIn("pkg/b.py", plan["briefs"][0]["read_set"])
 
-    def only_a_mapping_of_paths_to_lists_of_paths_is_an_adjacency(self):
+    def a_mapping_is_an_adjacency_when_any_path_lists_its_neighbours(self):
         self.assertTrue(core.is_adjacency({"a.py": ["b.py"], "b.py": []}))
-        self.assertFalse(core.is_adjacency(node_link(self.LINKS)))
-        self.assertFalse(core.is_adjacency({"a.py": "b.py"}))
-        self.assertFalse(core.is_adjacency({"a.py": [1]}))
+        self.assertTrue(core.is_adjacency({"version": "1", "a.py": ["b.py", None], "b.py": None}))
+        self.assertTrue(core.is_adjacency({}))
+        self.assertFalse(core.is_adjacency({"a.py": "b.py", "version": 2}))
         self.assertFalse(core.is_adjacency(["a.py"]))
         self.assertIsNone(core.node_link_edges({"a.py": ["b.py"]}))
         self.assertIsNone(core.node_link_edges({"nodes": [], "links": "x"}))
+
+    def a_node_id_of_any_json_shape_is_matched_to_its_links(self):
+        graph = {
+            "nodes": [
+                {"id": ["pkg", "a"], "source_file": "pkg/a.py"},
+                {"id": {"k": 1}, "source_file": "pkg/b.py"},
+                {"id": 7, "source_file": "pkg/c.py"},
+            ],
+            "links": [
+                {"source": ["pkg", "a"], "target": {"k": 1}},
+                {"source": 7, "target": ["pkg", "a"]},
+            ],
+        }
+        self.assertEqual(
+            core.adjacency_from_node_links(graph, "/repo"),
+            {"pkg/a.py": ["pkg/b.py", "pkg/c.py"], "pkg/b.py": ["pkg/a.py"], "pkg/c.py": ["pkg/a.py"]},
+        )
+
+    def a_path_reaching_the_root_through_a_symlink_is_kept_and_one_climbing_out_is_dropped(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            real = os.path.realpath(os.path.join(scratch, "real"))
+            os.makedirs(real)
+            link = os.path.join(scratch, "link")
+            os.symlink(real, link)
+            graph = {
+                "nodes": [
+                    {"id": "via-link", "source_file": os.path.join(link, "src", "a.py")},
+                    {"id": "local", "source_file": "./src/b.py"},
+                    {"id": "outside", "source_file": "../elsewhere/c.py"},
+                ],
+                "links": [
+                    {"source": "via-link", "target": "local"},
+                    {"source": "outside", "target": "local"},
+                ],
+            }
+            adjacency = core.adjacency_from_node_links(graph, real)
+        self.assertEqual(adjacency, {"src/a.py": ["src/b.py"], "src/b.py": ["src/a.py"]})
 
 
 def load_tests(loader, tests, pattern):
