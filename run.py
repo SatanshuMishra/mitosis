@@ -34,6 +34,8 @@ HALTED_REASON = (
 
 LOCK_MARKERS = (".lock': File exists", "Another git process seems to be running")
 
+LOCK_PATH = re.compile(r"[\\/]\.git[\\/][^\s'\"]*\.lock\b")
+
 LOCK_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.6, 3.2)
 
 MSP_UNCHANGED = "unchanged"
@@ -92,8 +94,9 @@ def _git_once(args, cwd):
 
 
 def _locked(completed):
-    return completed.returncode != 0 and any(
-        marker in (completed.stderr or "") for marker in LOCK_MARKERS
+    stderr = completed.stderr or ""
+    return completed.returncode != 0 and (
+        any(marker in stderr for marker in LOCK_MARKERS) or bool(LOCK_PATH.search(stderr))
     )
 
 

@@ -629,6 +629,23 @@ class Dispatch(RepoCase):
             release.join()
         self.assertEqual(sh(["git", "log", "-1", "--format=%s", head], tree), "land a")
 
+    def a_lock_is_recognised_in_any_language_and_nothing_else_is(self):
+        def failed(stderr, code=128):
+            return subprocess.CompletedProcess(["git"], code, "", stderr)
+
+        for stderr in (
+            "fatal: Unable to create '/r/.git/index.lock': File exists.",
+            "fatal : Impossible de créer '/r/.git/worktrees/m/index.lock' : Le fichier existe.",
+            "Schwerwiegend: Konnte '/r/.git/refs/heads/mitosis/a.lock' nicht erstellen",
+        ):
+            self.assertTrue(run._locked(failed(stderr)), stderr)
+        for stderr in (
+            "error: pathspec 'x' did not match any file(s) known to git",
+            "hook: Cargo.lock is out of date",
+        ):
+            self.assertFalse(run._locked(failed(stderr)), stderr)
+        self.assertFalse(run._locked(failed("fatal: Unable to create '/r/.git/index.lock'", 0)))
+
     def worker_output_goes_to_disk_and_the_record_stays_small(self):
         plan = core.plan([step("a", ["a.txt"])])
         trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
