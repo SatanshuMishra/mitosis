@@ -377,6 +377,13 @@ def load_graph(path, root):
     if path is None:
         return None
     graph = read_json(path, "--graph")
+    nodes = graph.get("nodes") if isinstance(graph, dict) else None
+    if isinstance(nodes, list) and any(isinstance(node, dict) for node in nodes):
+        if core.node_link_edges(graph) is None:
+            raise Refusal(
+                "--graph %s has a list of nodes but no links or edges list, so it cannot say "
+                "which files are linked" % path
+            )
     if core.node_link_edges(graph) is not None:
         if not any(core.node_files(graph, root).values()):
             raise Refusal(

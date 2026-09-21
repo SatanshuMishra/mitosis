@@ -790,8 +790,13 @@ class GraphLoading(unittest.TestCase):
         self.assertEqual(self._load(graph), {"a.py": ["b.py"]})
 
     def a_nodes_list_without_links_is_refused_rather_read_as_a_mapping(self):
-        with self.assertRaises(mitosis.Refusal):
-            self._load({"nodes": [{"id": "a", "source_file": "a.py"}], "meta": []})
+        for graph in (
+            {"nodes": [{"id": "a", "source_file": "a.py"}], "meta": []},
+            {"nodes": [{"id": "a"}], "connections": [], "languages": ["python"]},
+        ):
+            with self.assertRaises(mitosis.Refusal) as caught:
+                self._load(graph)
+            self.assertIn("no links or edges list", str(caught.exception))
 
     def an_object_that_is_neither_shape_is_refused_by_name(self):
         with self.assertRaises(mitosis.Refusal) as caught:
