@@ -122,6 +122,9 @@ class VersionBump(Repo):
                 "docs/notes.md": "n\n",
                 "scripts/release_check.py": "z = 1\n",
                 ".github/workflows/ci.yml": "name: ci\n",
+                "receipts.config.json": "{}\n",
+                "AGENTS.md": "agents\n",
+                ".receipts/gates.md": "gates\n",
             },
         )
         self.assertEqual(release_check.shipped_changes(self.root, self.base), ())

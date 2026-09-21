@@ -10,7 +10,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VERSION_LINE = re.compile(r'^__version__ = "(\d+)\.(\d+)\.(\d+)"$', re.M)
 
 UNSHIPPED = re.compile(
-    r"^(?:tests/|docs/|scripts/|\.github/|(?:README\.md|CHANGELOG\.md|LICENSE|NOTICE|\.gitignore)$)"
+    r"^(?:tests/|docs/|scripts/|\.github/|\.receipts/"
+    r"|(?:README\.md|CHANGELOG\.md|LICENSE|NOTICE|\.gitignore|AGENTS\.md|receipts\.config\.json)$)"
 )
 
 RELEASE_TAGS = "mitosis--v*"

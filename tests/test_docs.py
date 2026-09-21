@@ -30,6 +30,8 @@ EXCLUDED_DIR_NAMES = frozenset(
 )
 
 FENCE = re.compile(r"```.*?```", re.S)
+
+GENERATED_BLOCK = re.compile(r"<!-- BEGIN receipts gates.*?<!-- END receipts gates -->", re.S)
 INLINE_CODE = re.compile(r"`([^`\n]+)`")
 FLAG_SHAPE = re.compile(r"^--[a-z][a-z-]*$")
 WORD_SHAPE = re.compile(r"^[a-z][a-z0-9_-]*$")
@@ -183,6 +185,10 @@ def _unknown_identifiers(text):
     return unknown
 
 
+def _linted_identifiers(text):
+    return _unknown_identifiers(GENERATED_BLOCK.sub("", text))
+
+
 def _changelog_path(root):
     entries = {name.lower(): name for name in os.listdir(root) if os.path.isfile(os.path.join(root, name))}
     for candidate in CHANGELOG_CANDIDATES:
@@ -207,10 +213,17 @@ class Docs(unittest.TestCase):
         for path in _markdown_files(ROOT):
             with open(path, encoding="utf-8") as handle:
                 text = handle.read()
-            unknown = _unknown_identifiers(text)
+            unknown = _linted_identifiers(text)
             if unknown:
                 offenses[os.path.relpath(path, ROOT)] = unknown
         self.assertEqual(offenses, {})
+
+    def a_block_another_tool_generates_is_not_linted_but_the_rest_of_its_file_is(self):
+        generated = (
+            "<!-- BEGIN receipts gates (generated) -->\nuse `--no-such-flag` here\n<!-- END receipts gates -->\n"
+        )
+        self.assertEqual(_linted_identifiers(generated), [])
+        self.assertEqual(_linted_identifiers(generated + "then `--no-such-flag` again\n"), ["--no-such-flag"])
 
     def a_document_may_name_a_function_the_code_defines_but_not_one_it_does_not(self):
         self.assertEqual(_unknown_identifiers("the `manifest_gaps` check"), [])
