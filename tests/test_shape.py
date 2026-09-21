@@ -317,6 +317,20 @@ class Findings(unittest.TestCase):
         self.assertIn("a chain of after edges and an interface no contract Step pins", through[0])
         self.assertNotIn("shared files", through[0])
 
+    def a_pair_is_explained_by_the_links_between_them_not_elsewhere_in_the_lane(self):
+        items = [
+            step("a", ["a.py", "x.py"]),
+            step("b", ["b.py", "x.py", "y.py"]),
+            step("c", ["c.py", "y.py"]),
+            step("d", ["d.py", "a.py"], contract_group="g"),
+            step("e", ["e.py"], contract_group="g"),
+        ]
+        fused = of_kind(shape.findings(items), "fused-without-overlap")
+        details = {entry["detail"].split(" share a Lane")[0]: entry["detail"] for entry in fused}
+        self.assertIn("run of shared files", details["a and c"])
+        self.assertNotIn("interface", details["a and c"])
+        self.assertIn("shared files and an interface no contract Step pins", details["c and e"])
+
     def a_pair_sharing_a_file_is_not_a_fused_finding(self):
         items = [
             step("a", ["a.py", "x.py"]),

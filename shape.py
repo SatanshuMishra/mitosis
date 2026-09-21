@@ -150,57 +150,75 @@ def _chain_findings(items, groups, by_name):
     return found
 
 
-def _same_uncontracted_lane(items, a, b):
-    return any(a in lane and b in lane for lane in core.uncontracted_lanes(items))
-
-
 JOIN_KINDS = ("shared files", "a chain of after edges", "an interface no contract Step pins")
 
 
-def _join_kinds(items, a, b):
-    members = next(
-        frozenset(lane) for lane in core.uncontracted_lanes(items) if a in lane and b in lane
+def _path_kinds(pairs, members, a, b):
+    links = tuple(
+        (x, y, kind)
+        for kind, found in zip(JOIN_KINDS, pairs)
+        for x, y in found
+        if x in members and y in members
     )
-    return [
-        kind
-        for kind, pairs in zip(JOIN_KINDS, core.lane_pairs(items))
-        if any(x in members and y in members for x, y in pairs)
-    ]
+    trail = {a: ()}
+    frontier = (a,)
+    while frontier and b not in trail:
+        reached = {}
+        for node in frontier:
+            for x, y, kind in links:
+                for here, there in ((x, y), (y, x)):
+                    if here == node and there not in trail and there not in reached:
+                        reached = {**reached, there: trail[node] + (kind,)}
+        trail = {**trail, **reached}
+        frontier = tuple(reached)
+    kinds = trail.get(b, ())
+    return [kind for kind in JOIN_KINDS if kind in kinds]
 
 
 def _listed(parts):
     return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
 
 
-def _joined_by(items, a, b, by_name):
-    if not _same_uncontracted_lane(items, a, b):
+def _joined_by(items, a, b, by_name, pairs, uncontracted, pinned):
+    lane = next((lane for lane in uncontracted if a in lane and b in lane), None)
+    if lane is None:
         return "joined only because a cycle forced their Lanes to be merged"
-    shared, chained, _ = core.lane_pairs(items)
+    _, chained, _ = pairs
     if (a, b) in chained or (b, a) in chained:
         return "joined by a chain of after edges"
     group = items[a].get("contract_group")
     if (
         group not in (None, "")
         and group == items[b].get("contract_group")
-        and str(group) not in core.pinned_groups(items)
+        and str(group) not in pinned
     ):
         return "joined as two halves of one interface that no contract Step pins"
     if a in _producers(items, b, by_name) or b in _producers(items, a, by_name):
         return "joined by an after edge through a Step they both touch"
-    kinds = _join_kinds(items, a, b)
+    kinds = _path_kinds(pairs, frozenset(lane), a, b)
     if kinds == [JOIN_KINDS[0]]:
         return "joined by a run of shared files through other Steps in the Lane"
     return "joined through other Steps in the Lane by " + _listed(kinds)
 
 
 def _fused_findings(items, lanes, by_name):
+    fused = _fused_pairs(items, lanes)
+    if not fused:
+        return []
+    pairs = core.lane_pairs(items)
+    uncontracted = core.uncontracted_lanes(items)
+    pinned = core.pinned_groups(items)
     return [
         {
             "kind": "fused-without-overlap",
             "detail": "%s and %s share a Lane with no file in common, %s"
-            % (_name(items, a), _name(items, b), _joined_by(items, a, b, by_name)),
+            % (
+                _name(items, a),
+                _name(items, b),
+                _joined_by(items, a, b, by_name, pairs, uncontracted, pinned),
+            ),
         }
-        for a, b in _fused_pairs(items, lanes)
+        for a, b in fused
     ]
 
 
