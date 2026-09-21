@@ -702,9 +702,25 @@ class GraphInput(unittest.TestCase):
         self.assertTrue(core.is_adjacency({"version": "1", "a.py": ["b.py", None], "b.py": None}))
         self.assertTrue(core.is_adjacency({}))
         self.assertFalse(core.is_adjacency({"a.py": "b.py", "version": 2}))
+        self.assertFalse(core.is_adjacency({"nodes": [{"id": "a"}], "a.py": ["b.py"]}))
+        self.assertFalse(core.is_adjacency({"a.py": [["b.py"]]}))
         self.assertFalse(core.is_adjacency(["a.py"]))
         self.assertIsNone(core.node_link_edges({"a.py": ["b.py"]}))
         self.assertIsNone(core.node_link_edges({"nodes": [], "links": "x"}))
+
+    def a_source_file_with_a_nul_byte_is_dropped_not_raised(self):
+        graph = {
+            "nodes": [
+                {"id": "bad", "source_file": "/elsewhere/a\x00.py"},
+                {"id": "ok", "source_file": "src/b.py"},
+                {"id": "ok2", "source_file": "src/c.py"},
+            ],
+            "links": [{"source": "bad", "target": "ok"}, {"source": "ok", "target": "ok2"}],
+        }
+        self.assertEqual(
+            core.adjacency_from_node_links(graph, "/repo"),
+            {"src/b.py": ["src/c.py"], "src/c.py": ["src/b.py"]},
+        )
 
     def a_node_id_of_any_json_shape_is_matched_to_its_links(self):
         graph = {

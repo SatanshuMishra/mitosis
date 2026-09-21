@@ -388,7 +388,7 @@ def load_graph(path, root):
             "--graph %s is neither a JSON object mapping each path to a list of the paths it "
             "imports nor a node-link graph with nodes and links" % path
         )
-    return graph
+    return core.clean_adjacency(graph)
 
 
 def unoffered_placeholders(name, template):

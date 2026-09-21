@@ -1,4 +1,5 @@
 import fnmatch
+import functools
 import hashlib
 import itertools
 import json
@@ -761,14 +762,41 @@ def node_link_edges(graph):
 
 
 def is_adjacency(graph):
-    return isinstance(graph, dict) and (
-        not graph or any(isinstance(neighbours, list) for neighbours in graph.values())
-    )
+    if not isinstance(graph, dict):
+        return False
+    lists = [neighbours for neighbours in graph.values() if isinstance(neighbours, list)]
+    nested = any(isinstance(n, (dict, list)) for neighbours in lists for n in neighbours)
+    return (not graph or bool(lists)) and not nested
+
+
+def clean_adjacency(graph):
+    return {
+        path: [n for n in neighbours if isinstance(n, str)]
+        for path, neighbours in graph.items()
+        if isinstance(neighbours, list)
+    }
 
 
 def _within(path, root):
-    relative = os.path.relpath(path, root)
+    if path is None:
+        return None
+    try:
+        relative = os.path.relpath(path, root)
+    except ValueError:
+        return None
     return None if relative.split(os.sep)[0] == os.pardir else relative
+
+
+@functools.lru_cache(maxsize=4096)
+def _real_directory(directory):
+    return os.path.realpath(directory)
+
+
+def _real(path):
+    try:
+        return os.path.join(_real_directory(os.path.dirname(path)), os.path.basename(path))
+    except ValueError:
+        return None
 
 
 def _node_file(node, root):
@@ -778,7 +806,7 @@ def _node_file(node, root):
     if not isinstance(path, str) or not path:
         return None
     if os.path.isabs(path):
-        relative = _within(path, root) or _within(os.path.realpath(path), os.path.realpath(root))
+        relative = _within(path, root) or _within(_real(path), _real_directory(root))
     else:
         relative = _within(os.path.join(root, path), root)
     return None if relative is None else _norm(relative)
