@@ -518,6 +518,40 @@ class Dispatch(RepoCase):
         self.seed_existing(".gitignore", "build/\n")
         self._commit_refused_run(["build/out.txt"])
 
+    def a_refused_commit_leaves_nothing_staged_to_block_a_siblings_merge(self):
+        self.add_remote()
+        hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
+        write(hook, "#!/bin/sh\ngit diff --cached --name-only | grep -qx refused.txt && exit 1\nexit 0\n")
+        os.chmod(hook, 0o755)
+        plan = core.plan(
+            [
+                step("p", ["p.txt"]),
+                step("a", ["refused.txt"], msp="m"),
+                step("e", ["e.txt"], msp="m"),
+                step("c", ["c.txt"], msp="m", after=["p"]),
+            ]
+        )
+        final = self.execute(plan, mode="slow-%d" % lane_named(plan, "p"))
+        by_step = {plan["lanes"][int(i)]["steps"][0]: r for i, r in final["lanes"].items()}
+        self.assertEqual(by_step["a"]["state"], "failed")
+        self.assertEqual(by_step["e"]["state"], "ok")
+        self.assertEqual(by_step["c"]["state"], "ok", by_step["c"].get("reason"))
+        m = next(int(i) for i, msp in enumerate(plan["msps"]) if "a" in msp["steps"])
+        self.assertIn("is failed", final["msps"][str(m)]["reason"])
+
+    def a_repository_that_refuses_every_commit_is_refused_before_any_worker_runs(self):
+        hook = os.path.join(self.repo, ".git", "hooks", "commit-msg")
+        write(hook, "#!/bin/sh\nexit 1\n")
+        os.chmod(hook, 0o755)
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"])])
+        with self.assertRaises(run.ConfigError) as caught:
+            self.execute(plan)
+        self.assertIn("refused a commit before any Worker ran", str(caught.exception))
+        self.assertIsNone(self.marker(0))
+        self.assertIsNone(self.marker(1))
+        for tree in self.state()["worktrees"]:
+            self.assertEqual(sh(["git", "rev-parse", "HEAD"], tree["path"]), sh(["git", "rev-parse", "main"], self.repo))
+
     def worker_output_goes_to_disk_and_the_record_stays_small(self):
         plan = core.plan([step("a", ["a.txt"])])
         trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
@@ -1038,6 +1072,7 @@ class Ship(RepoCase):
         for record in held["msps"].values():
             log = sh(["git", "log", "--format=%s", "main.." + record["ship"]["branch"]], self.repo)
             self.assertIn("land Lane", log)
+            self.assertNotIn("check that a Lane can land", log)
         shipped = self.execute(plan, resume=True)
         self.assertEqual({m["state"] for m in shipped["msps"].values()}, {"shipped"})
         self.assertEqual(len(self.remote_heads()), 2)

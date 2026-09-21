@@ -420,6 +420,9 @@ def _land(plan, lane, tree):
             % (tree.get("label") or tree["msp"], lane, ", ".join(steps)),
         )
     except GitError as error:
+        write_set = plan["briefs"][lane]["write_set"]
+        if write_set:
+            git_run(["reset", "-q", "--", *write_set], tree["path"])
         return None, "the Lane's commit failed: %s" % error
     return commit, None
 
@@ -446,6 +449,27 @@ def _finish(plan, lane, tree, started, merged, out, err, code, timed_out):
         started=started,
         finished=now(),
     )
+
+
+def check_commits(tree):
+    head = git(["rev-parse", "HEAD"], tree["path"])
+    try:
+        git(
+            [
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "chore(%s): check that a Lane can land" % (tree.get("label") or tree["msp"]),
+            ],
+            tree["path"],
+        )
+    except GitError as error:
+        raise ConfigError(
+            "the repository refused a commit before any Worker ran, so no Lane could land; "
+            "fix its commit hooks, identity or signing first: %s" % error
+        )
+    git(["reset", "-q", "--soft", head], tree["path"])
 
 
 def dispatch(
@@ -1305,6 +1329,8 @@ def execute(
         plan["msps"], feature_branch, trees_root or os.path.join(run_dir, "trees"), repo, prefix
     )
     state = write_state(run_dir, {**state, "worktrees": trees})
+    if trees:
+        check_commits(trees[0])
 
     def on_lane(lane, record):
         nonlocal state

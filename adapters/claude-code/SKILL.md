@@ -308,6 +308,12 @@ one Worker per Lane with producers merged in first, then per MSP: commit,
 gate, reconcile, push, open a draft pull request stacked on its single
 predecessor, report.
 
+Before the first Worker starts, mitosis makes one empty commit in a worktree
+and undoes it. A repository whose hooks, identity or signing refuse every
+commit is refused there, with exit 3, before a Worker is paid for. A hook that
+refuses only some files lets that check pass, and then fails only the Lane
+whose commit it refuses.
+
 The gate runs each acceptance property twice, with the work present and with
 the implementation reverted on a probe branch. `pass` means the property
 failed without the work, so it is load-bearing. `inert` means it passed
