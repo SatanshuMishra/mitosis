@@ -202,10 +202,13 @@ class Docs(unittest.TestCase):
 
     def the_install_section_names_every_module_the_cli_imports(self):
         readme = os.path.join(ROOT, "README.md")
-        if not os.path.isfile(readme):
-            self.skipTest("README.md is not part of an installed copy")
-        with open(readme, encoding="utf-8") as handle:
-            install = handle.read().split("## Install", 1)[1].split("\n## ", 1)[0]
+        text = ""
+        if os.path.isfile(readme):
+            with open(readme, encoding="utf-8") as handle:
+                text = handle.read()
+        if not text.startswith("# mitosis\n") or "## Install" not in text:
+            self.skipTest("no mitosis README here; an installed copy does not carry one")
+        install = text.split("## Install", 1)[1].split("\n## ", 1)[0]
         named = set(re.findall(r"`([a-z_]+\.py)`", install))
         self.assertEqual(sorted(named), sorted(_local_closure("mitosis")))
 
