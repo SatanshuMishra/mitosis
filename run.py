@@ -881,9 +881,9 @@ def gate_outcome(properties):
 
 
 def gate_state(result):
-    if result["outcome"] == "inert":
+    if result.get("outcome") == "inert":
         return "gate-failed"
-    if result["outcome"] == "inconclusive":
+    if result.get("outcome") == "inconclusive":
         return "gate-inconclusive"
     return None
 
@@ -1060,12 +1060,32 @@ def pr_base(plan, msp, feature_branch, trees, repo, settled=None):
     return feature_branch, None
 
 
-def _property_lines(plan, msp):
+def _judged(gate_result):
+    return {
+        (entry.get("file"), entry.get("test")): entry
+        for entry in (gate_result or {}).get("properties") or []
+    }
+
+
+def _property_lines(plan, msp, gate_result=None):
     steps = _steps_by_name(plan)
+    judged = _judged(gate_result)
     lines = ()
     for name in plan["msps"][msp]["steps"]:
         for entry in steps[name].get("acceptance") or []:
-            lines = lines + ("- %s::%s (%s)" % (entry["file"], entry["test"], name),)
+            verdict = judged.get((entry["file"], entry["test"])) or {}
+            outcome = verdict.get("outcome")
+            reason = verdict.get("reason")
+            lines = lines + (
+                "- %s::%s (%s)%s%s"
+                % (
+                    entry["file"],
+                    entry["test"],
+                    name,
+                    ": %s" % outcome if outcome else "",
+                    " - %s" % reason if reason else "",
+                ),
+            )
     return lines
 
 
@@ -1097,7 +1117,7 @@ def pull_request_body(plan, msp, base, acceptance_command, gate_result, findings
     lines = lines + [
         "- %s: %s" % (name, _first_line(steps[name].get("task")) or name) for name in names
     ]
-    properties = _property_lines(plan, msp)
+    properties = _property_lines(plan, msp, gate_result)
     lines = lines + ["", "Acceptance properties, re-runnable by a reviewer:"]
     lines = lines + (list(properties) if properties else ["- none declared"])
     lines = lines + ["", "Run each property with: %s" % acceptance_command]
@@ -1107,6 +1127,12 @@ def pull_request_body(plan, msp, base, acceptance_command, gate_result, findings
         counts = gate_result.get("counts") or {}
         tally = ", ".join("%d %s" % (counts.get(key, 0), key) for key in core.GATE_OUTCOMES)
         lines = lines + ["Gate: %s (%s)" % (gate_result.get("outcome"), tally)]
+        if gate_result.get("blocks"):
+            lines = lines + [
+                "This pull request is open with an unproven acceptance property. A property is "
+                "proven only when it fails with the implementation reverted; read the list above "
+                "before trusting a green run."
+            ]
     if findings:
         undeclared = ", ".join(findings.get("undeclared") or []) or "none"
         unwritten = ", ".join(findings.get("unwritten") or []) or "none"
@@ -1251,8 +1277,8 @@ def _gate_stage(plan, msp, tree, settings):
             settings["timeout"],
         )
     except (OSError, GitError, subprocess.SubprocessError) as error:
-        return {"state": "gate-inconclusive", "reason": str(error), "gate": None}
-    return {"state": gate_state(result), "reason": None, "gate": result}
+        return {"gate": None, "gate_error": str(error)}
+    return {"gate": result, "gate_error": None}
 
 
 def _reconcile_stage(plan, msp, tree, producers, trees, settings):
@@ -1326,10 +1352,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     block = _lane_block(plan, msp, state) or _producer_block(plan, msp, state, producers)
     if block is not None:
         return write_state(run_dir, _msp_record(state, msp, **block))
-    gated = _gate_stage(plan, msp, tree, settings)
-    state = write_state(run_dir, _msp_record(state, msp, **gated))
-    if gated["gate"] is None or gated["gate"]["blocks"]:
-        return state
+    state = write_state(run_dir, _msp_record(state, msp, **_gate_stage(plan, msp, tree, settings)))
     reconciled = _reconcile_stage(plan, msp, tree, producers, trees, settings)
     state = write_state(run_dir, _msp_record(state, msp, **reconciled))
     if reconciled.get("state") == MSP_BLOCKED:

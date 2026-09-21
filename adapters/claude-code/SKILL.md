@@ -236,17 +236,11 @@ empty and the package would have no public interface. Every test still passes
 when this happens, which is why a program has to catch it. Give that file to a
 Step with an `after` edge reaching every Step whose modules it exports.
 
-`lane-cycle` means two Lanes each wait on the
-other, so neither can start and their pull requests would each have to merge
-before the other. mitosis prints the report and then refuses with exit 3,
-before a single brief is bought. It happens when two Steps land in one Lane,
-because they share a file or belong to one unpinned `contract_group`, and a
-Step from another MSP sits between them in the `after` order. Fix it in the
-Steps: take the shared file off one of them, take them out of the group, or
-drop the ordering that puts a Step in between. Where the
-same knot sits inside one pull request, mitosis merges those Lanes instead of
-refusing, which costs parallelism rather than the run, and
-`fused_without_overlap` counts what that cost.
+`lane-cycle` means Lanes that waited on each other, so one Worker builds them
+all in one sitting. mitosis never refuses a knot: MSPs that wait on each other
+become one MSP and one pull request, and Lanes that wait on each other become
+one Lane. The work still ships, in sequence instead of in parallel, and
+`lane_cycles` and `fused_without_overlap` count what that cost.
 
 An assumption you would have decided differently does not go back into the
 document. Write it into the decisions file, in your own words, and name it
@@ -327,11 +321,16 @@ hook that refuses that form fails every Lane after its Worker has run.
 The gate runs each acceptance property twice, with the work present and with
 the implementation reverted on a probe branch. `pass` means the property
 failed without the work, so it is load-bearing. `inert` means it passed
-without the work, so it proves nothing, and the pull request does not open.
-`inconclusive` means reverting broke the build. `not-applicable` means the
-Step declared no property, which is counted so nobody mistakes silence for
-coverage. Which files count as implementation is derived: the MSP's write-set
-minus the files its acceptance properties name.
+without the work, so it proves nothing. `inconclusive` means reverting broke
+the build. `not-applicable` means the Step declared no property, which is
+counted so nobody mistakes silence for coverage. Which files count as
+implementation is derived: the MSP's write-set minus the files its acceptance
+properties name.
+
+The gate never withholds a pull request. Every verdict is written into the
+pull request body beside the property it judges, and an `inert` or
+`inconclusive` verdict sets the exit code, so the human reviewing the pull
+request decides what an unproven property is worth.
 
 Reconcile compares what the git log says changed against what the Steps
 declared. A write outside the declaration, or a declared path never written,
@@ -340,17 +339,23 @@ is a finding, and a write into another MSP's files is fatal.
 ## Reading the result
 
 The exit code is zero only when every MSP reached `shipped`, `unchanged` or
-`committed` and reconcile found nothing. Every other outcome is a distinct
-non-zero code, printed with its meaning on the report's last line. Each Lane
-ends `ok`, `failed`, `blocked` or `merge-blocked`; each MSP ends `shipped`,
-`unchanged`, `committed`, `gate-failed`, `gate-inconclusive`, `ship-failed` or
-`blocked`.
+`committed`, every gate verdict was `pass` or `not-applicable`, and reconcile
+found nothing. Every other outcome is a distinct non-zero code, printed with
+its meaning on the report's last line. Each Lane ends `ok`, `failed`,
+`blocked` or `merge-blocked`; each MSP ends `shipped`, `unchanged`,
+`committed`, `ship-failed` or `blocked`.
 An MSP is `unchanged` when its branch adds nothing to its pull request's base,
 so nothing is pushed and no pull request opens. When mitosis chooses where a
 dependant's pull request stacks, it uses that base in place of the unchanged
 MSP's branch. The two Lane states that block dependents differ by the human
 action they need: `merge-blocked` wants a conflict resolved, `blocked` wants a
 predecessor fixed.
+
+The last line of mitosis's own output is one JSON object: the exit code and
+its meaning, every Lane with its state, reason, notes and log paths, every MSP
+with its branch, base, pull request, gate verdict and reconcile findings, and
+an `attention` list naming what a human or the calling session should look at.
+An agent that dispatched mitosis reads that line rather than the report.
 
 The run directory, printed in the report, holds the plan, the state, the
 persisted Steps, every Worker's full stdout and stderr, and the worktrees.

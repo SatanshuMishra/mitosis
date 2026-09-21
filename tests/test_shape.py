@@ -6,6 +6,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+import core
 import shape
 
 SCALAR_KEYS = (
@@ -154,13 +155,14 @@ class Scalars(unittest.TestCase):
         ]
         self.assertEqual(shape.scalars(items)["parallelism"], 1)
 
-    def parallelism_survives_a_cycle_between_lanes(self):
+    def two_steps_that_wait_on_each_other_score_as_one_lane(self):
         items = [
             step("a", ["a.py"], after=["b"]),
             step("b", ["b.py"], after=["a"]),
         ]
         result = shape.scalars(items)
-        self.assertEqual(result["lanes"], 2)
+        self.assertEqual(result["lanes"], 1)
+        self.assertEqual(result["msps"], 1)
         self.assertEqual(result["parallelism"], 1)
 
     def the_three_recorded_splits_score_as_recorded(self):
@@ -372,16 +374,19 @@ class Findings(unittest.TestCase):
 
     def findings_are_ordered_by_severity_so_a_cause_precedes_its_symptoms(self):
         items = [
-            step("core", ["core.py", "shared.py"]),
-            step("mid", ["mid.py"], after=["core"]),
-            step("tail", ["tail.py", "shared.py"], after=["mid"]),
-            step("x", ["x.py"], msp="w"),
-            step("y", ["y.py"], msp="w", after=["x"]),
+            step("a1", ["pkg/a.py"]),
+            step("a2", ["pkg/a.py"]),
+            step("b1", ["pkg/b.py"], after=["a1"]),
+            step("b2", ["pkg/b.py"]),
+            step("c", ["c.py"], after=["a1"]),
+            step("d", ["d.py"], after=["b2"]),
+            step("a3", ["pkg/a.py"], after=["b2"]),
+            step("surface", ["pkg/__init__.py"]),
         ]
         found = shape.findings(items)
         listed = [entry["kind"] for entry in found]
         self.assertEqual(
-            listed, ["lane-cycle", "shared-directory-manifest", "fused-without-overlap"]
+            listed[:3], ["lane-cycle", "manifest-exports-nothing", "fused-without-overlap"]
         )
         self.assertNotEqual(listed, sorted(listed))
         order = [shape.FINDING_KINDS.index(entry["kind"]) for entry in found]
@@ -389,14 +394,21 @@ class Findings(unittest.TestCase):
 
     def a_lane_cycle_names_the_lanes_that_wait_on_each_other(self):
         items = [
-            step("core", ["core.py", "shared.py"]),
-            step("mid", ["mid.py"], after=["core"]),
-            step("tail", ["tail.py", "shared.py"], after=["mid"]),
+            step("a1", ["pkg/a.py"]),
+            step("a2", ["pkg/a.py"]),
+            step("b1", ["pkg/b.py"], after=["a1"]),
+            step("b2", ["pkg/b.py"]),
+            step("c", ["c.py"], after=["a1"]),
+            step("d", ["d.py"], after=["b2"]),
+            step("a3", ["pkg/a.py"], after=["b2"]),
         ]
         cycles = of_kind(shape.findings(items), "lane-cycle")
         self.assertEqual(len(cycles), 1)
-        self.assertIn("none of them can start", cycles[0]["detail"])
+        self.assertIn("one Worker builds them all in one sitting", cycles[0]["detail"])
+        self.assertIn("a1", cycles[0]["detail"])
+        self.assertIn("b1", cycles[0]["detail"])
         self.assertEqual(shape.scalars(items)["lane_cycles"], 2)
+        self.assertEqual(len(core.lane_items(items)), 3)
 
     def a_plan_with_no_cycle_scores_zero_lane_cycles(self):
         items = [step("a", ["a.py"]), step("b", ["b.py"], after=["a"])]

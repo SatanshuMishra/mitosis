@@ -725,25 +725,24 @@ class ItemsEntryPointRefusals(unittest.TestCase):
                 ["--items", "items.json", "--plan-only", "--run-dir", os.path.join(root, "run")],
             )
 
-    def a_plan_supplied_as_items_that_cannot_run_is_refused(self):
+    def a_plan_whose_packages_wait_on_each_other_is_planned_as_one(self):
         code, out, err = self._run(self.CYCLIC)
-        self.assertEqual(code, mitosis.EXIT_REFUSED, out)
-        self.assertIn("each have to merge before", err + out)
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
+        self.assertEqual(len(core.msp_items(self.CYCLIC)), 1)
 
-    def a_cycle_through_an_unpinned_group_names_the_group_as_a_cause(self):
-        code, out, err = self._run(
-            [
-                {"name": "a", "task": "t", "files": ["a.py"], "source": None,
-                 "acceptance": [], "contract_group": "g"},
-                {"name": "x", "task": "t", "files": ["x.py"], "source": None,
-                 "acceptance": [], "after": ["a"]},
-                {"name": "b", "task": "t", "files": ["b.py"], "source": None,
-                 "acceptance": [], "contract_group": "g", "after": ["x"]},
-            ]
-        )
-        self.assertEqual(code, mitosis.EXIT_REFUSED, out)
-        self.assertIn("unpinned contract_group", err)
-        self.assertIn("take them out of the contract_group", err)
+    GROUP_CYCLE = [
+        {"name": "a", "task": "t", "files": ["a.py"], "source": None,
+         "acceptance": [], "contract_group": "g"},
+        {"name": "x", "task": "t", "files": ["x.py"], "source": None,
+         "acceptance": [], "after": ["a"]},
+        {"name": "b", "task": "t", "files": ["b.py"], "source": None,
+         "acceptance": [], "contract_group": "g", "after": ["x"]},
+    ]
+
+    def a_cycle_through_an_unpinned_group_is_built_by_one_worker(self):
+        code, out, err = self._run(self.GROUP_CYCLE)
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
+        self.assertEqual(len(core.lane_items(self.GROUP_CYCLE)), 1)
 
     def a_package_supplied_as_items_that_would_ship_empty_is_refused(self):
         code, out, err = self._run(self.EMPTY_MANIFEST)
@@ -830,7 +829,7 @@ print(json.dumps({"item": "lane", "status": "ok", "files_changed": paths, "notes
 
 
 class HeldRun(unittest.TestCase):
-    def _run(self, *extra):
+    def _run(self, *extra, worker=None):
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
             git_repo(root)
             write(root, "items.json", json.dumps([briefed("alpha")]))
@@ -845,7 +844,7 @@ class HeldRun(unittest.TestCase):
                         "--feature-branch",
                         "feature",
                         "--dispatch-command",
-                        command(elsewhere, "worker.py", HOLDING_WORKER, "{task}"),
+                        command(elsewhere, "worker.py", worker or HOLDING_WORKER, "{task}"),
                         "--acceptance-command",
                         "probe {file} {test}",
                         "--timeout",
@@ -853,6 +852,31 @@ class HeldRun(unittest.TestCase):
                         *extra,
                     ],
                 )
+
+    def the_last_line_is_a_json_summary_the_caller_can_act_on(self):
+        code, out, err = self._run("--no-push")
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        found = json.loads(out.splitlines()[-1])
+        self.assertEqual(found["exit"], mitosis.EXIT_SHIPPED)
+        self.assertEqual(found["meaning"], mitosis.EXIT_MEANING[mitosis.EXIT_SHIPPED])
+        self.assertEqual([lane["state"] for lane in found["lanes"]], ["ok"])
+        self.assertEqual(found["lanes"][0]["steps"], ["alpha"])
+        self.assertTrue(found["lanes"][0]["stdout"].endswith("0.out"))
+        self.assertEqual([msp["state"] for msp in found["msps"]], [run.MSP_COMMITTED])
+        self.assertEqual(found["attention"], [])
+        self.assertEqual(len(found["plan_id"]), 12)
+        self.assertTrue(found["run_dir"].endswith("run"))
+
+    def a_summary_names_what_needs_attention_when_a_worker_fails(self):
+        code, out, err = self._run("--no-push", worker="import sys\nsys.exit(4)\n")
+        self.assertEqual(code, 10, out + err)
+        found = json.loads(out.splitlines()[-1])
+        self.assertEqual(found["lanes"][0]["state"], "failed")
+        self.assertIn("exit 4", found["lanes"][0]["reason"])
+        self.assertTrue(found["lanes"][0]["stderr"].endswith("0.err"))
+        self.assertEqual(len(found["attention"]), 2)
+        self.assertIn("Lane 0 (alpha) is failed", found["attention"][0])
+        self.assertIn("MSP alpha is blocked", found["attention"][1])
 
     def a_held_run_needs_no_pull_request_command_and_pushes_nothing(self):
         code, out, err = self._run("--no-push")
@@ -868,6 +892,42 @@ class HeldRun(unittest.TestCase):
         code, _, err = self._run()
         self.assertEqual(code, mitosis.EXIT_REFUSED)
         self.assertIn("--pr-command", err)
+
+
+class GateExit(unittest.TestCase):
+    PLAN = {
+        "plan_id": "p",
+        "lanes": [{"msp": 0, "steps": ["impl"]}],
+        "msps": [{"label": "impl", "steps": ["impl"]}],
+        "items": [{"name": "impl", "files": ["impl.py"], "acceptance": []}],
+    }
+
+    def _state(self, **msp):
+        return {
+            "worktrees": [{"msp": 0}],
+            "lanes": {"0": {"state": "ok"}},
+            "msps": {"0": {"state": "shipped", "reconcile": {"undeclared": [], "unwritten": [],
+                                                             "crossing": [], "fatal": False}, **msp}},
+        }
+
+    def a_shipped_msp_with_an_inert_property_exits_twenty(self):
+        state = self._state(gate={"outcome": "inert", "counts": {}, "blocks": True})
+        self.assertEqual(mitosis.exit_code(state, self.PLAN), 20)
+        self.assertIn("proves nothing", mitosis.EXIT_MEANING[20])
+
+    def a_shipped_msp_the_gate_could_not_judge_exits_twenty_one(self):
+        self.assertEqual(
+            mitosis.exit_code(self._state(gate={"outcome": "inconclusive", "blocks": True}), self.PLAN), 21
+        )
+        self.assertEqual(
+            mitosis.exit_code(self._state(gate=None, gate_error="no runner"), self.PLAN), 21
+        )
+
+    def a_shipped_msp_whose_gate_passed_exits_zero(self):
+        state = self._state(gate={"outcome": "pass", "counts": {}, "blocks": False})
+        self.assertEqual(mitosis.exit_code(state, self.PLAN), mitosis.EXIT_SHIPPED)
+        passing = self._state(gate={"outcome": "not-applicable", "blocks": False})
+        self.assertEqual(mitosis.exit_code(passing, self.PLAN), mitosis.EXIT_SHIPPED)
 
 
 class ReportSections(unittest.TestCase):
@@ -970,7 +1030,7 @@ class CoverageRendering(unittest.TestCase):
         self.assertEqual([line for line in printed if "unclaimed" in line], [])
 
 
-class LaneCycleRefusal(unittest.TestCase):
+class LaneCycleFusion(unittest.TestCase):
     CYCLIC = [
         {"name": "core", "task": "t", "files": ["core.py", "shared.py"], "source": None,
          "acceptance": []},
@@ -985,18 +1045,16 @@ class LaneCycleRefusal(unittest.TestCase):
          "after": ["a"]},
     ]
 
-    def a_cycle_spanning_msps_refuses_before_anything_is_spawned(self):
-        with self.assertRaises(mitosis.Refusal) as raised:
-            mitosis.refuse_lane_cycles(self.CYCLIC)
-        self.assertIn("more than one MSP", str(raised.exception))
-        self.assertIn("pull requests", str(raised.exception))
+    def a_cycle_spanning_msps_is_planned_as_one_msp_and_never_refused(self):
+        self.assertIsNone(mitosis.refuse_empty_manifests(self.CYCLIC))
+        self.assertEqual(mitosis.planned_code(self.CYCLIC), mitosis.EXIT_SHIPPED)
+        self.assertEqual(len(core.msp_items(self.CYCLIC)), 1)
+        self.assertEqual(len(core.lane_items(self.CYCLIC)), 1)
 
-    def a_plan_without_a_cycle_is_never_refused(self):
-        self.assertIsNone(mitosis.refuse_lane_cycles(self.CLEAN))
+    def a_plan_without_a_cycle_keeps_its_msps_apart(self):
+        self.assertIsNone(mitosis.refuse_empty_manifests(self.CLEAN))
         self.assertEqual(mitosis.planned_code(self.CLEAN), mitosis.EXIT_SHIPPED)
-
-    def the_reported_exit_code_matches_the_refusal(self):
-        self.assertEqual(mitosis.planned_code(self.CYCLIC), mitosis.EXIT_REFUSED)
+        self.assertEqual(len(core.msp_items(self.CLEAN)), 2)
 
     def a_manifest_that_can_export_nothing_refuses(self):
         items = [
@@ -1006,7 +1064,7 @@ class LaneCycleRefusal(unittest.TestCase):
              "acceptance": [], "after": ["gregorian"]},
         ]
         with self.assertRaises(mitosis.Refusal) as raised:
-            mitosis.refuse_lane_cycles(items)
+            mitosis.refuse_empty_manifests(items)
         self.assertIn("would ship empty", str(raised.exception))
         self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_REFUSED)
 
@@ -1017,12 +1075,12 @@ class LaneCycleRefusal(unittest.TestCase):
             {"name": "surface", "task": "t", "files": ["pkg/__init__.py"], "source": None,
              "acceptance": [], "after": ["parse"]},
         ]
-        self.assertIsNone(mitosis.refuse_lane_cycles(items))
+        self.assertIsNone(mitosis.refuse_empty_manifests(items))
         self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_SHIPPED)
 
     def a_cycle_inside_one_msp_is_contracted_and_never_refused(self):
         items = [{**step, "msp": "m"} for step in self.CYCLIC]
-        self.assertIsNone(mitosis.refuse_lane_cycles(items))
+        self.assertIsNone(mitosis.refuse_empty_manifests(items))
         self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_SHIPPED)
 
     def an_outcome_line_states_the_meaning_of_every_exit_code(self):
@@ -1061,8 +1119,9 @@ def load_tests(loader, tests, pattern):
         ReportSections,
         BriefStageReport,
         CoverageRendering,
-        LaneCycleRefusal,
+        LaneCycleFusion,
         HeldRun,
+        GateExit,
         GraphLoading,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))

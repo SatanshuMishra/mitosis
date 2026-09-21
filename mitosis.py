@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 from datetime import datetime
@@ -28,10 +29,10 @@ MSP_EXIT = {
     run.MSP_UNCHANGED: EXIT_SHIPPED,
     run.MSP_COMMITTED: EXIT_SHIPPED,
     run.MSP_BLOCKED: 11,
-    "gate-failed": 20,
-    "gate-inconclusive": 21,
     "ship-failed": 22,
 }
+
+GATE_EXIT = {"gate-failed": 20, "gate-inconclusive": 21}
 
 EXIT_MEANING = {
     EXIT_SHIPPED: "every MSP reached shipped, unchanged or committed, and reconcile found nothing",
@@ -44,8 +45,10 @@ EXIT_MEANING = {
     LANE_EXIT["blocked"]: "a Lane or MSP was blocked, by a predecessor or by a write across an "
     "MSP boundary",
     LANE_EXIT["merge-blocked"]: "a producer branch would not merge",
-    MSP_EXIT["gate-failed"]: "a gate found an inert acceptance property",
-    MSP_EXIT["gate-inconclusive"]: "a gate could not reach a verdict",
+    GATE_EXIT["gate-failed"]: "a pull request is open with an acceptance property that proves "
+    "nothing: it passes with the implementation reverted",
+    GATE_EXIT["gate-inconclusive"]: "a pull request is open with an acceptance property the gate "
+    "could not judge",
     MSP_EXIT["ship-failed"]: "a commit, push or pull-request command failed",
 }
 
@@ -661,7 +664,7 @@ def resolve_input(args, root, repo, models, charter, graph):
         )
         if args.plan_only:
             return staged(items, decomposed, run_dir, decisions, False)
-    refuse_lane_cycles(items)
+    refuse_empty_manifests(items)
     items = brief_structure(args, items, root, run_dir, models, charter, graph, decisions, document)
     run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
     return staged(items, decomposed, run_dir, decisions, True)
@@ -852,17 +855,12 @@ def shape_lines(items):
     ) + (scalar_text(shape.scalars(items)),)
 
 
-def lane_cycle_findings(items):
-    return [finding for finding in shape.findings(items) if finding["kind"] == "lane-cycle"]
-
-
 def empty_manifests(items):
     return [gap for gap in shape.manifest_gaps(items) if gap["reached"] == 0]
 
 
 def planned_code(items):
-    blocked = lane_cycle_findings(items) or empty_manifests(items)
-    return EXIT_REFUSED if blocked else EXIT_SHIPPED
+    return EXIT_REFUSED if empty_manifests(items) else EXIT_SHIPPED
 
 
 def refuse_empty_manifests(items):
@@ -881,22 +879,6 @@ def refuse_empty_manifests(items):
                 for gap in gaps
             ),
         )
-    )
-
-
-def refuse_lane_cycles(items):
-    refuse_empty_manifests(items)
-    cycles = lane_cycle_findings(items)
-    if not cycles:
-        return
-    raise Refusal(
-        "%s spans more than one MSP, so their pull requests would each have to merge before "
-        "the other: %s. One Worker builds a Lane in one sitting, and a Lane joins Steps that "
-        "share a file or belong to one unpinned contract_group, so no Step from another MSP "
-        "may sit between two of them in the after order. Take the shared file off one of "
-        "them, take them out of the contract_group, or drop the ordering that puts the other "
-        "Step between them"
-        % (_n(len(cycles), "Lane cycle"), "; ".join(entry["detail"] for entry in cycles))
     )
 
 
@@ -1113,6 +1095,13 @@ def reconcile_dirty(findings):
     )
 
 
+def gate_exit(record):
+    if record.get("gate_error"):
+        return GATE_EXIT["gate-inconclusive"]
+    flag = run.gate_state(record.get("gate") or {})
+    return GATE_EXIT.get(flag)
+
+
 def exit_code(state, plan):
     lanes = plan.get("lanes") or []
     msps = plan.get("msps") or []
@@ -1134,6 +1123,9 @@ def exit_code(state, plan):
         code = MSP_EXIT.get(record.get("state"), EXIT_INCOMPLETE)
         if code != EXIT_SHIPPED:
             return code
+        flagged = gate_exit(record)
+        if flagged is not None:
+            return flagged
         if reconcile_dirty(record.get("reconcile")):
             return EXIT_RECONCILE
     return EXIT_SHIPPED if run.succeeded(state) else EXIT_INCOMPLETE
@@ -1188,6 +1180,97 @@ def outcome_lines(plan, state, run_dir, code):
 def outline(items):
     first = items[0] if items and isinstance(items[0], dict) else {}
     return {"items": items, "source": first.get("source")}
+
+
+def _lane_summary(plan, state):
+    records = (state or {}).get("lanes") or {}
+    return [
+        {
+            "lane": index,
+            "msp": _label(plan, lane["msp"]),
+            "steps": list(lane.get("steps") or ()),
+            "state": (records.get(str(index)) or {}).get("state"),
+            "reason": _one_line((records.get(str(index)) or {}).get("reason")),
+            "notes": ((records.get(str(index)) or {}).get("returned") or {}).get("notes"),
+            "stdout": (records.get(str(index)) or {}).get("stdout"),
+            "stderr": (records.get(str(index)) or {}).get("stderr"),
+        }
+        for index, lane in enumerate(plan.get("lanes") or [])
+    ]
+
+
+def _msp_summary(plan, state):
+    records = (state or {}).get("msps") or {}
+    summaries = []
+    for index in range(len(plan.get("msps") or [])):
+        record = records.get(str(index)) or {}
+        shipped = record.get("ship") or {}
+        gate = record.get("gate") or {}
+        findings = record.get("reconcile") or {}
+        summaries.append(
+            {
+                "msp": _label(plan, index),
+                "state": record.get("state"),
+                "reason": _one_line(record.get("reason")),
+                "branch": shipped.get("branch"),
+                "base": shipped.get("base"),
+                "pull_request": shipped.get("pull_request") or None,
+                "gate": {
+                    "outcome": gate.get("outcome"),
+                    "counts": gate.get("counts") or {},
+                    "error": record.get("gate_error"),
+                    "unproven": [
+                        "%s::%s %s" % (entry.get("file"), entry.get("test"), entry.get("outcome"))
+                        for entry in gate.get("properties") or []
+                        if entry.get("outcome") in ("inert", "inconclusive")
+                    ],
+                },
+                "reconcile": {
+                    key: list(findings.get(key) or ())
+                    for key in ("undeclared", "unwritten", "untouched")
+                },
+                "crossing": [entry.get("path") for entry in findings.get("crossing") or ()],
+            }
+        )
+    return summaries
+
+
+def _attention(lanes, msps):
+    lines = [
+        "Lane %d (%s) is %s: %s" % (lane["lane"], lane["msp"], lane["state"], lane["reason"] or "")
+        for lane in lanes
+        if lane["state"] not in ("ok", None)
+    ]
+    for msp in msps:
+        if msp["state"] not in ("shipped", run.MSP_UNCHANGED, run.MSP_COMMITTED, None):
+            lines.append("MSP %s is %s: %s" % (msp["msp"], msp["state"], msp["reason"] or ""))
+        if msp["gate"]["unproven"]:
+            lines.append(
+                "MSP %s shipped with unproven acceptance: %s"
+                % (msp["msp"], ", ".join(msp["gate"]["unproven"]))
+            )
+        if msp["gate"]["error"]:
+            lines.append("MSP %s could not be gated: %s" % (msp["msp"], msp["gate"]["error"]))
+        if msp["crossing"]:
+            lines.append(
+                "MSP %s wrote files another MSP owns: %s" % (msp["msp"], ", ".join(msp["crossing"]))
+            )
+    return lines
+
+
+def summary(plan, state, run_dir, code):
+    lanes = _lane_summary(plan or {}, state)
+    msps = _msp_summary(plan or {}, state)
+    return {
+        "version": core.__version__,
+        "plan_id": (plan or {}).get("plan_id"),
+        "run_dir": run_dir,
+        "exit": code,
+        "meaning": EXIT_MEANING.get(code, "not shipped"),
+        "lanes": lanes,
+        "msps": msps,
+        "attention": _attention(lanes, msps),
+    }
 
 
 def report(plan, state, decomposed, root, run_dir, code, from_items, decisions=None, items=None):
@@ -1275,7 +1358,7 @@ def run_pipeline(args):
                 decisions, items,
             )
         )
-        refuse_lane_cycles(items)
+        refuse_empty_manifests(items)
         return EXIT_SHIPPED
     plan = build_plan(args, items, root, charter, graph)
     if args.plan_only:
@@ -1284,9 +1367,9 @@ def run_pipeline(args):
         _print(
             report(plan, None, decomposed, root, run_dir, planned_code(items), from_items, decisions)
         )
-        refuse_lane_cycles(items)
+        refuse_empty_manifests(items)
         return EXIT_SHIPPED
-    refuse_lane_cycles(items)
+    refuse_empty_manifests(items)
     refuse_run(args, plan, models, run_dir, repo)
     run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
     if plan.get("msps"):
@@ -1300,6 +1383,7 @@ def run_pipeline(args):
     _print(report(plan, state, decomposed, root, run_dir, code, from_items, decisions))
     if failure is not None:
         _print(("the run stopped: %s" % failure,), sys.stderr)
+    _print((json.dumps(summary(plan, state, run_dir, code), separators=(",", ":")),))
     return code
 
 

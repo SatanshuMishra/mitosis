@@ -140,17 +140,23 @@ class Grouping(unittest.TestCase):
         self.assertLess(walked.index("p1"), walked.index("tail"))
         self.assertLess(walked.index("p2"), walked.index("tail"))
 
-    def a_cycle_spanning_two_msps_survives_because_contracting_it_would_span_msps(self):
+    def msps_that_wait_on_each_other_are_fused_into_one_msp_and_built_in_order(self):
         items = [
             step("core", ["core.py", "shared.py"]),
             step("mid", ["mid.py"], after=["core"]),
             step("tail", ["tail.py", "shared.py"], after=["mid"]),
         ]
         lanes = core.lane_items(items)
-        owner = core.lane_msps(items, lanes)
-        found = core.lane_cycles(items, lanes)
-        self.assertEqual(len(found), 1)
-        self.assertGreater(len({owner[lane] for lane in found[0]}), 1)
+        self.assertEqual(len(core.msp_items(items)), 1)
+        self.assertEqual(len(lanes), 1)
+        self.assertEqual(core.lane_cycles(items, lanes), ())
+        walked = [items[index]["name"] for index in lanes[0]]
+        self.assertEqual(walked, ["core", "mid", "tail"])
+
+    def two_steps_that_wait_on_each_other_are_fused_into_one_lane(self):
+        items = [step("a", ["a.py"], after=["b"]), step("b", ["b.py"], after=["a"])]
+        self.assertEqual(len(core.msp_items(items)), 1)
+        self.assertEqual(len(core.lane_items(items)), 1)
 
     def contraction_never_puts_two_msps_in_one_lane(self):
         items = [
@@ -166,15 +172,19 @@ class Grouping(unittest.TestCase):
 
     def a_lane_cycle_is_reported_when_fusion_turns_a_step_dag_into_a_loop(self):
         items = [
-            step("core", ["core.py", "shared.py"]),
-            step("mid", ["mid.py"], after=["core"]),
-            step("tail", ["tail.py", "shared.py"], after=["mid"]),
+            step("a1", ["pkg/a.py"]),
+            step("a2", ["pkg/a.py"]),
+            step("b1", ["pkg/b.py"], after=["a1"]),
+            step("b2", ["pkg/b.py"]),
+            step("c", ["c.py"], after=["a1"]),
+            step("d", ["d.py"], after=["b2"]),
+            step("a3", ["pkg/a.py"], after=["b2"]),
         ]
         self.assertEqual(core.cycles(items), ())
-        lanes = core.lane_items(items)
-        found = core.lane_cycles(items, lanes)
+        found = core.lane_cycles(items, core.uncontracted_lanes(items))
         self.assertEqual(len(found), 1)
         self.assertEqual(len(found[0]), 2)
+        self.assertEqual(core.lane_cycles(items, core.lane_items(items)), ())
 
     def a_plan_without_a_loop_reports_no_lane_cycle(self):
         items = [step("a", ["a.py"]), step("b", ["b.py"], after=["a"])]

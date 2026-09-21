@@ -69,7 +69,9 @@ def scalars(items):
         "msps_per_step": len(msps) / steps if steps else 0.0,
         "parallelism": _widest_layer(depths),
         "fused_without_overlap": len(_fused_pairs(items, lanes)),
-        "lane_cycles": sum(len(group) for group in core.lane_cycles(items, lanes)),
+        "lane_cycles": sum(
+            len(group) for group in core.lane_cycles(items, core.uncontracted_lanes(items))
+        ),
     }
 
 
@@ -343,12 +345,13 @@ def _manifest_findings(items):
     return found
 
 
-def _cycle_findings(items, lanes):
+def _cycle_findings(items, _lanes):
+    lanes = core.uncontracted_lanes(items)
     return [
         {
             "kind": "lane-cycle",
-            "detail": "%d Lanes wait on each other and none of them can start; the first"
-            " three are %s%s"
+            "detail": "%d Lanes waited on each other, so one Worker builds them all in one"
+            " sitting; the first three are %s%s"
             % (
                 len(component),
                 "; ".join(

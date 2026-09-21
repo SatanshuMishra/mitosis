@@ -802,21 +802,21 @@ class Resume(RepoCase):
         self.assertEqual(self.marker(0).count("ran"), 1)
         self.assertEqual(self.marker(1).count("ran"), 2)
 
-    def a_gate_failure_resumes_without_rerunning_lanes(self):
+    def a_gate_failure_ships_and_a_resume_repeats_neither_the_lane_nor_the_gate(self):
+        self.add_remote()
         plan = core.plan([gated_step()])
         first = self.execute(plan, accept="inert")
         self.assertEqual(first["lanes"]["0"]["state"], "ok")
-        self.assertEqual(first["msps"]["0"]["state"], "gate-failed")
+        self.assertEqual(first["msps"]["0"]["state"], "shipped")
         self.assertEqual(first["msps"]["0"]["gate"]["outcome"], "inert")
         self.assertEqual(self.marker(0).count("ran"), 1)
         first_gate_runs = len(self.gate_runs())
         self.assertGreater(first_gate_runs, 0)
         second = self.execute(plan, accept="real", resume=True)
         self.assertEqual(self.marker(0).count("ran"), 1)
-        self.assertGreater(len(self.gate_runs()), first_gate_runs)
-        self.assertEqual(second["lanes"]["0"], first["lanes"]["0"])
-        self.assertEqual(second["msps"]["0"]["gate"]["outcome"], "pass")
-        self.assertNotEqual(second["msps"]["0"]["state"], "gate-failed")
+        self.assertEqual(len(self.gate_runs()), first_gate_runs)
+        self.assertEqual(second["msps"]["0"], first["msps"]["0"])
+        self.assertEqual(len(self.pull_requests()), 1)
 
     def a_merged_predecessor_satisfies_its_dependents(self):
         plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"])])
@@ -880,7 +880,7 @@ class Gate(RepoCase):
         self.assertEqual(read(os.path.join(tree, "impl.txt")), "work by lane 0\n")
         self.assertFalse(any(b.startswith(run.PROBE_PREFIX + "/") for b in self.branches()))
 
-    def an_inert_acceptance_property_blocks_the_pull_request(self):
+    def an_inert_acceptance_property_is_reported_in_the_pull_request(self):
         plan = core.plan([gated_step()])
         trees = self.build(plan)
         result = self.gate(plan, trees, accept="inert")
@@ -888,10 +888,16 @@ class Gate(RepoCase):
         self.assertTrue(result["blocks"])
         self.assertEqual(run.gate_state(result), "gate-failed")
         shutil.rmtree(self.run_dir, ignore_errors=True)
+        self.add_remote()
         state = self.execute(core.plan([gated_step()]), accept="inert", pr=self.pr_command())
-        self.assertEqual(state["msps"]["0"]["state"], "gate-failed")
+        self.assertEqual(state["msps"]["0"]["state"], "shipped")
         self.assertEqual(state["msps"]["0"]["gate"]["outcome"], "inert")
-        self.assertEqual(self.pull_requests(), [])
+        opened = self.pull_requests()
+        self.assertEqual(len(opened), 1)
+        body = opened[0][3]
+        self.assertIn("Gate: inert", body)
+        self.assertIn("passes with the implementation reverted", body)
+        self.assertIn("unproven acceptance property", body)
 
     def a_step_that_changed_no_implementation_does_not_block(self):
         self.seed_existing("impl.txt", "already works\n")
@@ -1016,7 +1022,8 @@ class Gate(RepoCase):
         self.assertEqual(sh(["git", "status", "--porcelain"], tree), "")
         self.assertEqual(read(os.path.join(tree, "impl.txt")), "work by lane 0\n")
 
-    def a_gate_that_throws_leaves_the_msp_inconclusive(self):
+    def a_gate_that_throws_records_the_error_and_still_ships(self):
+        self.add_remote()
         plan = core.plan([gated_step()])
         state = run.execute(
             plan,
@@ -1030,15 +1037,19 @@ class Gate(RepoCase):
             2,
             trees_root=self.trees,
         )
-        self.assertEqual(state["msps"]["0"]["state"], "gate-inconclusive")
-        self.assertIn("no-such-runner", state["msps"]["0"]["reason"])
+        self.assertEqual(state["msps"]["0"]["state"], "shipped")
+        self.assertIsNone(state["msps"]["0"]["gate"])
+        self.assertIn("no-such-runner", state["msps"]["0"]["gate_error"])
+        self.assertEqual(len(self.pull_requests()), 1)
 
-    def nothing_is_pushed_before_the_gate_passes(self):
+    def an_unproven_property_is_named_in_the_body_with_its_step(self):
         self.add_remote()
         plan = core.plan([gated_step()])
         state = self.execute(plan, accept="inert", pr=self.pr_command())
-        self.assertEqual(state["msps"]["0"]["state"], "gate-failed")
-        self.assertEqual(sh(["git", "ls-remote", "--heads", "origin"], self.repo), "")
+        self.assertEqual(state["msps"]["0"]["state"], "shipped")
+        self.assertEqual(self.remote_heads(), ["mitosis/impl"])
+        body = self.pull_requests()[0][3]
+        self.assertIn("tests/t_impl.txt::property (impl): inert", body)
 
 
 class Reconcile(RepoCase):
@@ -1185,17 +1196,14 @@ class Ship(RepoCase):
         self.assertIn("draft", body.lower())
         self.assertIn("pass", body)
 
-    def a_gate_failure_blocks_the_cluster_below_it(self):
+    def a_gate_failure_no_longer_blocks_the_cluster_below_it(self):
         self.add_remote()
         plan = core.plan([gated_step(), step("b", ["b.txt"], after=["impl"])])
         state = self.execute(plan, accept="inert", pr=self.pr_command())
-        self.assertEqual(state["msps"]["0"]["state"], "gate-failed")
-        self.assertEqual(state["msps"]["1"]["state"], run.MSP_BLOCKED)
-        self.assertEqual(state["msps"]["1"]["blocked_by"], [0])
-        self.assertIn("gate-failed", state["msps"]["1"]["reason"])
-        self.assertEqual(state["lanes"]["1"]["state"], "ok")
-        self.assertEqual(self.pull_requests(), [])
-        self.assertEqual(self.remote_heads(), [])
+        self.assertEqual({m["state"] for m in state["msps"].values()}, {"shipped"})
+        self.assertEqual(state["msps"]["0"]["gate"]["outcome"], "inert")
+        self.assertEqual(len(self.pull_requests()), 2)
+        self.assertEqual(sorted(self.remote_heads()), ["mitosis/b", "mitosis/impl"])
 
     def an_msp_that_changed_nothing_is_unchanged_and_never_pushed(self):
         self.add_remote()
@@ -1262,16 +1270,21 @@ class Ship(RepoCase):
 
     def a_rerun_msp_keeps_nothing_from_its_earlier_pass(self):
         self.add_remote()
-        plan = core.plan([gated_step()])
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"])])
         held = run.execute(
-            plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command("real"),
+            plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command(),
             None, 60, 2, trees_root=self.trees, no_push=True,
         )
-        self.assertEqual(held["msps"]["0"]["state"], run.MSP_COMMITTED)
-        self.assertIn("ship", held["msps"]["0"])
-        again = self.execute(plan, accept="inert", resume=True)
-        self.assertEqual(again["msps"]["0"]["state"], "gate-failed")
-        self.assertIsNone(again["msps"]["0"].get("ship"))
+        self.assertEqual({m["state"] for m in held["msps"].values()}, {run.MSP_COMMITTED})
+        self.assertIn("ship", held["msps"]["1"])
+        refusing = os.path.join(self.tmp, "refuse-a.py")
+        write(refusing, "import sys\nsys.exit(1 if sys.argv[1] == 'mitosis/a' else 0)\n")
+        again = self.execute(
+            plan, resume=True, pr="%s %s {branch}" % (shlex.quote(sys.executable), shlex.quote(refusing))
+        )
+        self.assertEqual(again["msps"]["0"]["state"], "ship-failed")
+        self.assertEqual(again["msps"]["1"]["state"], run.MSP_BLOCKED)
+        self.assertIsNone(again["msps"]["1"].get("ship"))
 
     def a_stacking_exception_from_an_earlier_pass_is_dropped_when_the_msp_stacks(self):
         self.add_remote()

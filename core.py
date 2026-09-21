@@ -63,8 +63,6 @@ MSP_STATES = (
     "shipped",
     "unchanged",
     "committed",
-    "gate-failed",
-    "gate-inconclusive",
     "ship-failed",
     "blocked",
 )
@@ -198,13 +196,59 @@ def _tag(item, field):
     return ((field, str(value)),)
 
 
+def _msp_edges(items, owner, by_name):
+    return frozenset(
+        (owner[by_name[name]], owner[consumer])
+        for consumer, item in enumerate(items)
+        for name in _after(item)
+        if name in by_name and owner[by_name[name]] != owner[consumer]
+    )
+
+
+def _reaches(edges, start):
+    seen = frozenset()
+    frontier = (start,)
+    while frontier:
+        fresh = tuple(
+            dict.fromkeys(
+                consumer
+                for producer, consumer in edges
+                if producer in frontier and consumer not in seen
+            )
+        )
+        seen = seen | frozenset(fresh)
+        frontier = fresh
+    return seen
+
+
+def _cycle_pairs(items, groups, by_name):
+    edges = _msp_edges(items, _owners(groups, len(items)), by_name)
+    if not edges:
+        return ()
+    nodes = sorted({producer for producer, _ in edges} | {consumer for _, consumer in edges})
+    reached = {node: _reaches(edges, node) for node in nodes}
+    return tuple(
+        (groups[left][0], groups[right][0])
+        for position, left in enumerate(nodes)
+        for right in nodes[position + 1:]
+        if right in reached[left] and left in reached[right]
+    )
+
+
 def msp_items(items):
+    by_name = _by_name(items)
     pairs = (
         _shared(items, _files)
         + _shared(items, lambda item: _tag(item, "contract_group"))
         + _shared(items, lambda item: _tag(item, "msp"))
     )
-    return union_find(len(items), pairs)
+    groups = union_find(len(items), pairs)
+    while True:
+        fused = _cycle_pairs(items, groups, by_name)
+        if not fused:
+            return groups
+        pairs = pairs + fused
+        groups = union_find(len(items), pairs)
 
 
 def _walk_order(items, members, by_name):
