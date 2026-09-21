@@ -742,6 +742,41 @@ class ItemsEntryPointRefusals(unittest.TestCase):
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err)
 
 
+class GraphLoading(unittest.TestCase):
+    def _load(self, graph):
+        with tempfile.TemporaryDirectory() as root:
+            path = write(root, "graph.json", json.dumps(graph))
+            return mitosis.load_graph(path, root)
+
+    def a_node_link_graph_is_read_as_the_files_its_code_links(self):
+        graph = {
+            "directed": False,
+            "nodes": [
+                {"id": "f", "file_type": "code", "source_file": "src/parse.py"},
+                {"id": "g", "file_type": "code", "source_file": "src/emit.py"},
+                {"id": "d", "file_type": "document", "source_file": "README.md"},
+            ],
+            "links": [{"source": "f", "target": "g"}, {"source": "d", "target": "f"}],
+        }
+        self.assertEqual(
+            self._load(graph), {"src/emit.py": ["src/parse.py"], "src/parse.py": ["src/emit.py"]}
+        )
+
+    def a_mapping_is_still_read_as_it_is(self):
+        self.assertEqual(self._load({"a.py": ["b.py"]}), {"a.py": ["b.py"]})
+
+    def an_object_that_is_neither_shape_is_refused_by_name(self):
+        with self.assertRaises(mitosis.Refusal) as caught:
+            self._load({"directed": False, "graph": {}, "nodes": "not a list"})
+        self.assertIn("node-link", str(caught.exception))
+
+    def a_node_link_graph_that_names_no_file_is_refused(self):
+        graph = {"nodes": [{"id": "x"}, {"id": "y"}], "links": [{"source": "x", "target": "y"}]}
+        with self.assertRaises(mitosis.Refusal) as caught:
+            self._load(graph)
+        self.assertIn("source_file", str(caught.exception))
+
+
 HOLDING_WORKER = r'''
 import json
 import sys
@@ -995,6 +1030,7 @@ def load_tests(loader, tests, pattern):
         CoverageRendering,
         LaneCycleRefusal,
         HeldRun,
+        GraphLoading,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite

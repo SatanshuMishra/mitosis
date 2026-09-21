@@ -603,6 +603,70 @@ class Plan(unittest.TestCase):
         self.assertIn("ghost", str(caught.exception))
 
 
+def node_link(links, directed=False, key="links"):
+    nodes = [
+        {"id": "a1", "file_type": "code", "source_file": "pkg/a.py"},
+        {"id": "a2", "file_type": "code", "source_file": "pkg/a.py"},
+        {"id": "b1", "file_type": "code", "source_file": "pkg/b.py"},
+        {"id": "c1", "source_file": "pkg/c.py"},
+        {"id": "doc", "file_type": "document", "source_file": "README.md"},
+        {"id": "ext", "file_type": "concept", "source_file": ""},
+    ]
+    return {"directed": directed, "nodes": nodes, key: [
+        {"source": source, "target": target, "relation": "calls"} for source, target in links
+    ]}
+
+
+class GraphInput(unittest.TestCase):
+    LINKS = [("a1", "b1"), ("a2", "a1"), ("doc", "a1"), ("ext", "b1"), ("b1", "c1"), ("a1", "gone")]
+
+    def links_between_code_in_two_files_become_neighbours_both_ways(self):
+        adjacency = core.adjacency_from_node_links(node_link(self.LINKS), "/repo")
+        self.assertEqual(
+            adjacency,
+            {"pkg/a.py": ["pkg/b.py"], "pkg/b.py": ["pkg/a.py", "pkg/c.py"], "pkg/c.py": ["pkg/b.py"]},
+        )
+        self.assertTrue(core.is_adjacency(adjacency))
+
+    def a_directed_graph_keeps_its_direction(self):
+        adjacency = core.adjacency_from_node_links(node_link(self.LINKS, directed=True), "/repo")
+        self.assertEqual(adjacency, {"pkg/a.py": ["pkg/b.py"], "pkg/b.py": ["pkg/c.py"]})
+
+    def the_edges_key_is_read_like_the_links_key(self):
+        self.assertEqual(
+            core.adjacency_from_node_links(node_link(self.LINKS, key="edges"), "/repo"),
+            core.adjacency_from_node_links(node_link(self.LINKS), "/repo"),
+        )
+
+    def an_absolute_source_file_is_made_relative_and_one_outside_the_root_is_dropped(self):
+        graph = {
+            "nodes": [
+                {"id": "in", "source_file": "/repo/src/x.py"},
+                {"id": "out", "source_file": "/elsewhere/y.py"},
+                {"id": "local", "source_file": "src/z.py"},
+            ],
+            "links": [{"source": "in", "target": "local"}, {"source": "out", "target": "local"}],
+        }
+        self.assertEqual(
+            core.adjacency_from_node_links(graph, "/repo"),
+            {"src/x.py": ["src/z.py"], "src/z.py": ["src/x.py"]},
+        )
+
+    def a_read_set_reaches_a_neighbour_named_only_by_a_node_link_graph(self):
+        adjacency = core.adjacency_from_node_links(node_link(self.LINKS), "/repo")
+        plan = core.plan([step("edit-a", ["pkg/a.py"])], graph=adjacency)
+        self.assertIn("pkg/b.py", plan["briefs"][0]["read_set"])
+
+    def only_a_mapping_of_paths_to_lists_of_paths_is_an_adjacency(self):
+        self.assertTrue(core.is_adjacency({"a.py": ["b.py"], "b.py": []}))
+        self.assertFalse(core.is_adjacency(node_link(self.LINKS)))
+        self.assertFalse(core.is_adjacency({"a.py": "b.py"}))
+        self.assertFalse(core.is_adjacency({"a.py": [1]}))
+        self.assertFalse(core.is_adjacency(["a.py"]))
+        self.assertIsNone(core.node_link_edges({"a.py": ["b.py"]}))
+        self.assertIsNone(core.node_link_edges({"nodes": [], "links": "x"}))
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -614,7 +678,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Grouping, Validation, Tiering, Cost, Plan):
+    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

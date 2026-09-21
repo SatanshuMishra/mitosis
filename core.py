@@ -1,5 +1,6 @@
 import fnmatch
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -690,6 +691,68 @@ def item_cost(item):
 
 def lane_cost(items, lane):
     return sum(item_cost(items[i]) for i in lane)
+
+
+NODE_LINK_KEYS = ("links", "edges")
+
+CODE_FILE_TYPE = "code"
+
+
+def node_link_edges(graph):
+    if not isinstance(graph, dict) or not isinstance(graph.get("nodes"), list):
+        return None
+    for key in NODE_LINK_KEYS:
+        if isinstance(graph.get(key), list):
+            return graph[key]
+    return None
+
+
+def is_adjacency(graph):
+    return isinstance(graph, dict) and all(
+        isinstance(neighbours, list) and all(isinstance(n, str) for n in neighbours)
+        for neighbours in graph.values()
+    )
+
+
+def _node_file(node, root):
+    if not isinstance(node, dict) or node.get("file_type", CODE_FILE_TYPE) != CODE_FILE_TYPE:
+        return None
+    path = node.get("source_file")
+    if not isinstance(path, str) or not path:
+        return None
+    if os.path.isabs(path):
+        relative = os.path.relpath(path, root)
+        return None if relative.split(os.sep)[0] == os.pardir else _norm(relative)
+    return _norm(path)
+
+
+def node_files(graph, root):
+    return {
+        node["id"]: _node_file(node, root)
+        for node in graph["nodes"]
+        if isinstance(node, dict) and "id" in node
+    }
+
+
+def _file_pairs(files, link, both):
+    if not isinstance(link, dict):
+        return ()
+    left, right = files.get(link.get("source")), files.get(link.get("target"))
+    if not left or not right or left == right:
+        return ()
+    return ((left, right), (right, left)) if both else ((left, right),)
+
+
+def adjacency_from_node_links(graph, root):
+    files = node_files(graph, root)
+    both = not graph.get("directed", False)
+    linked = sorted(
+        {pair for link in node_link_edges(graph) for pair in _file_pairs(files, link, both)}
+    )
+    return {
+        path: [neighbour for _, neighbour in group]
+        for path, group in itertools.groupby(linked, key=lambda pair: pair[0])
+    }
 
 
 def _neighbours(adjacency, path):

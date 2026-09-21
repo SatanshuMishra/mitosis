@@ -235,7 +235,9 @@ FLAG_SPECS = {
     },
     "--graph": {
         "metavar": "PATH",
-        "help": "a JSON object mapping each path to the paths it imports",
+        "help": "a JSON object mapping each path to the paths it imports, or a node-link "
+        "graph such as graphify's graph.json, read as that mapping from its links between "
+        "code in different files",
     },
     "--risk-markers": {
         "metavar": "MARKER",
@@ -367,12 +369,22 @@ def check_charter(charter):
     return absolute
 
 
-def load_graph(path):
+def load_graph(path, root):
     if path is None:
         return None
     graph = read_json(path, "--graph")
-    if not isinstance(graph, dict):
-        raise Refusal("--graph %s must be a JSON object mapping each path to its neighbours" % path)
+    if core.node_link_edges(graph) is not None:
+        if not any(core.node_files(graph, root).values()):
+            raise Refusal(
+                "--graph %s is a node-link graph, but none of its code nodes names a "
+                "source_file under %s, so it cannot say which files are linked" % (path, root)
+            )
+        return core.adjacency_from_node_links(graph, root)
+    if not core.is_adjacency(graph):
+        raise Refusal(
+            "--graph %s is neither a JSON object mapping each path to a list of the paths it "
+            "imports nor a node-link graph with nodes and links" % path
+        )
     return graph
 
 
@@ -1233,7 +1245,7 @@ def run_pipeline(args):
     models = tier_models(args.tier_model)
     check_templates(args)
     charter = check_charter(args.charter)
-    graph = load_graph(args.graph)
+    graph = load_graph(args.graph, root)
     resolved = resolve_input(args, root, repo, models, charter, graph)
     items, decomposed, run_dir, decisions = (
         resolved["items"],
