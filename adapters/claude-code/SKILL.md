@@ -342,7 +342,8 @@ The exit code is zero only when every MSP reached `shipped`, `unchanged` or
 `committed` and reconcile found nothing. Every other outcome is a distinct
 non-zero code, printed with its meaning on the report's last line. Each Lane
 ends `ok`, `failed`, `blocked` or `merge-blocked`; each MSP ends `shipped`,
-`unchanged`, `committed`, `gate-failed`, `gate-inconclusive` or `ship-failed`.
+`unchanged`, `committed`, `gate-failed`, `gate-inconclusive`, `ship-failed` or
+`blocked`.
 An MSP is `unchanged` when its branch adds nothing to its pull request's base,
 so nothing is pushed and no pull request opens. When mitosis chooses where a
 dependant's pull request stacks, it uses that base in place of the unchanged

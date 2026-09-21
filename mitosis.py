@@ -41,7 +41,8 @@ EXIT_MEANING = {
     EXIT_NO_BRANCHES: "the run created no branches",
     EXIT_RECONCILE: "reconcile found a write outside the declaration or a declared path never written",
     LANE_EXIT["failed"]: "a Lane failed",
-    LANE_EXIT["blocked"]: "a Lane or MSP was blocked by a predecessor",
+    LANE_EXIT["blocked"]: "a Lane or MSP was blocked, by a predecessor or by a write across an "
+    "MSP boundary",
     LANE_EXIT["merge-blocked"]: "a producer branch would not merge",
     MSP_EXIT["gate-failed"]: "a gate found an inert acceptance property",
     MSP_EXIT["gate-inconclusive"]: "a gate could not reach a verdict",

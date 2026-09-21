@@ -66,6 +66,7 @@ MSP_STATES = (
     "gate-failed",
     "gate-inconclusive",
     "ship-failed",
+    "blocked",
 )
 
 DELIVERED_STATES = ("shipped", "unchanged", "committed")
