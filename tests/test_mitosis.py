@@ -331,6 +331,11 @@ class Flags(unittest.TestCase):
         self.assertEqual(args.concurrency, 4)
         self.assertIn("(default: 4)", " ".join(mitosis.build_parser().format_help().split()))
 
+    def the_read_set_is_capped_at_forty_by_default(self):
+        args = mitosis.build_parser().parse_args(["--items", "items.json"])
+        self.assertEqual(args.context_cap, core.CONTEXT_CAP)
+        self.assertIn("(default: 40)", " ".join(mitosis.build_parser().format_help().split()))
+
     def structure_samples_defaults_to_one(self):
         args = mitosis.build_parser().parse_args(["--spec", "x", "--decompose-command", "c"])
         self.assertEqual(args.structure_samples, 1)

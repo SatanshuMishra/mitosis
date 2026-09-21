@@ -626,6 +626,12 @@ def validate(items, root=None, required=None):
 
 GLOB_CHARACTERS = "*?["
 
+CONTEXT_CAP = 40
+
+RISKY_OUTCOMES = ("reverted", "speculative", "failed", "regressed")
+
+TRAPS_FOR_RISK = 2
+
 WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
 
 
@@ -644,9 +650,9 @@ def marker_matches(path, marker):
     normalized = _norm(path)
     candidate = marker.strip().lower()
     if any(character in candidate for character in GLOB_CHARACTERS):
-        return fnmatch.fnmatch(normalized, candidate)
+        return fnmatch.fnmatchcase(normalized.lower(), candidate)
     if not candidate.isalnum():
-        return candidate in normalized
+        return candidate in normalized.lower()
     return candidate in path_words(normalized)
 
 
@@ -673,16 +679,40 @@ def _record_files(record):
     return tuple(f for f in files if isinstance(f, str))
 
 
+def _strings(record, key):
+    values = record.get(key) if isinstance(record, dict) else None
+    return tuple(v for v in values if isinstance(v, str)) if isinstance(values, list) else ()
+
+
 def _is_regression(record):
-    return isinstance(record, dict) and "outcome" in record and record["outcome"] != "ok"
+    return isinstance(record, dict) and (
+        record.get("outcome") in RISKY_OUTCOMES or bool(_strings(record, "regressed"))
+    )
+
+
+def _about(record, paths):
+    return any(_touches(recorded, path) for recorded in _record_files(record) for path in paths)
+
+
+def _names(reference, path):
+    text = reference.strip()
+    base = os.path.basename(_norm(path))
+    return _touches(text, path) or bool(base) and text.lower().endswith("/" + base.lower())
 
 
 def surface_history(history, paths):
-    return tuple(
-        record
+    matched = tuple(record for record in (history or ()) if _about(record, paths))
+    risky = tuple(record for record in matched if _is_regression(record))
+    trapped = tuple(record for record in matched if _strings(record, "what_failed"))
+    return risky + (trapped if len(trapped) >= TRAPS_FOR_RISK else ())
+
+
+def _regression_links(history, left, right):
+    return any(
+        (_about(record, left) and any(_names(ref, p) for ref in _strings(record, "regressed") for p in right))
+        or (_about(record, right) and any(_names(ref, p) for ref in _strings(record, "regressed") for p in left))
+        or (_is_regression(record) and _about(record, left) and _about(record, right))
         for record in (history or ())
-        if _is_regression(record)
-        and any(_touches(recorded, path) for recorded in _record_files(record) for path in paths)
     )
 
 
@@ -701,7 +731,8 @@ def trajectory_store(path):
                 continue
             if isinstance(parsed, dict):
                 records.append(parsed)
-    return tuple(records)
+    superseded = {record.get("supersedes") for record in records if record.get("supersedes")}
+    return tuple(record for record in records if record.get("id") not in superseded)
 
 
 def tier_for(write_set, risk_markers, complexity, assumptions, history=()):
@@ -727,12 +758,7 @@ def _pair_signals(left, right, graph, risk_markers, history):
         signals.append("import-adjacency")
     if set(_marker_hits(left, risk_markers)) & set(_marker_hits(right, risk_markers)):
         signals.append("shared-risk-marker")
-    if any(
-        any(_touches(f, a) for f in _record_files(record) for a in left)
-        and any(_touches(f, b) for f in _record_files(record) for b in right)
-        for record in (history or ())
-        if _is_regression(record)
-    ):
+    if _regression_links(history, left, right):
         signals.append("recorded-regression")
     left_dirs = {os.path.dirname(p) for p in left if _numbered(p)}
     right_dirs = {os.path.dirname(p) for p in right if _numbered(p)}
@@ -1053,14 +1079,16 @@ def _step_brief(item):
     return {key: item[key] for key in keys if key in item}
 
 
-def _lane_read_set(items, lane, packs):
+def _lane_read_set(items, lane, packs, cap=CONTEXT_CAP):
     write_set = frozenset(path for i in lane for path in _files(items[i]))
     read = ()
     for i in lane:
         for path in packs.get(items[i]["name"], {}).get("paths", ()):
             if path not in write_set and path not in read:
                 read = read + (path,)
-    return list(read)
+    limit = len(read) if cap is None else max(0, int(cap))
+    dropped = sum(packs.get(items[i]["name"], {}).get("overflow", 0) for i in lane)
+    return list(read[:limit]), dropped + len(read) - len(read[:limit])
 
 
 SHARED_TREE_LINE = (
@@ -1103,25 +1131,33 @@ def brief_text(brief):
         SHARED_TREE_LINE,
     ]
     if brief.get("read_set"):
-        footer.append("Read-set, context only, never edit: %s" % ", ".join(brief["read_set"]))
+        footer.append(
+            "Read-set, context only, never edit: %s%s"
+            % (
+                ", ".join(brief["read_set"]),
+                " (%d more not shown)" % brief["read_overflow"] if brief.get("read_overflow") else "",
+            )
+        )
     footer.append("When finished, print one line of JSON and nothing after it:")
     footer.append(brief["return_contract"])
     return "\n\n".join("\n".join(part) for part in (header, body, footer)) + "\n"
 
 
-def _brief(items, lane_index, lane, msp_index, msp_label, packs, charter, source):
+def _brief(items, lane_index, lane, msp_index, msp_label, packs, charter, source, cap=CONTEXT_CAP):
     write_set = ()
     for i in lane:
         for path in _files(items[i]):
             if path not in write_set:
                 write_set = write_set + (path,)
+    read_set, read_overflow = _lane_read_set(items, lane, packs, cap)
     partial = {
         "lane": lane_index,
         "msp": msp_index,
         "msp_label": msp_label,
         "steps": [_step_brief(items[i]) for i in lane],
         "write_set": list(write_set),
-        "read_set": _lane_read_set(items, lane, packs),
+        "read_set": read_set,
+        "read_overflow": read_overflow,
         "charter": charter,
         "document": source.get("path") if isinstance(source, dict) else None,
         "return_contract": RETURN_CONTRACT,
@@ -1144,7 +1180,7 @@ def plan(
     serial_markers=(),
     graph=None,
     hops=1,
-    cap=None,
+    cap=CONTEXT_CAP,
     history=(),
     budget=3,
     root=None,
@@ -1198,7 +1234,7 @@ def plan(
         "coupling_order": ordered,
         "counts": checked["counts"],
         "briefs": [
-            _brief(items, index, lane, owners[index], labels[owners[index]], packs, charter, source)
+            _brief(items, index, lane, owners[index], labels[owners[index]], packs, charter, source, cap)
             for index, lane in enumerate(lanes)
         ],
     }

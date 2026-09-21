@@ -387,6 +387,53 @@ class Tiering(unittest.TestCase):
         nested = ({"files": ["src/auth/"], "outcome": "failed"},)
         self.assertEqual(core.tier_for(["src/auth/login.py"], (), "simple", [], history=nested), "top")
 
+    def only_a_record_that_went_wrong_raises_a_tier(self):
+        def tier(*records):
+            return core.tier_for(["src/a.py"], (), "simple", [], history=records)
+
+        self.assertEqual(tier({"files": ["src/a.py"], "outcome": "fixed"}), "cheap")
+        self.assertEqual(tier({"files": ["src/a.py"], "outcome": "unverified-reasoned"}), "cheap")
+        self.assertEqual(tier({"files": ["src/a.py"], "outcome": "reverted"}), "top")
+        self.assertEqual(tier({"files": ["src/a.py"], "outcome": "speculative"}), "top")
+        self.assertEqual(
+            tier({"files": ["src/a.py"], "outcome": "fixed", "regressed": ["src/b.py"]}), "top"
+        )
+        trap = {"files": ["src/a.py"], "outcome": "fixed", "what_failed": ["patched the wrong layer"]}
+        self.assertEqual(tier(trap), "cheap")
+        self.assertEqual(tier(trap, dict(trap)), "top")
+
+    def a_superseded_record_is_not_read(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
+            handle.write('{"id": "old", "files": ["src/a.py"], "outcome": "reverted"}\n')
+            handle.write('{"id": "new", "supersedes": "old", "files": ["src/a.py"], "outcome": "fixed"}\n')
+            path = handle.name
+        try:
+            loaded = core.trajectory_store(path)
+        finally:
+            os.unlink(path)
+        self.assertEqual([record["id"] for record in loaded], ["new"])
+        self.assertEqual(core.tier_for(["src/a.py"], (), "simple", [], history=loaded), "cheap")
+
+    def a_recorded_breakage_couples_the_two_surfaces_and_a_fix_does_not(self):
+        items = [step("a", ["src/a.py"]), step("b", ["src/b.py"])]
+        lanes = core.lane_items(items)
+        broke = ({"files": ["src/a.py"], "outcome": "fixed", "regressed": ["src/b.py"]},)
+        fixed = ({"files": ["src/a.py", "src/b.py"], "outcome": "fixed"},)
+        signals = {tuple(e["steps"]): e["signals"] for e in core.coupling_review(items, lanes, None, history=broke)}
+        self.assertEqual(signals[("a", "b")], ["recorded-regression"])
+        self.assertEqual(core.coupling_review(items, lanes, None, history=fixed), [])
+
+    def a_marker_matches_a_mixed_case_path(self):
+        self.assertTrue(core.marker_matches("app/Services/Auth/Login.php", "Services/Auth"))
+        self.assertTrue(core.marker_matches("app/Services/Auth/Login.php", "services/auth"))
+        self.assertTrue(core.marker_matches("db/Migrate/001.SQL", ".sql"))
+        self.assertTrue(core.marker_matches("DB/0004_add.SQL", "db/*.sql"))
+        self.assertTrue(core.marker_matches("app/types/AuthResponse.ts", "auth"))
+        self.assertFalse(core.marker_matches("src/waverider.py", "wav"))
+        self.assertEqual(
+            core.tier_for(["app/Services/Auth/Login.php"], ["Services/Auth"], "simple", None), "top"
+        )
+
     def a_missing_trajectory_store_changes_nothing(self):
         import tempfile
 
@@ -706,6 +753,34 @@ def node_link(links, directed=False, key="links"):
     ]}
 
 
+class ReadSetCap(unittest.TestCase):
+    def a_hub_file_fills_no_brief_past_the_default_cap(self):
+        graph = {"hub.py": ["n%03d.py" % n for n in range(120)]}
+        plan = core.plan([step("edit-hub", ["hub.py"])], graph=graph)
+        brief = plan["briefs"][0]
+        self.assertEqual(len(brief["read_set"]), core.CONTEXT_CAP)
+        self.assertEqual(brief["read_overflow"], 120 - core.CONTEXT_CAP)
+        self.assertIn("(%d more not shown)" % (120 - core.CONTEXT_CAP), brief["text"])
+        self.assertEqual(core.CONTEXT_CAP, 40)
+
+    def a_lane_of_several_steps_is_capped_as_a_whole(self):
+        graph = {
+            "a.py": ["a%02d.py" % n for n in range(30)],
+            "b.py": ["b%02d.py" % n for n in range(30)],
+        }
+        items = [step("a", ["a.py"], msp="m"), step("b", ["b.py"], msp="m", after=["a"])]
+        plan = core.plan(items, graph=graph)
+        self.assertEqual(len(plan["lanes"]), 1)
+        brief = plan["briefs"][0]
+        self.assertEqual(len(brief["read_set"]), core.CONTEXT_CAP)
+        self.assertEqual(brief["read_overflow"], 60 - core.CONTEXT_CAP)
+
+    def an_explicit_cap_is_still_honoured(self):
+        graph = {"hub.py": ["n%03d.py" % n for n in range(12)]}
+        brief = core.plan([step("edit-hub", ["hub.py"])], graph=graph, cap=5)["briefs"][0]
+        self.assertEqual((len(brief["read_set"]), brief["read_overflow"]), (5, 7))
+
+
 class SharedTree(unittest.TestCase):
     def every_lane_brief_says_the_worktree_is_shared(self):
         plan = core.plan([step("a", ["a.py"]), step("b", ["b.py"], msp="m"), step("c", ["c.py"], msp="m")])
@@ -831,7 +906,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, SharedTree):
+    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, SharedTree, ReadSetCap):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

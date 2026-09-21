@@ -248,7 +248,9 @@ FLAG_SPECS = {
     "--context-cap": {
         "metavar": "N",
         "type": int,
-        "help": "most graph neighbours kept per Step; the overflow is counted (default: no cap)",
+        "default": core.CONTEXT_CAP,
+        "help": "most graph neighbours kept per Step and per Lane; the overflow is counted "
+        "(default: %d)" % core.CONTEXT_CAP,
     },
     "--graph": {
         "metavar": "PATH",
