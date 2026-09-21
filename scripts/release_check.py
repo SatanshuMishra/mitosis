@@ -37,6 +37,11 @@ def version_at(root, ref):
     return tuple(int(part) for part in match.groups()) if match else None
 
 
+def is_ancestor(root, ref):
+    probe = ("git", "-C", root, "merge-base", "--is-ancestor", ref, "HEAD")
+    return subprocess.run(probe, capture_output=True).returncode == 0
+
+
 def last_release(root):
     tags = _text(git(root, "tag", "--merged", "HEAD", "--list", RELEASE_TAGS, "--sort=-v:refname")).split()
     return tags[0] if tags else None
@@ -74,11 +79,21 @@ def _hit(text, terms):
     return any(term in lowered for term in terms)
 
 
+def _occurrences(text, term):
+    return tuple(start for start in range(len(text) - len(term) + 1) if text.startswith(term, start))
+
+
 def masked(text, terms):
-    if not terms:
-        return text
-    pattern = re.compile("|".join(re.escape(term) for term in terms), re.I)
-    return pattern.sub(lambda match: "*" * len(match.group(0)), text)
+    lowered = text.lower()
+    if len(lowered) != len(text):
+        return "*" * len(text) if _hit(text, terms) else text
+    covered = frozenset(
+        index
+        for term in terms
+        for start in _occurrences(lowered, term)
+        for index in range(start, start + len(term))
+    )
+    return "".join("*" if index in covered else char for index, char in enumerate(text))
 
 
 def _shown(name, terms):
@@ -143,6 +158,11 @@ def build_parser():
         action="store_true",
         help="compare with the latest release tag merged into HEAD instead of --base",
     )
+    parser.add_argument(
+        "--or-last-release",
+        action="store_true",
+        help="compare with the latest release tag when --base is not an ancestor of HEAD",
+    )
     parser.add_argument("--text-only", action="store_true", help="scan only PR_TEXT")
     parser.add_argument("--root", default=ROOT, help="the repository to check")
     return parser
@@ -151,7 +171,8 @@ def build_parser():
 def _problems(args, terms, env):
     if args.text_only:
         return tuple("denied term in %s" % place for place in text_hits(env.get("PR_TEXT", ""), terms))
-    base = last_release(args.root) if args.since_release else args.base
+    fallback = args.or_last_release and not is_ancestor(args.root, args.base)
+    base = last_release(args.root) if args.since_release or fallback else args.base
     return bump_problems(args.root, base) + denied(args.root, base, terms)
 
 

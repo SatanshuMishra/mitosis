@@ -195,6 +195,15 @@ class DeniedTerms(Repo):
         )
         self.assertEqual(release_check.text_hits("Before this change it delivered.", (TERM,)), ())
 
+    def masking_covers_every_term_that_matches_even_when_they_overlap(self):
+        self.assertEqual(
+            release_check.masked("docs/AcmeCorp-Internal/a.md", ("acme", "acmecorp-internal")),
+            "docs/*****************/a.md",
+        )
+        self.assertEqual(release_check.masked("xabcdefx", ("abcd", "cdef")), "x******x")
+        self.assertEqual(release_check.masked("clean", ("abcd",)), "clean")
+        self.assertNotIn("zebracorn", release_check.masked("\u0130 zebracorn", (TERM,)).lower())
+
     def terms_split_on_commas_and_lines(self):
         self.assertEqual(release_check.terms_from(" Alpha, beta\n\ngamma ,"), ("alpha", "beta", "gamma"))
 
@@ -236,6 +245,34 @@ class Main(Repo):
         self.assertEqual(self._main(args=["--since-release"])[0], release_check.EXIT_FAILED)
         _commit(self.root, {"core.py": _version("0.2.1")})
         self.assertEqual(self._main(args=["--since-release"])[0], release_check.EXIT_OK)
+
+    def a_push_compares_with_the_commit_before_it(self):
+        _git(self.root, "tag", "mitosis--v0.2.0")
+        _commit(self.root, {"run.py": "x = 2\n", "core.py": _version("0.2.1")})
+        released = _git(self.root, "rev-parse", "HEAD")
+        _commit(self.root, {"run.py": "x = 3\n"})
+        args = ["--base", released, "--or-last-release"]
+        self.assertEqual(self._main(args=args)[0], release_check.EXIT_FAILED)
+        self.assertEqual(self._main(args=["--since-release"])[0], release_check.EXIT_OK)
+
+    def a_message_already_on_main_does_not_fail_every_later_push(self):
+        _commit(self.root, {"README.md": "# mitosis\n\n"}, "squashed as zebracorn")
+        landed = _git(self.root, "rev-parse", "HEAD")
+        self.assertEqual(self._main(args=["--base", self.base, "--or-last-release"])[0], release_check.EXIT_FAILED)
+        _commit(self.root, {"README.md": "# mitosis\n\n\n"}, "clean")
+        self.assertEqual(self._main(args=["--base", landed, "--or-last-release"])[0], release_check.EXIT_OK)
+
+    def a_base_that_is_not_behind_head_falls_back_to_the_last_release(self):
+        _git(self.root, "tag", "mitosis--v0.2.0")
+        _commit(self.root, {"run.py": "x = 2\n"})
+        for base in ("0" * 40, "no-such-ref"):
+            code, _ = self._main(args=["--base", base, "--or-last-release"])
+            self.assertEqual(code, release_check.EXIT_FAILED, base)
+        _git(self.root, "checkout", "-q", "-b", "side", self.base)
+        side = _commit(self.root, {"README.md": "# side\n"})
+        _git(self.root, "checkout", "-q", "main")
+        self.assertFalse(release_check.is_ancestor(self.root, side))
+        self.assertEqual(self._main(args=["--base", side, "--or-last-release"])[0], release_check.EXIT_FAILED)
 
     def a_failure_to_run_git_is_a_misconfiguration_that_prints_no_term(self):
         error = FileNotFoundError(2, "No such file or directory", "/zebracorn/git")

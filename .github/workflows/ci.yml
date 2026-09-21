@@ -2,6 +2,7 @@ name: ci
 
 on:
   pull_request:
+    types: [opened, edited, synchronize, reopened]
   push:
     branches: [main]
 
@@ -41,11 +42,12 @@ jobs:
         env:
           DENY_TERMS: ${{ secrets.DENY_TERMS }}
           EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
         run: |
           if [ "$EVENT" = pull_request ]; then
             python3 scripts/release_check.py --base HEAD^1
           else
-            python3 scripts/release_check.py --since-release
+            python3 scripts/release_check.py --base "$BEFORE" --or-last-release
           fi
 
   tag:
