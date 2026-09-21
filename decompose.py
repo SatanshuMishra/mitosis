@@ -47,8 +47,12 @@ OPTIONAL_FIELD_LINES = (
     "  after: names of Steps that must be built first; these edges join parts of the document"
     " that may be far apart, and they can only be seen from the whole of it",
     "  contract_group: one shared id for Steps that ship as ONE pull request because they"
-    " are parts of one interface. It does not order them; after edges do that. Use it when"
-    " two halves of an interface must be reviewed and merged together",
+    " are parts of one interface. Use it when two halves of an interface must be reviewed"
+    " and merged together. One Worker builds the whole group in sequence, so the halves"
+    " cannot disagree, unless the group is pinned: exactly one of its Steps has type"
+    " contract and fixes the interface, and every other Step in the group is after it,"
+    " directly or through other Steps. Only a pinned group's other Steps run in parallel."
+    " To ship Steps as one pull request without making them one Worker's, use msp instead",
     "  type: one of " + ", ".join(core.STEP_TYPES),
     "  complexity: one of " + ", ".join(core.COMPLEXITY_VALUES),
     "  file_notes: {path: what changes there}",

@@ -167,6 +167,13 @@ Two Steps that build a validator and then its command-line flag:
 the second behind the first; because their write-sets are disjoint, they
 become two MSPs and the second stacks its pull request on the first.
 
+Steps sharing a `contract_group` are halves of one interface, so they ship as
+one MSP and one Worker builds them in sequence, which stops two Workers
+inventing two shapes for it. To build the halves in parallel, pin the group:
+give exactly one of its Steps `"type": "contract"` to fix the interface, and
+make every other Step in the group wait on it through `after`. To ship Steps
+together without making them one Worker's, give them one `msp` tag instead.
+
 Plan first. This validates the Steps, schedules them, writes the plan into
 the run directory and prints the plan-stage report; it spawns nothing:
 

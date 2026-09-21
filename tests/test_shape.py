@@ -22,12 +22,12 @@ SCALAR_KEYS = (
 RECORDED = {
     "pass-1": {
         "steps": 8,
-        "lanes": 5,
+        "lanes": 3,
         "msps": 3,
         "largest_lane": 4,
         "msps_per_step": 3 / 8,
-        "parallelism": 2,
-        "fused_without_overlap": 5,
+        "parallelism": 1,
+        "fused_without_overlap": 8,
         "lane_cycles": 0,
     },
     "pass-2": {
@@ -42,12 +42,12 @@ RECORDED = {
     },
     "pass-3": {
         "steps": 8,
-        "lanes": 4,
+        "lanes": 2,
         "msps": 2,
-        "largest_lane": 5,
+        "largest_lane": 7,
         "msps_per_step": 2 / 8,
-        "parallelism": 2,
-        "fused_without_overlap": 9,
+        "parallelism": 1,
+        "fused_without_overlap": 20,
         "lane_cycles": 0,
     },
 }
@@ -251,7 +251,7 @@ class Findings(unittest.TestCase):
 
     def a_fusion_caused_by_cycle_contraction_says_so_and_never_blames_a_group(self):
         items = [
-            step("core", ["core.py", "shared.py"], msp="m", contract_group="g"),
+            step("core", ["core.py", "shared.py"], msp="m", contract_group="g", type="contract"),
             step("p1", ["p1.py"], msp="m", contract_group="g", after=["core"]),
             step("p2", ["p2.py"], msp="m", contract_group="g", after=["core"]),
             step("tail", ["tail.py", "shared.py"], msp="m", after=["p1", "p2"]),
@@ -262,15 +262,17 @@ class Findings(unittest.TestCase):
             self.assertNotIn("contract_group", entry["detail"])
         self.assertTrue(any("cycle forced" in entry["detail"] for entry in fused))
 
-    def an_unpinned_contract_group_does_not_fuse_its_steps(self):
+    def an_unpinned_contract_group_fuses_its_steps_and_says_why(self):
         items = [
             step("a", ["a.py"], contract_group="g"),
             step("b", ["b.py"], contract_group="g"),
         ]
         result = shape.scalars(items)
-        self.assertEqual(result["lanes"], 2)
+        self.assertEqual(result["lanes"], 1)
         self.assertEqual(result["msps"], 1)
-        self.assertEqual(result["fused_without_overlap"], 0)
+        self.assertEqual(result["fused_without_overlap"], 1)
+        fused = of_kind(shape.findings(items), "fused-without-overlap")
+        self.assertIn("two halves of one interface", fused[0]["detail"])
 
     def a_pinned_contract_group_still_runs_its_consumers_in_parallel(self):
         items = [
@@ -407,7 +409,13 @@ class Findings(unittest.TestCase):
         for name, expected in RECORDED.items():
             with self.subTest(split=name):
                 fused = of_kind(shape.findings(splits[name]), "fused-without-overlap")
-                self.assertEqual(len(fused), expected["fused_without_overlap"])
+                listed = [entry for entry in fused if "further fused" not in entry["detail"]]
+                further = sum(
+                    int(entry["detail"].split()[0])
+                    for entry in fused
+                    if "further fused" in entry["detail"]
+                )
+                self.assertEqual(len(listed) + further, expected["fused_without_overlap"])
 
 
 class ManifestExport(unittest.TestCase):

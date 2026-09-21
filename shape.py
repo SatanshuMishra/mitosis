@@ -157,9 +157,16 @@ def _same_uncontracted_lane(items, a, b):
 def _joined_by(items, a, b, by_name):
     if not _same_uncontracted_lane(items, a, b):
         return "joined only because a cycle forced their Lanes to be merged"
-    shared, chained = core.lane_pairs(items)
+    shared, chained, _ = core.lane_pairs(items)
     if (a, b) in chained or (b, a) in chained:
         return "joined by a chain of after edges"
+    group = items[a].get("contract_group")
+    if (
+        group not in (None, "")
+        and group == items[b].get("contract_group")
+        and str(group) not in core.pinned_groups(items)
+    ):
+        return "joined as two halves of one interface that no contract Step pins"
     if a in _producers(items, b, by_name) or b in _producers(items, a, by_name):
         return "joined by an after edge through a Step they both touch"
     return "joined by a run of shared files through other Steps in the Lane"

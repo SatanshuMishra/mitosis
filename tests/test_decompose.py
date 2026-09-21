@@ -1063,20 +1063,19 @@ class Sampling(unittest.TestCase):
         broken = {"items": [bare("a"), "not a step"], "errors": ["item #1: a Step must be an object"]}
         self.assertEqual(decompose.rank([broken, chained]), [1, 0])
 
-    def the_recorded_splits_rank_by_parallelism_first(self):
+    def the_recorded_splits_tie_on_parallelism_and_rank_by_fusion(self):
         splits = recorded_splits()
         names = ["pass-1", "pass-2", "pass-3"]
         results = [structured(splits[name]) for name in names]
+        self.assertEqual({shape.scalars(splits[name])["parallelism"] for name in names}, {1})
         order = decompose.rank(results)
-        self.assertEqual([names[i] for i in order], ["pass-1", "pass-3", "pass-2"])
-        self.assertLess(order.index(0), order.index(1))
-        self.assertLess(order.index(2), order.index(1))
+        self.assertEqual([names[i] for i in order], ["pass-2", "pass-1", "pass-3"])
         sentences = decompose.disagreements(results)
         self.assertTrue(any("bleep/effects/__init__.py" in s for s in sentences))
         self.assertTrue(any("demo/canyon.blp" in s for s in sentences))
         self.assertFalse(any("bleep/notation.py" in s for s in sentences))
         self.assertTrue(any("MSP" in s for s in sentences))
-        self.assertTrue(any("parallelism" in s for s in sentences))
+        self.assertFalse(any("parallelism" in s for s in sentences))
 
     def samples_that_split_a_file_differently_are_reported_as_a_disagreement(self):
         one_owner = structured([bare("a", files=["a.py", "shared.py"]), bare("b")])

@@ -73,17 +73,46 @@ class Grouping(unittest.TestCase):
             step("client", ["client.py"], contract_group="g"),
         ]
         self.assertEqual(len(core.msp_items(unpinned)), 1)
-        self.assertEqual(len(core.lane_items(unpinned)), 2)
-        self.assertEqual(core.lane_after(unpinned, core.lane_items(unpinned)), {})
+        self.assertEqual(len(core.lane_items(unpinned)), 1)
 
-    def an_unpinned_contract_group_ships_as_one_msp_without_serialising_its_steps(self):
+    def an_unpinned_contract_group_is_built_by_one_worker(self):
         items = [
             step("server", ["server.py"], contract_group="g"),
             step("client", ["client.py"], contract_group="g"),
             step("docs", ["docs.py"], contract_group="g"),
         ]
         self.assertEqual(len(core.msp_items(items)), 1)
-        self.assertEqual(len(core.lane_items(items)), 3)
+        self.assertEqual(core.lane_items(items), ((0, 1, 2),))
+        self.assertEqual(core.pinned_groups(items), frozenset())
+
+    def a_group_with_two_contract_steps_is_not_pinned(self):
+        items = [
+            step("shape-a", ["a.py"], type="contract", contract_group="g"),
+            step("shape-b", ["b.py"], type="contract", contract_group="g"),
+            step("user", ["u.py"], contract_group="g", after=["shape-a", "shape-b"]),
+        ]
+        self.assertEqual(core.pinned_groups(items), frozenset())
+        self.assertEqual(len(core.lane_items(items)), 1)
+
+    def a_member_that_never_waits_on_the_contract_unpins_the_group(self):
+        items = [
+            step("iface", ["iface.py"], type="contract", contract_group="g"),
+            step("server", ["server.py"], contract_group="g", after=["iface"]),
+            step("client", ["client.py"], contract_group="g"),
+        ]
+        self.assertEqual(core.pinned_groups(items), frozenset())
+        self.assertEqual(len(core.lane_items(items)), 1)
+
+    def a_member_waiting_on_the_contract_through_another_step_keeps_the_group_pinned(self):
+        items = [
+            step("iface", ["iface.py"], type="contract", contract_group="g"),
+            step("server", ["server.py"], contract_group="g", after=["iface"]),
+            step("adapter", ["adapter.py"], after=["iface"]),
+            step("client", ["client.py"], contract_group="g", after=["adapter"]),
+        ]
+        self.assertEqual(core.pinned_groups(items), frozenset({"g"}))
+        lanes = core.lane_items(items)
+        self.assertNotEqual(lane_of(lanes, items, "server"), lane_of(lanes, items, "client"))
 
     def a_cycle_inside_one_msp_is_contracted_so_the_plan_can_still_run(self):
         items = [

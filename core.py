@@ -251,6 +251,59 @@ def _contract_within_msp(items, lanes, owner, by_name):
         lanes = tuple(kept + rebuilt)
 
 
+def _group_members(items):
+    members = {}
+    for index, item in enumerate(items):
+        for _, group in _tag(item, "contract_group"):
+            members = {**members, group: members.get(group, ()) + (index,)}
+    return members
+
+
+def _waits_on(items, start, target, by_name):
+    seen = frozenset()
+    frontier = (start,)
+    while frontier:
+        reached = tuple(
+            by_name[name]
+            for index in frontier
+            for name in _after(items[index])
+            if name in by_name and by_name[name] not in seen
+        )
+        if target in reached:
+            return True
+        seen = seen | frozenset(reached)
+        frontier = tuple(dict.fromkeys(reached))
+    return False
+
+
+def _pins(items, members, by_name):
+    producers = tuple(index for index in members if items[index].get("type") == "contract")
+    if len(producers) != 1:
+        return False
+    return all(
+        _waits_on(items, index, producers[0], by_name)
+        for index in members
+        if index != producers[0]
+    )
+
+
+def pinned_groups(items):
+    by_name = _by_name(items)
+    return frozenset(
+        group
+        for group, members in _group_members(items).items()
+        if _pins(items, members, by_name)
+    )
+
+
+def _interface_pairs(items):
+    pinned = pinned_groups(items)
+    return _shared(
+        items,
+        lambda item: tuple(tag for tag in _tag(item, "contract_group") if tag[1] not in pinned),
+    )
+
+
 def lane_pairs(items):
     owner = _owners(msp_items(items), len(items))
     by_name = _by_name(items)
@@ -272,14 +325,14 @@ def lane_pairs(items):
         producer = producers[0]
         if owner[producer] == owner[consumer] and consumers.get(producer) == 1:
             chain_pairs.append((producer, consumer))
-    return _shared(items, _files), tuple(chain_pairs)
+    return _shared(items, _files), tuple(chain_pairs), _interface_pairs(items)
 
 
 def uncontracted_lanes(items):
     owner = _owners(msp_items(items), len(items))
     by_name = _by_name(items)
-    shared, chained = lane_pairs(items)
-    groups = union_find(len(items), shared + chained)
+    shared, chained, interfaced = lane_pairs(items)
+    groups = union_find(len(items), shared + chained + interfaced)
     lanes = tuple(_walk_order(items, group, by_name) for group in groups)
     return tuple(sorted(lanes, key=lambda lane: (owner[lane[0]], min(lane))))
 
