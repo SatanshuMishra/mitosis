@@ -64,6 +64,8 @@ DECOMPOSE_LOG = "decompose.log"
 
 REMOTE = "origin"
 
+DEFAULT_CONCURRENCY = 4
+
 REPORT_SECTIONS = (
     "Coverage map",
     "Assumptions",
@@ -219,8 +221,9 @@ FLAG_SPECS = {
     "--concurrency": {
         "metavar": "N",
         "type": int,
-        "default": 1,
-        "help": "Workers running at once (default: 1)",
+        "default": DEFAULT_CONCURRENCY,
+        "help": "Workers running at once, for the brief stage and the build "
+        "(default: %d)" % DEFAULT_CONCURRENCY,
     },
     "--context-hops": {
         "metavar": "N",
