@@ -400,8 +400,37 @@ def _walk(base, relative=""):
             yield found
 
 
+def _tracked(base):
+    try:
+        completed = subprocess.run(
+            ["git", "-C", base, "ls-files", "-z"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return None
+    if completed.returncode != 0:
+        return None
+    return tuple(os.fsdecode(raw) for raw in completed.stdout.split(b"\0") if raw)
+
+
+def _kept(base, relative):
+    full = os.path.join(base, relative)
+    return (
+        not any(part in SKIPPED_DIRS for part in relative.split("/"))
+        and os.path.isfile(full)
+        and not os.path.islink(full)
+    )
+
+
 def inventory(root, cap=None):
-    paths = tuple(_walk(os.path.abspath(root)))
+    base = os.path.abspath(root)
+    tracked = _tracked(base)
+    paths = (
+        tuple(_walk(base))
+        if tracked is None
+        else tuple(sorted(path for path in tracked if _kept(base, path)))
+    )
     limit = len(paths) if cap is None else max(0, int(cap))
     kept = paths[:limit]
     return {"root": root, "paths": list(kept), "overflow": len(paths) - len(kept)}

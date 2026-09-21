@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import shlex
+import subprocess
 import sys
 import tempfile
 import time
@@ -215,6 +216,19 @@ class Contract(unittest.TestCase):
             capped = decompose.inventory(root, cap=2)
             self.assertEqual(capped["paths"], ["a.py", "b.py"])
             self.assertEqual(capped["overflow"], 1)
+
+    def a_repository_is_inventoried_from_what_git_tracks(self):
+        with tempfile.TemporaryDirectory() as root:
+            subprocess.run(["git", "init", "-q", root], check=True)
+            for relative in (".gitignore", "a.py", "pkg/c.py", "gone.py"):
+                write(root, relative, "build/\n" if relative == ".gitignore" else "")
+            subprocess.run(["git", "-C", root, "add", "."], check=True)
+            os.remove(os.path.join(root, "gone.py"))
+            for relative in ("build/out.o", "build/deep/cache.bin", "untracked.py"):
+                write(root, relative, "")
+            listed = decompose.inventory(root)
+        self.assertEqual(listed["paths"], [".gitignore", "a.py", "pkg/c.py"])
+        self.assertEqual(listed["overflow"], 0)
 
 
 class Run(unittest.TestCase):
