@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.event.action != 'edited'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.9', '3.14']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run the suite
+        run: python -m unittest discover tests
+
+  release-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate the marketplace, the plugin and its skill
+        if: github.event.action != 'edited'
+        run: |
+          npx --yes @anthropic-ai/claude-code@2.1.278 plugin validate .
+          npx --yes @anthropic-ai/claude-code@2.1.278 plugin validate .claude-plugin/plugin.json
+          npx --yes @anthropic-ai/claude-code@2.1.278 plugin validate skills
+      - name: Refuse an unversioned change or a denied term
+        env:
+          DENY_TERMS: ${{ secrets.DENY_TERMS }}
+          PR_TEXT: ${{ github.event.pull_request.title }} ${{ github.event.pull_request.body }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 scripts/release_check.py --base "$BASE"
+
+  tag:
+    if: github.event_name == 'push'
+    needs: [test, release-check]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Tag the release this commit declares
+        run: |
+          version=$(python3 -c 'import core; print(core.__version__)')
+          tag="mitosis--v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+            echo "$tag already exists"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$tag" -m "mitosis $version"
+            git push origin "refs/tags/$tag"
+          fi

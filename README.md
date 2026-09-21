@@ -87,6 +87,15 @@ python3 -m unittest discover tests
 The tests ship with the plugin, so an installed copy can verify itself
 wherever it lands.
 
+## Releasing
+
+A pull request that changes the modules, the skill or the plugin manifest
+must raise the version in `core.py` and `.claude-plugin/plugin.json` together
+and add its heading to `CHANGELOG.md`; the tests and continuous integration
+refuse it otherwise. Versions stay below 1.0.0 until mitosis is released.
+Merging to `main` publishes the release, and continuous integration then tags
+the merge `mitosis--v<version>`.
+
 ## More
 
 For when an agent should reach for mitosis and how to invoke it, read
