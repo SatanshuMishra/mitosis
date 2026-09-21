@@ -949,6 +949,14 @@ def _lane_read_set(items, lane, packs):
     return list(read)
 
 
+SHARED_TREE_LINE = (
+    "Other Workers may be editing other files in this same worktree right now. Change only "
+    "the files in your write-set, and run no command that changes the repository's index or "
+    "history: no add, commit, stash, reset, checkout, restore, clean, merge or rebase. mitosis "
+    "commits your work when you return."
+)
+
+
 def brief_text(brief):
     header = ["Lane %d of MSP %s" % (brief["lane"], brief["msp_label"])]
     if brief.get("charter"):
@@ -978,6 +986,7 @@ def brief_text(brief):
             body.append("   Assumption: %s" % assumption)
     footer = [
         "Write-set for this Lane, the only files you may edit: %s" % ", ".join(brief["write_set"]),
+        SHARED_TREE_LINE,
     ]
     if brief.get("read_set"):
         footer.append("Read-set, context only, never edit: %s" % ", ".join(brief["read_set"]))

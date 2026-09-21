@@ -649,6 +649,14 @@ def node_link(links, directed=False, key="links"):
     ]}
 
 
+class SharedTree(unittest.TestCase):
+    def every_lane_brief_says_the_worktree_is_shared(self):
+        plan = core.plan([step("a", ["a.py"]), step("b", ["b.py"], msp="m"), step("c", ["c.py"], msp="m")])
+        for brief in plan["briefs"]:
+            self.assertIn(core.SHARED_TREE_LINE, brief["text"])
+            self.assertIn("changes the repository's index or history", brief["text"])
+
+
 class GraphInput(unittest.TestCase):
     LINKS = [("a1", "b1"), ("a2", "a1"), ("doc", "a1"), ("ext", "b1"), ("b1", "c1"), ("a1", "gone")]
 
@@ -747,7 +755,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput):
+    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, SharedTree):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

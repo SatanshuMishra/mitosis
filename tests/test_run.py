@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -551,6 +552,22 @@ class Dispatch(RepoCase):
         self.assertIsNone(self.marker(1))
         for tree in self.state()["worktrees"]:
             self.assertEqual(sh(["git", "rev-parse", "HEAD"], tree["path"]), sh(["git", "rev-parse", "main"], self.repo))
+
+    def a_commit_waits_out_a_sibling_holding_the_worktree_lock(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        tree = trees[0]["path"]
+        write(os.path.join(tree, "a.txt"), "work\n")
+        lock = sh(["git", "rev-parse", "--git-path", "index.lock"], tree)
+        lock = lock if os.path.isabs(lock) else os.path.join(tree, lock)
+        write(lock, "")
+        release = threading.Timer(0.5, os.remove, [lock])
+        release.start()
+        try:
+            head = run.commit_paths(tree, ["a.txt"], "land a")
+        finally:
+            release.join()
+        self.assertEqual(sh(["git", "log", "-1", "--format=%s", head], tree), "land a")
 
     def worker_output_goes_to_disk_and_the_record_stays_small(self):
         plan = core.plan([step("a", ["a.txt"])])

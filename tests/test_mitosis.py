@@ -329,7 +329,7 @@ class Flags(unittest.TestCase):
     def a_run_builds_several_lanes_at_once_by_default(self):
         args = mitosis.build_parser().parse_args(["--items", "items.json"])
         self.assertEqual(args.concurrency, 4)
-        self.assertIn("(default: 4)", mitosis.build_parser().format_help())
+        self.assertIn("(default: 4)", " ".join(mitosis.build_parser().format_help().split()))
 
     def structure_samples_defaults_to_one(self):
         args = mitosis.build_parser().parse_args(["--spec", "x", "--decompose-command", "c"])

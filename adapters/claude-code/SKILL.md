@@ -315,6 +315,12 @@ commit is refused there, with exit 3, before a Worker is paid for. A hook that
 refuses only some files lets that check pass, and then fails only the Lane
 whose commit it refuses.
 
+The Lanes of one MSP share its worktree, and `--concurrency` Workers run at
+once, four by default. Each brief tells its Worker that others are writing in
+the same tree, to change only its write-set and to leave the index and history
+alone. A git command that meets another process's lock is retried for a few
+seconds before it counts as a failure.
+
 The gate runs each acceptance property twice, with the work present and with
 the implementation reverted on a probe branch. `pass` means the property
 failed without the work, so it is load-bearing. `inert` means it passed

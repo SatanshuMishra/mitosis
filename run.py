@@ -6,6 +6,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
@@ -20,6 +21,10 @@ PLAN_FILE = "plan.json"
 STATE_FILE = "state.json"
 
 MSP_BLOCKED = "blocked"
+
+LOCK_MARKERS = (".lock': File exists", "Another git process seems to be running")
+
+LOCK_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.6, 3.2)
 
 MSP_UNCHANGED = "unchanged"
 
@@ -70,10 +75,26 @@ class ShipError(RuntimeError):
     pass
 
 
-def git_run(args, cwd):
+def _git_once(args, cwd):
     return subprocess.run(
         ["git", *args], cwd=cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL
     )
+
+
+def _locked(completed):
+    return completed.returncode != 0 and any(
+        marker in (completed.stderr or "") for marker in LOCK_MARKERS
+    )
+
+
+def git_run(args, cwd):
+    completed = _git_once(args, cwd)
+    for delay in LOCK_RETRY_DELAYS:
+        if not _locked(completed):
+            return completed
+        time.sleep(delay)
+        completed = _git_once(args, cwd)
+    return completed
 
 
 def git(args, cwd, check=True):
