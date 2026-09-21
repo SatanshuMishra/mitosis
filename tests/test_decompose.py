@@ -1289,6 +1289,27 @@ class StructureRetry(unittest.TestCase):
             self.assertEqual([item["name"] for item in result["items"]], ["only"])
             self.assertEqual(tally(root, "structure"), 2)
 
+    def a_valid_revision_is_dispatched_once_and_a_broken_one_twice(self):
+        prior = [bare("kept", task="its brief")]
+        for bad_rounds, dispatches in ((0, 1), (1, 2)):
+            with self.subTest(bad_rounds=bad_rounds), tempfile.TemporaryDirectory() as root:
+                write(root, "docs/spec.md", "# One\n\nbody\n")
+                argv = flaky(root, "revise", bad_rounds, bad_line="chatter, no object")
+                write(root, "flaky.py", FLAKY.replace(
+                    'print(json.dumps({"ok": True, "attempt": seen + 1}))',
+                    "print(%r)" % json.dumps(delta(keep=["kept"])),
+                ))
+                result = decompose.structure(
+                    os.path.join(root, "docs/spec.md"),
+                    " ".join(shlex.quote(part) for part in argv),
+                    root,
+                    timeout=20,
+                    prior=prior,
+                )
+                self.assertEqual(result["errors"], [])
+                self.assertEqual([step["name"] for step in result["items"]], ["kept"])
+                self.assertEqual(tally(root, "revise"), dispatches)
+
     def a_structure_dispatch_that_never_returns_an_object_stops_at_the_bound(self):
         with tempfile.TemporaryDirectory() as root:
             write(root, "docs/spec.md", "# One\n\nbody\n")

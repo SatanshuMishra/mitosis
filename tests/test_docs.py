@@ -64,6 +64,26 @@ VOCABULARY_WORDS = frozenset(
     + _public_callables(core, shape, briefs, decompose, mitosis)
 )
 
+def _local_imports(module):
+    with open(os.path.join(ROOT, module + ".py"), encoding="utf-8") as handle:
+        imported = re.findall(r"^import (\w+)$", handle.read(), re.M)
+    return tuple(name for name in imported if os.path.isfile(os.path.join(ROOT, name + ".py")))
+
+
+def _local_closure(start):
+    reached = frozenset((start,))
+    frontier = (start,)
+    while frontier:
+        fresh = tuple(
+            dict.fromkeys(
+                name for module in frontier for name in _local_imports(module) if name not in reached
+            )
+        )
+        reached = reached | frozenset(fresh)
+        frontier = fresh
+    return frozenset(name + ".py" for name in reached)
+
+
 CHANGELOG_CANDIDATES = ("changelog.md", "changelog.rst", "changelog", "history.md")
 
 
@@ -164,6 +184,12 @@ class Docs(unittest.TestCase):
         }
         declared = set(mitosis.flag_names())
         self.assertEqual(sorted(named - declared), [])
+
+    def the_install_section_names_every_module_the_cli_imports(self):
+        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as handle:
+            install = handle.read().split("## Install", 1)[1].split("\n## ", 1)[0]
+        named = set(re.findall(r"`([a-z_]+\.py)`", install))
+        self.assertEqual(sorted(named), sorted(_local_closure("mitosis")))
 
     def the_skill_file_is_within_its_size_cap(self):
         path = os.path.join(ROOT, "adapters", "claude-code", "SKILL.md")

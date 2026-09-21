@@ -720,6 +720,10 @@ def parse_delta(line):
     return _parse_lists(line, DELTA_KEYS)
 
 
+def _returned_a_delta(index, spawned):
+    return not parse_delta(spawned["line"])["errors"]
+
+
 def _step_name(step):
     name = step.get("name") if isinstance(step, dict) else None
     return name if isinstance(name, str) and name else None
@@ -1009,7 +1013,8 @@ def sample_structures(
     argv = _argv_for(frozen, template, prompt, model)
     logs = _sample_logs(log, count)
     jobs = [{"argv": argv, "prompt": prompt, "log": sample_log} for sample_log in logs]
-    spawned = spawn_until(jobs, timeout, count, root, _returned_a_structure)
+    accepts = _returned_a_delta if prior else _returned_a_structure
+    spawned = spawn_until(jobs, timeout, count, root, accepts)
     return [
         _assemble_structure(frozen, one, sample_log, root, prior)
         for one, sample_log in zip(spawned, logs)
