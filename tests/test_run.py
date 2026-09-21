@@ -65,6 +65,8 @@ import sys
 import time
 
 mode, marker_dir, lane, task = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+running = os.path.join(marker_dir, "running-%s" % lane)
+open(running, "w").close()
 if mode == "slow-" + lane:
     time.sleep(1.5)
 prefix = "Write-set for this Lane, the only files you may edit: "
@@ -102,6 +104,7 @@ status = "failed" if mode == "reports-failed" else "ok"
 notes = "n" * 500 if mode == "noisy" else "done"
 if mode != "silent":
     print(json.dumps({"item": "lane-%s" % lane, "status": status, "files_changed": write_set, "notes": notes}))
+os.remove(running)
 sys.exit(3 if mode in ("crash", "crash-" + lane) else 0)
 '''
 
@@ -540,18 +543,75 @@ class Dispatch(RepoCase):
         m = next(int(i) for i, msp in enumerate(plan["msps"]) if "a" in msp["steps"])
         self.assertIn("is failed", final["msps"][str(m)]["reason"])
 
-    def a_repository_that_refuses_every_commit_is_refused_before_any_worker_runs(self):
+    def a_repository_that_refuses_every_commit_stops_dispatching_after_two_refusals(self):
         hook = os.path.join(self.repo, ".git", "hooks", "commit-msg")
         write(hook, "#!/bin/sh\nexit 1\n")
         os.chmod(hook, 0o755)
-        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"])])
-        with self.assertRaises(run.ConfigError) as caught:
-            self.execute(plan)
-        self.assertIn("refused a commit before any Worker ran", str(caught.exception))
-        self.assertIsNone(self.marker(0))
-        self.assertIsNone(self.marker(1))
-        for tree in self.state()["worktrees"]:
-            self.assertEqual(sh(["git", "rev-parse", "HEAD"], tree["path"]), sh(["git", "rev-parse", "main"], self.repo))
+        plan = core.plan([step(name, [name + ".txt"]) for name in "abcdef"])
+        final = self.execute(plan)
+        ran = [i for i in range(len(plan["lanes"])) if self.marker(i) is not None]
+        self.assertGreaterEqual(len(ran), run.COMMIT_REFUSALS_TO_HALT)
+        self.assertLessEqual(len(ran), run.COMMIT_REFUSALS_TO_HALT + 1)
+        records = final["lanes"].values()
+        self.assertEqual(sum(1 for r in records if r["state"] == "failed"), len(ran))
+        halted = [r for r in records if r["state"] == "blocked"]
+        self.assertEqual(len(halted), len(plan["lanes"]) - len(ran))
+        self.assertTrue(all(r["reason"] == run.HALTED_REASON for r in halted))
+
+    def a_refused_lane_does_not_halt_a_run_whose_other_commits_land(self):
+        hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
+        write(hook, "#!/bin/sh\ngit diff --cached --name-only | grep -q '^refused' && exit 1\nexit 0\n")
+        os.chmod(hook, 0o755)
+        plan = core.plan(
+            [step("fine", ["fine.txt"])]
+            + [step("refused-%d" % n, ["refused-%d.txt" % n]) for n in range(3)]
+            + [step("later-%d" % n, ["later-%d.txt" % n]) for n in range(3)]
+        )
+        final = self.execute(plan, mode="slow-%d" % lane_named(plan, "refused-0"))
+        by_step = {plan["lanes"][int(i)]["steps"][0]: r for i, r in final["lanes"].items()}
+        self.assertEqual(by_step["fine"]["state"], "ok")
+        for n in range(3):
+            self.assertEqual(by_step["later-%d" % n]["state"], "ok")
+            self.assertEqual(by_step["refused-%d" % n]["state"], "failed")
+
+    def a_finished_lane_lands_only_when_no_sibling_is_writing_in_its_worktree(self):
+        overlap = os.path.join(self.markers, "overlap")
+        hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
+        write(
+            hook,
+            "#!/bin/sh\nfor f in %s/running-*; do [ -e \"$f\" ] && echo \"$f\" >> %s; done\nexit 0\n"
+            % (self.markers, overlap),
+        )
+        os.chmod(hook, 0o755)
+        plan = core.plan([step("a", ["a.txt"], msp="m"), step("b", ["b.txt"], msp="m")])
+        final = self.execute(plan, mode="slow-%d" % lane_named(plan, "b"))
+        self.assertEqual({r["state"] for r in final["lanes"].values()}, {"ok"})
+        self.assertTrue(all(r["commit"] for r in final["lanes"].values()))
+        self.assertFalse(os.path.exists(overlap), read(overlap) if os.path.exists(overlap) else "")
+
+    def no_lane_starts_in_an_msp_while_one_of_its_lanes_waits_to_land(self):
+        plan = core.plan(
+            [step("a", ["a.txt"], msp="m"), step("c", ["c.txt"], msp="m"), step("e", ["e.txt"], msp="m")]
+        )
+        final = self.execute(plan, mode="slow-%d" % lane_named(plan, "c"))
+        self.assertEqual({r["state"] for r in final["lanes"].values()}, {"ok"})
+        branch = final["worktrees"][0]["branch"]
+        landed = sh(["git", "log", "--reverse", "--format=%s", "main.." + branch], self.repo).splitlines()
+        self.assertEqual([line.rsplit("(", 1)[1].rstrip(")") for line in landed], ["a", "c", "e"])
+
+    def a_step_waiting_on_a_held_lane_in_its_own_msp_runs_after_it_lands(self):
+        plan = core.plan(
+            [
+                step("a", ["a.txt"], msp="m"),
+                step("b", ["b.txt"], msp="m", after=["a"]),
+                step("d", ["d.txt"], msp="m", after=["a"]),
+                step("c", ["c.txt"], msp="m"),
+            ]
+        )
+        final = self.execute(plan, mode="slow-%d" % lane_named(plan, "c"))
+        self.assertEqual({r["state"] for r in final["lanes"].values()}, {"ok"})
+        self.assertIsNotNone(self.marker(lane_named(plan, "b")))
+        self.assertIsNotNone(self.marker(lane_named(plan, "d")))
 
     def a_commit_waits_out_a_sibling_holding_the_worktree_lock(self):
         plan = core.plan([step("a", ["a.txt"])])

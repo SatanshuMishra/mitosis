@@ -22,6 +22,16 @@ STATE_FILE = "state.json"
 
 MSP_BLOCKED = "blocked"
 
+LANE_COMMIT_FAILED = "the Lane's commit failed"
+
+COMMIT_REFUSALS_TO_HALT = 2
+
+HALTED_REASON = (
+    "not dispatched: %d Lane commits were refused and none landed in this run, so the "
+    "repository is likely refusing every commit (a hook, the identity or signing); fix it and "
+    "resume" % COMMIT_REFUSALS_TO_HALT
+)
+
 LOCK_MARKERS = (".lock': File exists", "Another git process seems to be running")
 
 LOCK_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.6, 3.2)
@@ -444,17 +454,13 @@ def _land(plan, lane, tree):
         write_set = plan["briefs"][lane]["write_set"]
         if write_set:
             git_run(["reset", "-q", "--", *write_set], tree["path"])
-        return None, "the Lane's commit failed: %s" % error
+        return None, "%s: %s" % (LANE_COMMIT_FAILED, error)
     return commit, None
 
 
-def _finish(plan, lane, tree, started, merged, out, err, code, timed_out):
+def _verdict(lane, tree, started, merged, out, err, code, timed_out):
     returned = last_return(out)
     state, reason = lane_verdict(code, returned, timed_out)
-    commit = None
-    if state == "ok":
-        commit, reason = _land(plan, lane, tree)
-        state = "ok" if reason is None else "failed"
     return lane_record(
         lane,
         tree["msp"],
@@ -466,31 +472,26 @@ def _finish(plan, lane, tree, started, merged, out, err, code, timed_out):
         stdout=out,
         stderr=err,
         merged=merged,
-        commit=commit,
+        commit=None,
         started=started,
         finished=now(),
     )
 
 
-def check_commits(tree):
-    head = git(["rev-parse", "HEAD"], tree["path"])
-    try:
-        git(
-            [
-                "commit",
-                "-q",
-                "--allow-empty",
-                "-m",
-                "chore(%s): check that a Lane can land" % (tree.get("label") or tree["msp"]),
-            ],
-            tree["path"],
-        )
-    except GitError as error:
-        raise ConfigError(
-            "the repository refused a commit before any Worker ran, so no Lane could land; "
-            "fix its commit hooks, identity or signing first: %s" % error
-        )
-    git(["reset", "-q", "--soft", head], tree["path"])
+def _landed(plan, lane, tree, record):
+    commit, reason = _land(plan, lane, tree)
+    if reason is not None:
+        return {**record, "state": "failed", "reason": reason}
+    return {**record, "commit": commit}
+
+
+def _refusing_every_commit(records, prior):
+    fresh = [record for lane, record in records.items() if lane not in prior]
+    refused = sum(
+        1 for record in fresh if str(record.get("reason") or "").startswith(LANE_COMMIT_FAILED)
+    )
+    landed = any(record.get("state") == "ok" for record in fresh)
+    return refused >= COMMIT_REFUSALS_TO_HALT and not landed
 
 
 def dispatch(
@@ -521,7 +522,9 @@ def dispatch(
     ordered = [int(i) for i in plan.get("lane_order") or range(len(lanes))]
     every = ordered + [i for i in range(len(lanes)) if i not in ordered]
     pending = [i for i in every if i not in records]
+    prior_lanes = frozenset(records)
     running = {}
+    held = {}
     cap = max(1, int(concurrency))
 
     def settle(known, lane, record):
@@ -530,15 +533,31 @@ def dispatch(
         return {**known, lane: record}
 
     with ThreadPoolExecutor(max_workers=cap) as pool:
-        while pending or running:
+        while pending or running or held:
             progressed = False
+            busy = {lanes[entry[0]]["msp"] for entry in running.values()}
+            for lane in [lane for lane in held if lanes[lane]["msp"] not in busy]:
+                landed = _landed(plan, lane, tree_of[lanes[lane]["msp"]], held[lane])
+                held = {key: value for key, value in held.items() if key != lane}
+                records = settle(records, lane, landed)
+                progressed = True
+            if pending and _refusing_every_commit(records, prior_lanes):
+                for lane in pending:
+                    records = settle(
+                        records,
+                        lane,
+                        lane_record(lane, lanes[lane]["msp"], "blocked", reason=HALTED_REASON),
+                    )
+                pending = []
+                progressed = True
             waiting = ()
+            holding = {lanes[lane]["msp"] for lane in held}
             for lane in pending:
                 msp = lanes[lane]["msp"]
                 producers = edges.get(lane, ())
                 unfinished = [p for p in producers if p not in records]
                 if unfinished:
-                    active = {entry[0] for entry in running.values()}
+                    active = {entry[0] for entry in running.values()} | set(held)
                     live = [p for p in unfinished if p in pending or p in active]
                     if live:
                         waiting = waiting + (lane,)
@@ -555,7 +574,7 @@ def dispatch(
                     )
                     progressed = True
                     continue
-                if len(running) >= cap:
+                if len(running) >= cap or msp in holding:
                     waiting = waiting + (lane,)
                     continue
                 bad = [p for p in producers if records[p].get("state") != "ok"]
@@ -598,9 +617,12 @@ def dispatch(
                     running = {f: v for f, v in running.items() if f is not future}
                     code, timed_out = future.result()
                     tree = tree_of[lanes[lane]["msp"]]
-                    finished = _finish(plan, lane, tree, started, merged, out, err, code, timed_out)
-                    records = settle(records, lane, finished)
-            elif pending and not progressed:
+                    judged = _verdict(lane, tree, started, merged, out, err, code, timed_out)
+                    if judged["state"] == "ok":
+                        held = {**held, lane: judged}
+                    else:
+                        records = settle(records, lane, judged)
+            elif pending and not progressed and not held:
                 for lane in pending:
                     records = settle(
                         records,
@@ -1360,8 +1382,6 @@ def execute(
         plan["msps"], feature_branch, trees_root or os.path.join(run_dir, "trees"), repo, prefix
     )
     state = write_state(run_dir, {**state, "worktrees": trees})
-    if trees:
-        check_commits(trees[0])
 
     def on_lane(lane, record):
         nonlocal state

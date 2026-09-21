@@ -309,17 +309,19 @@ one Worker per Lane with producers merged in first, then per MSP: commit,
 gate, reconcile, push, open a draft pull request stacked on its single
 predecessor, report.
 
-Before the first Worker starts, mitosis makes one empty commit in a worktree
-and undoes it. A repository whose hooks, identity or signing refuse every
-commit is refused there, with exit 3, before a Worker is paid for. A hook that
-refuses only some files lets that check pass, and then fails only the Lane
-whose commit it refuses.
-
 The Lanes of one MSP share its worktree, and `--concurrency` Workers run at
 once, four by default. Each brief tells its Worker that others are writing in
 the same tree, to change only its write-set and to leave the index and history
-alone. A git command that meets another process's lock is retried for a few
+alone. A finished Lane is committed only once no Worker is running in its
+worktree, so a commit hook that stashes unstaged files never touches a
+sibling's work in progress, and no new Lane starts in that MSP until it has
+landed. A git command that meets another process's lock is retried for a few
 seconds before it counts as a failure.
+
+A refused Lane commit fails that Lane alone. When the first two refusals of a
+run arrive before any Lane has landed, the repository is likely refusing every
+commit, through a hook, the identity or signing, so mitosis starts no further
+Lane and records the rest `blocked` for a resume.
 
 The gate runs each acceptance property twice, with the work present and with
 the implementation reverted on a probe branch. `pass` means the property
