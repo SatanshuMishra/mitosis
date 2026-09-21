@@ -1163,6 +1163,25 @@ class Ship(RepoCase):
         )
         self.assertNotIn("mitosis/c", self.remote_heads())
 
+    def a_chain_of_unchanged_producers_is_followed_to_a_branch_that_ships(self):
+        plan = core.plan(
+            [step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"]), step("c", ["c.txt"], after=["b"])]
+        )
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        index = {plan["msps"][m]["steps"][0]: m for m in range(len(plan["msps"]))}
+        settled = {
+            str(index["a"]): {"state": run.MSP_UNCHANGED, "ship": {"base": "main"}},
+            str(index["b"]): {"state": run.MSP_UNCHANGED, "ship": {"base": trees[index["a"]]["branch"]}},
+        }
+        self.assertEqual(
+            run.pr_base(plan, index["c"], "main", trees, self.repo, settled), ("main", None)
+        )
+        shipped = {**settled, str(index["a"]): {"state": "shipped"}}
+        self.assertEqual(
+            run.pr_base(plan, index["c"], "main", trees, self.repo, shipped),
+            (trees[index["a"]]["branch"], None),
+        )
+
     def a_dependent_of_an_unchanged_msp_targets_that_msps_base(self):
         self.add_remote()
         self.seed_existing("a.txt", "already done\n")

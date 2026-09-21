@@ -1013,10 +1013,19 @@ def reconcile(plan, msp, tree, branch, base, producer_branches=()):
 
 
 def _stack_target(producer, trees, settled):
-    record = (settled or {}).get(str(producer)) or {}
-    if record.get("state") == MSP_UNCHANGED:
-        return (record.get("ship") or {}).get("base")
-    return trees[producer]["branch"]
+    owners = {tree["branch"]: index for index, tree in enumerate(trees)}
+    seen = frozenset()
+    current = producer
+    while current not in seen:
+        record = (settled or {}).get(str(current)) or {}
+        if record.get("state") != MSP_UNCHANGED:
+            return trees[current]["branch"]
+        base = (record.get("ship") or {}).get("base")
+        if base not in owners:
+            return base
+        seen = seen | {current}
+        current = owners[base]
+    return None
 
 
 def pr_base(plan, msp, feature_branch, trees, repo, settled=None):
@@ -1278,8 +1287,8 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings):
     if shipped["unchanged"]:
         return {
             "state": MSP_UNCHANGED,
-            "reason": "the branch matches %s, so nothing was pushed and no pull request opened"
-            % base,
+            "reason": "the branch adds nothing to %s, so nothing was pushed and no pull request "
+            "opened" % base,
             "ship": shipped,
         }
     if shipped["pushed"] is None:
