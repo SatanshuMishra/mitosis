@@ -1,0 +1,16 @@
+{
+  "name": "mitosis",
+  "owner": {
+    "name": "Satanshu Mishra"
+  },
+  "metadata": {
+    "description": "The mitosis plugin: parallel builds that each end as a draft pull request."
+  },
+  "plugins": [
+    {
+      "name": "mitosis",
+      "source": "./",
+      "description": "Build independent changes in parallel, each as its own draft pull request."
+    }
+  ]
+}

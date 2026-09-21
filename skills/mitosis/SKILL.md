@@ -54,7 +54,7 @@ quotes or newlines lands as one argument and is never reinterpreted by a shell.
 | `--decompose-command` | the structure pass that turns a document into unbriefed Steps | prompt, model, document |
 | `--brief-command` | one Worker per unbriefed Step, writing its task | prompt, model, step, document |
 
-A Worker spawned from this adapter, with the Lane brief as its whole prompt
+A Worker spawned from this skill, with the Lane brief as its whole prompt
 and the model chosen by tier:
 
 ```
@@ -123,7 +123,7 @@ tell them apart. Pass one, never both.
 ### Items: hand-written Steps
 
 `--items` takes a JSON array. Each Step is one entry with the five required
-fields and any of the optional ones; --help and the specification list them.
+fields and any of the optional ones; --help lists them.
 Two Steps that build a validator and then its command-line flag:
 
 ```json
@@ -169,7 +169,7 @@ Plan first. This validates the Steps, schedules them, writes the plan into
 the run directory and prints the plan-stage report; it spawns nothing:
 
 ```
-python3 /path/to/mitosis.py --items plan.json --plan-only
+python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --items plan.json --plan-only
 ```
 
 Read the report. An `after` naming a Step that does not exist is fatal and is
@@ -178,7 +178,7 @@ and a non-empty `assumptions` list are each counted, not fatal. When the
 Lane count and the tiers look right, run:
 
 ```
-python3 /path/to/mitosis.py --items plan.json \
+python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --items plan.json \
   --charter docs/CHARTER.md \
   --feature-branch main \
   --dispatch-command "claude -p {task} --model {model} --permission-mode bypassPermissions" \
@@ -203,7 +203,7 @@ because the two fields that join distant parts of it, `after` and
 No Step returned here carries a `task`; nothing is briefed yet:
 
 ```
-python3 /path/to/mitosis.py --spec docs/specs/search.md --plan-only \
+python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --spec docs/specs/search.md --plan-only \
   --decompose-command "claude -p --model {model} --permission-mode bypassPermissions" \
   --tier-model top=claude-opus-5 \
   --timeout 900
@@ -253,7 +253,7 @@ Revise the structure once the decisions file has grown, without paying to
 rebuild every Step:
 
 ```
-python3 /path/to/mitosis.py --spec docs/specs/search.md --plan-only --revise \
+python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --spec docs/specs/search.md --plan-only --revise \
   --decompose-command "claude -p --model {model} --permission-mode bypassPermissions" \
   --tier-model top=claude-opus-5 \
   --timeout 900
@@ -270,7 +270,7 @@ revision that touched three Steps buys three brief dispatches, not a rebuild
 of all of them:
 
 ```
-python3 /path/to/mitosis.py --spec docs/specs/search.md --resume \
+python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --spec docs/specs/search.md --resume \
   --charter docs/CHARTER.md \
   --feature-branch main \
   --dispatch-command "claude -p {task} --model {model} --permission-mode bypassPermissions" \
@@ -394,10 +394,9 @@ refuses one. Clean up after a failure, beyond the probe branch.
 
 ## Checking an installed copy
 
-The install is a copy. --version prints the version of the copy in hand, and
-the tests ship with it:
+--version prints the installed plugin's version, and its tests ship with it:
 
 ```
-python3 /path/to/mitosis.py --version
-python3 -m unittest discover /path/to/tests
+python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --version
+python3 -m unittest discover "${CLAUDE_PLUGIN_ROOT}/tests"
 ```

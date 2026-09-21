@@ -1,4 +1,5 @@
 import ast
+import json
 import os
 import re
 import sys
@@ -101,6 +102,40 @@ def _local_closure(start, root=ROOT):
 
 CHANGELOG_CANDIDATES = ("changelog.md", "changelog.rst", "changelog", "history.md")
 
+PLUGIN_MANIFEST = os.path.join(ROOT, ".claude-plugin", "plugin.json")
+
+MARKETPLACE_MANIFEST = os.path.join(ROOT, ".claude-plugin", "marketplace.json")
+
+SKILL_PATH = os.path.join(ROOT, "skills", "mitosis", "SKILL.md")
+
+SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+def _skill_text(case):
+    if not os.path.isfile(PLUGIN_MANIFEST):
+        case.skipTest("a bare copy of the modules carries no plugin")
+    case.assertTrue(os.path.isfile(SKILL_PATH), "the plugin carries no skills/mitosis/SKILL.md")
+    with open(SKILL_PATH, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def _manifests(case):
+    if not os.path.isfile(PLUGIN_MANIFEST):
+        case.skipTest("a bare copy of the modules carries no plugin")
+    with open(PLUGIN_MANIFEST, encoding="utf-8") as handle:
+        plugin = json.load(handle)
+    with open(MARKETPLACE_MANIFEST, encoding="utf-8") as handle:
+        marketplace = json.load(handle)
+    return plugin, marketplace
+
+
+def _frontmatter(text):
+    match = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+    if not match:
+        return {}
+    pairs = (line.split(":", 1) for line in match.group(1).splitlines() if ":" in line)
+    return {key.strip(): value.strip() for key, value in pairs}
+
 
 def _markdown_files(root):
     found = []
@@ -185,12 +220,8 @@ class Docs(unittest.TestCase):
             [],
         )
 
-    def every_flag_the_adapter_names_exists_in_the_cli(self):
-        path = os.path.join(ROOT, "adapters", "claude-code", "SKILL.md")
-        if not os.path.isfile(path):
-            self.skipTest("adapters/claude-code/SKILL.md does not exist yet")
-        with open(path, encoding="utf-8") as handle:
-            text = handle.read()
+    def every_flag_the_skill_names_exists_in_the_cli(self):
+        text = _skill_text(self)
         named = {
             token
             for line in FENCE.sub("", text).splitlines()
@@ -231,15 +262,37 @@ class Docs(unittest.TestCase):
             )
 
     def the_skill_file_is_within_its_size_cap(self):
-        path = os.path.join(ROOT, "adapters", "claude-code", "SKILL.md")
-        if not os.path.isfile(path):
-            self.skipTest("adapters/claude-code/SKILL.md does not exist yet")
-        self.assertLessEqual(os.path.getsize(path), 20480)
+        text = _skill_text(self)
+        self.assertLessEqual(len(text.encode("utf-8")), 20480)
+
+    def the_skill_runs_the_installed_copy_and_names_no_placeholder(self):
+        text = _skill_text(self)
+        commands = re.findall(r"^python3 (?!-m )(\S+) ", text, re.M)
+        self.assertTrue(commands)
+        self.assertEqual(set(commands), {'"${CLAUDE_PLUGIN_ROOT}/mitosis.py"'})
+        self.assertNotIn("/path/to", text)
+
+    def the_plugin_the_marketplace_and_the_skill_name_one_thing(self):
+        plugin, marketplace = _manifests(self)
+        front = _frontmatter(_skill_text(self))
+        entries = marketplace["plugins"]
+        self.assertEqual([entry["name"] for entry in entries], ["mitosis"])
+        self.assertEqual(plugin["name"], "mitosis")
+        self.assertEqual(front.get("name"), "mitosis")
+        self.assertTrue(front.get("description"))
+        self.assertEqual(entries[0]["source"], "./")
+
+    def the_plugin_declares_the_version_the_code_reports(self):
+        plugin, marketplace = _manifests(self)
+        self.assertRegex(core.__version__, SEMVER)
+        self.assertEqual(plugin.get("version"), core.__version__)
+        self.assertNotIn("version", marketplace["plugins"][0])
 
     def the_declared_version_matches_the_changelog_head(self):
         path = _changelog_path(ROOT)
-        if path is None:
-            self.skipTest("no changelog file exists yet")
+        if path is None and not os.path.isfile(PLUGIN_MANIFEST):
+            self.skipTest("a bare copy of the modules carries no changelog")
+        self.assertIsNotNone(path, "the plugin carries no changelog")
         with open(path, encoding="utf-8") as handle:
             head = _changelog_head(handle.read())
         self.assertIn(core.__version__, head)

@@ -31,10 +31,34 @@ reports how cleanly a document decomposed, and never refuses one.
 
 ## Install
 
-There is no package and no dependency. Copy the Python files at the root of
-this repository — `core.py`, `shape.py`, `decompose.py`, `briefs.py`, `run.py`,
-`mitosis.py` — into one directory of the target project, anywhere they can be
-invoked by path. They import one another, so they must stay side by side.
+mitosis installs as a Claude Code plugin from this repository. Add the
+repository as a plugin marketplace, install the plugin, then restart Claude
+Code:
+
+```bash
+claude plugin marketplace add SatanshuMishra/mitosis
+claude plugin install mitosis@mitosis
+```
+
+The plugin carries the skill and the six modules it runs — `core.py`,
+`shape.py`, `decompose.py`, `briefs.py`, `run.py`, `mitosis.py` — which need
+Python 3.9 or later and nothing else.
+
+To update, refresh the marketplace, update the plugin, and restart:
+
+```bash
+claude plugin marketplace update mitosis
+claude plugin update mitosis@mitosis
+```
+
+An installed copy only updates when the plugin's version changes, and every
+release changes it; `CHANGELOG.md` lists them. The version is part of each
+plan's id, so finish a run before updating: it cannot be resumed on another
+release.
+
+Without Claude Code, copy the six modules into one directory and invoke
+`mitosis.py` by path. They import one another, so they must stay side by
+side.
 
 ## A worked invocation
 
@@ -60,11 +84,10 @@ not the full surface.
 python3 -m unittest discover tests
 ```
 
-The tests ship with the install, so a copied checkout can verify itself
+The tests ship with the plugin, so an installed copy can verify itself
 wherever it lands.
 
 ## More
 
-For why each decision was made, what it cost, and what evidence backs it, read
-`SPEC.md`. For when an agent should reach for mitosis and how to invoke it,
-read `adapters/claude-code/SKILL.md`.
+For when an agent should reach for mitosis and how to invoke it, read
+`skills/mitosis/SKILL.md`.
