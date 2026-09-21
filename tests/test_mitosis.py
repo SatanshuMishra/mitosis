@@ -673,6 +673,74 @@ class Staging(unittest.TestCase):
             self.assertIn("parallelism", out.split("Coverage map:")[0])
 
 
+class ReconcileReporting(unittest.TestCase):
+    def _state(self, found):
+        return {"msps": {"0": {"state": "shipped", "reconcile": found}}}
+
+    PLAN = {"msps": [{"label": "alpha", "files": ["a.py"], "steps": ["a"]}]}
+
+    def a_path_left_alone_on_purpose_is_shown_but_is_not_a_finding(self):
+        found = {"undeclared": [], "unwritten": [], "untouched": ["a.py"],
+                 "crossing": [], "fatal": False}
+        lines = mitosis.reconcile_lines(self.PLAN, self._state(found))
+        self.assertIn("0 findings from the git log", lines[0])
+        self.assertTrue(any("1 left unchanged on purpose" in line for line in lines))
+        self.assertTrue(any("untouched: a.py" in line for line in lines))
+        self.assertFalse(mitosis.reconcile_dirty(found))
+
+    def a_path_that_should_have_been_written_is_still_a_finding(self):
+        found = {"undeclared": [], "unwritten": ["a.py"], "untouched": [],
+                 "crossing": [], "fatal": False}
+        lines = mitosis.reconcile_lines(self.PLAN, self._state(found))
+        self.assertIn("1 finding from the git log", lines[0])
+        self.assertTrue(mitosis.reconcile_dirty(found))
+
+
+class ItemsEntryPointRefusals(unittest.TestCase):
+    CYCLIC = [
+        {"name": "x", "task": "t", "files": ["pkg/shared.py"], "source": None, "acceptance": []},
+        {"name": "y", "task": "t", "files": ["pkg/y.py"], "source": None,
+         "acceptance": [], "after": ["x"]},
+        {"name": "z", "task": "t", "files": ["pkg/shared.py"], "source": None,
+         "acceptance": [], "after": ["y"]},
+    ]
+    EMPTY_MANIFEST = [
+        {"name": "surface", "task": "t", "files": ["pkg/__init__.py", "pkg/g.py"],
+         "source": None, "acceptance": []},
+        {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None,
+         "acceptance": [], "after": ["surface"]},
+    ]
+
+    def _run(self, items):
+        with tempfile.TemporaryDirectory() as root:
+            write(root, "items.json", json.dumps(items))
+            return invoke(
+                root,
+                ["--items", "items.json", "--plan-only", "--run-dir", os.path.join(root, "run")],
+            )
+
+    def a_plan_supplied_as_items_that_cannot_run_is_refused(self):
+        code, out, err = self._run(self.CYCLIC)
+        self.assertEqual(code, mitosis.EXIT_REFUSED, out)
+        self.assertIn("each have to merge before", err + out)
+
+    def a_package_supplied_as_items_that_would_ship_empty_is_refused(self):
+        code, out, err = self._run(self.EMPTY_MANIFEST)
+        self.assertEqual(code, mitosis.EXIT_REFUSED, out)
+        self.assertIn("would ship empty", err + out)
+
+    def a_sound_plan_supplied_as_items_still_ships(self):
+        code, out, err = self._run(
+            [
+                {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None,
+                 "acceptance": []},
+                {"name": "surface", "task": "t", "files": ["pkg/__init__.py"], "source": None,
+                 "acceptance": [], "after": ["parse"]},
+            ]
+        )
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, err)
+
+
 class ReportSections(unittest.TestCase):
     def the_split_shape_section_prints_every_scalar(self):
         with tempfile.TemporaryDirectory() as root:
@@ -735,6 +803,18 @@ class BriefStageReport(unittest.TestCase):
         lines = mitosis.brief_lines({"written": [], "reused": ["a", "b"], "errors": []})
         self.assertIn("2 briefs reused", lines[0])
         self.assertIn("0 briefs written", lines[0])
+
+    def a_brief_that_had_to_be_asked_again_is_named_in_the_report(self):
+        lines = mitosis.brief_lines(
+            {"written": ["a", "b"], "reused": [], "retried": ["b"], "errors": []}
+        )
+        self.assertIn("1 brief re-dispatched after a return that broke the contract: b", lines)
+
+    def a_run_where_every_brief_returned_cleanly_says_nothing_about_retries(self):
+        lines = mitosis.brief_lines(
+            {"written": ["a"], "reused": [], "retried": [], "errors": []}
+        )
+        self.assertTrue(all("re-dispatched" not in line for line in lines))
 
 
 class CoverageRendering(unittest.TestCase):
@@ -847,6 +927,8 @@ def load_tests(loader, tests, pattern):
         CoverageReport,
         Flags,
         Staging,
+        ItemsEntryPointRefusals,
+        ReconcileReporting,
         ReportSections,
         BriefStageReport,
         CoverageRendering,

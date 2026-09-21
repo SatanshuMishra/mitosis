@@ -671,7 +671,37 @@ def implementation_paths(plan, msp):
     return [path for path in plan["msps"][msp]["files"] if _norm(path) not in named]
 
 
-def msp_properties(plan, msp):
+def step_implementation_paths(plan, msp, name):
+    named = acceptance_files(plan, msp)
+    steps = _steps_by_name(plan)
+    return [
+        path for path in (steps[name].get("files") or []) if _norm(path) not in named
+    ]
+
+
+def steps_without_implementation_change(plan, msp, tree, base):
+    unchanged = ()
+    for name in plan["msps"][msp]["steps"]:
+        paths = step_implementation_paths(plan, msp, name)
+        if paths and not git(["diff", "--name-only", base, "--", *paths], tree):
+            unchanged = unchanged + (name,)
+    return frozenset(unchanged)
+
+
+UNCHANGED_REASON = (
+    "the Step changed no implementation, so no property can depend on it"
+)
+
+
+def _property_verdict(name, modes, unchanged):
+    if name in unchanged:
+        return "not-applicable", UNCHANGED_REASON
+    if modes.get(name) == "serial":
+        return "not-applicable", "serial surface; the probe cannot run it headlessly"
+    return None, None
+
+
+def msp_properties(plan, msp, unchanged=frozenset()):
     steps = _steps_by_name(plan)
     modes = plan.get("verify_modes") or {}
     found = ()
@@ -688,17 +718,15 @@ def msp_properties(plan, msp):
                 },
             )
             continue
+        outcome, reason = _property_verdict(name, modes, unchanged)
         for entry in acceptance:
-            serial = modes.get(name) == "serial"
             found = found + (
                 {
                     "step": name,
                     "file": entry["file"],
                     "test": entry["test"],
-                    "outcome": "not-applicable" if serial else None,
-                    "reason": (
-                        "serial surface; the probe cannot run it headlessly" if serial else None
-                    ),
+                    "outcome": outcome,
+                    "reason": reason,
                 },
             )
     return found
@@ -789,7 +817,9 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None):
     commit = commit_all(
         tree, "chore(%s): commit the MSP's work before the gate" % _label(plan, msp)
     )
-    properties = msp_properties(plan, msp)
+    properties = msp_properties(
+        plan, msp, steps_without_implementation_change(plan, msp, tree, base)
+    )
     implementation = implementation_paths(plan, msp)
     runnable = [index for index, entry in enumerate(properties) if entry["outcome"] is None]
     if not runnable:
@@ -862,11 +892,28 @@ def msp_owner_of(plan, path):
     return None
 
 
+def _unproven_paths(plan, msp):
+    steps = _steps_by_name(plan)
+    return {
+        _norm(path)
+        for name in plan["msps"][msp]["steps"]
+        if not (steps[name].get("acceptance") or [])
+        for path in (steps[name].get("files") or [])
+    }
+
+
 def reconcile(plan, msp, tree, branch, base, producer_branches=()):
     changed = changed_files(tree, branch, base, producer_branches)
     declared = sorted({_norm(f) for f in plan["msps"][msp].get("files") or ()})
     undeclared = [path for path in changed if _norm(path) not in declared]
-    unwritten = [path for path in declared if path not in {_norm(c) for c in changed}]
+    missing = [path for path in declared if path not in {_norm(c) for c in changed}]
+    unproven = _unproven_paths(plan, msp)
+    untouched = [
+        path
+        for path in missing
+        if path in unproven and git_ok(["cat-file", "-e", "%s:%s" % (base, path)], tree)
+    ]
+    unwritten = [path for path in missing if path not in untouched]
     crossing = ()
     for path in undeclared:
         owner = msp_owner_of(plan, path)
@@ -877,6 +924,7 @@ def reconcile(plan, msp, tree, branch, base, producer_branches=()):
         "declared": declared,
         "undeclared": undeclared,
         "unwritten": unwritten,
+        "untouched": untouched,
         "crossing": list(crossing),
         "fatal": bool(crossing),
     }

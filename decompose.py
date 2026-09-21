@@ -13,6 +13,8 @@ import shape
 
 RETURN_KEYS = ("items", "assumptions", "constraints")
 
+DISPATCH_ATTEMPTS = 2
+
 PROMPT_PLACEHOLDER = "{prompt}"
 MODEL_PLACEHOLDER = "{model}"
 DOCUMENT_PLACEHOLDER = "{document}"
@@ -71,6 +73,14 @@ SCHEDULING_LINES = (
     " and give that Step an after edge reaching every Step whose modules it exports, directly"
     " or through another. A Step that merely needs the file to exist will create it empty, every"
     " test will still pass, and the package will export nothing.",
+    "  When the codebase already holds an implementation, every acceptance property is judged"
+    " against the code as it stands TODAY, not against an empty file. A property describing"
+    " behaviour the existing code already has proves nothing about the Step and stops the run.",
+    "  So for each Step over existing code, ask what the document requires that the code does"
+    " not already do. Name acceptance properties that FAIL against the current code and pass"
+    " only once the Step has changed it. If the answer is that the code already satisfies this"
+    " part of the document, keep the Step and return an EMPTY acceptance list, which records"
+    " that nothing was required here. Never pad a Step with properties that already hold.",
 )
 
 TOP_LEVEL_LINES = (
@@ -607,6 +617,27 @@ def spawn_many(jobs, timeout, concurrency, cwd=None):
         return [future.result() for future in pending]
 
 
+def spawn_until(jobs, timeout, concurrency, cwd, accepts, attempts=None):
+    rounds = DISPATCH_ATTEMPTS if attempts is None else max(1, attempts)
+    results = {}
+    outstanding = tuple(range(len(jobs)))
+    for _ in range(rounds):
+        if not outstanding:
+            break
+        spawned = spawn_many([jobs[index] for index in outstanding], timeout, concurrency, cwd=cwd)
+        results = {
+            **results,
+            **{
+                index: {**one, "attempts": results.get(index, {}).get("attempts", 0) + 1}
+                for index, one in zip(outstanding, spawned)
+            },
+        }
+        outstanding = tuple(
+            index for index in outstanding if not accepts(index, results[index])
+        )
+    return tuple(results[index] for index in range(len(jobs)))
+
+
 def _clip(text, limit=200):
     return text if len(text) <= limit else text[:limit] + "..."
 
@@ -646,6 +677,10 @@ def _parse_lists(line, keys):
 
 def parse_return(line):
     return _parse_lists(line, RETURN_KEYS)
+
+
+def _returned_a_structure(index, spawned):
+    return not parse_return(spawned["line"])["errors"]
 
 
 def parse_delta(line):
@@ -941,7 +976,7 @@ def sample_structures(
     argv = _argv_for(frozen, template, prompt, model)
     logs = _sample_logs(log, count)
     jobs = [{"argv": argv, "prompt": prompt, "log": sample_log} for sample_log in logs]
-    spawned = spawn_many(jobs, timeout, count, cwd=root)
+    spawned = spawn_until(jobs, timeout, count, root, _returned_a_structure)
     return [
         _assemble_structure(frozen, one, sample_log, root, prior)
         for one, sample_log in zip(spawned, logs)

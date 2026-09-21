@@ -138,7 +138,7 @@ trial runs and listed here in full, so the set cannot be pruned afterwards.
 | D4 | Semantic Versioning 2.0.0 | semver.org | the published precedence examples | low; small and precise |
 | D5 | RFC 3339 | IETF | the grammar's own examples plus boundary cases | medium; one tightly coupled grammar |
 | D6 | bencode | BitTorrent BEP 3 | round-trip vectors from the spec | low; four types, tiny |
-| D7 | TOML v1.0.0, a named subset | toml.io | the toml-test suite valid and invalid cases | high; large and interdependent |
+| D7 | TOML, the toml.io main-branch text | toml.io | the toml-test suite valid and invalid cases | high; large and interdependent |
 | D8 | `.gitignore` pattern semantics | git documentation | behaviour compared against `git check-ignore` | high; ambiguous and stateful |
 
 **Selection rules, fixed now.** A document qualifies only if it was published
@@ -282,3 +282,280 @@ authoring, and the point of this corpus is that no part of it was shaped here.
 The consequence is that coverage will honestly report boilerplate sections as
 unclaimed, and that is read as a property of the document rather than a fault
 in the split.
+
+**2026-09-20, after corpus run 3 and before stage D.** Corpus run 3 is
+discarded and stage D is built from corpus run 4 instead. Two sessions held the
+same output paths open at once, forty-four seconds apart, and the second
+truncated files the first was still writing at its own offset. The reports are
+blends: `contaminated-reports-b3/D6-B3.txt` carries a complete clean run ending
+`exit 0: the structure was written` followed by a second writer's output ending
+`exit 3: refused to start`. Every run-3 report is therefore unusable. The eight
+run-3 structures were checked individually against the raw model output stored
+beside them and each matches one dispatch name for name, so the structures were
+single-writer even though the reports were not; they are kept under
+`contaminated-runs3/` and are not used for any claim here. Run 4 takes a
+per-document atomic lock and records `SKIPPED` rather than interleaving. Reason:
+a result that needs an argument about which bytes came from which writer is not
+a result, and the four builds drawn in §7 are the most expensive arm in this
+protocol.
+
+**2026-09-20, before stage E.** One of the five frozen oracle digests does not
+verify what it appears to verify. `FROZEN.json` records `1bbab111e8d0dfb4` for
+the 777-file toml-test corpus. That value is reproducible, by hashing the sorted
+file path strings and never opening a file, so it moves only when a file is
+added, removed or renamed. Rewriting the entire body of any of the 777 cases,
+including turning an expected failure into an expected success, leaves it
+unchanged; this was demonstrated on a throwaway copy, where the path digest held
+at `1bbab111e8d0dfb4` while a content digest moved. The four single-file digests
+are genuine content hashes and all reproduce exactly. The TOML corpus is pinned
+instead by its git commit `ff49d10` with a clean working tree and the counts 266
+valid and 511 invalid, which reproduces and pins contents exactly, since git
+content-hashes every file in the tree. `FROZEN.json` is left exactly as written;
+the recipe, the demonstration of its blindness and the replacement check are
+recorded beside it in `oracles/FROZEN-RECIPE.md`, with `verify-oracles.py`
+running the check. The earlier stage E figure of 932 of 945 was measured against
+this corpus under this digest, so it was pinned by the clone being untouched
+rather than by any check. Reason: a pre-registered hash that cannot detect the
+tampering it exists to detect is worse than no hash, because it is reported as
+assurance, and stage E's whole purpose is to be checkable by someone who does
+not trust the people who ran it.
+
+**2026-09-20, after stage E.** §3 named D7 "TOML v1.0.0, a named subset" and
+both halves of that are wrong. The fetched file is the toml.io main-branch
+text, which is the unreleased 1.1.0 draft: it states that seconds may be
+omitted and its own worked example shows a multi-line inline table with a
+trailing comma, neither of which 1.0.0 permits. It was also handed over whole,
+not as a subset, per the amendment above. The mislabel had a direct cost:
+D7's conformance was first scored against `files-toml-1.0.0`, which reported
+eleven failures, nine of which are cases 1.1.0 deliberately makes valid.
+Scored against `files-toml-1.1.0` the result is 710 of 712. The row is
+corrected and the three scopes are reported side by side rather than one
+being chosen. Reason: the corpus entry is the only record of what a document
+actually was, and an oracle chosen from a wrong label measures a different
+specification than the one the Workers were given.
+
+**2026-09-20, after stage B run 4.** H3 is unevaluable on this corpus and is
+closed rather than left pending. Its metric is the precision of
+`fused_without_overlap`, which requires at least one non-zero value to judge
+blindly. The scalar reads **0 on all eight documents** in run 4, as it did in
+runs 2 and 3, because the contract change that stopped Steps being fused
+without a shared file removed the behaviour the scalar detects. Precision
+over zero positives is undefined, so the pre-registered blind pairing has
+nothing to pair. This is recorded as a hypothesis the corpus cannot test, not
+as one that passed: the scalar may still be right and may still be wrong, and
+nothing here distinguishes those. A corpus that still produced needless
+fusion would be needed to settle it.
+
+**2026-09-20, before stage C.** H2's clean arm is D1, D3, D6 and D8 only. The
+control in §2 requires the decisions file to be written from trial 1's
+printed report alone, with no inspection of the resulting split. That holds
+for those four. It does not hold for D2, D4, D5 and D7, whose structures were
+built in stage D and whose source code the author read in stage E before the
+decisions files were written. D7's file also carries one rule that did not
+come from its report at all: that every error escaping the parser must be the
+package's own decode error, which comes from a defect stage E found. All
+eight are run and reported; the four built documents are reported separately
+and are not pooled with the clean four. The decisions files were committed at
+2026-09-20T12:43:04-06:00, before any stage C trial executed, and every file
+except D7's settles exactly the readings its trial-1 report printed.
+
+---
+
+## 11. Brownfield trial, pre-registered 2026-09-20 before it runs
+
+Every trial in §3 hands mitosis an empty repository. §8 says this protocol
+cannot speak to a repository with existing code that must be modified rather
+than created, and that is the gap that matters most for using the tool on a
+real project. This trial addresses it and nothing else.
+
+**D9.** A repository holding the implementation D7 produced: 33 tracked
+files, 29 Python modules, 152 passing tests. Its `docs/spec.md` is the TOML
+**v1.0.0** document from the `toml-lang/toml` tag `1.0.0`, fetched whole. The
+code was written against the toml.io main-branch text, which is the 1.1.0
+draft, so the repository already implements a different and later revision of
+the same specification. No Step can succeed by creating a new package; every
+Step must read and edit code it did not write.
+
+**The charter change.** D9's charter is the corpus charter with one section
+added, stating that the package already exists, that most work edits a file
+rather than creating one, that an existing test contradicting the document is
+wrong and must be changed by whichever Step owns its file, and that a test
+the document still requires must keep passing. Nothing else differs.
+
+**Starting point, measured before the run.** 698 of the 709 cases in
+`files-toml-1.0.0` pass. The eleven failures are recorded in
+`conformance/D9-baseline.json` and span at least four existing modules:
+six inline-table and datetime cases the 1.1.0 text permits and 1.0.0 forbids,
+three omitted-seconds cases, one hex string escape, and two integers that
+raise the wrong error type.
+
+**H7 — mitosis can change code it did not write.** Predict the run reaches
+exit 0, merges with zero conflicts, keeps the integrated suite green, and
+raises conformance above the 698 baseline.
+
+**Falsified if** conformance does not rise above 698, or the run cannot
+produce a plan whose Steps edit existing files.
+
+**Recorded as a separate failure** if it reaches 709 by deleting tests rather
+than changing behaviour. The integrated suite's test count is recorded before
+and after, and a drop is reported.
+
+**What it still cannot establish.** One document, one language, one
+repository, and a repository whose existing code mitosis itself wrote. A
+codebase written by other people, with conventions mitosis has never seen,
+remains untested.
+
+---
+
+## 12. Language trial, pre-registered 2026-09-20 before it runs
+
+Every trial so far is Python. §8 says this protocol cannot speak to a
+language mitosis has never built in. This trial addresses that and holds
+everything else fixed.
+
+**D10.** An empty repository whose `docs/spec.md` is the same Semantic
+Versioning 2.0.0 document as D4, byte for byte. Its charter is the corpus
+charter with the language clauses replaced: JavaScript against the Node
+standard library alone, ES modules only, no build step and no transpiler,
+source under `src/`, tests under `test/` using `node:test` and
+`node:assert/strict`. Its acceptance runner is `acceptance.mjs`, which
+selects one test by its exact top-level name and returns the same three
+verdicts the Python runner returns.
+
+D4 is therefore the control for D10 in the strictest sense available: one
+document, one model, one charter shape, one oracle, and language as the only
+deliberate difference.
+
+**The acceptance runner was proven able to fail before use.** A passing test
+returns 0, a failing property returns 1, a test whose module does not exist
+returns 1, a missing file returns 4, and a test name that does not exist
+returns 4. The first draft returned 0 for a name that did not exist, because
+Node's TAP summary counts the file itself as a passing subtest; that draft
+would have marked every unwritten property as satisfied. The runner now
+matches the named test's own result line.
+
+**H8 — the pipeline is not Python-specific.** Predict D10 reaches exit 0,
+merges with zero conflicts, keeps its suite green, and scores at or above 44
+of the 46 frozen semver cases, which is D4's 46 less a two-case margin.
+
+**Falsified if** the run cannot produce a plan, or conformance falls below 40
+of 46, or the split collapses to one Lane where D4 produced seven.
+
+**What it still cannot establish.** One language, one document, one model,
+and a language whose conventions are close to Python's. It says nothing
+about a language with a compile step, a package manifest that Steps must
+share, or a test runner that cannot select a single test by name.
+
+**2026-09-20, D10 structure written, before its build.** The language trial
+found a check that cannot fire outside Python, and it is recorded here before
+the build so the finding is not shaped by the outcome. `shape.MANIFEST_NAMES`
+is `__init__.py`, `index.ts`, `index.js`, `mod.rs` and `index.d.ts`. D10's
+public interface is `src/index.mjs`, which is on none of those lists, so
+`manifest_gaps` returns empty for this package and the refusal that stops a
+package shipping an empty public interface cannot trigger. The empty result is
+a false negative, not a pass.
+
+The ownership happens to be correct without the check: the public-surface
+Step owns `src/index.mjs` and carries after edges reaching all four module
+Steps. So
+the model got right what the program could not have caught.
+
+The trial runs against the tool as it stands. `index.mjs` is not added to
+`MANIFEST_NAMES` before D10 builds, because changing the checker between
+registering a prediction and testing it is the fitting this protocol exists
+to prevent. It is fixed afterwards, with a test that goes red when reverted,
+and H8's result is reported knowing the manifest gate was inert for it.
+
+This is the fifth check found this day that produced a plausible value while
+verifying nothing, after inert acceptance tests, a manifest rule that could
+not fire on its corpus, `pgrep -fc`, and an integrity digest blind to file
+contents. The common shape is that none was visible in its own output.
+
+**2026-09-20, after stage A.** H1 is withdrawn as unmeasurable, for the same
+reason H3 was. It compares the cost of one structure stage against the cost of
+one combined structure-and-brief dispatch at commit `261681c`. That commit
+contains no plan-validity check of any kind: zero references to a lane-cycle
+refusal or a manifest refusal, against five today. Four of its eight plans are
+refused by today's tool, three for cycles where every Lane waits on another so
+nothing can start, and one for a package whose public interface would ship
+empty. A fifth put ten Steps in a single Lane and a sixth put seven in two.
+
+The control is therefore cheaper in part because it does not check, and its
+output is not the same deliverable. A ratio between the cost of a plan that
+runs and the cost of a plan that does not is not a cost comparison, and the
+median of 0.52 recorded against the pre-registered metric, and the 3.59 median
+recorded for the full staged pipeline, are both withdrawn rather than
+reported as findings.
+
+The measurement that would answer the underlying question, whether the split
+costs more than not splitting, was never in this protocol. It requires a third
+arm: one agent handed the same document and the same charter, implementing it
+serially in one repository with no decomposition, measured to the same
+external conformance suite. Until that arm runs, this protocol says nothing
+about whether mitosis costs more than the alternative a user actually has.
+
+Recorded because the flaw is in the pre-registration, not in the data: the
+control was chosen as the previous version of the tool rather than as the
+alternative to using the tool, and the previous version's plans do not run.
+
+---
+
+## 13. Results of the brownfield and language trials
+
+**H7, brownfield: the work succeeded and the gate refused it.** All 14 Lanes
+ran. Every one of the 14 MSPs was gate-failed or blocked, and nothing shipped,
+so the run ended at exit 20 and H7's exit-0 clause did not hold. Its stated
+falsification condition did not trigger: the plan's Steps edit only existing
+files, 28 of 28, and conformance rose.
+
+Merging the refused work by hand and measuring it: **698 of 709 before, 707 of
+709 after**, zero merge conflicts, and the integrated suite grew from 152 tests
+to 171, so the rise was not bought by deleting tests. Nine of the eleven
+baseline defects are fixed. The two survivors are `++99` and `--99`, which
+raise the wrong error type from the float module while being an integer
+concern; the plan gave integers and floats to different Steps with disjoint
+write-sets, and that split was recorded as a risk before the build ran.
+
+**Why the gate refused it, which is not what it looks like.** 46 of 50
+acceptance properties were judged inert. The gate reverts a Step's files to
+the base branch and requires the property to fail. In an empty repository the
+file disappears and the property fails. In a repository with code, reverting
+restores the working previous implementation, and a property describing
+behaviour that already worked still passes.
+
+The gate is right. The source-encoding Step and the arrays Step changed
+nothing at all, because the two revisions of the document agree on those
+modules, and `booleans` changed one line. Those Steps named properties
+describing their module's whole behaviour, nearly all of it pre-existing, and
+the gate correctly reported that none depends on the new work.
+
+The defect is that mitosis has no way for a Step to say the document requires
+no change here. In an empty repository that case cannot arise, because every
+Step creates something. Against existing code it arises immediately, since a
+revision leaves most modules untouched. The tool cannot distinguish a Worker
+that wrote a worthless test from a Worker that correctly had nothing to do,
+and it treats both as a reason to stop. The failure direction is safe: it
+refused rather than shipping.
+
+**H8, language: held.** The JavaScript package scores **46 of 46** on the same
+frozen vectors as D4's Python package, which also scored 46 of 46. Five MSPs
+shipped, the five branches merge with zero conflicts in `src/` and `test/`,
+and the merged suite runs 50 tests green. The split was 5 Lanes against D4's
+7, well clear of the one-Lane collapse that would have falsified it. The
+charter's language was honoured exactly: every write-set path is `.mjs` under
+`src/` or `test/`, with no Python anywhere.
+
+D10's run reported exit 6, reconcile finding 71 undeclared writes. Every one
+is `graphify-out/`, a knowledge-graph directory a hook in the operator's own
+environment wrote into the trial repository while the build ran. No other
+undeclared path appears, D9 and the four corpus builds are untouched, and the
+same directory is the only cause of the four apparent merge conflicts.
+Reconcile behaved correctly on files no Worker wrote; the contamination is the
+operator's and the exit code is not attributed to mitosis.
+
+**The conformance adapters were proven able to fail.** The JavaScript adapter
+reports 0 failures against the real package, 8 when `isValid` always returns
+true, and 7 when `compare` always returns 0. The first probe written for it
+reported 0 in all three cases, because an ES module cache keeps the original
+dependency loaded when only the entry point carries a cache-busting query;
+each variant now runs in a fresh process.
