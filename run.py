@@ -11,6 +11,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
 import core
+import shape
 
 BRANCH_PREFIX = "mitosis"
 
@@ -1094,6 +1095,20 @@ def _first_line(text):
     return stripped.splitlines()[0] if stripped else ""
 
 
+def _name_of(plan, index):
+    items = plan.get("items") or []
+    return items[index].get("name") if 0 <= index < len(items) else "a Step"
+
+
+def manifest_gaps(plan, msp):
+    owned = set(plan["msps"][msp]["steps"])
+    return [
+        gap
+        for gap in shape.manifest_gaps(plan.get("items") or [])
+        if gap["reached"] == 0 and _name_of(plan, gap["owner"]) in owned
+    ]
+
+
 def pull_request_title(plan, msp):
     label = _label(plan, msp)
     steps = plan["msps"][msp]["steps"]
@@ -1137,6 +1152,18 @@ def pull_request_body(plan, msp, base, acceptance_command, gate_result, findings
         undeclared = ", ".join(findings.get("undeclared") or []) or "none"
         unwritten = ", ".join(findings.get("unwritten") or []) or "none"
         lines = lines + ["Reconcile: undeclared %s; unwritten %s" % (undeclared, unwritten)]
+        for entry in findings.get("crossing") or []:
+            lines = lines + [
+                "This branch writes %s, which MSP %s owns and its pull request also changes. "
+                "Merging both as they stand overwrites one with the other."
+                % (entry["path"], entry["label"])
+            ]
+    for gap in manifest_gaps(plan, msp):
+        lines = lines + [
+            "%s would ship with nothing exported: %s owns it and is built before all %d Steps "
+            "whose modules it should export."
+            % (gap["manifest"], _name_of(plan, gap["owner"]), gap["siblings"])
+        ]
     if exception:
         producers = ", ".join(_label(plan, p) for p in exception["producers"])
         lines = lines + [
@@ -1290,16 +1317,7 @@ def _reconcile_stage(plan, msp, tree, producers, trees, settings):
         settings["feature_branch"],
         tuple(trees[p]["branch"] for p in producers),
     )
-    if not findings["fatal"]:
-        return {"reconcile": findings}
-    crossed = ", ".join(
-        "%s belongs to MSP %s" % (entry["path"], entry["label"]) for entry in findings["crossing"]
-    )
-    return {
-        "reconcile": findings,
-        "state": MSP_BLOCKED,
-        "reason": "a write crossed an MSP boundary: " + crossed,
-    }
+    return {"reconcile": findings}
 
 
 def _ship_stage(plan, msp, tree, base, exception, record, settings):

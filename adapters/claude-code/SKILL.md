@@ -100,16 +100,14 @@ module missing because it was reverted means the behaviour does not exist,
 which is the property failing and exit 1. Any other load error is still
 inconclusive. Catch the whole import family, not the missing-module case
 alone: importing a name out of a package that survives raises the general
-error, not the specific one, so a wrapper that catches only the specific one
-reports inconclusive on exactly the Steps it was written to judge. A wrapper that maps every load error to the same code either
-blocks honest work or passes work that proves nothing.
+error, so a wrapper catching only the specific one reports inconclusive on
+exactly the Steps it was written to judge.
 
 Whatever else writes into a worktree is yours to exclude. Editor state, build
 caches and hooks that fire on a spawned Worker all land in the tree, and the
 commit before the gate stages everything not ignored, so they arrive as
-undeclared writes against every MSP at once. Ignore them in the repository
-before the run. Reconcile will report them either way, and two MSPs that both
-picked up the same cache will conflict when a human merges them.
+undeclared writes against every MSP at once. Ignore them before the run: two
+MSPs that picked up the same cache will conflict when a human merges them.
 
 Three more things every run needs: `--feature-branch`, which must exist and is
 what every MSP branches from; `--timeout` in seconds, applied to every Worker,
@@ -228,12 +226,13 @@ document's sections no Step claimed; and the assumptions, each a reading
 chosen where the document was underdetermined, and a Step carrying one is
 never rated `simple`.
 
-Two findings stop the run, both with exit 3.
+No finding stops a run. Each one is printed, written into the pull request it
+belongs to, listed for the caller and given a distinct exit code.
 
 `manifest-exports-nothing` means the file that declares what a package exports
 is written by a Step built before the modules it must export, so it would ship
 empty and the package would have no public interface. Every test still passes
-when this happens, which is why a program has to catch it. Give that file to a
+when this happens, which is why a program has to say so. Give that file to a
 Step with an `after` edge reaching every Step whose modules it exports.
 
 `lane-cycle` means Lanes that waited on each other, so one Worker builds them
@@ -334,7 +333,10 @@ request decides what an unproven property is worth.
 
 Reconcile compares what the git log says changed against what the Steps
 declared. A write outside the declaration, or a declared path never written,
-is a finding, and a write into another MSP's files is fatal.
+is a finding. A write into a file another MSP owns is the serious one: both
+pull requests then change that file, so merging them as they stand overwrites
+one with the other. That sentence goes into the body of the pull request that
+made the write, and it sets the exit code.
 
 ## Reading the result
 

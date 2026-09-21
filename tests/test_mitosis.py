@@ -744,10 +744,13 @@ class ItemsEntryPointRefusals(unittest.TestCase):
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
         self.assertEqual(len(core.lane_items(self.GROUP_CYCLE)), 1)
 
-    def a_package_supplied_as_items_that_would_ship_empty_is_refused(self):
+    def a_package_supplied_as_items_that_would_ship_empty_is_planned_and_reported(self):
         code, out, err = self._run(self.EMPTY_MANIFEST)
-        self.assertEqual(code, mitosis.EXIT_REFUSED, out)
-        self.assertIn("would ship empty", err + out)
+        self.assertEqual(code, mitosis.EXIT_MANIFEST, err + out)
+        self.assertIn("manifest-exports-nothing", out)
+        found = json.loads(out.splitlines()[-1])
+        self.assertEqual(found["exit"], mitosis.EXIT_MANIFEST)
+        self.assertIn("nothing exported", found["attention"][0])
 
     def a_sound_plan_supplied_as_items_still_ships(self):
         code, out, err = self._run(
@@ -923,6 +926,17 @@ class GateExit(unittest.TestCase):
             mitosis.exit_code(self._state(gate=None, gate_error="no runner"), self.PLAN), 21
         )
 
+    def a_shipped_msp_that_wrote_another_msps_file_exits_seven(self):
+        crossing = {"undeclared": ["b.txt"], "unwritten": [], "crossing": [{"path": "b.txt", "label": "beta"}], "fatal": True}
+        state = self._state(gate={"outcome": "pass", "blocks": False}, reconcile=crossing)
+        self.assertEqual(mitosis.exit_code(state, self.PLAN), mitosis.EXIT_CROSSING)
+        self.assertIn("another MSP owns", mitosis.EXIT_MEANING[mitosis.EXIT_CROSSING])
+        undeclared = {"undeclared": ["stray.txt"], "unwritten": [], "crossing": [], "fatal": False}
+        self.assertEqual(
+            mitosis.exit_code(self._state(gate={"outcome": "pass", "blocks": False}, reconcile=undeclared), self.PLAN),
+            mitosis.EXIT_RECONCILE,
+        )
+
     def a_shipped_msp_whose_gate_passed_exits_zero(self):
         state = self._state(gate={"outcome": "pass", "counts": {}, "blocks": False})
         self.assertEqual(mitosis.exit_code(state, self.PLAN), mitosis.EXIT_SHIPPED)
@@ -1046,27 +1060,28 @@ class LaneCycleFusion(unittest.TestCase):
     ]
 
     def a_cycle_spanning_msps_is_planned_as_one_msp_and_never_refused(self):
-        self.assertIsNone(mitosis.refuse_empty_manifests(self.CYCLIC))
+        self.assertEqual(mitosis.manifest_lines(self.CYCLIC), ())
         self.assertEqual(mitosis.planned_code(self.CYCLIC), mitosis.EXIT_SHIPPED)
         self.assertEqual(len(core.msp_items(self.CYCLIC)), 1)
         self.assertEqual(len(core.lane_items(self.CYCLIC)), 1)
 
     def a_plan_without_a_cycle_keeps_its_msps_apart(self):
-        self.assertIsNone(mitosis.refuse_empty_manifests(self.CLEAN))
+        self.assertEqual(mitosis.manifest_lines(self.CLEAN), ())
         self.assertEqual(mitosis.planned_code(self.CLEAN), mitosis.EXIT_SHIPPED)
         self.assertEqual(len(core.msp_items(self.CLEAN)), 2)
 
-    def a_manifest_that_can_export_nothing_refuses(self):
+    def a_manifest_that_can_export_nothing_is_reported_not_refused(self):
         items = [
             {"name": "gregorian", "task": "t", "files": ["pkg/__init__.py", "pkg/g.py"],
              "source": None, "acceptance": []},
             {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None,
              "acceptance": [], "after": ["gregorian"]},
         ]
-        with self.assertRaises(mitosis.Refusal) as raised:
-            mitosis.refuse_empty_manifests(items)
-        self.assertIn("would ship empty", str(raised.exception))
-        self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_REFUSED)
+        reported = mitosis.manifest_lines(items)
+        self.assertEqual(len(reported), 1)
+        self.assertIn("pkg/__init__.py would ship with nothing exported", reported[0])
+        self.assertIn("gregorian owns it", reported[0])
+        self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_MANIFEST)
 
     def a_manifest_written_last_is_never_refused(self):
         items = [
@@ -1075,12 +1090,12 @@ class LaneCycleFusion(unittest.TestCase):
             {"name": "surface", "task": "t", "files": ["pkg/__init__.py"], "source": None,
              "acceptance": [], "after": ["parse"]},
         ]
-        self.assertIsNone(mitosis.refuse_empty_manifests(items))
+        self.assertEqual(mitosis.manifest_lines(items), ())
         self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_SHIPPED)
 
     def a_cycle_inside_one_msp_is_contracted_and_never_refused(self):
         items = [{**step, "msp": "m"} for step in self.CYCLIC]
-        self.assertIsNone(mitosis.refuse_empty_manifests(items))
+        self.assertEqual(mitosis.manifest_lines(items), ())
         self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_SHIPPED)
 
     def an_outcome_line_states_the_meaning_of_every_exit_code(self):

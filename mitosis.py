@@ -17,6 +17,10 @@ EXIT_INCOMPLETE = 4
 EXIT_NO_BRANCHES = 5
 EXIT_RECONCILE = 6
 
+EXIT_CROSSING = 7
+
+EXIT_MANIFEST = 23
+
 LANE_EXIT = {
     "ok": EXIT_SHIPPED,
     "failed": 10,
@@ -41,6 +45,8 @@ EXIT_MEANING = {
     EXIT_INCOMPLETE: "the run stopped before every Lane and MSP reached a terminal state",
     EXIT_NO_BRANCHES: "the run created no branches",
     EXIT_RECONCILE: "reconcile found a write outside the declaration or a declared path never written",
+    EXIT_CROSSING: "a pull request is open that writes files another MSP owns and also changes",
+    EXIT_MANIFEST: "a pull request is open with a package manifest that exports nothing",
     LANE_EXIT["failed"]: "a Lane failed",
     LANE_EXIT["blocked"]: "a Lane or MSP was blocked, by a predecessor or by a write across an "
     "MSP boundary",
@@ -664,7 +670,6 @@ def resolve_input(args, root, repo, models, charter, graph):
         )
         if args.plan_only:
             return staged(items, decomposed, run_dir, decisions, False)
-    refuse_empty_manifests(items)
     items = brief_structure(args, items, root, run_dir, models, charter, graph, decisions, document)
     run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
     return staged(items, decomposed, run_dir, decisions, True)
@@ -860,25 +865,18 @@ def empty_manifests(items):
 
 
 def planned_code(items):
-    return EXIT_REFUSED if empty_manifests(items) else EXIT_SHIPPED
+    return EXIT_MANIFEST if empty_manifests(items) else EXIT_SHIPPED
 
 
-def refuse_empty_manifests(items):
+def manifest_lines(items):
     gaps = empty_manifests(items)
     if not gaps:
-        return
-    raise Refusal(
-        "%s would ship empty: %s. A file that declares what a package exports must be written "
-        "by a Step that is built after every Step whose modules it exports, or there is nothing "
-        "to export when it runs"
-        % (
-            _n(len(gaps), "package manifest"),
-            "; ".join(
-                "%s owns %s and is built before all %d of them"
-                % (items[gap["owner"]].get("name"), gap["manifest"], gap["siblings"])
-                for gap in gaps
-            ),
-        )
+        return ()
+    return tuple(
+        "%s would ship with nothing exported: %s owns it and is built before all %d Steps whose "
+        "modules it should export"
+        % (gap["manifest"], items[gap["owner"]].get("name"), gap["siblings"])
+        for gap in gaps
     )
 
 
@@ -1126,8 +1124,12 @@ def exit_code(state, plan):
         flagged = gate_exit(record)
         if flagged is not None:
             return flagged
+        if (record.get("reconcile") or {}).get("crossing"):
+            return EXIT_CROSSING
         if reconcile_dirty(record.get("reconcile")):
             return EXIT_RECONCILE
+    if empty_manifests(plan.get("items") or []):
+        return EXIT_MANIFEST
     return EXIT_SHIPPED if run.succeeded(state) else EXIT_INCOMPLETE
 
 
@@ -1269,8 +1271,13 @@ def summary(plan, state, run_dir, code):
         "meaning": EXIT_MEANING.get(code, "not shipped"),
         "lanes": lanes,
         "msps": msps,
-        "attention": _attention(lanes, msps),
+        "attention": _attention(lanes, msps) + list(manifest_lines((plan or {}).get("items") or [])),
     }
+
+
+def _summarised(plan, state, run_dir, code):
+    _print((json.dumps(summary(plan, state, run_dir, code), separators=(",", ":")),))
+    return code
 
 
 def report(plan, state, decomposed, root, run_dir, code, from_items, decisions=None, items=None):
@@ -1358,8 +1365,7 @@ def run_pipeline(args):
                 decisions, items,
             )
         )
-        refuse_empty_manifests(items)
-        return EXIT_SHIPPED
+        return _summarised({"items": items}, None, run_dir, planned_code(items))
     plan = build_plan(args, items, root, charter, graph)
     if args.plan_only:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
@@ -1367,9 +1373,7 @@ def run_pipeline(args):
         _print(
             report(plan, None, decomposed, root, run_dir, planned_code(items), from_items, decisions)
         )
-        refuse_empty_manifests(items)
-        return EXIT_SHIPPED
-    refuse_empty_manifests(items)
+        return _summarised(plan, None, run_dir, planned_code(items))
     refuse_run(args, plan, models, run_dir, repo)
     run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
     if plan.get("msps"):
@@ -1383,8 +1387,7 @@ def run_pipeline(args):
     _print(report(plan, state, decomposed, root, run_dir, code, from_items, decisions))
     if failure is not None:
         _print(("the run stopped: %s" % failure,), sys.stderr)
-    _print((json.dumps(summary(plan, state, run_dir, code), separators=(",", ":")),))
-    return code
+    return _summarised(plan, state, run_dir, code)
 
 
 def main(argv=None):

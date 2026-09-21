@@ -1116,11 +1116,13 @@ class Reconcile(RepoCase):
         self.assertEqual(findings["crossing"][0]["label"], "beta")
         self.assertEqual(findings["undeclared"], ["b.txt"])
         shutil.rmtree(self.run_dir, ignore_errors=True)
+        self.add_remote()
         state = self.execute(plan, mode="cross", pr=self.pr_command())
         self.assertTrue(state["msps"]["0"]["reconcile"]["fatal"])
-        self.assertNotEqual(state["msps"]["0"]["state"], "shipped")
-        self.assertIn("b.txt", state["msps"]["0"]["reason"])
-        self.assertNotIn(trees[0]["branch"], [pr[0] for pr in self.pull_requests()])
+        self.assertEqual(state["msps"]["0"]["state"], "shipped")
+        opened = {pr[0]: pr[3] for pr in self.pull_requests()}
+        self.assertIn(trees[0]["branch"], opened)
+        self.assertIn("writes b.txt, which MSP beta owns", opened[trees[0]["branch"]])
 
     def reconcile_ignores_the_worker_self_report(self):
         plan = core.plan([step("a", ["a.txt", "never.txt"])])
