@@ -1,6 +1,8 @@
+import ast
 import os
 import re
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -64,19 +66,32 @@ VOCABULARY_WORDS = frozenset(
     + _public_callables(core, shape, briefs, decompose, mitosis)
 )
 
-def _local_imports(module):
-    with open(os.path.join(ROOT, module + ".py"), encoding="utf-8") as handle:
-        imported = re.findall(r"^import (\w+)$", handle.read(), re.M)
-    return tuple(name for name in imported if os.path.isfile(os.path.join(ROOT, name + ".py")))
+def _local_imports(module, root=ROOT):
+    with open(os.path.join(root, module + ".py"), encoding="utf-8") as handle:
+        tree = ast.parse(handle.read())
+    imported = {
+        alias.name.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    } | {
+        node.module.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module and node.level == 0
+    }
+    return tuple(sorted(name for name in imported if os.path.isfile(os.path.join(root, name + ".py"))))
 
 
-def _local_closure(start):
+def _local_closure(start, root=ROOT):
     reached = frozenset((start,))
     frontier = (start,)
     while frontier:
         fresh = tuple(
             dict.fromkeys(
-                name for module in frontier for name in _local_imports(module) if name not in reached
+                name
+                for module in frontier
+                for name in _local_imports(module, root)
+                if name not in reached
             )
         )
         reached = reached | frozenset(fresh)
@@ -186,10 +201,30 @@ class Docs(unittest.TestCase):
         self.assertEqual(sorted(named - declared), [])
 
     def the_install_section_names_every_module_the_cli_imports(self):
-        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as handle:
+        readme = os.path.join(ROOT, "README.md")
+        if not os.path.isfile(readme):
+            self.skipTest("README.md is not part of an installed copy")
+        with open(readme, encoding="utf-8") as handle:
             install = handle.read().split("## Install", 1)[1].split("\n## ", 1)[0]
         named = set(re.findall(r"`([a-z_]+\.py)`", install))
         self.assertEqual(sorted(named), sorted(_local_closure("mitosis")))
+
+    def the_import_closure_follows_every_import_form(self):
+        with tempfile.TemporaryDirectory() as root:
+            for name, text in (
+                ("main", "from alpha import thing\nif True:\n    import beta\nimport gamma, os\n"),
+                ("alpha", "import delta.sub\n"),
+                ("beta", ""),
+                ("gamma", ""),
+                ("delta", ""),
+                ("unused", ""),
+            ):
+                with open(os.path.join(root, name + ".py"), "w", encoding="utf-8") as handle:
+                    handle.write(text)
+            self.assertEqual(
+                _local_closure("main", root),
+                frozenset(("main.py", "alpha.py", "beta.py", "gamma.py", "delta.py")),
+            )
 
     def the_skill_file_is_within_its_size_cap(self):
         path = os.path.join(ROOT, "adapters", "claude-code", "SKILL.md")
