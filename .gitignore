@@ -2,8 +2,6 @@ docs/specs/
 
 graphify-out/
 
-.fanout/
-
 __pycache__/
 *.py[cod]
 .pytest_cache/

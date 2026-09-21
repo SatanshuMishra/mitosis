@@ -232,7 +232,7 @@ class Findings(unittest.TestCase):
         ]
         self.assertEqual(of_kind(shape.findings(items), "group-is-a-chain"), [])
 
-    def a_fan_out_contract_group_is_not_reported(self):
+    def a_contract_group_with_many_consumers_is_not_reported(self):
         items = [
             step("iface", ["iface.py"], type="contract", contract_group="g"),
             step("server", ["server.py"], contract_group="g", after=["iface"]),
