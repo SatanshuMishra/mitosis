@@ -1,4 +1,6 @@
 import argparse
+import itertools
+import json
 import os
 import sys
 from datetime import datetime
@@ -16,6 +18,12 @@ EXIT_INCOMPLETE = 4
 EXIT_NO_BRANCHES = 5
 EXIT_RECONCILE = 6
 
+EXIT_CROSSING = 7
+
+EXIT_FOREIGN = 8
+
+EXIT_MANIFEST = 23
+
 LANE_EXIT = {
     "ok": EXIT_SHIPPED,
     "failed": 10,
@@ -25,24 +33,32 @@ LANE_EXIT = {
 
 MSP_EXIT = {
     "shipped": EXIT_SHIPPED,
+    run.MSP_UNCHANGED: EXIT_SHIPPED,
+    run.MSP_COMMITTED: EXIT_SHIPPED,
     run.MSP_BLOCKED: 11,
-    "gate-failed": 20,
-    "gate-inconclusive": 21,
     "ship-failed": 22,
 }
 
+GATE_EXIT = {"gate-failed": 20, "gate-inconclusive": 21}
+
 EXIT_MEANING = {
-    EXIT_SHIPPED: "every MSP shipped and reconcile found nothing",
+    EXIT_SHIPPED: "every MSP reached shipped, unchanged or committed, and reconcile found nothing",
     EXIT_USAGE: "the flags did not parse",
     EXIT_REFUSED: "refused to start",
     EXIT_INCOMPLETE: "the run stopped before every Lane and MSP reached a terminal state",
     EXIT_NO_BRANCHES: "the run created no branches",
     EXIT_RECONCILE: "reconcile found a write outside the declaration or a declared path never written",
+    EXIT_CROSSING: "a pull request is open that writes files another MSP owns and also changes",
+    EXIT_FOREIGN: "a Lane changed a file another Lane of its MSP owns and had already committed",
+    EXIT_MANIFEST: "a pull request is open with a package manifest that exports nothing",
     LANE_EXIT["failed"]: "a Lane failed",
-    LANE_EXIT["blocked"]: "a Lane or MSP was blocked by a predecessor",
+    LANE_EXIT["blocked"]: "a Lane or MSP was blocked, by a predecessor or by a write across an "
+    "MSP boundary",
     LANE_EXIT["merge-blocked"]: "a producer branch would not merge",
-    MSP_EXIT["gate-failed"]: "a gate found an inert acceptance property",
-    MSP_EXIT["gate-inconclusive"]: "a gate could not reach a verdict",
+    GATE_EXIT["gate-failed"]: "a pull request is open with an acceptance property that proves "
+    "nothing: it passes with the implementation reverted",
+    GATE_EXIT["gate-inconclusive"]: "a pull request is open with an acceptance property the gate "
+    "could not judge",
     MSP_EXIT["ship-failed"]: "a commit, push or pull-request command failed",
 }
 
@@ -62,6 +78,8 @@ DECOMPOSE_LOG = "decompose.log"
 
 REMOTE = "origin"
 
+DEFAULT_CONCURRENCY = 4
+
 REPORT_SECTIONS = (
     "Coverage map",
     "Assumptions",
@@ -72,7 +90,7 @@ REPORT_SECTIONS = (
     "Split quality",
     "Gate outcomes",
     "Reconcile findings",
-    "Unreviewed coupling pairs",
+    "Coupling",
     "Stacking exceptions",
     "Outcome",
 )
@@ -195,6 +213,12 @@ FLAG_SPECS = {
         "help": "opens one draft pull request; placeholders %s; its last stdout line is recorded"
         % PLACEHOLDER_HELP["pull-request"],
     },
+    "--no-push": {
+        "action": "store_true",
+        "help": "commit, gate and reconcile every MSP on its local branch, then stop: nothing is "
+        "pushed and no pull request opens, so --pr-command is not needed; a later --resume "
+        "without this flag ships what was held",
+    },
     "--tier-model": {
         "metavar": "TIER=MODEL",
         "action": "append",
@@ -211,8 +235,9 @@ FLAG_SPECS = {
     "--concurrency": {
         "metavar": "N",
         "type": int,
-        "default": 1,
-        "help": "Workers running at once (default: 1)",
+        "default": DEFAULT_CONCURRENCY,
+        "help": "Workers running at once, for the brief stage and the build "
+        "(default: %d)" % DEFAULT_CONCURRENCY,
     },
     "--context-hops": {
         "metavar": "N",
@@ -223,11 +248,15 @@ FLAG_SPECS = {
     "--context-cap": {
         "metavar": "N",
         "type": int,
-        "help": "most graph neighbours kept per Step; the overflow is counted (default: no cap)",
+        "default": core.CONTEXT_CAP,
+        "help": "most graph neighbours kept per Step and per Lane; the overflow is counted "
+        "(default: %d)" % core.CONTEXT_CAP,
     },
     "--graph": {
         "metavar": "PATH",
-        "help": "a JSON object mapping each path to the paths it imports",
+        "help": "a JSON object mapping each path to the paths it imports, or a node-link "
+        "graph such as graphify's graph.json, read as that mapping from its links between "
+        "code in different files",
     },
     "--risk-markers": {
         "metavar": "MARKER",
@@ -359,13 +388,30 @@ def check_charter(charter):
     return absolute
 
 
-def load_graph(path):
+def load_graph(path, root):
     if path is None:
         return None
     graph = read_json(path, "--graph")
-    if not isinstance(graph, dict):
-        raise Refusal("--graph %s must be a JSON object mapping each path to its neighbours" % path)
-    return graph
+    nodes = graph.get("nodes") if isinstance(graph, dict) else None
+    if isinstance(nodes, list) and any(isinstance(node, dict) for node in nodes):
+        if core.node_link_edges(graph) is None:
+            raise Refusal(
+                "--graph %s has a list of nodes but no links or edges list, so it cannot say "
+                "which files are linked" % path
+            )
+    if core.node_link_edges(graph) is not None:
+        if not any(core.node_files(graph, root).values()):
+            raise Refusal(
+                "--graph %s is a node-link graph, but none of its code nodes names a "
+                "source_file under %s, so it cannot say which files are linked" % (path, root)
+            )
+        return core.adjacency_from_node_links(graph, root)
+    if not core.is_adjacency(graph):
+        raise Refusal(
+            "--graph %s is neither a JSON object mapping each path to a list of the paths it "
+            "imports nor a node-link graph with nodes and links" % path
+        )
+    return core.clean_adjacency(graph)
 
 
 def unoffered_placeholders(name, template):
@@ -630,7 +676,6 @@ def resolve_input(args, root, repo, models, charter, graph):
         )
         if args.plan_only:
             return staged(items, decomposed, run_dir, decisions, False)
-    refuse_lane_cycles(items)
     items = brief_structure(args, items, root, run_dir, models, charter, graph, decisions, document)
     run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
     return staged(items, decomposed, run_dir, decisions, True)
@@ -656,12 +701,20 @@ def build_plan(args, items, root, charter, graph):
 
 
 def missing_run_flags(args):
-    return tuple(flag for flag, attribute in RUN_FLAGS if getattr(args, attribute) is None)
+    return tuple(
+        flag
+        for flag, attribute in RUN_FLAGS
+        if getattr(args, attribute) is None and not (args.no_push and attribute == "pr_command")
+    )
 
 
 def refuse_unbuildable(args, repo):
     if repo is None:
         raise Refusal("the working directory is not inside a git repository")
+    if args.no_push and args.pr_command is not None:
+        raise Refusal(
+            "--no-push opens no pull request, so --pr-command would never run; pass one of them"
+        )
     missing = missing_run_flags(args)
     if missing:
         raise Refusal("a run needs %s; pass --plan-only to stop at the plan" % ", ".join(missing))
@@ -813,48 +866,23 @@ def shape_lines(items):
     ) + (scalar_text(shape.scalars(items)),)
 
 
-def lane_cycle_findings(items):
-    return [finding for finding in shape.findings(items) if finding["kind"] == "lane-cycle"]
-
-
 def empty_manifests(items):
     return [gap for gap in shape.manifest_gaps(items) if gap["reached"] == 0]
 
 
 def planned_code(items):
-    blocked = lane_cycle_findings(items) or empty_manifests(items)
-    return EXIT_REFUSED if blocked else EXIT_SHIPPED
+    return EXIT_MANIFEST if empty_manifests(items) else EXIT_SHIPPED
 
 
-def refuse_empty_manifests(items):
+def manifest_lines(items):
     gaps = empty_manifests(items)
     if not gaps:
-        return
-    raise Refusal(
-        "%s would ship empty: %s. A file that declares what a package exports must be written "
-        "by a Step that is built after every Step whose modules it exports, or there is nothing "
-        "to export when it runs"
-        % (
-            _n(len(gaps), "package manifest"),
-            "; ".join(
-                "%s owns %s and is built before all %d of them"
-                % (items[gap["owner"]].get("name"), gap["manifest"], gap["siblings"])
-                for gap in gaps
-            ),
-        )
-    )
-
-
-def refuse_lane_cycles(items):
-    refuse_empty_manifests(items)
-    cycles = lane_cycle_findings(items)
-    if not cycles:
-        return
-    raise Refusal(
-        "%s spans more than one MSP, so their pull requests would each have to merge before "
-        "the other: %s. Two Steps that share a file are built by one Worker in one sitting, so "
-        "no Step outside that pair may sit between them in the after order"
-        % (_n(len(cycles), "Lane cycle"), "; ".join(entry["detail"] for entry in cycles))
+        return ()
+    return tuple(
+        "%s would ship with nothing exported: %s owns it and is built before all %d Steps whose "
+        "modules it should export"
+        % (gap["manifest"], items[gap["owner"]].get("name"), gap["siblings"])
+        for gap in gaps
     )
 
 
@@ -1013,21 +1041,24 @@ def reconcile_lines(plan, state):
 def coupling_lines(plan, state):
     if plan is None:
         return (NO_PLAN,)
+    ordered = plan.get("coupling_order") or []
     pairs = plan.get("coupling_review") or []
-    if not pairs:
+    if not ordered and not pairs:
         return ("none: no write-set-disjoint pair in different Lanes shares a coupling signal",)
-    verb = "ran" if state is not None else "will run"
-    lines = (
-        "%s share a signal and carry no checkpoint verdict; they %s unreviewed"
-        % (_n(len(pairs), "pair"), verb),
-    )
-    return lines + tuple(
-        "%s and %s (Lanes %s): %s"
+    verb = "ran" if state is not None else "run"
+    return tuple(
+        "%s then %s: put in order because of %s"
+        % (entry["first"], entry["then"], ", ".join(entry["signals"]))
+        for entry in ordered
+    ) + tuple(
+        "%s and %s (Lanes %s) %s in parallel with only %s between them; add an after edge if "
+        "one needs the other's output"
         % (
             pair["steps"][0],
             pair["steps"][1],
             ", ".join(str(lane) for lane in pair.get("lanes") or []),
-            ", ".join(pair.get("signals") or []),
+            verb,
+            " and ".join(pair.get("signals") or []),
         )
         for pair in pairs
     )
@@ -1071,6 +1102,13 @@ def reconcile_dirty(findings):
     )
 
 
+def gate_exit(record):
+    if record.get("gate_error"):
+        return GATE_EXIT["gate-inconclusive"]
+    flag = run.gate_state(record.get("gate") or {})
+    return GATE_EXIT.get(flag)
+
+
 def exit_code(state, plan):
     lanes = plan.get("lanes") or []
     msps = plan.get("msps") or []
@@ -1092,8 +1130,17 @@ def exit_code(state, plan):
         code = MSP_EXIT.get(record.get("state"), EXIT_INCOMPLETE)
         if code != EXIT_SHIPPED:
             return code
+        flagged = gate_exit(record)
+        if flagged is not None:
+            return flagged
+        if (record.get("reconcile") or {}).get("crossing"):
+            return EXIT_CROSSING
+        if run.msp_foreign_writes(plan, index, lane_records):
+            return EXIT_FOREIGN
         if reconcile_dirty(record.get("reconcile")):
             return EXIT_RECONCILE
+    if empty_manifests(plan.get("items") or []):
+        return EXIT_MANIFEST
     return EXIT_SHIPPED if run.succeeded(state) else EXIT_INCOMPLETE
 
 
@@ -1148,6 +1195,145 @@ def outline(items):
     return {"items": items, "source": first.get("source")}
 
 
+def _lane_summary(plan, state):
+    records = (state or {}).get("lanes") or {}
+    return [
+        {
+            "lane": index,
+            "msp": _label(plan, lane["msp"]),
+            "steps": list(lane.get("steps") or ()),
+            "state": (records.get(str(index)) or {}).get("state"),
+            "reason": _one_line((records.get(str(index)) or {}).get("reason")),
+            "notes": ((records.get(str(index)) or {}).get("returned") or {}).get("notes"),
+            "foreign_writes": list((records.get(str(index)) or {}).get("foreign_writes") or ()),
+            "stdout": (records.get(str(index)) or {}).get("stdout"),
+            "stderr": (records.get(str(index)) or {}).get("stderr"),
+        }
+        for index, lane in enumerate(plan.get("lanes") or [])
+    ]
+
+
+def _msp_summary(plan, state):
+    records = (state or {}).get("msps") or {}
+    summaries = []
+    for index in range(len(plan.get("msps") or [])):
+        record = records.get(str(index)) or {}
+        shipped = record.get("ship") or {}
+        gate = record.get("gate") or {}
+        findings = record.get("reconcile") or {}
+        summaries.append(
+            {
+                "msp": _label(plan, index),
+                "state": record.get("state"),
+                "reason": _one_line(record.get("reason")),
+                "branch": shipped.get("branch"),
+                "base": shipped.get("base"),
+                "pull_request": shipped.get("pull_request") or None,
+                "gate": {
+                    "outcome": gate.get("outcome"),
+                    "counts": gate.get("counts") or {},
+                    "error": record.get("gate_error"),
+                    "unproven": [
+                        "%s::%s %s" % (entry.get("file"), entry.get("test"), entry.get("outcome"))
+                        for entry in gate.get("properties") or []
+                        if entry.get("outcome") in ("inert", "inconclusive")
+                    ],
+                },
+                "reconcile": {
+                    key: list(findings.get(key) or ())
+                    for key in ("undeclared", "unwritten", "untouched")
+                },
+                "crossing": [entry.get("path") for entry in findings.get("crossing") or ()],
+            }
+        )
+    return summaries
+
+
+def _attention(plan, lanes, msps):
+    lines = [
+        "Lane %d (%s) is %s: %s"
+        % (lane["lane"], ", ".join(lane["steps"]), lane["state"], lane["reason"] or "")
+        for lane in lanes
+        if lane["state"] not in ("ok", None)
+    ] + [
+        run.foreign_sentence(plan, entry)
+        for entry in run.unique_foreign(
+            [{**entry, "lane": lane["lane"]} for lane in lanes for entry in lane["foreign_writes"]]
+        )
+    ]
+    for msp in msps:
+        if msp["state"] not in ("shipped", run.MSP_UNCHANGED, run.MSP_COMMITTED, None):
+            lines.append("MSP %s is %s: %s" % (msp["msp"], msp["state"], msp["reason"] or ""))
+        if msp["gate"]["unproven"]:
+            lines.append(
+                "MSP %s shipped with unproven acceptance: %s"
+                % (msp["msp"], ", ".join(msp["gate"]["unproven"]))
+            )
+        if msp["gate"]["error"]:
+            lines.append("MSP %s could not be gated: %s" % (msp["msp"], msp["gate"]["error"]))
+        if msp["crossing"]:
+            lines.append(
+                "MSP %s wrote files another MSP owns: %s" % (msp["msp"], ", ".join(msp["crossing"]))
+            )
+    return lines
+
+
+COUPLING_NAMED = 8
+
+
+def _coupling_summary(plan):
+    return {
+        "ordered": [dict(entry) for entry in plan.get("coupling_order") or []],
+        "parallel": [
+            {"steps": list(pair["steps"]), "signals": list(pair["signals"])}
+            for pair in plan.get("coupling_review") or []
+            if pair.get("default") == "parallel"
+        ],
+    }
+
+
+def _coupling_attention(coupling):
+    keyed = sorted((tuple(pair["signals"]), "+".join(pair["steps"])) for pair in coupling["parallel"])
+    return [
+        "%s run in parallel with only %s between them: %s%s; add an after edge where one needs "
+        "the other's output"
+        % (
+            _n(len(names), "pair") + " of Steps",
+            " and ".join(signals),
+            ", ".join(names[:COUPLING_NAMED]),
+            " and %d more" % (len(names) - COUPLING_NAMED) if len(names) > COUPLING_NAMED else "",
+        )
+        for signals, names in (
+            (signals, [name for _, name in group])
+            for signals, group in itertools.groupby(keyed, key=lambda entry: entry[0])
+        )
+    ]
+
+
+def summary(plan, state, run_dir, code):
+    lanes = _lane_summary(plan or {}, state)
+    msps = _msp_summary(plan or {}, state)
+    coupling = _coupling_summary(plan or {})
+    return {
+        "version": core.__version__,
+        "plan_id": (plan or {}).get("plan_id"),
+        "run_dir": run_dir,
+        "exit": code,
+        "meaning": EXIT_MEANING.get(code, "not shipped"),
+        "lanes": lanes,
+        "msps": msps,
+        "coupling": coupling,
+        "attention": _attention(plan or {}, lanes, msps)
+        + list(manifest_lines((plan or {}).get("items") or []))
+        + _coupling_attention(coupling),
+    }
+
+
+def _summarised(plan, state, run_dir, code):
+    _print((json.dumps(summary(plan, state, run_dir, code), separators=(",", ":")),))
+    return code
+
+
 def report(plan, state, decomposed, root, run_dir, code, from_items, decisions=None, items=None):
     steps = plan if plan is not None else outline(items or [])
     sections = (
@@ -1186,6 +1372,7 @@ def execute(args, plan, models, run_dir, repo, root):
             resume=args.resume,
             root=root,
             remote=REMOTE,
+            no_push=args.no_push,
         ), None
     except (run.ConfigError, run.ResumeError) as error:
         raise Refusal(str(error))
@@ -1216,7 +1403,7 @@ def run_pipeline(args):
     models = tier_models(args.tier_model)
     check_templates(args)
     charter = check_charter(args.charter)
-    graph = load_graph(args.graph)
+    graph = load_graph(args.graph, root)
     resolved = resolve_input(args, root, repo, models, charter, graph)
     items, decomposed, run_dir, decisions = (
         resolved["items"],
@@ -1232,8 +1419,7 @@ def run_pipeline(args):
                 decisions, items,
             )
         )
-        refuse_lane_cycles(items)
-        return EXIT_SHIPPED
+        return _summarised({"items": items}, None, run_dir, planned_code(items))
     plan = build_plan(args, items, root, charter, graph)
     if args.plan_only:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
@@ -1241,9 +1427,7 @@ def run_pipeline(args):
         _print(
             report(plan, None, decomposed, root, run_dir, planned_code(items), from_items, decisions)
         )
-        refuse_lane_cycles(items)
-        return EXIT_SHIPPED
-    refuse_lane_cycles(items)
+        return _summarised(plan, None, run_dir, planned_code(items))
     refuse_run(args, plan, models, run_dir, repo)
     run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
     if plan.get("msps"):
@@ -1257,7 +1441,7 @@ def run_pipeline(args):
     _print(report(plan, state, decomposed, root, run_dir, code, from_items, decisions))
     if failure is not None:
         _print(("the run stopped: %s" % failure,), sys.stderr)
-    return code
+    return _summarised(plan, state, run_dir, code)
 
 
 def main(argv=None):

@@ -6,10 +6,12 @@ import shlex
 import shutil
 import signal
 import subprocess
+import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
 import core
+import shape
 
 BRANCH_PREFIX = "mitosis"
 
@@ -20,6 +22,22 @@ PLAN_FILE = "plan.json"
 STATE_FILE = "state.json"
 
 MSP_BLOCKED = "blocked"
+
+LANE_COMMIT_FAILED = "the Lane's commit failed"
+
+LANE_HELD = "held"
+
+LOCK_MARKERS = (".lock': File exists", "Another git process seems to be running")
+
+LOCK_PATH = re.compile(r"[\\/]\.git[\\/][^\s'\"]*\.lock\b")
+
+LOCK_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.6, 3.2)
+
+MSP_UNCHANGED = "unchanged"
+
+MSP_COMMITTED = "committed"
+
+PUBLISHED_STATES = ("shipped", MSP_UNCHANGED)
 
 ACCEPTANCE_FAILURE_EXIT = 1
 
@@ -64,10 +82,27 @@ class ShipError(RuntimeError):
     pass
 
 
-def git_run(args, cwd):
+def _git_once(args, cwd):
     return subprocess.run(
         ["git", *args], cwd=cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL
     )
+
+
+def _locked(completed):
+    stderr = completed.stderr or ""
+    return completed.returncode != 0 and (
+        any(marker in stderr for marker in LOCK_MARKERS) or bool(LOCK_PATH.search(stderr))
+    )
+
+
+def git_run(args, cwd):
+    completed = _git_once(args, cwd)
+    for delay in LOCK_RETRY_DELAYS:
+        if not _locked(completed):
+            return completed
+        time.sleep(delay)
+        completed = _git_once(args, cwd)
+    return completed
 
 
 def git(args, cwd, check=True):
@@ -333,7 +368,10 @@ def merge_producers(tree, consumer_branch, producers, base):
                 "producer branch %s is missing and its commits are not reachable from %s"
                 % (producer["branch"], base)
             )
-        result = git_run(["merge", "--no-edit", target], tree)
+        result = git_run(
+            ["-c", "core.hooksPath=" + os.devnull, "merge", "--no-edit", "--no-verify", target],
+            tree,
+        )
         if result.returncode != 0:
             git_run(["merge", "--abort"], tree)
             detail = (result.stderr.strip() or result.stdout.strip()).splitlines()
@@ -404,18 +442,49 @@ def _worker_values(plan, lane, tree, models, run_dir):
     }
 
 
-def _finish(plan, lane, tree, started, merged, out, err, code, timed_out):
-    returned = last_return(out)
-    state, reason = lane_verdict(code, returned, timed_out)
-    commit = None
-    if state == "ok":
-        steps = plan["lanes"][lane]["steps"]
+def _landing_message(plan, lane, tree):
+    return "chore(%s): land Lane %d (%s)" % (
+        tree.get("label") or tree["msp"],
+        lane,
+        ", ".join(plan["lanes"][lane]["steps"]),
+    )
+
+
+def check_identity(repo):
+    for ident in ("GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"):
+        found = git_run(["var", ident], repo)
+        if found.returncode != 0:
+            raise ConfigError(
+                "git has no commit identity in %s, so no Lane could land: %s"
+                % (repo, (found.stderr or "").strip() or "git var %s failed" % ident)
+            )
+
+
+def _still_written(plan, lane, tree):
+    write_set = plan["briefs"][lane]["write_set"]
+    return bool(write_set) and bool(
+        git_run(["status", "--porcelain", "--", *write_set], tree["path"]).stdout.strip()
+    )
+
+
+def _land(plan, lane, tree):
+    try:
         commit = commit_paths(
             tree["path"],
             plan["briefs"][lane]["write_set"],
-            "chore(%s): land Lane %d (%s)"
-            % (tree.get("label") or tree["msp"], lane, ", ".join(steps)),
+            _landing_message(plan, lane, tree),
         )
+    except GitError as error:
+        write_set = plan["briefs"][lane]["write_set"]
+        if write_set:
+            git_run(["reset", "-q", "--", *write_set], tree["path"])
+        return None, "%s: %s" % (LANE_COMMIT_FAILED, error)
+    return commit, None
+
+
+def _verdict(lane, tree, started, merged, out, err, code, timed_out):
+    returned = last_return(out)
+    state, reason = lane_verdict(code, returned, timed_out)
     return lane_record(
         lane,
         tree["msp"],
@@ -427,10 +496,63 @@ def _finish(plan, lane, tree, started, merged, out, err, code, timed_out):
         stdout=out,
         stderr=err,
         merged=merged,
-        commit=commit,
+        commit=None,
         started=started,
         finished=now(),
     )
+
+
+def _dirty_paths(tree):
+    entries = git_run(
+        ["status", "--porcelain", "-z", "--untracked-files=all"], tree["path"]
+    ).stdout.split("\0")
+    found = ()
+    skip = False
+    for entry in entries:
+        if skip:
+            skip = False
+            continue
+        if len(entry) > 3:
+            found = found + (entry[3:],)
+            skip = entry[0] in "RC"
+    return found
+
+
+def _foreign_writes(plan, msp, tree, batch, records):
+    owners = {
+        _norm(path): index
+        for index, record in records.items()
+        if record.get("state") == "ok" and plan["lanes"][index]["msp"] == msp and index not in batch
+        for path in plan["briefs"][index]["write_set"]
+    }
+    touched = sorted(path for path in _dirty_paths(tree) if _norm(path) in owners)
+    if touched:
+        try:
+            commit_paths(
+                tree["path"],
+                touched,
+                "chore(%s): keep changes to files other Lanes own (%s)"
+                % (tree.get("label") or tree["msp"], ", ".join(touched)),
+            )
+        except GitError:
+            pass
+    return [{"path": path, "owner": owners[_norm(path)]} for path in touched]
+
+
+def _suspects(batch, held, path):
+    claimants = [
+        lane
+        for lane in batch
+        if path in (((held[lane].get("returned") or {}).get("files_changed")) or [])
+    ]
+    return claimants or list(batch)
+
+
+def _landed(plan, lane, tree, record):
+    commit, reason = _land(plan, lane, tree)
+    if reason is not None:
+        return {**record, "state": "failed", "reason": reason}
+    return {**record, "commit": commit}
 
 
 def dispatch(
@@ -458,9 +580,16 @@ def dispatch(
         for index, record in (prior or {}).items()
         if isinstance(record, dict) and record.get("state") == "ok"
     }
+    held = {
+        int(index): {**record, "state": "ok"}
+        for index, record in (prior or {}).items()
+        if isinstance(record, dict)
+        and record.get("state") == LANE_HELD
+        and _still_written(plan, int(index), tree_of[lanes[int(index)]["msp"]])
+    }
     ordered = [int(i) for i in plan.get("lane_order") or range(len(lanes))]
     every = ordered + [i for i in range(len(lanes)) if i not in ordered]
-    pending = [i for i in every if i not in records]
+    pending = [i for i in every if i not in records and i not in held]
     running = {}
     cap = max(1, int(concurrency))
 
@@ -470,15 +599,37 @@ def dispatch(
         return {**known, lane: record}
 
     with ThreadPoolExecutor(max_workers=cap) as pool:
-        while pending or running:
+        while pending or running or held:
             progressed = False
+            busy = {lanes[entry[0]]["msp"] for entry in running.values()}
+            for msp in sorted({lanes[lane]["msp"] for lane in held} - busy):
+                batch = [lane for lane in held if lanes[lane]["msp"] == msp]
+                landed = {lane: _landed(plan, lane, tree_of[msp], held[lane]) for lane in batch}
+                foreign = _foreign_writes(plan, msp, tree_of[msp], batch, records)
+                for lane in batch:
+                    records = settle(
+                        records,
+                        lane,
+                        {
+                            **landed[lane],
+                            "foreign_writes": [
+                                {**entry, "suspects": suspects}
+                                for entry in foreign
+                                for suspects in (_suspects(batch, held, entry["path"]),)
+                                if lane in suspects
+                            ],
+                        },
+                    )
+                held = {key: value for key, value in held.items() if key not in batch}
+                progressed = True
             waiting = ()
+            holding = {lanes[lane]["msp"] for lane in held}
             for lane in pending:
                 msp = lanes[lane]["msp"]
                 producers = edges.get(lane, ())
                 unfinished = [p for p in producers if p not in records]
                 if unfinished:
-                    active = {entry[0] for entry in running.values()}
+                    active = {entry[0] for entry in running.values()} | set(held)
                     live = [p for p in unfinished if p in pending or p in active]
                     if live:
                         waiting = waiting + (lane,)
@@ -495,7 +646,7 @@ def dispatch(
                     )
                     progressed = True
                     continue
-                if len(running) >= cap:
+                if len(running) >= cap or msp in holding:
                     waiting = waiting + (lane,)
                     continue
                 bad = [p for p in producers if records[p].get("state") != "ok"]
@@ -538,9 +689,14 @@ def dispatch(
                     running = {f: v for f, v in running.items() if f is not future}
                     code, timed_out = future.result()
                     tree = tree_of[lanes[lane]["msp"]]
-                    finished = _finish(plan, lane, tree, started, merged, out, err, code, timed_out)
-                    records = settle(records, lane, finished)
-            elif pending and not progressed:
+                    judged = _verdict(lane, tree, started, merged, out, err, code, timed_out)
+                    if judged["state"] == "ok":
+                        held = {**held, lane: judged}
+                        if on_lane is not None:
+                            on_lane(lane, {**judged, "state": LANE_HELD})
+                    else:
+                        records = settle(records, lane, judged)
+            elif pending and not progressed and not held:
                 for lane in pending:
                     records = settle(
                         records,
@@ -787,9 +943,9 @@ def gate_outcome(properties):
 
 
 def gate_state(result):
-    if result["outcome"] == "inert":
+    if result.get("outcome") == "inert":
         return "gate-failed"
-    if result["outcome"] == "inconclusive":
+    if result.get("outcome") == "inconclusive":
         return "gate-inconclusive"
     return None
 
@@ -930,33 +1086,88 @@ def reconcile(plan, msp, tree, branch, base, producer_branches=()):
     }
 
 
-def pr_base(plan, msp, feature_branch, trees, repo):
-    producers = msp_producers(plan).get(msp, ())
-    if len(producers) > 1:
+def _stack_target(producer, trees, settled):
+    owners = {tree["branch"]: index for index, tree in enumerate(trees)}
+    seen = frozenset()
+    current = producer
+    while current not in seen:
+        record = (settled or {}).get(str(current)) or {}
+        if record.get("state") != MSP_UNCHANGED:
+            return trees[current]["branch"]
+        base = (record.get("ship") or {}).get("base")
+        if base not in owners:
+            return base
+        seen = seen | {current}
+        current = owners[base]
+    return None
+
+
+def pr_base(plan, msp, feature_branch, trees, repo, settled=None):
+    targets = {
+        producer: _stack_target(producer, trees, settled)
+        for producer in msp_producers(plan).get(msp, ())
+    }
+    stacked = [p for p, target in targets.items() if target not in (None, feature_branch)]
+    distinct = tuple(dict.fromkeys(targets[p] for p in stacked))
+    if len(distinct) > 1:
         return feature_branch, {
             "msp": msp,
             "label": _label(plan, msp),
-            "producers": list(producers),
+            "producers": stacked,
             "reason": "a pull request can stack on one predecessor; this MSP has %d"
-            % len(producers),
+            % len(stacked),
         }
-    if len(producers) == 1 and branch_exists(repo, trees[producers[0]]["branch"]):
-        return trees[producers[0]]["branch"], None
+    if distinct and branch_exists(repo, distinct[0]):
+        return distinct[0], None
     return feature_branch, None
 
 
-def _property_lines(plan, msp):
+def _judged(gate_result):
+    return {
+        (entry.get("file"), entry.get("test")): entry
+        for entry in (gate_result or {}).get("properties") or []
+    }
+
+
+def _property_lines(plan, msp, gate_result=None):
     steps = _steps_by_name(plan)
+    judged = _judged(gate_result)
     lines = ()
     for name in plan["msps"][msp]["steps"]:
         for entry in steps[name].get("acceptance") or []:
-            lines = lines + ("- %s::%s (%s)" % (entry["file"], entry["test"], name),)
+            verdict = judged.get((entry["file"], entry["test"])) or {}
+            outcome = verdict.get("outcome")
+            reason = verdict.get("reason")
+            lines = lines + (
+                "- %s::%s (%s)%s%s"
+                % (
+                    entry["file"],
+                    entry["test"],
+                    name,
+                    ": %s" % outcome if outcome else "",
+                    " - %s" % reason if reason else "",
+                ),
+            )
     return lines
 
 
 def _first_line(text):
     stripped = (text or "").strip()
     return stripped.splitlines()[0] if stripped else ""
+
+
+def _name_of(plan, index):
+    items = plan.get("items") or []
+    return items[index].get("name") if 0 <= index < len(items) else "a Step"
+
+
+def manifest_gaps(plan, msp):
+    owned = set(plan["msps"][msp]["steps"])
+    return [
+        gap
+        for gap in shape.manifest_gaps(plan.get("items") or [])
+        if gap["reached"] == 0 and _name_of(plan, gap["owner"]) in owned
+    ]
 
 
 def pull_request_title(plan, msp):
@@ -967,7 +1178,49 @@ def pull_request_title(plan, msp):
     return "%s: %s" % (label, ", ".join(steps))
 
 
-def pull_request_body(plan, msp, base, acceptance_command, gate_result, findings, exception):
+def lane_name(plan, lane):
+    return "Lane %d (%s)" % (lane, ", ".join((plan.get("lanes") or [])[lane]["steps"]))
+
+
+def foreign_sentence(plan, entry):
+    suspects = entry.get("suspects") or [entry["lane"]]
+    who = " or ".join(lane_name(plan, lane) for lane in suspects)
+    unsure = "; they finished together, so git cannot tell which" if len(suspects) > 1 else ""
+    return "%s changed %s%s. %s owns that file and had already committed it" % (
+        who,
+        entry["path"],
+        unsure,
+        lane_name(plan, entry["owner"]),
+    )
+
+
+def _foreign_lines(plan, foreign):
+    return [
+        "%s; a Lane built alongside it may rely on the earlier version." % foreign_sentence(plan, entry)
+        for entry in unique_foreign(foreign)
+    ]
+
+
+def unique_foreign(foreign):
+    seen = {}
+    for entry in foreign:
+        key = (entry["path"], entry["owner"], tuple(entry.get("suspects") or [entry["lane"]]))
+        seen = seen if key in seen else {**seen, key: entry}
+    return list(seen.values())
+
+
+def msp_foreign_writes(plan, msp, lane_records):
+    return [
+        {**entry, "lane": index}
+        for index, lane in enumerate(plan.get("lanes") or [])
+        if lane["msp"] == msp
+        for entry in (lane_records.get(str(index)) or {}).get("foreign_writes") or []
+    ]
+
+
+def pull_request_body(
+    plan, msp, base, acceptance_command, gate_result, findings, exception, foreign=()
+):
     steps = _steps_by_name(plan)
     names = plan["msps"][msp]["steps"]
     lines = [
@@ -982,7 +1235,7 @@ def pull_request_body(plan, msp, base, acceptance_command, gate_result, findings
     lines = lines + [
         "- %s: %s" % (name, _first_line(steps[name].get("task")) or name) for name in names
     ]
-    properties = _property_lines(plan, msp)
+    properties = _property_lines(plan, msp, gate_result)
     lines = lines + ["", "Acceptance properties, re-runnable by a reviewer:"]
     lines = lines + (list(properties) if properties else ["- none declared"])
     lines = lines + ["", "Run each property with: %s" % acceptance_command]
@@ -992,10 +1245,29 @@ def pull_request_body(plan, msp, base, acceptance_command, gate_result, findings
         counts = gate_result.get("counts") or {}
         tally = ", ".join("%d %s" % (counts.get(key, 0), key) for key in core.GATE_OUTCOMES)
         lines = lines + ["Gate: %s (%s)" % (gate_result.get("outcome"), tally)]
+        if gate_result.get("blocks"):
+            lines = lines + [
+                "This pull request is open with an unproven acceptance property. A property is "
+                "proven only when it fails with the implementation reverted; read the list above "
+                "before trusting a green run."
+            ]
     if findings:
         undeclared = ", ".join(findings.get("undeclared") or []) or "none"
         unwritten = ", ".join(findings.get("unwritten") or []) or "none"
         lines = lines + ["Reconcile: undeclared %s; unwritten %s" % (undeclared, unwritten)]
+        for entry in findings.get("crossing") or []:
+            lines = lines + [
+                "This branch writes %s, which MSP %s owns and its pull request also changes. "
+                "Merging both as they stand overwrites one with the other."
+                % (entry["path"], entry["label"])
+            ]
+    lines = lines + _foreign_lines(plan, foreign)
+    for gap in manifest_gaps(plan, msp):
+        lines = lines + [
+            "%s would ship with nothing exported: %s owns it and is built before all %d Steps "
+            "whose modules it should export."
+            % (gap["manifest"], _name_of(plan, gap["owner"]), gap["siblings"])
+        ]
     if exception:
         producers = ", ".join(_label(plan, p) for p in exception["producers"])
         lines = lines + [
@@ -1020,12 +1292,29 @@ def ship(
     findings=None,
     exception=None,
     timeout=None,
+    push=True,
+    foreign=(),
 ):
     label = _label(plan, msp)
     head = commit_all(tree, "chore(%s): commit the MSP's work before shipping" % label)
+    held = {
+        "branch": branch,
+        "base": base,
+        "remote": remote,
+        "pushed": None,
+        "title": pull_request_title(plan, msp),
+        "pull_request": "",
+        "stacking_exception": exception is not None,
+    }
+    if git_ok(["diff", "--quiet", "%s...%s" % (base, head)], tree):
+        return {**held, "unchanged": True}
+    if not push:
+        return {**held, "unchanged": False}
     git(["push", "-q", "-u", remote, branch], tree)
     title = pull_request_title(plan, msp)
-    body = pull_request_body(plan, msp, base, acceptance_command, gate_result, findings, exception)
+    body = pull_request_body(
+        plan, msp, base, acceptance_command, gate_result, findings, exception, foreign
+    )
     os.makedirs(log_dir, exist_ok=True)
     out = os.path.join(log_dir, "pull-request.out")
     err = os.path.join(log_dir, "pull-request.err")
@@ -1055,6 +1344,7 @@ def ship(
         "title": title,
         "pull_request": last_line(out) or "",
         "stacking_exception": exception is not None,
+        "unchanged": False,
     }
 
 
@@ -1073,7 +1363,8 @@ def succeeded(state):
     if not msps:
         return False
     return all(record.get("state") == "ok" for record in lanes.values()) and all(
-        record.get("state") == "shipped" and _reconcile_clean(record.get("reconcile"))
+        record.get("state") in core.DELIVERED_STATES
+        and _reconcile_clean(record.get("reconcile"))
         for record in msps.values()
     )
 
@@ -1098,7 +1389,7 @@ def _lane_block(plan, msp, state):
 def _producer_block(plan, msp, state, producers):
     for producer in producers:
         producer_state = (state["msps"].get(str(producer)) or {}).get("state")
-        if producer_state != "shipped":
+        if producer_state not in core.DELIVERED_STATES:
             return {
                 "state": MSP_BLOCKED,
                 "reason": "MSP %s is %s" % (_label(plan, producer), producer_state),
@@ -1120,8 +1411,8 @@ def _gate_stage(plan, msp, tree, settings):
             settings["timeout"],
         )
     except (OSError, GitError, subprocess.SubprocessError) as error:
-        return {"state": "gate-inconclusive", "reason": str(error), "gate": None}
-    return {"state": gate_state(result), "reason": None, "gate": result}
+        return {"gate": None, "gate_error": str(error)}
+    return {"gate": result, "gate_error": None}
 
 
 def _reconcile_stage(plan, msp, tree, producers, trees, settings):
@@ -1133,19 +1424,10 @@ def _reconcile_stage(plan, msp, tree, producers, trees, settings):
         settings["feature_branch"],
         tuple(trees[p]["branch"] for p in producers),
     )
-    if not findings["fatal"]:
-        return {"reconcile": findings}
-    crossed = ", ".join(
-        "%s belongs to MSP %s" % (entry["path"], entry["label"]) for entry in findings["crossing"]
-    )
-    return {
-        "reconcile": findings,
-        "state": MSP_BLOCKED,
-        "reason": "a write crossed an MSP boundary: " + crossed,
-    }
+    return {"reconcile": findings}
 
 
-def _ship_stage(plan, msp, tree, base, exception, record, settings):
+def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=()):
     try:
         shipped = ship(
             plan,
@@ -1161,32 +1443,74 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings):
             record.get("reconcile"),
             exception,
             settings["timeout"],
+            settings["push"],
+            foreign,
         )
     except (OSError, GitError, ShipError, subprocess.SubprocessError, ValueError) as error:
         return {"state": "ship-failed", "reason": str(error), "ship": None}
+    if shipped["unchanged"]:
+        return {
+            "state": MSP_UNCHANGED,
+            "reason": "the branch adds nothing to %s, so nothing was pushed and no pull request "
+            "opened" % base,
+            "ship": shipped,
+        }
+    if shipped["pushed"] is None:
+        return {
+            "state": MSP_COMMITTED,
+            "reason": "committed on %s and held: this run pushes nothing and opens no pull request"
+            % shipped["branch"],
+            "ship": shipped,
+        }
     return {"state": "shipped", "reason": None, "ship": shipped}
 
 
 def _finish_msp(plan, msp, trees, producers, state, settings):
     run_dir = settings["run_dir"]
     tree = trees[msp]
+    state = {
+        **state,
+        "msps": {**state["msps"], str(msp): {}},
+        "stacking_exceptions": [
+            entry for entry in state["stacking_exceptions"] if entry.get("msp") != msp
+        ],
+    }
     block = _lane_block(plan, msp, state) or _producer_block(plan, msp, state, producers)
     if block is not None:
         return write_state(run_dir, _msp_record(state, msp, **block))
-    gated = _gate_stage(plan, msp, tree, settings)
-    state = write_state(run_dir, _msp_record(state, msp, **gated))
-    if gated["gate"] is None or gated["gate"]["blocks"]:
-        return state
+    state = write_state(run_dir, _msp_record(state, msp, **_gate_stage(plan, msp, tree, settings)))
     reconciled = _reconcile_stage(plan, msp, tree, producers, trees, settings)
     state = write_state(run_dir, _msp_record(state, msp, **reconciled))
     if reconciled.get("state") == MSP_BLOCKED:
         return state
-    base, exception = pr_base(plan, msp, settings["feature_branch"], trees, settings["repo"])
+    base, exception = pr_base(
+        plan, msp, settings["feature_branch"], trees, settings["repo"], state["msps"]
+    )
     if exception is not None:
-        kept = [entry for entry in state["stacking_exceptions"] if entry.get("msp") != msp]
-        state = write_state(run_dir, {**state, "stacking_exceptions": kept + [exception]})
-    shipped = _ship_stage(plan, msp, tree, base, exception, state["msps"][str(msp)], settings)
+        state = write_state(
+            run_dir, {**state, "stacking_exceptions": state["stacking_exceptions"] + [exception]}
+        )
+    shipped = _ship_stage(
+        plan,
+        msp,
+        tree,
+        base,
+        exception,
+        state["msps"][str(msp)],
+        settings,
+        msp_foreign_writes(plan, msp, state["lanes"]),
+    )
     return write_state(run_dir, _msp_record(state, msp, **shipped))
+
+
+def _settled(state, msp, producers, finished):
+    current = (state["msps"].get(str(msp)) or {}).get("state")
+    if current == "shipped":
+        return True
+    return current in finished and all(
+        (state["msps"].get(str(producer)) or {}).get("state") in finished
+        for producer in producers
+    )
 
 
 def execute(
@@ -1205,14 +1529,22 @@ def execute(
     trees_root=None,
     remote="origin",
     prefix=BRANCH_PREFIX,
+    no_push=False,
 ):
     prior = prior_state(run_dir, plan, resume)
     check_template("dispatch", worker_command)
     check_template("acceptance", acceptance_command)
-    check_template("pull-request", pr_command)
+    if not no_push:
+        check_template("pull-request", pr_command)
     check_models(plan, worker_command, models)
     if timeout is None:
         raise ConfigError("a per-Lane timeout is required; mitosis has no default")
+    recorded = (prior or {}).get("lanes") or {}
+    if any(
+        (recorded.get(str(index)) or {}).get("state") != "ok"
+        for index in range(len(plan.get("lanes") or []))
+    ):
+        check_identity(repo)
     settings = {
         "repo": repo,
         "feature_branch": feature_branch,
@@ -1221,6 +1553,7 @@ def execute(
         "pr_command": pr_command,
         "timeout": timeout,
         "remote": remote,
+        "push": not no_push,
     }
     os.makedirs(run_dir, exist_ok=True)
     write_json(os.path.join(run_dir, PLAN_FILE), plan)
@@ -1260,8 +1593,9 @@ def execute(
         on_lane=on_lane,
     )
     producers = msp_producers(plan)
+    finished = core.DELIVERED_STATES if no_push else PUBLISHED_STATES
     for msp in msp_order(plan):
-        if (state["msps"].get(str(msp)) or {}).get("state") == "shipped":
+        if _settled(state, msp, producers[msp], finished):
             continue
         state = _finish_msp(plan, msp, trees, producers[msp], state, settings)
     return state

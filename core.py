@@ -1,5 +1,7 @@
 import fnmatch
+import functools
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -21,6 +23,7 @@ PLAN_KEYS = (
     "lane_order",
     "coalesce",
     "coupling_review",
+    "coupling_order",
     "counts",
     "briefs",
 )
@@ -55,9 +58,17 @@ ACCEPTANCE_KEYS = ("file", "test")
 
 SOURCE_KEYS = ("path", "sha256")
 
-LANE_STATES = ("ok", "failed", "blocked", "merge-blocked")
+LANE_STATES = ("ok", "failed", "blocked", "merge-blocked", "held")
 
-MSP_STATES = ("shipped", "gate-failed", "gate-inconclusive", "ship-failed")
+MSP_STATES = (
+    "shipped",
+    "unchanged",
+    "committed",
+    "ship-failed",
+    "blocked",
+)
+
+DELIVERED_STATES = ("shipped", "unchanged", "committed")
 
 GATE_OUTCOMES = ("pass", "inert", "inconclusive", "not-applicable")
 
@@ -75,6 +86,8 @@ COUPLING_SIGNALS = (
     "recorded-regression",
     "same-migration-directory",
 )
+
+SERIALIZING_SIGNALS = ("shared-risk-marker", "recorded-regression", "same-migration-directory")
 
 COUNT_KEYS = ("missing_paths", "no_acceptance", "assumptions")
 
@@ -99,6 +112,7 @@ FLAG_NAMES = (
     "--decompose-command",
     "--acceptance-command",
     "--pr-command",
+    "--no-push",
     "--tier-model",
     "--timeout",
     "--concurrency",
@@ -185,13 +199,59 @@ def _tag(item, field):
     return ((field, str(value)),)
 
 
+def _msp_edges(items, owner, by_name):
+    return frozenset(
+        (owner[by_name[name]], owner[consumer])
+        for consumer, item in enumerate(items)
+        for name in _after(item)
+        if name in by_name and owner[by_name[name]] != owner[consumer]
+    )
+
+
+def _reaches(edges, start):
+    seen = frozenset()
+    frontier = (start,)
+    while frontier:
+        fresh = tuple(
+            dict.fromkeys(
+                consumer
+                for producer, consumer in edges
+                if producer in frontier and consumer not in seen
+            )
+        )
+        seen = seen | frozenset(fresh)
+        frontier = fresh
+    return seen
+
+
+def _cycle_pairs(items, groups, by_name):
+    edges = _msp_edges(items, _owners(groups, len(items)), by_name)
+    if not edges:
+        return ()
+    nodes = sorted({producer for producer, _ in edges} | {consumer for _, consumer in edges})
+    reached = {node: _reaches(edges, node) for node in nodes}
+    return tuple(
+        (groups[left][0], groups[right][0])
+        for position, left in enumerate(nodes)
+        for right in nodes[position + 1:]
+        if right in reached[left] and left in reached[right]
+    )
+
+
 def msp_items(items):
+    by_name = _by_name(items)
     pairs = (
         _shared(items, _files)
         + _shared(items, lambda item: _tag(item, "contract_group"))
         + _shared(items, lambda item: _tag(item, "msp"))
     )
-    return union_find(len(items), pairs)
+    groups = union_find(len(items), pairs)
+    while True:
+        fused = _cycle_pairs(items, groups, by_name)
+        if not fused:
+            return groups
+        pairs = pairs + fused
+        groups = union_find(len(items), pairs)
 
 
 def _walk_order(items, members, by_name):
@@ -240,6 +300,59 @@ def _contract_within_msp(items, lanes, owner, by_name):
         lanes = tuple(kept + rebuilt)
 
 
+def _group_members(items):
+    members = {}
+    for index, item in enumerate(items):
+        for _, group in _tag(item, "contract_group"):
+            members = {**members, group: members.get(group, ()) + (index,)}
+    return members
+
+
+def _waits_on(items, start, target, by_name):
+    seen = frozenset()
+    frontier = (start,)
+    while frontier:
+        reached = tuple(
+            by_name[name]
+            for index in frontier
+            for name in _after(items[index])
+            if name in by_name and by_name[name] not in seen
+        )
+        if target in reached:
+            return True
+        seen = seen | frozenset(reached)
+        frontier = tuple(dict.fromkeys(reached))
+    return False
+
+
+def _pins(items, members, by_name):
+    producers = tuple(index for index in members if items[index].get("type") == "contract")
+    if len(producers) != 1:
+        return False
+    return all(
+        _waits_on(items, index, producers[0], by_name)
+        for index in members
+        if index != producers[0]
+    )
+
+
+def pinned_groups(items):
+    by_name = _by_name(items)
+    return frozenset(
+        group
+        for group, members in _group_members(items).items()
+        if _pins(items, members, by_name)
+    )
+
+
+def _interface_pairs(items):
+    pinned = pinned_groups(items)
+    return _shared(
+        items,
+        lambda item: tuple(tag for tag in _tag(item, "contract_group") if tag[1] not in pinned),
+    )
+
+
 def lane_pairs(items):
     owner = _owners(msp_items(items), len(items))
     by_name = _by_name(items)
@@ -261,14 +374,14 @@ def lane_pairs(items):
         producer = producers[0]
         if owner[producer] == owner[consumer] and consumers.get(producer) == 1:
             chain_pairs.append((producer, consumer))
-    return _shared(items, _files), tuple(chain_pairs)
+    return _shared(items, _files), tuple(chain_pairs), _interface_pairs(items)
 
 
 def uncontracted_lanes(items):
     owner = _owners(msp_items(items), len(items))
     by_name = _by_name(items)
-    shared, chained = lane_pairs(items)
-    groups = union_find(len(items), shared + chained)
+    shared, chained, interfaced = lane_pairs(items)
+    groups = union_find(len(items), shared + chained + interfaced)
     lanes = tuple(_walk_order(items, group, by_name) for group in groups)
     return tuple(sorted(lanes, key=lambda lane: (owner[lane[0]], min(lane))))
 
@@ -513,6 +626,12 @@ def validate(items, root=None, required=None):
 
 GLOB_CHARACTERS = "*?["
 
+CONTEXT_CAP = 40
+
+RISKY_OUTCOMES = ("reverted", "speculative", "failed", "regressed")
+
+TRAPS_FOR_RISK = 2
+
 WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
 
 
@@ -531,9 +650,9 @@ def marker_matches(path, marker):
     normalized = _norm(path)
     candidate = marker.strip().lower()
     if any(character in candidate for character in GLOB_CHARACTERS):
-        return fnmatch.fnmatch(normalized, candidate)
+        return fnmatch.fnmatchcase(normalized.lower(), candidate)
     if not candidate.isalnum():
-        return candidate in normalized
+        return candidate in normalized.lower()
     return candidate in path_words(normalized)
 
 
@@ -560,16 +679,40 @@ def _record_files(record):
     return tuple(f for f in files if isinstance(f, str))
 
 
+def _strings(record, key):
+    values = record.get(key) if isinstance(record, dict) else None
+    return tuple(v for v in values if isinstance(v, str)) if isinstance(values, list) else ()
+
+
 def _is_regression(record):
-    return isinstance(record, dict) and "outcome" in record and record["outcome"] != "ok"
+    return isinstance(record, dict) and (
+        record.get("outcome") in RISKY_OUTCOMES or bool(_strings(record, "regressed"))
+    )
+
+
+def _about(record, paths):
+    return any(_touches(recorded, path) for recorded in _record_files(record) for path in paths)
+
+
+def _names(reference, path):
+    text = reference.strip()
+    base = os.path.basename(_norm(path))
+    return _touches(text, path) or bool(base) and text.lower().endswith("/" + base.lower())
 
 
 def surface_history(history, paths):
-    return tuple(
-        record
+    matched = tuple(record for record in (history or ()) if _about(record, paths))
+    risky = tuple(record for record in matched if _is_regression(record))
+    trapped = tuple(record for record in matched if _strings(record, "what_failed"))
+    return risky + (trapped if len(trapped) >= TRAPS_FOR_RISK else ())
+
+
+def _regression_links(history, left, right):
+    return any(
+        (_about(record, left) and any(_names(ref, p) for ref in _strings(record, "regressed") for p in right))
+        or (_about(record, right) and any(_names(ref, p) for ref in _strings(record, "regressed") for p in left))
+        or (_is_regression(record) and _about(record, left) and _about(record, right))
         for record in (history or ())
-        if _is_regression(record)
-        and any(_touches(recorded, path) for recorded in _record_files(record) for path in paths)
     )
 
 
@@ -588,7 +731,8 @@ def trajectory_store(path):
                 continue
             if isinstance(parsed, dict):
                 records.append(parsed)
-    return tuple(records)
+    superseded = {record.get("supersedes") for record in records if record.get("supersedes")}
+    return tuple(record for record in records if record.get("id") not in superseded)
 
 
 def tier_for(write_set, risk_markers, complexity, assumptions, history=()):
@@ -614,12 +758,7 @@ def _pair_signals(left, right, graph, risk_markers, history):
         signals.append("import-adjacency")
     if set(_marker_hits(left, risk_markers)) & set(_marker_hits(right, risk_markers)):
         signals.append("shared-risk-marker")
-    if any(
-        any(_touches(f, a) for f in _record_files(record) for a in left)
-        and any(_touches(f, b) for f in _record_files(record) for b in right)
-        for record in (history or ())
-        if _is_regression(record)
-    ):
+    if _regression_links(history, left, right):
         signals.append("recorded-regression")
     left_dirs = {os.path.dirname(p) for p in left if _numbered(p)}
     right_dirs = {os.path.dirname(p) for p in right if _numbered(p)}
@@ -628,26 +767,63 @@ def _pair_signals(left, right, graph, risk_markers, history):
     return signals
 
 
+def coupling_default(signals):
+    return "serialize" if any(s in SERIALIZING_SIGNALS for s in signals) else "parallel"
+
+
+def _ordered(items, a, b, by_name):
+    return _waits_on(items, a, b, by_name) or _waits_on(items, b, a, by_name)
+
+
+def _disjoint_signals(items, a, b, graph, risk_markers, history):
+    left = frozenset(_files(items[a]))
+    right = frozenset(_files(items[b]))
+    if left & right:
+        return []
+    return _pair_signals(left, right, graph, risk_markers, history)
+
+
+def order_coupled(items, graph=None, risk_markers=(), history=()):
+    lane_of = _owners(lane_items(items), len(items))
+    current = list(items)
+    added = ()
+    for a in range(len(items)):
+        for b in range(a + 1, len(items)):
+            if lane_of[a] == lane_of[b]:
+                continue
+            signals = _disjoint_signals(items, a, b, graph, risk_markers, history)
+            if coupling_default(signals) != "serialize":
+                continue
+            if _ordered(current, a, b, _by_name(current)):
+                continue
+            first, then = items[a]["name"], items[b]["name"]
+            current = [
+                {**item, "after": list(_after(item)) + [first]} if index == b else item
+                for index, item in enumerate(current)
+            ]
+            added = added + ({"first": first, "then": then, "signals": signals},)
+    return current, list(added)
+
+
 def coupling_review(items, lanes, graph, risk_markers=(), history=()):
     lane_of = _owners(lanes, len(items))
+    by_name = _by_name(items)
     review = []
     for a in range(len(items)):
         for b in range(a + 1, len(items)):
             if lane_of[a] == lane_of[b]:
                 continue
-            left = frozenset(_files(items[a]))
-            right = frozenset(_files(items[b]))
-            if left & right:
+            signals = _disjoint_signals(items, a, b, graph, risk_markers, history)
+            if not signals or _ordered(items, a, b, by_name):
                 continue
-            signals = _pair_signals(left, right, graph, risk_markers, history)
-            if signals:
-                review.append(
-                    {
-                        "steps": [items[a]["name"], items[b]["name"]],
-                        "lanes": [lane_of[a], lane_of[b]],
-                        "signals": signals,
-                    }
-                )
+            review.append(
+                {
+                    "steps": [items[a]["name"], items[b]["name"]],
+                    "lanes": [lane_of[a], lane_of[b]],
+                    "signals": signals,
+                    "default": coupling_default(signals),
+                }
+            )
     return review
 
 
@@ -680,6 +856,106 @@ def item_cost(item):
 
 def lane_cost(items, lane):
     return sum(item_cost(items[i]) for i in lane)
+
+
+NODE_LINK_KEYS = ("links", "edges")
+
+CODE_FILE_TYPE = "code"
+
+
+def node_link_edges(graph):
+    if not isinstance(graph, dict) or not isinstance(graph.get("nodes"), list):
+        return None
+    for key in NODE_LINK_KEYS:
+        if isinstance(graph.get(key), list):
+            return graph[key]
+    return None
+
+
+def is_adjacency(graph):
+    if not isinstance(graph, dict):
+        return False
+    lists = [neighbours for neighbours in graph.values() if isinstance(neighbours, list)]
+    nested = any(isinstance(n, (dict, list)) for neighbours in lists for n in neighbours)
+    named = any(isinstance(n, str) for neighbours in lists for n in neighbours)
+    return (not graph or bool(lists)) and (named or not nested)
+
+
+def clean_adjacency(graph):
+    return {
+        path: [n for n in neighbours if isinstance(n, str)]
+        for path, neighbours in graph.items()
+        if isinstance(neighbours, list)
+    }
+
+
+def _within(path, root):
+    if path is None:
+        return None
+    try:
+        relative = os.path.relpath(path, root)
+    except ValueError:
+        return None
+    return None if relative.split(os.sep)[0] == os.pardir else relative
+
+
+@functools.lru_cache(maxsize=4096)
+def _real_directory(directory):
+    return os.path.realpath(directory)
+
+
+def _real(path):
+    try:
+        return os.path.join(_real_directory(os.path.dirname(path)), os.path.basename(path))
+    except ValueError:
+        return None
+
+
+def _node_file(node, root):
+    if not isinstance(node, dict) or node.get("file_type", CODE_FILE_TYPE) != CODE_FILE_TYPE:
+        return None
+    path = node.get("source_file")
+    if not isinstance(path, str) or not path:
+        return None
+    if os.path.isabs(path):
+        relative = _within(path, root) or _within(_real(path), _real_directory(root))
+    else:
+        relative = _within(os.path.join(root, path), root)
+    return None if relative is None else _norm(relative)
+
+
+def _node_key(value):
+    return json.dumps(value, sort_keys=True)
+
+
+def node_files(graph, root):
+    return {
+        _node_key(node["id"]): _node_file(node, root)
+        for node in graph["nodes"]
+        if isinstance(node, dict) and "id" in node
+    }
+
+
+def _file_pairs(files, link, both):
+    if not isinstance(link, dict):
+        return ()
+    left = files.get(_node_key(link.get("source")))
+    right = files.get(_node_key(link.get("target")))
+    if not left or not right or left == right:
+        return ()
+    return ((left, right), (right, left)) if both else ((left, right),)
+
+
+def adjacency_from_node_links(graph, root):
+    files = node_files(graph, root)
+    both = not graph.get("directed", False)
+    linked = sorted(
+        {pair for link in node_link_edges(graph) for pair in _file_pairs(files, link, both)}
+    )
+    return {
+        path: [neighbour for _, neighbour in group]
+        for path, group in itertools.groupby(linked, key=lambda pair: pair[0])
+    }
 
 
 def _neighbours(adjacency, path):
@@ -803,14 +1079,24 @@ def _step_brief(item):
     return {key: item[key] for key in keys if key in item}
 
 
-def _lane_read_set(items, lane, packs):
+def _lane_read_set(items, lane, packs, cap=CONTEXT_CAP):
     write_set = frozenset(path for i in lane for path in _files(items[i]))
     read = ()
     for i in lane:
         for path in packs.get(items[i]["name"], {}).get("paths", ()):
             if path not in write_set and path not in read:
                 read = read + (path,)
-    return list(read)
+    limit = len(read) if cap is None else max(0, int(cap))
+    dropped = sum(packs.get(items[i]["name"], {}).get("overflow", 0) for i in lane)
+    return list(read[:limit]), dropped + len(read) - len(read[:limit])
+
+
+SHARED_TREE_LINE = (
+    "Other Workers may be editing other files in this same worktree right now. Change only "
+    "the files in your write-set, and run no command that changes the repository's index or "
+    "history: no add, commit, stash, reset, checkout, restore, clean, merge or rebase. mitosis "
+    "commits your work when you return."
+)
 
 
 def brief_text(brief):
@@ -842,27 +1128,36 @@ def brief_text(brief):
             body.append("   Assumption: %s" % assumption)
     footer = [
         "Write-set for this Lane, the only files you may edit: %s" % ", ".join(brief["write_set"]),
+        SHARED_TREE_LINE,
     ]
     if brief.get("read_set"):
-        footer.append("Read-set, context only, never edit: %s" % ", ".join(brief["read_set"]))
+        footer.append(
+            "Read-set, context only, never edit: %s%s"
+            % (
+                ", ".join(brief["read_set"]),
+                " (%d more not shown)" % brief["read_overflow"] if brief.get("read_overflow") else "",
+            )
+        )
     footer.append("When finished, print one line of JSON and nothing after it:")
     footer.append(brief["return_contract"])
     return "\n\n".join("\n".join(part) for part in (header, body, footer)) + "\n"
 
 
-def _brief(items, lane_index, lane, msp_index, msp_label, packs, charter, source):
+def _brief(items, lane_index, lane, msp_index, msp_label, packs, charter, source, cap=CONTEXT_CAP):
     write_set = ()
     for i in lane:
         for path in _files(items[i]):
             if path not in write_set:
                 write_set = write_set + (path,)
+    read_set, read_overflow = _lane_read_set(items, lane, packs, cap)
     partial = {
         "lane": lane_index,
         "msp": msp_index,
         "msp_label": msp_label,
         "steps": [_step_brief(items[i]) for i in lane],
         "write_set": list(write_set),
-        "read_set": _lane_read_set(items, lane, packs),
+        "read_set": read_set,
+        "read_overflow": read_overflow,
         "charter": charter,
         "document": source.get("path") if isinstance(source, dict) else None,
         "return_contract": RETURN_CONTRACT,
@@ -885,7 +1180,7 @@ def plan(
     serial_markers=(),
     graph=None,
     hops=1,
-    cap=None,
+    cap=CONTEXT_CAP,
     history=(),
     budget=3,
     root=None,
@@ -893,6 +1188,7 @@ def plan(
     checked = validate(items, root=root)
     if checked["errors"]:
         raise ValidationError(checked["errors"])
+    items, ordered = order_coupled(items, graph, risk_markers, history)
     msps = msp_items(items)
     lanes = lane_items(items)
     owners = lane_msps(items, lanes)
@@ -935,9 +1231,10 @@ def plan(
         "lane_order": list(lane_order(lanes, edges, items)),
         "coalesce": coalesce(items, lanes, tiers, edges, budget),
         "coupling_review": coupling_review(items, lanes, graph, risk_markers, history),
+        "coupling_order": ordered,
         "counts": checked["counts"],
         "briefs": [
-            _brief(items, index, lane, owners[index], labels[owners[index]], packs, charter, source)
+            _brief(items, index, lane, owners[index], labels[owners[index]], packs, charter, source, cap)
             for index, lane in enumerate(lanes)
         ],
     }

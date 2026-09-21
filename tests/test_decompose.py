@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import shlex
+import subprocess
 import sys
 import tempfile
 import time
@@ -215,6 +216,37 @@ class Contract(unittest.TestCase):
             capped = decompose.inventory(root, cap=2)
             self.assertEqual(capped["paths"], ["a.py", "b.py"])
             self.assertEqual(capped["overflow"], 1)
+
+    def a_repository_is_inventoried_from_what_git_tracks(self):
+        with tempfile.TemporaryDirectory() as root:
+            subprocess.run(["git", "init", "-q", root], check=True)
+            for relative in (".gitignore", "a.py", "pkg/c.py", "gone.py"):
+                write(root, relative, "build/\n" if relative == ".gitignore" else "")
+            subprocess.run(["git", "-C", root, "add", "."], check=True)
+            os.remove(os.path.join(root, "gone.py"))
+            for relative in ("build/out.o", "build/deep/cache.bin", "untracked.py"):
+                write(root, relative, "")
+            listed = decompose.inventory(root)
+        self.assertEqual(listed["paths"], [".gitignore", "a.py", "pkg/c.py"])
+        self.assertEqual(listed["overflow"], 0)
+
+    def a_file_in_conflict_is_listed_once(self):
+        with tempfile.TemporaryDirectory() as root:
+            subprocess.run(["git", "init", "-q", root], check=True)
+            write(root, "f.py", "conflicted\n")
+            write(root, "other.py", "")
+            subprocess.run(["git", "-C", root, "add", "other.py"], check=True)
+            blob = subprocess.run(
+                ["git", "-C", root, "hash-object", "-w", "f.py"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            stages = "".join("100644 %s %d\tf.py\n" % (blob, stage) for stage in (1, 2, 3))
+            subprocess.run(
+                ["git", "-C", root, "update-index", "--index-info"],
+                input=stages, check=True, text=True,
+            )
+            listed = decompose.inventory(root)
+        self.assertEqual(listed["paths"], ["f.py", "other.py"])
 
 
 class Run(unittest.TestCase):
@@ -1049,20 +1081,19 @@ class Sampling(unittest.TestCase):
         broken = {"items": [bare("a"), "not a step"], "errors": ["item #1: a Step must be an object"]}
         self.assertEqual(decompose.rank([broken, chained]), [1, 0])
 
-    def the_recorded_splits_rank_by_parallelism_first(self):
+    def the_recorded_splits_tie_on_parallelism_and_rank_by_fusion(self):
         splits = recorded_splits()
         names = ["pass-1", "pass-2", "pass-3"]
         results = [structured(splits[name]) for name in names]
+        self.assertEqual({shape.scalars(splits[name])["parallelism"] for name in names}, {1})
         order = decompose.rank(results)
-        self.assertEqual([names[i] for i in order], ["pass-1", "pass-3", "pass-2"])
-        self.assertLess(order.index(0), order.index(1))
-        self.assertLess(order.index(2), order.index(1))
+        self.assertEqual([names[i] for i in order], ["pass-2", "pass-1", "pass-3"])
         sentences = decompose.disagreements(results)
         self.assertTrue(any("bleep/effects/__init__.py" in s for s in sentences))
         self.assertTrue(any("demo/canyon.blp" in s for s in sentences))
         self.assertFalse(any("bleep/notation.py" in s for s in sentences))
         self.assertTrue(any("MSP" in s for s in sentences))
-        self.assertTrue(any("parallelism" in s for s in sentences))
+        self.assertFalse(any("parallelism" in s for s in sentences))
 
     def samples_that_split_a_file_differently_are_reported_as_a_disagreement(self):
         one_owner = structured([bare("a", files=["a.py", "shared.py"]), bare("b")])
@@ -1275,6 +1306,27 @@ class StructureRetry(unittest.TestCase):
             self.assertEqual(result["errors"], [])
             self.assertEqual([item["name"] for item in result["items"]], ["only"])
             self.assertEqual(tally(root, "structure"), 2)
+
+    def a_valid_revision_is_dispatched_once_and_a_broken_one_twice(self):
+        prior = [bare("kept", task="its brief")]
+        for bad_rounds, dispatches in ((0, 1), (1, 2)):
+            with self.subTest(bad_rounds=bad_rounds), tempfile.TemporaryDirectory() as root:
+                write(root, "docs/spec.md", "# One\n\nbody\n")
+                argv = flaky(root, "revise", bad_rounds, bad_line="chatter, no object")
+                write(root, "flaky.py", FLAKY.replace(
+                    'print(json.dumps({"ok": True, "attempt": seen + 1}))',
+                    "print(%r)" % json.dumps(delta(keep=["kept"])),
+                ))
+                result = decompose.structure(
+                    os.path.join(root, "docs/spec.md"),
+                    " ".join(shlex.quote(part) for part in argv),
+                    root,
+                    timeout=20,
+                    prior=prior,
+                )
+                self.assertEqual(result["errors"], [])
+                self.assertEqual([step["name"] for step in result["items"]], ["kept"])
+                self.assertEqual(tally(root, "revise"), dispatches)
 
     def a_structure_dispatch_that_never_returns_an_object_stops_at_the_bound(self):
         with tempfile.TemporaryDirectory() as root:

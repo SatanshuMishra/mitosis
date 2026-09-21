@@ -31,9 +31,10 @@ reports how cleanly a document decomposed, and never refuses one.
 
 ## Install
 
-There is no package and no dependency. Copy the four files at the root of this
-repository — `core.py`, `decompose.py`, `run.py`, `mitosis.py` — into the
-target project, anywhere they can be invoked by path.
+There is no package and no dependency. Copy the Python files at the root of
+this repository — `core.py`, `shape.py`, `decompose.py`, `briefs.py`, `run.py`,
+`mitosis.py` — into one directory of the target project, anywhere they can be
+invoked by path. They import one another, so they must stay side by side.
 
 ## A worked invocation
 

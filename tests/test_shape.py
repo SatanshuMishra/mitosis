@@ -6,6 +6,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+import core
 import shape
 
 SCALAR_KEYS = (
@@ -22,12 +23,12 @@ SCALAR_KEYS = (
 RECORDED = {
     "pass-1": {
         "steps": 8,
-        "lanes": 5,
+        "lanes": 3,
         "msps": 3,
         "largest_lane": 4,
         "msps_per_step": 3 / 8,
-        "parallelism": 2,
-        "fused_without_overlap": 5,
+        "parallelism": 1,
+        "fused_without_overlap": 8,
         "lane_cycles": 0,
     },
     "pass-2": {
@@ -42,12 +43,12 @@ RECORDED = {
     },
     "pass-3": {
         "steps": 8,
-        "lanes": 4,
+        "lanes": 2,
         "msps": 2,
-        "largest_lane": 5,
+        "largest_lane": 7,
         "msps_per_step": 2 / 8,
-        "parallelism": 2,
-        "fused_without_overlap": 9,
+        "parallelism": 1,
+        "fused_without_overlap": 20,
         "lane_cycles": 0,
     },
 }
@@ -154,13 +155,14 @@ class Scalars(unittest.TestCase):
         ]
         self.assertEqual(shape.scalars(items)["parallelism"], 1)
 
-    def parallelism_survives_a_cycle_between_lanes(self):
+    def two_steps_that_wait_on_each_other_score_as_one_lane(self):
         items = [
             step("a", ["a.py"], after=["b"]),
             step("b", ["b.py"], after=["a"]),
         ]
         result = shape.scalars(items)
-        self.assertEqual(result["lanes"], 2)
+        self.assertEqual(result["lanes"], 1)
+        self.assertEqual(result["msps"], 1)
         self.assertEqual(result["parallelism"], 1)
 
     def the_three_recorded_splits_score_as_recorded(self):
@@ -251,7 +253,7 @@ class Findings(unittest.TestCase):
 
     def a_fusion_caused_by_cycle_contraction_says_so_and_never_blames_a_group(self):
         items = [
-            step("core", ["core.py", "shared.py"], msp="m", contract_group="g"),
+            step("core", ["core.py", "shared.py"], msp="m", contract_group="g", type="contract"),
             step("p1", ["p1.py"], msp="m", contract_group="g", after=["core"]),
             step("p2", ["p2.py"], msp="m", contract_group="g", after=["core"]),
             step("tail", ["tail.py", "shared.py"], msp="m", after=["p1", "p2"]),
@@ -259,18 +261,20 @@ class Findings(unittest.TestCase):
         fused = of_kind(shape.findings(items), "fused-without-overlap")
         self.assertTrue(fused)
         for entry in fused:
-            self.assertNotIn("contract_group", entry["detail"])
+            self.assertNotIn("interface", entry["detail"])
         self.assertTrue(any("cycle forced" in entry["detail"] for entry in fused))
 
-    def an_unpinned_contract_group_does_not_fuse_its_steps(self):
+    def an_unpinned_contract_group_fuses_its_steps_and_says_why(self):
         items = [
             step("a", ["a.py"], contract_group="g"),
             step("b", ["b.py"], contract_group="g"),
         ]
         result = shape.scalars(items)
-        self.assertEqual(result["lanes"], 2)
+        self.assertEqual(result["lanes"], 1)
         self.assertEqual(result["msps"], 1)
-        self.assertEqual(result["fused_without_overlap"], 0)
+        self.assertEqual(result["fused_without_overlap"], 1)
+        fused = of_kind(shape.findings(items), "fused-without-overlap")
+        self.assertIn("two halves of one interface", fused[0]["detail"])
 
     def a_pinned_contract_group_still_runs_its_consumers_in_parallel(self):
         items = [
@@ -303,6 +307,32 @@ class Findings(unittest.TestCase):
         self.assertTrue(fused[0]["detail"].startswith("a and c"))
         self.assertIn("run of shared files", fused[0]["detail"])
         self.assertNotIn("contract_group", fused[0]["detail"])
+    def a_pair_joined_through_a_group_and_a_chain_names_both(self):
+        items = [
+            step("a", ["a.py"], contract_group="g"),
+            step("b", ["b.py"], contract_group="g", msp="m"),
+            step("c", ["c.py"], msp="m", after=["b"]),
+        ]
+        fused = of_kind(shape.findings(items), "fused-without-overlap")
+        through = [entry["detail"] for entry in fused if entry["detail"].startswith("a and c")]
+        self.assertEqual(len(through), 1)
+        self.assertIn("a chain of after edges and an interface no contract Step pins", through[0])
+        self.assertNotIn("shared files", through[0])
+
+    def a_pair_is_explained_by_the_links_between_them_not_elsewhere_in_the_lane(self):
+        items = [
+            step("a", ["a.py", "x.py"]),
+            step("b", ["b.py", "x.py", "y.py"]),
+            step("c", ["c.py", "y.py"]),
+            step("d", ["d.py", "a.py"], contract_group="g"),
+            step("e", ["e.py"], contract_group="g"),
+        ]
+        fused = of_kind(shape.findings(items), "fused-without-overlap")
+        details = {entry["detail"].split(" share a Lane")[0]: entry["detail"] for entry in fused}
+        self.assertIn("run of shared files", details["a and c"])
+        self.assertNotIn("interface", details["a and c"])
+        self.assertIn("shared files and an interface no contract Step pins", details["c and e"])
+
     def a_pair_sharing_a_file_is_not_a_fused_finding(self):
         items = [
             step("a", ["a.py", "x.py"]),
@@ -344,16 +374,19 @@ class Findings(unittest.TestCase):
 
     def findings_are_ordered_by_severity_so_a_cause_precedes_its_symptoms(self):
         items = [
-            step("core", ["core.py", "shared.py"]),
-            step("mid", ["mid.py"], after=["core"]),
-            step("tail", ["tail.py", "shared.py"], after=["mid"]),
-            step("x", ["x.py"], msp="w"),
-            step("y", ["y.py"], msp="w", after=["x"]),
+            step("a1", ["pkg/a.py"]),
+            step("a2", ["pkg/a.py"]),
+            step("b1", ["pkg/b.py"], after=["a1"]),
+            step("b2", ["pkg/b.py"]),
+            step("c", ["c.py"], after=["a1"]),
+            step("d", ["d.py"], after=["b2"]),
+            step("a3", ["pkg/a.py"], after=["b2"]),
+            step("surface", ["pkg/__init__.py"]),
         ]
         found = shape.findings(items)
         listed = [entry["kind"] for entry in found]
         self.assertEqual(
-            listed, ["lane-cycle", "shared-directory-manifest", "fused-without-overlap"]
+            listed[:3], ["lane-cycle", "manifest-exports-nothing", "fused-without-overlap"]
         )
         self.assertNotEqual(listed, sorted(listed))
         order = [shape.FINDING_KINDS.index(entry["kind"]) for entry in found]
@@ -361,14 +394,21 @@ class Findings(unittest.TestCase):
 
     def a_lane_cycle_names_the_lanes_that_wait_on_each_other(self):
         items = [
-            step("core", ["core.py", "shared.py"]),
-            step("mid", ["mid.py"], after=["core"]),
-            step("tail", ["tail.py", "shared.py"], after=["mid"]),
+            step("a1", ["pkg/a.py"]),
+            step("a2", ["pkg/a.py"]),
+            step("b1", ["pkg/b.py"], after=["a1"]),
+            step("b2", ["pkg/b.py"]),
+            step("c", ["c.py"], after=["a1"]),
+            step("d", ["d.py"], after=["b2"]),
+            step("a3", ["pkg/a.py"], after=["b2"]),
         ]
         cycles = of_kind(shape.findings(items), "lane-cycle")
         self.assertEqual(len(cycles), 1)
-        self.assertIn("none of them can start", cycles[0]["detail"])
+        self.assertIn("one Worker builds them all in one sitting", cycles[0]["detail"])
+        self.assertIn("a1", cycles[0]["detail"])
+        self.assertIn("b1", cycles[0]["detail"])
         self.assertEqual(shape.scalars(items)["lane_cycles"], 2)
+        self.assertEqual(len(core.lane_items(items)), 3)
 
     def a_plan_with_no_cycle_scores_zero_lane_cycles(self):
         items = [step("a", ["a.py"]), step("b", ["b.py"], after=["a"])]
@@ -407,7 +447,13 @@ class Findings(unittest.TestCase):
         for name, expected in RECORDED.items():
             with self.subTest(split=name):
                 fused = of_kind(shape.findings(splits[name]), "fused-without-overlap")
-                self.assertEqual(len(fused), expected["fused_without_overlap"])
+                listed = [entry for entry in fused if "further fused" not in entry["detail"]]
+                further = sum(
+                    int(entry["detail"].split()[0])
+                    for entry in fused
+                    if "further fused" in entry["detail"]
+                )
+                self.assertEqual(len(listed) + further, expected["fused_without_overlap"])
 
 
 class ManifestExport(unittest.TestCase):

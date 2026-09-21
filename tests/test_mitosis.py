@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -324,6 +325,16 @@ class Flags(unittest.TestCase):
             self.assertIn(flag, text)
         for placeholder in ("{prompt}", "{model}", "{step}", "{document}"):
             self.assertIn(placeholder, text)
+
+    def a_run_builds_several_lanes_at_once_by_default(self):
+        args = mitosis.build_parser().parse_args(["--items", "items.json"])
+        self.assertEqual(args.concurrency, 4)
+        self.assertIn("(default: 4)", " ".join(mitosis.build_parser().format_help().split()))
+
+    def the_read_set_is_capped_at_forty_by_default(self):
+        args = mitosis.build_parser().parse_args(["--items", "items.json"])
+        self.assertEqual(args.context_cap, core.CONTEXT_CAP)
+        self.assertIn("(default: 40)", " ".join(mitosis.build_parser().format_help().split()))
 
     def structure_samples_defaults_to_one(self):
         args = mitosis.build_parser().parse_args(["--spec", "x", "--decompose-command", "c"])
@@ -719,15 +730,32 @@ class ItemsEntryPointRefusals(unittest.TestCase):
                 ["--items", "items.json", "--plan-only", "--run-dir", os.path.join(root, "run")],
             )
 
-    def a_plan_supplied_as_items_that_cannot_run_is_refused(self):
+    def a_plan_whose_packages_wait_on_each_other_is_planned_as_one(self):
         code, out, err = self._run(self.CYCLIC)
-        self.assertEqual(code, mitosis.EXIT_REFUSED, out)
-        self.assertIn("each have to merge before", err + out)
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
+        self.assertEqual(len(core.msp_items(self.CYCLIC)), 1)
 
-    def a_package_supplied_as_items_that_would_ship_empty_is_refused(self):
+    GROUP_CYCLE = [
+        {"name": "a", "task": "t", "files": ["a.py"], "source": None,
+         "acceptance": [], "contract_group": "g"},
+        {"name": "x", "task": "t", "files": ["x.py"], "source": None,
+         "acceptance": [], "after": ["a"]},
+        {"name": "b", "task": "t", "files": ["b.py"], "source": None,
+         "acceptance": [], "contract_group": "g", "after": ["x"]},
+    ]
+
+    def a_cycle_through_an_unpinned_group_is_built_by_one_worker(self):
+        code, out, err = self._run(self.GROUP_CYCLE)
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
+        self.assertEqual(len(core.lane_items(self.GROUP_CYCLE)), 1)
+
+    def a_package_supplied_as_items_that_would_ship_empty_is_planned_and_reported(self):
         code, out, err = self._run(self.EMPTY_MANIFEST)
-        self.assertEqual(code, mitosis.EXIT_REFUSED, out)
-        self.assertIn("would ship empty", err + out)
+        self.assertEqual(code, mitosis.EXIT_MANIFEST, err + out)
+        self.assertIn("manifest-exports-nothing", out)
+        found = json.loads(out.splitlines()[-1])
+        self.assertEqual(found["exit"], mitosis.EXIT_MANIFEST)
+        self.assertIn("nothing exported", found["attention"][0])
 
     def a_sound_plan_supplied_as_items_still_ships(self):
         code, out, err = self._run(
@@ -739,6 +767,241 @@ class ItemsEntryPointRefusals(unittest.TestCase):
             ]
         )
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err)
+
+
+class GraphLoading(unittest.TestCase):
+    def _load(self, graph):
+        with tempfile.TemporaryDirectory() as root:
+            path = write(root, "graph.json", json.dumps(graph))
+            return mitosis.load_graph(path, root)
+
+    def a_node_link_graph_is_read_as_the_files_its_code_links(self):
+        graph = {
+            "directed": False,
+            "nodes": [
+                {"id": "f", "file_type": "code", "source_file": "src/parse.py"},
+                {"id": "g", "file_type": "code", "source_file": "src/emit.py"},
+                {"id": "d", "file_type": "document", "source_file": "README.md"},
+            ],
+            "links": [{"source": "f", "target": "g"}, {"source": "d", "target": "f"}],
+        }
+        self.assertEqual(
+            self._load(graph), {"src/emit.py": ["src/parse.py"], "src/parse.py": ["src/emit.py"]}
+        )
+
+    def a_mapping_is_still_read_as_it_is(self):
+        self.assertEqual(self._load({"a.py": ["b.py"]}), {"a.py": ["b.py"]})
+
+    def a_mapping_carrying_metadata_and_nulls_is_read_without_them(self):
+        graph = {"version": "1", "a.py": ["b.py", None, 3], "b.py": None}
+        self.assertEqual(self._load(graph), {"a.py": ["b.py"]})
+
+    def a_nodes_list_without_links_is_refused_rather_read_as_a_mapping(self):
+        for graph in (
+            {"nodes": [{"id": "a", "source_file": "a.py"}], "meta": []},
+            {"nodes": [{"id": "a"}], "connections": [], "languages": ["python"]},
+        ):
+            with self.assertRaises(mitosis.Refusal) as caught:
+                self._load(graph)
+            self.assertIn("no links or edges list", str(caught.exception))
+
+    def an_object_that_is_neither_shape_is_refused_by_name(self):
+        with self.assertRaises(mitosis.Refusal) as caught:
+            self._load({"directed": False, "graph": {}, "nodes": "not a list"})
+        self.assertIn("node-link", str(caught.exception))
+
+    def a_node_link_graph_that_names_no_file_is_refused(self):
+        graph = {"nodes": [{"id": "x"}, {"id": "y"}], "links": [{"source": "x", "target": "y"}]}
+        with self.assertRaises(mitosis.Refusal) as caught:
+            self._load(graph)
+        self.assertIn("source_file", str(caught.exception))
+
+
+HOLDING_WORKER = r'''
+import json
+import sys
+
+prefix = "Write-set for this Lane, the only files you may edit: "
+paths = [
+    path.strip()
+    for line in sys.argv[1].splitlines()
+    if line.startswith(prefix)
+    for path in line[len(prefix):].split(",")
+    if path.strip()
+]
+for path in paths:
+    with open(path, "a") as handle:
+        handle.write("work\n")
+print(json.dumps({"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"}))
+'''
+
+
+class HeldRun(unittest.TestCase):
+    def _run(self, *extra, worker=None):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
+            git_repo(root)
+            write(root, "items.json", json.dumps([briefed("alpha")]))
+            with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
+                return invoke(
+                    root,
+                    [
+                        "--items",
+                        "items.json",
+                        "--run-dir",
+                        os.path.join(elsewhere, "run"),
+                        "--feature-branch",
+                        "feature",
+                        "--dispatch-command",
+                        command(elsewhere, "worker.py", worker or HOLDING_WORKER, "{task}"),
+                        "--acceptance-command",
+                        "probe {file} {test}",
+                        "--timeout",
+                        "30",
+                        *extra,
+                    ],
+                )
+
+    def the_last_line_is_a_json_summary_the_caller_can_act_on(self):
+        code, out, err = self._run("--no-push")
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        found = json.loads(out.splitlines()[-1])
+        self.assertEqual(found["exit"], mitosis.EXIT_SHIPPED)
+        self.assertEqual(found["meaning"], mitosis.EXIT_MEANING[mitosis.EXIT_SHIPPED])
+        self.assertEqual([lane["state"] for lane in found["lanes"]], ["ok"])
+        self.assertEqual(found["lanes"][0]["steps"], ["alpha"])
+        self.assertTrue(found["lanes"][0]["stdout"].endswith("0.out"))
+        self.assertEqual([msp["state"] for msp in found["msps"]], [run.MSP_COMMITTED])
+        self.assertEqual(found["attention"], [])
+        self.assertEqual(len(found["plan_id"]), 12)
+        self.assertTrue(found["run_dir"].endswith("run"))
+
+    def a_summary_names_what_needs_attention_when_a_worker_fails(self):
+        code, out, err = self._run("--no-push", worker="import sys\nsys.exit(4)\n")
+        self.assertEqual(code, 10, out + err)
+        found = json.loads(out.splitlines()[-1])
+        self.assertEqual(found["lanes"][0]["state"], "failed")
+        self.assertIn("exit 4", found["lanes"][0]["reason"])
+        self.assertTrue(found["lanes"][0]["stderr"].endswith("0.err"))
+        self.assertEqual(len(found["attention"]), 2)
+        self.assertIn("Lane 0 (alpha) is failed", found["attention"][0])
+        self.assertIn("MSP alpha is blocked", found["attention"][1])
+
+    def a_held_run_needs_no_pull_request_command_and_pushes_nothing(self):
+        code, out, err = self._run("--no-push")
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        self.assertIn("MSP alpha: committed", out)
+
+    def a_held_run_with_a_pull_request_command_is_refused(self):
+        code, _, err = self._run("--no-push", "--pr-command", "opener {branch}")
+        self.assertEqual(code, mitosis.EXIT_REFUSED)
+        self.assertIn("--no-push", err)
+
+    def a_run_that_pushes_still_needs_a_pull_request_command(self):
+        code, _, err = self._run()
+        self.assertEqual(code, mitosis.EXIT_REFUSED)
+        self.assertIn("--pr-command", err)
+
+
+class GateExit(unittest.TestCase):
+    PLAN = {
+        "plan_id": "p",
+        "lanes": [{"msp": 0, "steps": ["impl"]}],
+        "msps": [{"label": "impl", "steps": ["impl"]}],
+        "items": [{"name": "impl", "files": ["impl.py"], "acceptance": []}],
+    }
+
+    def _state(self, **msp):
+        return {
+            "worktrees": [{"msp": 0}],
+            "lanes": {"0": {"state": "ok"}},
+            "msps": {"0": {"state": "shipped", "reconcile": {"undeclared": [], "unwritten": [],
+                                                             "crossing": [], "fatal": False}, **msp}},
+        }
+
+    def a_shipped_msp_with_an_inert_property_exits_twenty(self):
+        state = self._state(gate={"outcome": "inert", "counts": {}, "blocks": True})
+        self.assertEqual(mitosis.exit_code(state, self.PLAN), 20)
+        self.assertIn("proves nothing", mitosis.EXIT_MEANING[20])
+
+    def a_shipped_msp_the_gate_could_not_judge_exits_twenty_one(self):
+        self.assertEqual(
+            mitosis.exit_code(self._state(gate={"outcome": "inconclusive", "blocks": True}), self.PLAN), 21
+        )
+        self.assertEqual(
+            mitosis.exit_code(self._state(gate=None, gate_error="no runner"), self.PLAN), 21
+        )
+
+    def a_shipped_msp_that_wrote_another_msps_file_exits_seven(self):
+        crossing = {"undeclared": ["b.txt"], "unwritten": [], "crossing": [{"path": "b.txt", "label": "beta"}], "fatal": True}
+        state = self._state(gate={"outcome": "pass", "blocks": False}, reconcile=crossing)
+        self.assertEqual(mitosis.exit_code(state, self.PLAN), mitosis.EXIT_CROSSING)
+        self.assertIn("another MSP owns", mitosis.EXIT_MEANING[mitosis.EXIT_CROSSING])
+        undeclared = {"undeclared": ["stray.txt"], "unwritten": [], "crossing": [], "fatal": False}
+        self.assertEqual(
+            mitosis.exit_code(self._state(gate={"outcome": "pass", "blocks": False}, reconcile=undeclared), self.PLAN),
+            mitosis.EXIT_RECONCILE,
+        )
+
+    def a_lane_that_changed_a_siblings_file_exits_eight(self):
+        state = self._state(gate={"outcome": "pass", "blocks": False})
+        state = {
+            **state,
+            "lanes": {"0": {"state": "ok", "foreign_writes": [{"path": "impl.py", "owner": 0, "suspects": [0]}]}},
+        }
+        self.assertEqual(mitosis.exit_code(state, self.PLAN), mitosis.EXIT_FOREIGN)
+        self.assertIn("another Lane", mitosis.EXIT_MEANING[mitosis.EXIT_FOREIGN])
+
+    def a_shipped_msp_whose_gate_passed_exits_zero(self):
+        state = self._state(gate={"outcome": "pass", "counts": {}, "blocks": False})
+        self.assertEqual(mitosis.exit_code(state, self.PLAN), mitosis.EXIT_SHIPPED)
+        passing = self._state(gate={"outcome": "not-applicable", "blocks": False})
+        self.assertEqual(mitosis.exit_code(passing, self.PLAN), mitosis.EXIT_SHIPPED)
+
+
+class CouplingReport(unittest.TestCase):
+    ITEMS = [
+        briefed("seven", files=["db/migrations/0007_x.sql"]),
+        briefed("eight", files=["db/migrations/0008_y.sql"]),
+        briefed("plain-a", files=["src/a.py"]),
+        briefed("plain-b", files=["src/b.py"]),
+    ]
+
+    def _plan_only(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(root, "items.json", json.dumps(self.ITEMS))
+            write(root, "graph.json", json.dumps({"src/a.py": ["src/b.py"]}))
+            return invoke(
+                root,
+                ["--items", "items.json", "--graph", "graph.json", "--plan-only",
+                 "--run-dir", os.path.join(root, "run")],
+            )
+
+    def a_strong_signal_is_ordered_and_an_import_link_is_named_before_the_build(self):
+        code, out, err = self._plan_only()
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
+        body = section(out, "Coupling")
+        self.assertIn("seven then eight: put in order because of same-migration-directory", body)
+        self.assertTrue(any(line.startswith("plain-a and plain-b") and "run in parallel" in line for line in body))
+        found = json.loads(out.splitlines()[-1])
+        self.assertEqual(
+            [(entry["first"], entry["then"]) for entry in found["coupling"]["ordered"]], [("seven", "eight")]
+        )
+        self.assertEqual(found["coupling"]["parallel"], [{"steps": ["plain-a", "plain-b"], "signals": ["import-adjacency"]}])
+        self.assertEqual(
+            found["attention"],
+            ["1 pair of Steps run in parallel with only import-adjacency between them: plain-a+plain-b; "
+             "add an after edge where one needs the other's output"],
+        )
+
+    def many_parallel_pairs_are_named_in_one_line_with_the_rest_counted(self):
+        coupling = {
+            "ordered": [],
+            "parallel": [{"steps": ["a%d" % n, "b%d" % n], "signals": ["import-adjacency"]} for n in range(10)],
+        }
+        lines = mitosis._coupling_attention(coupling)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("10 pairs of Steps", lines[0])
+        self.assertIn("and 2 more", lines[0])
 
 
 class ReportSections(unittest.TestCase):
@@ -841,7 +1104,7 @@ class CoverageRendering(unittest.TestCase):
         self.assertEqual([line for line in printed if "unclaimed" in line], [])
 
 
-class LaneCycleRefusal(unittest.TestCase):
+class LaneCycleFusion(unittest.TestCase):
     CYCLIC = [
         {"name": "core", "task": "t", "files": ["core.py", "shared.py"], "source": None,
          "acceptance": []},
@@ -856,30 +1119,29 @@ class LaneCycleRefusal(unittest.TestCase):
          "after": ["a"]},
     ]
 
-    def a_cycle_spanning_msps_refuses_before_anything_is_spawned(self):
-        with self.assertRaises(mitosis.Refusal) as raised:
-            mitosis.refuse_lane_cycles(self.CYCLIC)
-        self.assertIn("more than one MSP", str(raised.exception))
-        self.assertIn("pull requests", str(raised.exception))
+    def a_cycle_spanning_msps_is_planned_as_one_msp_and_never_refused(self):
+        self.assertEqual(mitosis.manifest_lines(self.CYCLIC), ())
+        self.assertEqual(mitosis.planned_code(self.CYCLIC), mitosis.EXIT_SHIPPED)
+        self.assertEqual(len(core.msp_items(self.CYCLIC)), 1)
+        self.assertEqual(len(core.lane_items(self.CYCLIC)), 1)
 
-    def a_plan_without_a_cycle_is_never_refused(self):
-        self.assertIsNone(mitosis.refuse_lane_cycles(self.CLEAN))
+    def a_plan_without_a_cycle_keeps_its_msps_apart(self):
+        self.assertEqual(mitosis.manifest_lines(self.CLEAN), ())
         self.assertEqual(mitosis.planned_code(self.CLEAN), mitosis.EXIT_SHIPPED)
+        self.assertEqual(len(core.msp_items(self.CLEAN)), 2)
 
-    def the_reported_exit_code_matches_the_refusal(self):
-        self.assertEqual(mitosis.planned_code(self.CYCLIC), mitosis.EXIT_REFUSED)
-
-    def a_manifest_that_can_export_nothing_refuses(self):
+    def a_manifest_that_can_export_nothing_is_reported_not_refused(self):
         items = [
             {"name": "gregorian", "task": "t", "files": ["pkg/__init__.py", "pkg/g.py"],
              "source": None, "acceptance": []},
             {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None,
              "acceptance": [], "after": ["gregorian"]},
         ]
-        with self.assertRaises(mitosis.Refusal) as raised:
-            mitosis.refuse_lane_cycles(items)
-        self.assertIn("would ship empty", str(raised.exception))
-        self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_REFUSED)
+        reported = mitosis.manifest_lines(items)
+        self.assertEqual(len(reported), 1)
+        self.assertIn("pkg/__init__.py would ship with nothing exported", reported[0])
+        self.assertIn("gregorian owns it", reported[0])
+        self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_MANIFEST)
 
     def a_manifest_written_last_is_never_refused(self):
         items = [
@@ -888,12 +1150,12 @@ class LaneCycleRefusal(unittest.TestCase):
             {"name": "surface", "task": "t", "files": ["pkg/__init__.py"], "source": None,
              "acceptance": [], "after": ["parse"]},
         ]
-        self.assertIsNone(mitosis.refuse_lane_cycles(items))
+        self.assertEqual(mitosis.manifest_lines(items), ())
         self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_SHIPPED)
 
     def a_cycle_inside_one_msp_is_contracted_and_never_refused(self):
         items = [{**step, "msp": "m"} for step in self.CYCLIC]
-        self.assertIsNone(mitosis.refuse_lane_cycles(items))
+        self.assertEqual(mitosis.manifest_lines(items), ())
         self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_SHIPPED)
 
     def an_outcome_line_states_the_meaning_of_every_exit_code(self):
@@ -932,7 +1194,11 @@ def load_tests(loader, tests, pattern):
         ReportSections,
         BriefStageReport,
         CoverageRendering,
-        LaneCycleRefusal,
+        LaneCycleFusion,
+        HeldRun,
+        GateExit,
+        CouplingReport,
+        GraphLoading,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite

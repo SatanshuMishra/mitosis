@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -73,17 +74,48 @@ class Grouping(unittest.TestCase):
             step("client", ["client.py"], contract_group="g"),
         ]
         self.assertEqual(len(core.msp_items(unpinned)), 1)
-        self.assertEqual(len(core.lane_items(unpinned)), 2)
-        self.assertEqual(core.lane_after(unpinned, core.lane_items(unpinned)), {})
+        self.assertEqual(len(core.lane_items(unpinned)), 1)
 
-    def an_unpinned_contract_group_ships_as_one_msp_without_serialising_its_steps(self):
+    def an_unpinned_contract_group_is_built_by_one_worker(self):
         items = [
             step("server", ["server.py"], contract_group="g"),
             step("client", ["client.py"], contract_group="g"),
             step("docs", ["docs.py"], contract_group="g"),
         ]
         self.assertEqual(len(core.msp_items(items)), 1)
-        self.assertEqual(len(core.lane_items(items)), 3)
+        self.assertEqual(core.lane_items(items), ((0, 1, 2),))
+        self.assertEqual(core.pinned_groups(items), frozenset())
+
+    def a_group_with_two_contract_steps_is_not_pinned(self):
+        items = [
+            step("shape-a", ["a.py"], type="contract", contract_group="g"),
+            step("shape-b", ["b.py"], type="contract", contract_group="g"),
+            step("user", ["u.py"], contract_group="g", after=["shape-a", "shape-b"]),
+        ]
+        self.assertEqual(core.pinned_groups(items), frozenset())
+        self.assertEqual(len(core.lane_items(items)), 1)
+
+    def a_member_that_never_waits_on_the_contract_unpins_the_group(self):
+        items = [
+            step("iface", ["iface.py"], type="contract", contract_group="g"),
+            step("server", ["server.py"], contract_group="g", after=["iface"]),
+            step("client", ["client.py"], contract_group="g"),
+        ]
+        self.assertEqual(core.pinned_groups(items), frozenset())
+        self.assertEqual(len(core.lane_items(items)), 1)
+
+    def a_member_waiting_on_the_contract_through_another_step_keeps_the_group_pinned(self):
+        items = [
+            step("iface", ["iface.py"], type="contract", contract_group="g"),
+            step("server", ["server.py"], contract_group="g", after=["iface"]),
+            step("adapter", ["adapter.py"], contract_group="g", after=["iface"]),
+            step("client", ["client.py"], contract_group="g", after=["adapter"]),
+        ]
+        self.assertEqual(core.pinned_groups(items), frozenset({"g"}))
+        self.assertEqual(len(core.msp_items(items)), 1)
+        lanes = core.lane_items(items)
+        self.assertNotEqual(lane_of(lanes, items, "server"), lane_of(lanes, items, "client"))
+        self.assertEqual(core.lane_cycles(items, lanes), ())
 
     def a_cycle_inside_one_msp_is_contracted_so_the_plan_can_still_run(self):
         items = [
@@ -108,17 +140,23 @@ class Grouping(unittest.TestCase):
         self.assertLess(walked.index("p1"), walked.index("tail"))
         self.assertLess(walked.index("p2"), walked.index("tail"))
 
-    def a_cycle_spanning_two_msps_survives_because_contracting_it_would_span_msps(self):
+    def msps_that_wait_on_each_other_are_fused_into_one_msp_and_built_in_order(self):
         items = [
             step("core", ["core.py", "shared.py"]),
             step("mid", ["mid.py"], after=["core"]),
             step("tail", ["tail.py", "shared.py"], after=["mid"]),
         ]
         lanes = core.lane_items(items)
-        owner = core.lane_msps(items, lanes)
-        found = core.lane_cycles(items, lanes)
-        self.assertEqual(len(found), 1)
-        self.assertGreater(len({owner[lane] for lane in found[0]}), 1)
+        self.assertEqual(len(core.msp_items(items)), 1)
+        self.assertEqual(len(lanes), 1)
+        self.assertEqual(core.lane_cycles(items, lanes), ())
+        walked = [items[index]["name"] for index in lanes[0]]
+        self.assertEqual(walked, ["core", "mid", "tail"])
+
+    def two_steps_that_wait_on_each_other_are_fused_into_one_lane(self):
+        items = [step("a", ["a.py"], after=["b"]), step("b", ["b.py"], after=["a"])]
+        self.assertEqual(len(core.msp_items(items)), 1)
+        self.assertEqual(len(core.lane_items(items)), 1)
 
     def contraction_never_puts_two_msps_in_one_lane(self):
         items = [
@@ -134,15 +172,19 @@ class Grouping(unittest.TestCase):
 
     def a_lane_cycle_is_reported_when_fusion_turns_a_step_dag_into_a_loop(self):
         items = [
-            step("core", ["core.py", "shared.py"]),
-            step("mid", ["mid.py"], after=["core"]),
-            step("tail", ["tail.py", "shared.py"], after=["mid"]),
+            step("a1", ["pkg/a.py"]),
+            step("a2", ["pkg/a.py"]),
+            step("b1", ["pkg/b.py"], after=["a1"]),
+            step("b2", ["pkg/b.py"]),
+            step("c", ["c.py"], after=["a1"]),
+            step("d", ["d.py"], after=["b2"]),
+            step("a3", ["pkg/a.py"], after=["b2"]),
         ]
         self.assertEqual(core.cycles(items), ())
-        lanes = core.lane_items(items)
-        found = core.lane_cycles(items, lanes)
+        found = core.lane_cycles(items, core.uncontracted_lanes(items))
         self.assertEqual(len(found), 1)
         self.assertEqual(len(found[0]), 2)
+        self.assertEqual(core.lane_cycles(items, core.lane_items(items)), ())
 
     def a_plan_without_a_loop_reports_no_lane_cycle(self):
         items = [step("a", ["a.py"]), step("b", ["b.py"], after=["a"])]
@@ -345,6 +387,53 @@ class Tiering(unittest.TestCase):
         nested = ({"files": ["src/auth/"], "outcome": "failed"},)
         self.assertEqual(core.tier_for(["src/auth/login.py"], (), "simple", [], history=nested), "top")
 
+    def only_a_record_that_went_wrong_raises_a_tier(self):
+        def tier(*records):
+            return core.tier_for(["src/a.py"], (), "simple", [], history=records)
+
+        self.assertEqual(tier({"files": ["src/a.py"], "outcome": "fixed"}), "cheap")
+        self.assertEqual(tier({"files": ["src/a.py"], "outcome": "unverified-reasoned"}), "cheap")
+        self.assertEqual(tier({"files": ["src/a.py"], "outcome": "reverted"}), "top")
+        self.assertEqual(tier({"files": ["src/a.py"], "outcome": "speculative"}), "top")
+        self.assertEqual(
+            tier({"files": ["src/a.py"], "outcome": "fixed", "regressed": ["src/b.py"]}), "top"
+        )
+        trap = {"files": ["src/a.py"], "outcome": "fixed", "what_failed": ["patched the wrong layer"]}
+        self.assertEqual(tier(trap), "cheap")
+        self.assertEqual(tier(trap, dict(trap)), "top")
+
+    def a_superseded_record_is_not_read(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
+            handle.write('{"id": "old", "files": ["src/a.py"], "outcome": "reverted"}\n')
+            handle.write('{"id": "new", "supersedes": "old", "files": ["src/a.py"], "outcome": "fixed"}\n')
+            path = handle.name
+        try:
+            loaded = core.trajectory_store(path)
+        finally:
+            os.unlink(path)
+        self.assertEqual([record["id"] for record in loaded], ["new"])
+        self.assertEqual(core.tier_for(["src/a.py"], (), "simple", [], history=loaded), "cheap")
+
+    def a_recorded_breakage_couples_the_two_surfaces_and_a_fix_does_not(self):
+        items = [step("a", ["src/a.py"]), step("b", ["src/b.py"])]
+        lanes = core.lane_items(items)
+        broke = ({"files": ["src/a.py"], "outcome": "fixed", "regressed": ["src/b.py"]},)
+        fixed = ({"files": ["src/a.py", "src/b.py"], "outcome": "fixed"},)
+        signals = {tuple(e["steps"]): e["signals"] for e in core.coupling_review(items, lanes, None, history=broke)}
+        self.assertEqual(signals[("a", "b")], ["recorded-regression"])
+        self.assertEqual(core.coupling_review(items, lanes, None, history=fixed), [])
+
+    def a_marker_matches_a_mixed_case_path(self):
+        self.assertTrue(core.marker_matches("app/Services/Auth/Login.php", "Services/Auth"))
+        self.assertTrue(core.marker_matches("app/Services/Auth/Login.php", "services/auth"))
+        self.assertTrue(core.marker_matches("db/Migrate/001.SQL", ".sql"))
+        self.assertTrue(core.marker_matches("DB/0004_add.SQL", "db/*.sql"))
+        self.assertTrue(core.marker_matches("app/types/AuthResponse.ts", "auth"))
+        self.assertFalse(core.marker_matches("src/waverider.py", "wav"))
+        self.assertEqual(
+            core.tier_for(["app/Services/Auth/Login.php"], ["Services/Auth"], "simple", None), "top"
+        )
+
     def a_missing_trajectory_store_changes_nothing(self):
         import tempfile
 
@@ -397,6 +486,50 @@ class Tiering(unittest.TestCase):
         self.assertEqual(core.coupling_review(items, lanes, None), [
             entry for entry in review if entry["signals"] == ["same-migration-directory"]
         ])
+
+    def a_strong_coupling_signal_orders_the_pair_and_an_import_link_leaves_it_parallel(self):
+        items = [
+            step("seven", ["db/migrations/0007_add_x.sql"]),
+            step("eight", ["db/migrations/0008_add_y.sql"]),
+            step("plain-a", ["src/a.py"]),
+            step("plain-b", ["src/b.py"]),
+            step("auth-a", ["src/auth/a.py"]),
+            step("auth-b", ["lib/auth/b.py"]),
+        ]
+        history = ({"files": ["src/a.py", "src/auth/a.py"], "outcome": "failed"},)
+        plan = core.plan(items, graph={"src/a.py": ["src/b.py"]}, risk_markers=("auth/",), history=history)
+        ordered = {(entry["first"], entry["then"]): entry["signals"] for entry in plan["coupling_order"]}
+        self.assertEqual(ordered[("seven", "eight")], ["same-migration-directory"])
+        self.assertEqual(ordered[("auth-a", "auth-b")], ["shared-risk-marker"])
+        self.assertEqual(ordered[("plain-a", "auth-a")], ["recorded-regression"])
+        by_name = {item["name"]: item for item in plan["items"]}
+        self.assertEqual(by_name["eight"]["after"], ["seven"])
+        self.assertEqual(by_name["auth-b"]["after"], ["auth-a"])
+        review = {tuple(entry["steps"]): entry for entry in plan["coupling_review"]}
+        self.assertEqual(review[("plain-a", "plain-b")]["default"], "parallel")
+        self.assertEqual(review[("plain-a", "plain-b")]["signals"], ["import-adjacency"])
+        self.assertNotIn(("seven", "eight"), review)
+        self.assertFalse(any("after" in item for item in items))
+
+    def an_added_order_never_closes_a_loop(self):
+        items = [
+            step("a", ["m/0001_a.sql"], after=["c"]),
+            step("b", ["m/0002_b.sql"]),
+            step("c", ["m/0003_c.sql"]),
+        ]
+        plan = core.plan(items)
+        self.assertEqual(core.cycles(plan["items"]), ())
+        self.assertEqual(
+            [(entry["first"], entry["then"]) for entry in plan["coupling_order"]], [("a", "b")]
+        )
+        by_name = core._by_name(plan["items"])
+        for x, y in (("a", "b"), ("a", "c"), ("b", "c")):
+            self.assertTrue(core._ordered(plan["items"], by_name[x], by_name[y], by_name), (x, y))
+
+    def a_pair_already_ordered_by_an_after_edge_gets_no_verdict(self):
+        items = [step("a", ["src/a.py"]), step("b", ["src/b.py"], after=["a"])]
+        lanes = core.lane_items(items)
+        self.assertEqual(core.coupling_review(items, lanes, {"src/a.py": ["src/b.py"]}), [])
 
     def verify_mode_splits_serial_from_offloadable(self):
         items = [
@@ -498,6 +631,9 @@ class Cost(unittest.TestCase):
 SOURCE = {"path": "docs/spec.md", "sha256": "0" * 64}
 
 
+RICH_GRAPH = {"core.py": ["run.py"], "README.md": ["SKILL.md"]}
+
+
 def rich_items():
     return [
         step("core-vocab", ["core.py"], source=dict(SOURCE), complexity="simple",
@@ -513,8 +649,8 @@ def rich_items():
 
 class Plan(unittest.TestCase):
     def the_plan_emits_exactly_the_declared_keys(self):
-        result = core.plan(rich_items(), charter="docs/charter.md", graph={"core.py": ["run.py"]})
-        self.assertEqual(set(result), set(core.PLAN_KEYS))
+        result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
+        self.assertEqual(set(result), set(core.PLAN_KEYS) - {"coupling_order"})
         self.assertEqual(list(result), [key for key in core.PLAN_KEYS if key in result])
         self.assertEqual(result["version"], core.__version__)
         self.assertEqual(result["source"], SOURCE)
@@ -592,8 +728,8 @@ class Plan(unittest.TestCase):
         self.assertNotIn("popen", source)
         self.assertIsNone(re.search(r"\bgit\b", source))
         with mock.patch.object(builtins, "open", side_effect=AssertionError("plan opened a file")):
-            result = core.plan(rich_items(), charter="docs/charter.md", graph={"core.py": ["run.py"]})
-        self.assertEqual(set(result), set(core.PLAN_KEYS))
+            result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
+        self.assertEqual(set(result), set(core.PLAN_KEYS) - {"coupling_order"})
 
     def plan_refuses_invalid_items_with_messages(self):
         with self.assertRaises(core.ValidationError) as caught:
@@ -601,6 +737,162 @@ class Plan(unittest.TestCase):
         self.assertEqual(len(caught.exception.errors), 1)
         self.assertIn("ghost", caught.exception.errors[0])
         self.assertIn("ghost", str(caught.exception))
+
+
+def node_link(links, directed=False, key="links"):
+    nodes = [
+        {"id": "a1", "file_type": "code", "source_file": "pkg/a.py"},
+        {"id": "a2", "file_type": "code", "source_file": "pkg/a.py"},
+        {"id": "b1", "file_type": "code", "source_file": "pkg/b.py"},
+        {"id": "c1", "source_file": "pkg/c.py"},
+        {"id": "doc", "file_type": "document", "source_file": "README.md"},
+        {"id": "ext", "file_type": "concept", "source_file": ""},
+    ]
+    return {"directed": directed, "nodes": nodes, key: [
+        {"source": source, "target": target, "relation": "calls"} for source, target in links
+    ]}
+
+
+class ReadSetCap(unittest.TestCase):
+    def a_hub_file_fills_no_brief_past_the_default_cap(self):
+        graph = {"hub.py": ["n%03d.py" % n for n in range(120)]}
+        plan = core.plan([step("edit-hub", ["hub.py"])], graph=graph)
+        brief = plan["briefs"][0]
+        self.assertEqual(len(brief["read_set"]), core.CONTEXT_CAP)
+        self.assertEqual(brief["read_overflow"], 120 - core.CONTEXT_CAP)
+        self.assertIn("(%d more not shown)" % (120 - core.CONTEXT_CAP), brief["text"])
+        self.assertEqual(core.CONTEXT_CAP, 40)
+
+    def a_lane_of_several_steps_is_capped_as_a_whole(self):
+        graph = {
+            "a.py": ["a%02d.py" % n for n in range(30)],
+            "b.py": ["b%02d.py" % n for n in range(30)],
+        }
+        items = [step("a", ["a.py"], msp="m"), step("b", ["b.py"], msp="m", after=["a"])]
+        plan = core.plan(items, graph=graph)
+        self.assertEqual(len(plan["lanes"]), 1)
+        brief = plan["briefs"][0]
+        self.assertEqual(len(brief["read_set"]), core.CONTEXT_CAP)
+        self.assertEqual(brief["read_overflow"], 60 - core.CONTEXT_CAP)
+
+    def an_explicit_cap_is_still_honoured(self):
+        graph = {"hub.py": ["n%03d.py" % n for n in range(12)]}
+        brief = core.plan([step("edit-hub", ["hub.py"])], graph=graph, cap=5)["briefs"][0]
+        self.assertEqual((len(brief["read_set"]), brief["read_overflow"]), (5, 7))
+
+
+class SharedTree(unittest.TestCase):
+    def every_lane_brief_says_the_worktree_is_shared(self):
+        plan = core.plan([step("a", ["a.py"]), step("b", ["b.py"], msp="m"), step("c", ["c.py"], msp="m")])
+        for brief in plan["briefs"]:
+            self.assertIn(core.SHARED_TREE_LINE, brief["text"])
+            self.assertIn("changes the repository's index or history", brief["text"])
+
+
+class GraphInput(unittest.TestCase):
+    LINKS = [("a1", "b1"), ("a2", "a1"), ("doc", "a1"), ("ext", "b1"), ("b1", "c1"), ("a1", "gone")]
+
+    def links_between_code_in_two_files_become_neighbours_both_ways(self):
+        adjacency = core.adjacency_from_node_links(node_link(self.LINKS), "/repo")
+        self.assertEqual(
+            adjacency,
+            {"pkg/a.py": ["pkg/b.py"], "pkg/b.py": ["pkg/a.py", "pkg/c.py"], "pkg/c.py": ["pkg/b.py"]},
+        )
+        self.assertTrue(core.is_adjacency(adjacency))
+
+    def a_directed_graph_keeps_its_direction(self):
+        adjacency = core.adjacency_from_node_links(node_link(self.LINKS, directed=True), "/repo")
+        self.assertEqual(adjacency, {"pkg/a.py": ["pkg/b.py"], "pkg/b.py": ["pkg/c.py"]})
+
+    def the_edges_key_is_read_like_the_links_key(self):
+        self.assertEqual(
+            core.adjacency_from_node_links(node_link(self.LINKS, key="edges"), "/repo"),
+            core.adjacency_from_node_links(node_link(self.LINKS), "/repo"),
+        )
+
+    def an_absolute_source_file_is_made_relative_and_one_outside_the_root_is_dropped(self):
+        graph = {
+            "nodes": [
+                {"id": "in", "source_file": "/repo/src/x.py"},
+                {"id": "out", "source_file": "/elsewhere/y.py"},
+                {"id": "local", "source_file": "src/z.py"},
+            ],
+            "links": [{"source": "in", "target": "local"}, {"source": "out", "target": "local"}],
+        }
+        self.assertEqual(
+            core.adjacency_from_node_links(graph, "/repo"),
+            {"src/x.py": ["src/z.py"], "src/z.py": ["src/x.py"]},
+        )
+
+    def a_read_set_reaches_a_neighbour_named_only_by_a_node_link_graph(self):
+        adjacency = core.adjacency_from_node_links(node_link(self.LINKS), "/repo")
+        plan = core.plan([step("edit-a", ["pkg/a.py"])], graph=adjacency)
+        self.assertIn("pkg/b.py", plan["briefs"][0]["read_set"])
+
+    def a_mapping_is_an_adjacency_when_any_path_lists_its_neighbours(self):
+        self.assertTrue(core.is_adjacency({"a.py": ["b.py"], "b.py": []}))
+        self.assertTrue(core.is_adjacency({"version": "1", "a.py": ["b.py", None], "b.py": None}))
+        self.assertTrue(core.is_adjacency({}))
+        self.assertFalse(core.is_adjacency({"a.py": "b.py", "version": 2}))
+        self.assertTrue(core.is_adjacency({"a.py": ["b.py", {"x": 1}], "nodes": [{"id": "a"}]}))
+        self.assertEqual(core.clean_adjacency({"a.py": ["b.py", {"x": 1}]}), {"a.py": ["b.py"]})
+        self.assertFalse(core.is_adjacency({"nodes": [{"id": "a"}], "meta": []}))
+        self.assertFalse(core.is_adjacency({"a.py": [["b.py"]]}))
+        self.assertTrue(core.is_adjacency({"a.py": [], "b.py": []}))
+        self.assertFalse(core.is_adjacency(["a.py"]))
+        self.assertIsNone(core.node_link_edges({"a.py": ["b.py"]}))
+        self.assertIsNone(core.node_link_edges({"nodes": [], "links": "x"}))
+
+    def a_source_file_with_a_nul_byte_is_dropped_not_raised(self):
+        graph = {
+            "nodes": [
+                {"id": "bad", "source_file": "/elsewhere/a\x00.py"},
+                {"id": "ok", "source_file": "src/b.py"},
+                {"id": "ok2", "source_file": "src/c.py"},
+            ],
+            "links": [{"source": "bad", "target": "ok"}, {"source": "ok", "target": "ok2"}],
+        }
+        self.assertEqual(
+            core.adjacency_from_node_links(graph, "/repo"),
+            {"src/b.py": ["src/c.py"], "src/c.py": ["src/b.py"]},
+        )
+
+    def a_node_id_of_any_json_shape_is_matched_to_its_links(self):
+        graph = {
+            "nodes": [
+                {"id": ["pkg", "a"], "source_file": "pkg/a.py"},
+                {"id": {"k": 1}, "source_file": "pkg/b.py"},
+                {"id": 7, "source_file": "pkg/c.py"},
+            ],
+            "links": [
+                {"source": ["pkg", "a"], "target": {"k": 1}},
+                {"source": 7, "target": ["pkg", "a"]},
+            ],
+        }
+        self.assertEqual(
+            core.adjacency_from_node_links(graph, "/repo"),
+            {"pkg/a.py": ["pkg/b.py", "pkg/c.py"], "pkg/b.py": ["pkg/a.py"], "pkg/c.py": ["pkg/a.py"]},
+        )
+
+    def a_path_reaching_the_root_through_a_symlink_is_kept_and_one_climbing_out_is_dropped(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            real = os.path.realpath(os.path.join(scratch, "real"))
+            os.makedirs(real)
+            link = os.path.join(scratch, "link")
+            os.symlink(real, link)
+            graph = {
+                "nodes": [
+                    {"id": "via-link", "source_file": os.path.join(link, "src", "a.py")},
+                    {"id": "local", "source_file": "./src/b.py"},
+                    {"id": "outside", "source_file": "../elsewhere/c.py"},
+                ],
+                "links": [
+                    {"source": "via-link", "target": "local"},
+                    {"source": "outside", "target": "local"},
+                ],
+            }
+            adjacency = core.adjacency_from_node_links(graph, real)
+        self.assertEqual(adjacency, {"src/a.py": ["src/b.py"], "src/b.py": ["src/a.py"]})
 
 
 def load_tests(loader, tests, pattern):
@@ -614,7 +906,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Grouping, Validation, Tiering, Cost, Plan):
+    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, SharedTree, ReadSetCap):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

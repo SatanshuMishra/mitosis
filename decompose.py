@@ -47,8 +47,12 @@ OPTIONAL_FIELD_LINES = (
     "  after: names of Steps that must be built first; these edges join parts of the document"
     " that may be far apart, and they can only be seen from the whole of it",
     "  contract_group: one shared id for Steps that ship as ONE pull request because they"
-    " are parts of one interface. It does not order them; after edges do that. Use it when"
-    " two halves of an interface must be reviewed and merged together",
+    " are parts of one interface. Use it when two halves of an interface must be reviewed"
+    " and merged together. One Worker builds the whole group in sequence, so the halves"
+    " cannot disagree, unless the group is pinned: exactly one of its Steps has type"
+    " contract and fixes the interface, and every other Step in the group is after it,"
+    " directly or through other Steps. Only a pinned group's other Steps run in parallel."
+    " To ship Steps as one pull request without making them one Worker's, use msp instead",
     "  type: one of " + ", ".join(core.STEP_TYPES),
     "  complexity: one of " + ", ".join(core.COMPLEXITY_VALUES),
     "  file_notes: {path: what changes there}",
@@ -400,8 +404,37 @@ def _walk(base, relative=""):
             yield found
 
 
+def _tracked(base):
+    try:
+        completed = subprocess.run(
+            ["git", "-C", base, "ls-files", "-z"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return None
+    if completed.returncode != 0:
+        return None
+    return tuple(os.fsdecode(raw) for raw in completed.stdout.split(b"\0") if raw)
+
+
+def _kept(base, relative):
+    full = os.path.join(base, relative)
+    return (
+        not any(part in SKIPPED_DIRS for part in relative.split("/"))
+        and os.path.isfile(full)
+        and not os.path.islink(full)
+    )
+
+
 def inventory(root, cap=None):
-    paths = tuple(_walk(os.path.abspath(root)))
+    base = os.path.abspath(root)
+    tracked = _tracked(base)
+    paths = (
+        tuple(_walk(base))
+        if tracked is None
+        else tuple(sorted({path for path in tracked if _kept(base, path)}))
+    )
     limit = len(paths) if cap is None else max(0, int(cap))
     kept = paths[:limit]
     return {"root": root, "paths": list(kept), "overflow": len(paths) - len(kept)}
@@ -685,6 +718,10 @@ def _returned_a_structure(index, spawned):
 
 def parse_delta(line):
     return _parse_lists(line, DELTA_KEYS)
+
+
+def _returned_a_delta(index, spawned):
+    return not parse_delta(spawned["line"])["errors"]
 
 
 def _step_name(step):
@@ -976,7 +1013,8 @@ def sample_structures(
     argv = _argv_for(frozen, template, prompt, model)
     logs = _sample_logs(log, count)
     jobs = [{"argv": argv, "prompt": prompt, "log": sample_log} for sample_log in logs]
-    spawned = spawn_until(jobs, timeout, count, root, _returned_a_structure)
+    accepts = _returned_a_delta if prior else _returned_a_structure
+    spawned = spawn_until(jobs, timeout, count, root, accepts)
     return [
         _assemble_structure(frozen, one, sample_log, root, prior)
         for one, sample_log in zip(spawned, logs)
