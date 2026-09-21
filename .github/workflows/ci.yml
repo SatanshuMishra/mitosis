@@ -1,0 +1,75 @@
+name: ci
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.9', '3.14']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run the suite
+        run: python -m unittest discover tests
+
+  release-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+      - name: Validate the marketplace, the plugin and its skill
+        run: |
+          npx --yes @anthropic-ai/claude-code@2.1.278 plugin validate --strict .
+          npx --yes @anthropic-ai/claude-code@2.1.278 plugin validate --strict .claude-plugin/plugin.json
+          npx --yes @anthropic-ai/claude-code@2.1.278 plugin validate --strict skills
+      - name: Refuse an unversioned change or a denied term
+        env:
+          DENY_TERMS: ${{ secrets.DENY_TERMS }}
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            python3 scripts/release_check.py --base HEAD^1
+          else
+            python3 scripts/release_check.py --base "$BEFORE" --or-last-release
+          fi
+
+  tag:
+    if: github.event_name == 'push'
+    needs: [test, release-check]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-tag
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Tag the release this commit declares
+        run: |
+          version=$(python3 -c 'import core; print(core.__version__)')
+          tag="mitosis--v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+            echo "$tag already exists"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$tag" -m "mitosis $version"
+            git push origin "refs/tags/$tag"
+          fi

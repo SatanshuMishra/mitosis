@@ -1,0 +1,18 @@
+{
+  "name": "mitosis",
+  "version": "0.2.0",
+  "description": "Splits a batch of changes or a document into parts built in parallel on their own branches, checks each part's acceptance test fails without the work, and opens one draft pull request per part. Never merges.",
+  "author": {
+    "name": "Satanshu Mishra",
+    "url": "https://github.com/SatanshuMishra"
+  },
+  "homepage": "https://github.com/SatanshuMishra/mitosis",
+  "repository": "https://github.com/SatanshuMishra/mitosis",
+  "license": "Apache-2.0",
+  "keywords": [
+    "parallel",
+    "pull-requests",
+    "worktrees",
+    "decomposition"
+  ]
+}

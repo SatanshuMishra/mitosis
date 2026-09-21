@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "claim": {
+    "issue_link": "closes #(\\d+)",
+    "downgrade_tags": [
+      "unverified-reasoned",
+      "speculative",
+      "reverted"
+    ]
+  },
+  "build": {
+    "sha_source": "none",
+    "platform": "none",
+    "deploy_host_patterns": [],
+    "environments": {},
+    "verify_against": "none"
+  },
+  "verify": {
+    "test_command": "python3 -m unittest {test}",
+    "suite_command": "python3 -m unittest discover tests",
+    "live_drive": null
+  },
+  "degrade": {
+    "on_no_receipt": "require-downgrade-tag",
+    "on_unreachable_build": "sha-bind-only"
+  },
+  "agent": {
+    "loop_skills": [
+      "gates"
+    ],
+    "staging_query_patterns": [],
+    "observe": {
+      "confirmed": true,
+      "surface": "the mitosis command (python3 mitosis.py, or the installed plugin's copy): its plan report on stdout, the one-line JSON summary on stdout's last line, its exit code, and what it leaves in the target repository - MSP branches and worktrees, Lane commits, draft pull requests opened through --pr-command, and the run directory",
+      "value": "the exit code and the JSON summary's exit, meaning, lanes, msps, coupling and attention fields; the report's sections; the branch heads, commit messages and pull request bodies a run leaves behind",
+      "observe_by": "unittest for units; for end to end, running mitosis.py against a scratch git repository with stub dispatch, acceptance and pull-request commands and a local bare remote, then reading stdout, the exit code and git",
+      "terminal_action": "a full run, not --plan-only, that ends with each MSP shipped as a draft pull request through --pr-command, or committed on its local branch under --no-push; for a document, --spec with --plan-only and then --resume",
+      "build_artifact": "the installed plugin copy, whose python3 mitosis.py --version must equal the version in .claude-plugin/plugin.json and core.__version__; in a checkout, python3 mitosis.py --version at the commit",
+      "twin": "skills/mitosis/SKILL.md, README.md and CHANGELOG.md restate the flags, Lane and MSP states, exit codes and landing-commit message that core.py, run.py and mitosis.py define; core.__version__, .claude-plugin/plugin.json and CHANGELOG.md carry one version; tests/test_docs.py holds them together",
+      "dependent": "the Claude Code session that invokes the skill and reads stdout's last line as JSON; the caller's --dispatch-command, --acceptance-command and --pr-command templates; runs resumed with --resume; installed plugin copies, which update only on a version bump; the CI release check",
+      "receipt": "a unittest in tests/ named for the behaviour, red before the fix and green after, run as python3 -m unittest tests.<module>.<Class>.<method>; for end-to-end behaviour, a scripted mitosis.py run against a scratch repository with stub commands that asserts the exit code and the JSON summary",
+      "compat_boundary": "a run directory written by one release and resumed by another, which the plan id refuses; the JSON summary line read by whatever session called mitosis; command templates a caller wrote against the placeholders one release documents; an installed plugin copy that stays on its version until the plugin version changes",
+      "reach": {
+        "access": "python3 mitosis.py from the repository root, or the installed plugin's copy; needs Python 3.9 or later and git; no credentials for --plan-only or --no-push runs; a real run needs the caller's model CLI, and gh signed in to open pull requests",
+        "shortcut": "--plan-only spawns nothing; --no-push commits locally and opens no pull request; stub dispatch, acceptance and pull-request commands make a run unattended and reproducible; --timeout bounds every child",
+        "fixtures": "any git repository with a commit on --feature-branch; the tests build scratch repositories and a local bare remote in temporary directories",
+        "special_surfaces": []
+      }
+    },
+    "closeout_fixed_statuses": [
+      "Pending Retest",
+      "Verified"
+    ],
+    "repo_name": "mitosis",
+    "receipts_version": "0.9.3"
+  },
+  "gates": {
+    "medium": "cli",
+    "enabled": "all",
+    "disabled": [],
+    "G8": {
+      "integration_branch": "main"
+    }
+  }
+}
