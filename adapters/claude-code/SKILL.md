@@ -315,13 +315,14 @@ the same tree, to change only its write-set and to leave the index and history
 alone. A finished Lane is `held` until no Worker is running in its worktree,
 then committed, so a commit hook that stashes unstaged files never touches a
 sibling's work; no new Lane starts in that MSP meanwhile, and a resume lands a
-`held` Lane without paying for it again. Merges of a producer's branch skip
-commit hooks. A git command that meets another process's lock is retried for
-a few seconds.
+`held` Lane without paying for it again. Merges of a producer's branch run no
+hooks. A git command that meets another process's lock is retried for a few
+seconds.
 
-Before the first Worker, mitosis checks that git has a commit identity and
-that any commit-msg hook accepts its landing message, and refuses with exit 3
-if not. Any other refused Lane commit fails that Lane alone.
+Before anything is written, mitosis checks that git has a commit identity and
+refuses with exit 3 if not. A refused Lane commit fails that Lane alone. Hooks
+see each Lane's landing message, `chore(<MSP>): land Lane <n> (<Steps>)`, so a
+hook that refuses that form fails every Lane after its Worker has run.
 
 The gate runs each acceptance property twice, with the work present and with
 the implementation reverted on a probe branch. `pass` means the property

@@ -543,16 +543,25 @@ class Dispatch(RepoCase):
         m = next(int(i) for i, msp in enumerate(plan["msps"]) if "a" in msp["steps"])
         self.assertIn("is failed", final["msps"][str(m)]["reason"])
 
-    def a_commit_msg_hook_that_refuses_the_landing_message_is_refused_before_any_worker(self):
+    def a_commit_msg_hook_that_refuses_every_landing_fails_each_lane_and_stops_nothing(self):
         hook = os.path.join(self.repo, ".git", "hooks", "commit-msg")
         write(hook, "#!/bin/sh\ngrep -q '^JIRA-' \"$1\" || { echo 'needs a ticket' >&2; exit 1; }\n")
         os.chmod(hook, 0o755)
         plan = core.plan([step(name, [name + ".txt"]) for name in "abc"])
+        final = self.execute(plan)
+        self.assertEqual({r["state"] for r in final["lanes"].values()}, {"failed"})
+        self.assertTrue(all("needs a ticket" in r["reason"] for r in final["lanes"].values()))
+
+    def a_repository_without_a_commit_identity_is_refused_before_anything_is_written(self):
+        sh(["git", "config", "user.useConfigOnly", "true"], self.repo)
+        for key in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+            os.environ.pop(key, None)
+        plan = core.plan([step("a", ["a.txt"])])
         with self.assertRaises(run.ConfigError) as caught:
             self.execute(plan)
-        self.assertIn("commit-msg hook refuses", str(caught.exception))
-        self.assertIn("needs a ticket", str(caught.exception))
-        self.assertEqual([self.marker(i) for i in range(3)], [None, None, None])
+        self.assertIn("no commit identity", str(caught.exception))
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, run.STATE_FILE)))
+        self.assertEqual(self.branches(), ["main"])
 
     def a_commit_msg_hook_that_accepts_the_landing_message_lets_the_run_go(self):
         hook = os.path.join(self.repo, ".git", "hooks", "commit-msg")
@@ -561,22 +570,6 @@ class Dispatch(RepoCase):
         plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"])])
         final = self.execute(plan)
         self.assertEqual({r["state"] for r in final["lanes"].values()}, {"ok"})
-
-    def a_resume_with_nothing_left_to_dispatch_runs_no_commit_check(self):
-        plan = core.plan([step("a", ["a.txt"])])
-        held = dict(
-            trees_root=self.trees,
-            no_push=True,
-        )
-        run.execute(plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command(), None, 60, 2, **held)
-        hook = os.path.join(self.repo, ".git", "hooks", "commit-msg")
-        write(hook, "#!/bin/sh\nexit 1\n")
-        os.chmod(hook, 0o755)
-        again = run.execute(
-            plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command(), None, 60, 2,
-            resume=True, **held
-        )
-        self.assertEqual(again["msps"]["0"]["state"], run.MSP_COMMITTED)
 
     def two_lane_specific_refusals_first_never_stop_the_lanes_after_them(self):
         hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
@@ -607,6 +600,15 @@ class Dispatch(RepoCase):
         self.assertIsNone(self.marker(0))
         self.assertIn("a.txt", sh(["git", "show", "--name-only", "--format=", records[0]["commit"]], self.repo))
 
+    def a_held_lane_whose_work_is_gone_is_run_again_not_recorded_ok(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        prior = {0: {"lane": 0, "msp": 0, "state": run.LANE_HELD, "commit": None}}
+        records = self.dispatch(plan, trees, prior=prior)
+        self.assertEqual(records[0]["state"], "ok")
+        self.assertIsNotNone(self.marker(0))
+        self.assertIn("a.txt", sh(["git", "show", "--name-only", "--format=", records[0]["commit"]], self.repo))
+
     def a_lane_waiting_to_land_is_recorded_held_before_it_lands(self):
         plan = core.plan([step("a", ["a.txt"], msp="m"), step("b", ["b.txt"], msp="m")])
         trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
@@ -626,7 +628,7 @@ class Dispatch(RepoCase):
         producer, consumer = trees[lane_named(plan, "p")], trees[lane_named(plan, "c")]
         self.commit_file(producer["path"], "p.txt", "produced\n")
         self.commit_file(consumer["path"], "early.txt", "diverged\n")
-        for name in ("pre-merge-commit", "commit-msg"):
+        for name in ("pre-merge-commit", "commit-msg", "prepare-commit-msg"):
             hook = os.path.join(self.repo, ".git", "hooks", name)
             write(hook, "#!/bin/sh\nexit 1\n")
             os.chmod(hook, 0o755)

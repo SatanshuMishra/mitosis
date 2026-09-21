@@ -26,8 +26,6 @@ LANE_COMMIT_FAILED = "the Lane's commit failed"
 
 LANE_HELD = "held"
 
-MESSAGE_CHECK_FILE = "landing-message.txt"
-
 LOCK_MARKERS = (".lock': File exists", "Another git process seems to be running")
 
 LOCK_PATH = re.compile(r"[\\/]\.git[\\/][^\s'\"]*\.lock\b")
@@ -369,7 +367,10 @@ def merge_producers(tree, consumer_branch, producers, base):
                 "producer branch %s is missing and its commits are not reachable from %s"
                 % (producer["branch"], base)
             )
-        result = git_run(["merge", "--no-edit", "--no-verify", target], tree)
+        result = git_run(
+            ["-c", "core.hooksPath=" + os.devnull, "merge", "--no-edit", "--no-verify", target],
+            tree,
+        )
         if result.returncode != 0:
             git_run(["merge", "--abort"], tree)
             detail = (result.stderr.strip() or result.stdout.strip()).splitlines()
@@ -448,24 +449,21 @@ def _landing_message(plan, lane, tree):
     )
 
 
-def check_committable(tree, message, run_dir):
+def check_identity(repo):
     for ident in ("GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"):
-        found = git_run(["var", ident], tree["path"])
+        found = git_run(["var", ident], repo)
         if found.returncode != 0:
             raise ConfigError(
                 "git has no commit identity in %s, so no Lane could land: %s"
-                % (tree["path"], (found.stderr or "").strip() or "git var %s failed" % ident)
+                % (repo, (found.stderr or "").strip() or "git var %s failed" % ident)
             )
-    path = os.path.join(run_dir, MESSAGE_CHECK_FILE)
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(message + "\n")
-    hooked = git_run(["hook", "run", "--ignore-missing", "commit-msg", "--", path], tree["path"])
-    detail = ((hooked.stderr or "") + (hooked.stdout or "")).strip()
-    if hooked.returncode != 0 and "'hook' is not a git command" not in detail:
-        raise ConfigError(
-            "the repository's commit-msg hook refuses mitosis's landing message %r, so no Lane "
-            "could land: %s" % (message, detail or "exit %d" % hooked.returncode)
-        )
+
+
+def _still_written(plan, lane, tree):
+    write_set = plan["briefs"][lane]["write_set"]
+    return bool(write_set) and bool(
+        git_run(["status", "--porcelain", "--", *write_set], tree["path"]).stdout.strip()
+    )
 
 
 def _land(plan, lane, tree):
@@ -538,16 +536,15 @@ def dispatch(
     held = {
         int(index): {**record, "state": "ok"}
         for index, record in (prior or {}).items()
-        if isinstance(record, dict) and record.get("state") == LANE_HELD
+        if isinstance(record, dict)
+        and record.get("state") == LANE_HELD
+        and _still_written(plan, int(index), tree_of[lanes[int(index)]["msp"]])
     }
     ordered = [int(i) for i in plan.get("lane_order") or range(len(lanes))]
     every = ordered + [i for i in range(len(lanes)) if i not in ordered]
     pending = [i for i in every if i not in records and i not in held]
     running = {}
     cap = max(1, int(concurrency))
-    if pending:
-        first = tree_of[lanes[pending[0]]["msp"]]
-        check_committable(first, _landing_message(plan, pending[0], first), run_dir)
 
     def settle(known, lane, record):
         if on_lane is not None:
@@ -1384,6 +1381,12 @@ def execute(
     check_models(plan, worker_command, models)
     if timeout is None:
         raise ConfigError("a per-Lane timeout is required; mitosis has no default")
+    recorded = (prior or {}).get("lanes") or {}
+    if any(
+        (recorded.get(str(index)) or {}).get("state") != "ok"
+        for index in range(len(plan.get("lanes") or []))
+    ):
+        check_identity(repo)
     settings = {
         "repo": repo,
         "feature_branch": feature_branch,
