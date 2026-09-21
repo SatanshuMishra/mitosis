@@ -404,18 +404,27 @@ def _worker_values(plan, lane, tree, models, run_dir):
     }
 
 
-def _finish(plan, lane, tree, started, merged, out, err, code, timed_out):
-    returned = last_return(out)
-    state, reason = lane_verdict(code, returned, timed_out)
-    commit = None
-    if state == "ok":
-        steps = plan["lanes"][lane]["steps"]
+def _land(plan, lane, tree):
+    steps = plan["lanes"][lane]["steps"]
+    try:
         commit = commit_paths(
             tree["path"],
             plan["briefs"][lane]["write_set"],
             "chore(%s): land Lane %d (%s)"
             % (tree.get("label") or tree["msp"], lane, ", ".join(steps)),
         )
+    except GitError as error:
+        return None, "the Lane's commit failed: %s" % error
+    return commit, None
+
+
+def _finish(plan, lane, tree, started, merged, out, err, code, timed_out):
+    returned = last_return(out)
+    state, reason = lane_verdict(code, returned, timed_out)
+    commit = None
+    if state == "ok":
+        commit, reason = _land(plan, lane, tree)
+        state = "ok" if reason is None else "failed"
     return lane_record(
         lane,
         tree["msp"],

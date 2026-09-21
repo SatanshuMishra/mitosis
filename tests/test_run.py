@@ -486,6 +486,38 @@ class Dispatch(RepoCase):
         self.assertIsNone(self.marker(lane_named(plan, "c")))
         self.assertIsNotNone(self.marker(lane_named(plan, "d")))
 
+    def _commit_refused_run(self, first_files):
+        self.add_remote()
+        plan = core.plan(
+            [
+                step("a", first_files),
+                step("b", ["b.txt"], after=["a"]),
+                step("d", ["d.txt"]),
+            ]
+        )
+        final = self.execute(plan)
+        by_step = {plan["lanes"][int(i)]["steps"][0]: r for i, r in final["lanes"].items()}
+        self.assertEqual(by_step["a"]["state"], "failed")
+        self.assertIn("the Lane's commit failed", by_step["a"]["reason"])
+        self.assertEqual(by_step["b"]["state"], "blocked")
+        self.assertEqual(by_step["d"]["state"], "ok")
+        shipped = {
+            plan["msps"][int(m)]["steps"][0]: r["state"] for m, r in final["msps"].items()
+        }
+        self.assertEqual(shipped["d"], "shipped")
+        self.assertEqual(shipped["a"], run.MSP_BLOCKED)
+        self.assertEqual(len(self.pull_requests()), 1)
+
+    def a_refused_commit_fails_its_lane_and_the_run_goes_on(self):
+        hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
+        write(hook, "#!/bin/sh\ngit diff --cached --name-only | grep -qx refused.txt && exit 1\nexit 0\n")
+        os.chmod(hook, 0o755)
+        self._commit_refused_run(["refused.txt"])
+
+    def a_write_set_path_git_ignores_fails_its_lane_and_the_run_goes_on(self):
+        self.seed_existing(".gitignore", "build/\n")
+        self._commit_refused_run(["build/out.txt"])
+
     def worker_output_goes_to_disk_and_the_record_stays_small(self):
         plan = core.plan([step("a", ["a.txt"])])
         trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
