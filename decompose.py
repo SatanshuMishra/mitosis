@@ -433,7 +433,7 @@ def inventory(root, cap=None):
     paths = (
         tuple(_walk(base))
         if tracked is None
-        else tuple(sorted(path for path in tracked if _kept(base, path)))
+        else tuple(sorted({path for path in tracked if _kept(base, path)}))
     )
     limit = len(paths) if cap is None else max(0, int(cap))
     kept = paths[:limit]

@@ -230,6 +230,24 @@ class Contract(unittest.TestCase):
         self.assertEqual(listed["paths"], [".gitignore", "a.py", "pkg/c.py"])
         self.assertEqual(listed["overflow"], 0)
 
+    def a_file_in_conflict_is_listed_once(self):
+        with tempfile.TemporaryDirectory() as root:
+            subprocess.run(["git", "init", "-q", root], check=True)
+            write(root, "f.py", "conflicted\n")
+            write(root, "other.py", "")
+            subprocess.run(["git", "-C", root, "add", "other.py"], check=True)
+            blob = subprocess.run(
+                ["git", "-C", root, "hash-object", "-w", "f.py"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            stages = "".join("100644 %s %d\tf.py\n" % (blob, stage) for stage in (1, 2, 3))
+            subprocess.run(
+                ["git", "-C", root, "update-index", "--index-info"],
+                input=stages, check=True, text=True,
+            )
+            listed = decompose.inventory(root)
+        self.assertEqual(listed["paths"], ["f.py", "other.py"])
+
 
 class Run(unittest.TestCase):
     def an_edge_between_distant_sections_survives(self):
