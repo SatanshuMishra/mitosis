@@ -1015,6 +1015,34 @@ class Ship(RepoCase):
         self.assertEqual(self.remote_heads(), [by_step["b"]["ship"]["branch"]])
         self.assertTrue(run.succeeded(state))
 
+    def a_held_run_commits_every_branch_and_pushes_nothing_until_resumed(self):
+        self.add_remote()
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"])])
+        held = run.execute(
+            plan,
+            self.repo,
+            "main",
+            self.run_dir,
+            self.worker_command(),
+            self.acceptance_command(),
+            None,
+            60,
+            2,
+            trees_root=self.trees,
+            no_push=True,
+        )
+        self.assertEqual({m["state"] for m in held["msps"].values()}, {run.MSP_COMMITTED})
+        self.assertEqual(self.remote_heads(), [])
+        self.assertEqual(self.pull_requests(), [])
+        self.assertTrue(run.succeeded(held))
+        for record in held["msps"].values():
+            log = sh(["git", "log", "--format=%s", "main.." + record["ship"]["branch"]], self.repo)
+            self.assertIn("land Lane", log)
+        shipped = self.execute(plan, resume=True)
+        self.assertEqual({m["state"] for m in shipped["msps"].values()}, {"shipped"})
+        self.assertEqual(len(self.remote_heads()), 2)
+        self.assertEqual(len(self.pull_requests()), 2)
+
     def mitosis_never_merges(self):
         self.add_remote()
         plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"])])

@@ -52,7 +52,7 @@ quotes or newlines lands as one argument and is never reinterpreted by a shell.
 |---|---|---|
 | `--dispatch-command` | one Worker per Lane, in its worktree | listed under --help |
 | `--acceptance-command` | one acceptance property, in a worktree | file, test, worktree |
-| `--pr-command` | one draft pull request per MSP | listed under --help |
+| `--pr-command` | one draft pull request per MSP; not taken with `--no-push` | listed under --help |
 | `--decompose-command` | the structure pass that turns a document into unbriefed Steps | prompt, model, document |
 | `--brief-command` | one Worker per unbriefed Step, writing its task | prompt, model, step, document |
 
@@ -316,11 +316,11 @@ is a finding, and a write into another MSP's files is fatal.
 
 ## Reading the result
 
-The exit code is zero only when every MSP reached `shipped` or `unchanged`
-and reconcile found nothing. Every other outcome is a distinct non-zero code,
-printed with its meaning on the report's last line. Each Lane ends `ok`,
-`failed`, `blocked` or `merge-blocked`; each MSP ends `shipped`, `unchanged`,
-`gate-failed`, `gate-inconclusive` or `ship-failed`. An MSP is `unchanged` when
+The exit code is zero only when every MSP reached `shipped`, `unchanged` or
+`committed` and reconcile found nothing. Every other outcome is a distinct
+non-zero code, printed with its meaning on the report's last line. Each Lane
+ends `ok`, `failed`, `blocked` or `merge-blocked`; each MSP ends `shipped`,
+`unchanged`, `committed`, `gate-failed`, `gate-inconclusive` or `ship-failed`. An MSP is `unchanged` when
 its branch holds nothing its pull request's base does not, so nothing is pushed
 and no pull request opens; an MSP that depends on it targets that same base. The two Lane states that block
 dependents differ by the human action they need: `merge-blocked` wants a
@@ -338,11 +338,20 @@ leaves a local commit on an unpushed branch.
 ## Resuming
 
 Pass `--resume` with the same input and run directory. Lanes already `ok`
-and MSPs already `shipped` or `unchanged` are skipped, a failed gate is re-run without
-rebuilding the Lane, and a producer whose branch was deleted after its pull
+and MSPs already `shipped` or `unchanged` are skipped, a failed gate is re-run
+without rebuilding the Lane, and a producer whose branch was deleted after its pull
 request merged is still found through its recorded commit on the feature
 branch. The plan id must match: if the Steps changed, the prior results do not
 apply, and mitosis refuses rather than resume against a different plan.
+
+## Holding the work locally
+
+Pass `--no-push` to build, gate and reconcile every MSP without publishing
+anything. Each MSP ends `committed` on its local branch: nothing is pushed and
+no pull request opens, so `--pr-command` is not taken, and passing it is
+refused. Run the project's own checks against those branches, then `--resume`
+without `--no-push` ships what was held. Resuming with `--no-push` again
+leaves a `committed` MSP where it is.
 
 ## What mitosis never does
 

@@ -23,6 +23,10 @@ MSP_BLOCKED = "blocked"
 
 MSP_UNCHANGED = "unchanged"
 
+MSP_COMMITTED = "committed"
+
+PUBLISHED_STATES = ("shipped", MSP_UNCHANGED)
+
 ACCEPTANCE_FAILURE_EXIT = 1
 
 PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
@@ -1043,20 +1047,23 @@ def ship(
     findings=None,
     exception=None,
     timeout=None,
+    push=True,
 ):
     label = _label(plan, msp)
     head = commit_all(tree, "chore(%s): commit the MSP's work before shipping" % label)
+    held = {
+        "branch": branch,
+        "base": base,
+        "remote": remote,
+        "pushed": None,
+        "title": pull_request_title(plan, msp),
+        "pull_request": "",
+        "stacking_exception": exception is not None,
+    }
     if git_ok(["diff", "--quiet", base, head], tree):
-        return {
-            "branch": branch,
-            "base": base,
-            "remote": remote,
-            "pushed": None,
-            "title": pull_request_title(plan, msp),
-            "pull_request": "",
-            "stacking_exception": exception is not None,
-            "unchanged": True,
-        }
+        return {**held, "unchanged": True}
+    if not push:
+        return {**held, "unchanged": False}
     git(["push", "-q", "-u", remote, branch], tree)
     title = pull_request_title(plan, msp)
     body = pull_request_body(plan, msp, base, acceptance_command, gate_result, findings, exception)
@@ -1197,6 +1204,7 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings):
             record.get("reconcile"),
             exception,
             settings["timeout"],
+            settings["push"],
         )
     except (OSError, GitError, ShipError, subprocess.SubprocessError, ValueError) as error:
         return {"state": "ship-failed", "reason": str(error), "ship": None}
@@ -1205,6 +1213,13 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings):
             "state": MSP_UNCHANGED,
             "reason": "the branch matches %s, so nothing was pushed and no pull request opened"
             % base,
+            "ship": shipped,
+        }
+    if shipped["pushed"] is None:
+        return {
+            "state": MSP_COMMITTED,
+            "reason": "committed on %s and held: this run pushes nothing and opens no pull request"
+            % shipped["branch"],
             "ship": shipped,
         }
     return {"state": "shipped", "reason": None, "ship": shipped}
@@ -1250,11 +1265,13 @@ def execute(
     trees_root=None,
     remote="origin",
     prefix=BRANCH_PREFIX,
+    no_push=False,
 ):
     prior = prior_state(run_dir, plan, resume)
     check_template("dispatch", worker_command)
     check_template("acceptance", acceptance_command)
-    check_template("pull-request", pr_command)
+    if not no_push:
+        check_template("pull-request", pr_command)
     check_models(plan, worker_command, models)
     if timeout is None:
         raise ConfigError("a per-Lane timeout is required; mitosis has no default")
@@ -1266,6 +1283,7 @@ def execute(
         "pr_command": pr_command,
         "timeout": timeout,
         "remote": remote,
+        "push": not no_push,
     }
     os.makedirs(run_dir, exist_ok=True)
     write_json(os.path.join(run_dir, PLAN_FILE), plan)
@@ -1305,8 +1323,9 @@ def execute(
         on_lane=on_lane,
     )
     producers = msp_producers(plan)
+    finished = core.DELIVERED_STATES if no_push else PUBLISHED_STATES
     for msp in msp_order(plan):
-        if (state["msps"].get(str(msp)) or {}).get("state") in core.DELIVERED_STATES:
+        if (state["msps"].get(str(msp)) or {}).get("state") in finished:
             continue
         state = _finish_msp(plan, msp, trees, producers[msp], state, settings)
     return state

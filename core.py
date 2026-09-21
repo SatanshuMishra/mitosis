@@ -57,9 +57,16 @@ SOURCE_KEYS = ("path", "sha256")
 
 LANE_STATES = ("ok", "failed", "blocked", "merge-blocked")
 
-MSP_STATES = ("shipped", "unchanged", "gate-failed", "gate-inconclusive", "ship-failed")
+MSP_STATES = (
+    "shipped",
+    "unchanged",
+    "committed",
+    "gate-failed",
+    "gate-inconclusive",
+    "ship-failed",
+)
 
-DELIVERED_STATES = ("shipped", "unchanged")
+DELIVERED_STATES = ("shipped", "unchanged", "committed")
 
 GATE_OUTCOMES = ("pass", "inert", "inconclusive", "not-applicable")
 
@@ -101,6 +108,7 @@ FLAG_NAMES = (
     "--decompose-command",
     "--acceptance-command",
     "--pr-command",
+    "--no-push",
     "--tier-model",
     "--timeout",
     "--concurrency",

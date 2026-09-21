@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -741,6 +742,66 @@ class ItemsEntryPointRefusals(unittest.TestCase):
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err)
 
 
+HOLDING_WORKER = r'''
+import json
+import sys
+
+prefix = "Write-set for this Lane, the only files you may edit: "
+paths = [
+    path.strip()
+    for line in sys.argv[1].splitlines()
+    if line.startswith(prefix)
+    for path in line[len(prefix):].split(",")
+    if path.strip()
+]
+for path in paths:
+    with open(path, "a") as handle:
+        handle.write("work\n")
+print(json.dumps({"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"}))
+'''
+
+
+class HeldRun(unittest.TestCase):
+    def _run(self, *extra):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
+            git_repo(root)
+            write(root, "items.json", json.dumps([briefed("alpha")]))
+            with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
+                return invoke(
+                    root,
+                    [
+                        "--items",
+                        "items.json",
+                        "--run-dir",
+                        os.path.join(elsewhere, "run"),
+                        "--feature-branch",
+                        "feature",
+                        "--dispatch-command",
+                        command(elsewhere, "worker.py", HOLDING_WORKER, "{task}"),
+                        "--acceptance-command",
+                        "probe {file} {test}",
+                        "--timeout",
+                        "30",
+                        *extra,
+                    ],
+                )
+
+    def a_held_run_needs_no_pull_request_command_and_pushes_nothing(self):
+        code, out, err = self._run("--no-push")
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        self.assertIn("MSP alpha: committed", out)
+
+    def a_held_run_with_a_pull_request_command_is_refused(self):
+        code, _, err = self._run("--no-push", "--pr-command", "opener {branch}")
+        self.assertEqual(code, mitosis.EXIT_REFUSED)
+        self.assertIn("--no-push", err)
+
+    def a_run_that_pushes_still_needs_a_pull_request_command(self):
+        code, _, err = self._run()
+        self.assertEqual(code, mitosis.EXIT_REFUSED)
+        self.assertIn("--pr-command", err)
+
+
 class ReportSections(unittest.TestCase):
     def the_split_shape_section_prints_every_scalar(self):
         with tempfile.TemporaryDirectory() as root:
@@ -933,6 +994,7 @@ def load_tests(loader, tests, pattern):
         BriefStageReport,
         CoverageRendering,
         LaneCycleRefusal,
+        HeldRun,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite

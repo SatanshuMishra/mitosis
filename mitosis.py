@@ -26,6 +26,7 @@ LANE_EXIT = {
 MSP_EXIT = {
     "shipped": EXIT_SHIPPED,
     run.MSP_UNCHANGED: EXIT_SHIPPED,
+    run.MSP_COMMITTED: EXIT_SHIPPED,
     run.MSP_BLOCKED: 11,
     "gate-failed": 20,
     "gate-inconclusive": 21,
@@ -33,7 +34,7 @@ MSP_EXIT = {
 }
 
 EXIT_MEANING = {
-    EXIT_SHIPPED: "every MSP shipped or had nothing to ship, and reconcile found nothing",
+    EXIT_SHIPPED: "every MSP reached shipped, unchanged or committed, and reconcile found nothing",
     EXIT_USAGE: "the flags did not parse",
     EXIT_REFUSED: "refused to start",
     EXIT_INCOMPLETE: "the run stopped before every Lane and MSP reached a terminal state",
@@ -195,6 +196,12 @@ FLAG_SPECS = {
         "metavar": "TEMPLATE",
         "help": "opens one draft pull request; placeholders %s; its last stdout line is recorded"
         % PLACEHOLDER_HELP["pull-request"],
+    },
+    "--no-push": {
+        "action": "store_true",
+        "help": "commit, gate and reconcile every MSP on its local branch, then stop: nothing is "
+        "pushed and no pull request opens, so --pr-command is not needed; a later --resume "
+        "without this flag ships what was held",
     },
     "--tier-model": {
         "metavar": "TIER=MODEL",
@@ -657,12 +664,20 @@ def build_plan(args, items, root, charter, graph):
 
 
 def missing_run_flags(args):
-    return tuple(flag for flag, attribute in RUN_FLAGS if getattr(args, attribute) is None)
+    return tuple(
+        flag
+        for flag, attribute in RUN_FLAGS
+        if getattr(args, attribute) is None and not (args.no_push and attribute == "pr_command")
+    )
 
 
 def refuse_unbuildable(args, repo):
     if repo is None:
         raise Refusal("the working directory is not inside a git repository")
+    if args.no_push and args.pr_command is not None:
+        raise Refusal(
+            "--no-push opens no pull request, so --pr-command would never run; pass one of them"
+        )
     missing = missing_run_flags(args)
     if missing:
         raise Refusal("a run needs %s; pass --plan-only to stop at the plan" % ", ".join(missing))
@@ -1187,6 +1202,7 @@ def execute(args, plan, models, run_dir, repo, root):
             resume=args.resume,
             root=root,
             remote=REMOTE,
+            no_push=args.no_push,
         ), None
     except (run.ConfigError, run.ResumeError) as error:
         raise Refusal(str(error))
