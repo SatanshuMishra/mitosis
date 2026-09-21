@@ -206,8 +206,9 @@ class Docs(unittest.TestCase):
         if os.path.isfile(readme):
             with open(readme, encoding="utf-8") as handle:
                 text = handle.read()
-        if not text.startswith("# mitosis\n") or "## Install" not in text:
+        if not text.startswith("# mitosis\n"):
             self.skipTest("no mitosis README here; an installed copy does not carry one")
+        self.assertIn("## Install", text)
         install = text.split("## Install", 1)[1].split("\n## ", 1)[0]
         named = set(re.findall(r"`([a-z_]+\.py)`", install))
         self.assertEqual(sorted(named), sorted(_local_closure("mitosis")))
