@@ -316,11 +316,13 @@ is a finding, and a write into another MSP's files is fatal.
 
 ## Reading the result
 
-The exit code is zero only when every MSP reached `shipped` and reconcile
-found nothing. Every other outcome is a distinct non-zero code, printed with
-its meaning on the report's last line. Each Lane ends `ok`, `failed`,
-`blocked` or `merge-blocked`; each MSP ends `shipped`, `gate-failed`,
-`gate-inconclusive` or `ship-failed`. The two Lane states that block
+The exit code is zero only when every MSP reached `shipped` or `unchanged`
+and reconcile found nothing. Every other outcome is a distinct non-zero code,
+printed with its meaning on the report's last line. Each Lane ends `ok`,
+`failed`, `blocked` or `merge-blocked`; each MSP ends `shipped`, `unchanged`,
+`gate-failed`, `gate-inconclusive` or `ship-failed`. An MSP is `unchanged` when
+its branch holds nothing its pull request's base does not, so nothing is pushed
+and no pull request opens; an MSP that depends on it targets that same base. The two Lane states that block
 dependents differ by the human action they need: `merge-blocked` wants a
 conflict resolved, `blocked` wants a predecessor fixed.
 
@@ -336,7 +338,7 @@ leaves a local commit on an unpushed branch.
 ## Resuming
 
 Pass `--resume` with the same input and run directory. Lanes already `ok`
-and MSPs already `shipped` are skipped, a failed gate is re-run without
+and MSPs already `shipped` or `unchanged` are skipped, a failed gate is re-run without
 rebuilding the Lane, and a producer whose branch was deleted after its pull
 request merged is still found through its recorded commit on the feature
 branch. The plan id must match: if the Steps changed, the prior results do not

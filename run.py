@@ -21,6 +21,8 @@ STATE_FILE = "state.json"
 
 MSP_BLOCKED = "blocked"
 
+MSP_UNCHANGED = "unchanged"
+
 ACCEPTANCE_FAILURE_EXIT = 1
 
 PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
@@ -939,18 +941,30 @@ def reconcile(plan, msp, tree, branch, base, producer_branches=()):
     }
 
 
-def pr_base(plan, msp, feature_branch, trees, repo):
-    producers = msp_producers(plan).get(msp, ())
-    if len(producers) > 1:
+def _stack_target(producer, trees, settled):
+    record = (settled or {}).get(str(producer)) or {}
+    if record.get("state") == MSP_UNCHANGED:
+        return (record.get("ship") or {}).get("base")
+    return trees[producer]["branch"]
+
+
+def pr_base(plan, msp, feature_branch, trees, repo, settled=None):
+    targets = {
+        producer: _stack_target(producer, trees, settled)
+        for producer in msp_producers(plan).get(msp, ())
+    }
+    stacked = [p for p, target in targets.items() if target not in (None, feature_branch)]
+    distinct = tuple(dict.fromkeys(targets[p] for p in stacked))
+    if len(distinct) > 1:
         return feature_branch, {
             "msp": msp,
             "label": _label(plan, msp),
-            "producers": list(producers),
+            "producers": stacked,
             "reason": "a pull request can stack on one predecessor; this MSP has %d"
-            % len(producers),
+            % len(stacked),
         }
-    if len(producers) == 1 and branch_exists(repo, trees[producers[0]]["branch"]):
-        return trees[producers[0]]["branch"], None
+    if distinct and branch_exists(repo, distinct[0]):
+        return distinct[0], None
     return feature_branch, None
 
 
@@ -1032,6 +1046,17 @@ def ship(
 ):
     label = _label(plan, msp)
     head = commit_all(tree, "chore(%s): commit the MSP's work before shipping" % label)
+    if git_ok(["diff", "--quiet", base, head], tree):
+        return {
+            "branch": branch,
+            "base": base,
+            "remote": remote,
+            "pushed": None,
+            "title": pull_request_title(plan, msp),
+            "pull_request": "",
+            "stacking_exception": exception is not None,
+            "unchanged": True,
+        }
     git(["push", "-q", "-u", remote, branch], tree)
     title = pull_request_title(plan, msp)
     body = pull_request_body(plan, msp, base, acceptance_command, gate_result, findings, exception)
@@ -1064,6 +1089,7 @@ def ship(
         "title": title,
         "pull_request": last_line(out) or "",
         "stacking_exception": exception is not None,
+        "unchanged": False,
     }
 
 
@@ -1082,7 +1108,8 @@ def succeeded(state):
     if not msps:
         return False
     return all(record.get("state") == "ok" for record in lanes.values()) and all(
-        record.get("state") == "shipped" and _reconcile_clean(record.get("reconcile"))
+        record.get("state") in core.DELIVERED_STATES
+        and _reconcile_clean(record.get("reconcile"))
         for record in msps.values()
     )
 
@@ -1107,7 +1134,7 @@ def _lane_block(plan, msp, state):
 def _producer_block(plan, msp, state, producers):
     for producer in producers:
         producer_state = (state["msps"].get(str(producer)) or {}).get("state")
-        if producer_state != "shipped":
+        if producer_state not in core.DELIVERED_STATES:
             return {
                 "state": MSP_BLOCKED,
                 "reason": "MSP %s is %s" % (_label(plan, producer), producer_state),
@@ -1173,6 +1200,13 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings):
         )
     except (OSError, GitError, ShipError, subprocess.SubprocessError, ValueError) as error:
         return {"state": "ship-failed", "reason": str(error), "ship": None}
+    if shipped["unchanged"]:
+        return {
+            "state": MSP_UNCHANGED,
+            "reason": "the branch matches %s, so nothing was pushed and no pull request opened"
+            % base,
+            "ship": shipped,
+        }
     return {"state": "shipped", "reason": None, "ship": shipped}
 
 
@@ -1190,7 +1224,9 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     state = write_state(run_dir, _msp_record(state, msp, **reconciled))
     if reconciled.get("state") == MSP_BLOCKED:
         return state
-    base, exception = pr_base(plan, msp, settings["feature_branch"], trees, settings["repo"])
+    base, exception = pr_base(
+        plan, msp, settings["feature_branch"], trees, settings["repo"], state["msps"]
+    )
     if exception is not None:
         kept = [entry for entry in state["stacking_exceptions"] if entry.get("msp") != msp]
         state = write_state(run_dir, {**state, "stacking_exceptions": kept + [exception]})
@@ -1270,7 +1306,7 @@ def execute(
     )
     producers = msp_producers(plan)
     for msp in msp_order(plan):
-        if (state["msps"].get(str(msp)) or {}).get("state") == "shipped":
+        if (state["msps"].get(str(msp)) or {}).get("state") in core.DELIVERED_STATES:
             continue
         state = _finish_msp(plan, msp, trees, producers[msp], state, settings)
     return state

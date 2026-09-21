@@ -25,6 +25,7 @@ LANE_EXIT = {
 
 MSP_EXIT = {
     "shipped": EXIT_SHIPPED,
+    run.MSP_UNCHANGED: EXIT_SHIPPED,
     run.MSP_BLOCKED: 11,
     "gate-failed": 20,
     "gate-inconclusive": 21,
@@ -32,7 +33,7 @@ MSP_EXIT = {
 }
 
 EXIT_MEANING = {
-    EXIT_SHIPPED: "every MSP shipped and reconcile found nothing",
+    EXIT_SHIPPED: "every MSP shipped or had nothing to ship, and reconcile found nothing",
     EXIT_USAGE: "the flags did not parse",
     EXIT_REFUSED: "refused to start",
     EXIT_INCOMPLETE: "the run stopped before every Lane and MSP reached a terminal state",

@@ -57,7 +57,9 @@ SOURCE_KEYS = ("path", "sha256")
 
 LANE_STATES = ("ok", "failed", "blocked", "merge-blocked")
 
-MSP_STATES = ("shipped", "gate-failed", "gate-inconclusive", "ship-failed")
+MSP_STATES = ("shipped", "unchanged", "gate-failed", "gate-inconclusive", "ship-failed")
+
+DELIVERED_STATES = ("shipped", "unchanged")
 
 GATE_OUTCOMES = ("pass", "inert", "inconclusive", "not-applicable")
 

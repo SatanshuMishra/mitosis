@@ -81,7 +81,7 @@ if mode == "hang":
 written = write_set[:1] if mode == "partial" else write_set
 if mode == "tests-only":
     written = [p for p in write_set if p.startswith("tests/")]
-if mode == "nothing":
+if mode in ("nothing", "nothing-" + lane):
     written = []
 for path in written:
     if os.path.dirname(path):
@@ -989,6 +989,32 @@ class Ship(RepoCase):
         self.assertEqual(self.pull_requests(), [])
         self.assertEqual(self.remote_heads(), [])
 
+    def an_msp_that_changed_nothing_is_unchanged_and_never_pushed(self):
+        self.add_remote()
+        self.seed_existing("a.txt", "already done\n")
+        plan = core.plan([step("a", ["a.txt"])])
+        state = self.execute(plan, mode="nothing")
+        self.assertEqual(state["msps"]["0"]["state"], run.MSP_UNCHANGED)
+        self.assertIn("main", state["msps"]["0"]["reason"])
+        self.assertIsNone(state["msps"]["0"]["ship"]["pushed"])
+        self.assertEqual(self.remote_heads(), [])
+        self.assertEqual(self.pull_requests(), [])
+        self.assertTrue(run.succeeded(state))
+
+    def a_dependent_of_an_unchanged_msp_targets_that_msps_base(self):
+        self.add_remote()
+        self.seed_existing("a.txt", "already done\n")
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"])])
+        state = self.execute(plan, mode="nothing-%d" % lane_named(plan, "a"))
+        by_step = {plan["msps"][int(m)]["steps"][0]: r for m, r in state["msps"].items()}
+        self.assertEqual(by_step["a"]["state"], run.MSP_UNCHANGED)
+        self.assertEqual(by_step["b"]["state"], "shipped")
+        opened = self.pull_requests()
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(opened[0][:2], [by_step["b"]["ship"]["branch"], "main"])
+        self.assertEqual(self.remote_heads(), [by_step["b"]["ship"]["branch"]])
+        self.assertTrue(run.succeeded(state))
+
     def mitosis_never_merges(self):
         self.add_remote()
         plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"])])
@@ -1024,8 +1050,9 @@ class Ship(RepoCase):
 
         clean = {"undeclared": [], "unwritten": [], "crossing": [], "fatal": False}
         self.assertTrue(run.succeeded(state_with("shipped", findings=clean)))
+        self.assertTrue(run.succeeded(state_with(run.MSP_UNCHANGED, findings=clean)))
         for msp_state in core.MSP_STATES:
-            if msp_state != "shipped":
+            if msp_state not in core.DELIVERED_STATES:
                 self.assertFalse(run.succeeded(state_with(msp_state, findings=clean)), msp_state)
         self.assertFalse(run.succeeded(state_with(run.MSP_BLOCKED, findings=clean)))
         self.assertFalse(run.succeeded(state_with(None, findings=clean)))
