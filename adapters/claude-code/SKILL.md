@@ -10,10 +10,8 @@ several agents run at once, and produces draft pull requests a human can merge
 without discovering that the parallelism broke something. A model may produce
 anything; a model may judge nothing. Every gate in mitosis is a program.
 
-This file says when to reach for it and how to invoke it. Every flag is
-described by --help, and every design decision, with its cost and the test
-that backs it, is in the specification at docs/specs. Do not look for either
-here.
+This file says when to reach for it and how to invoke it; --help describes
+every flag.
 
 ## When to reach for it
 
@@ -86,10 +84,9 @@ the gate tell a broken build from a failing test:
 --acceptance-command "python3 -m pytest {file} -k {test} -q"
 ```
 
-pytest exits 5 when it collects nothing, so a misspelled test identifier is
-reported as inconclusive, not as a pass. Where the project's runner selects
-tests differently, point the template at a small wrapper script that maps its
-exit codes to those three.
+pytest exits 5 when it collects nothing, so a misspelled test reads as
+inconclusive, not a pass. For another runner, point the template at a small
+wrapper that maps its exit codes to those three.
 
 The wrapper carries one obligation the runner alone will not meet. Reverting
 the implementation deletes whatever the work created, so in a language that
@@ -115,12 +112,8 @@ acceptance run and pull-request command; and the repository root as the
 working directory, because every Step path and the document path are relative
 to it. mitosis refuses to run from anywhere else.
 
-`--timeout` is measured on a monotonic clock, so time the machine spends
-asleep is never counted against it. A Worker dispatched before a laptop
-sleeps is not killed the moment the laptop wakes; a run left overnight on a
-machine that sleeps will sit there until its connection drops, not until
-`--timeout` elapses. Only a machine that never sleeps enforces the timeout
-the way wall-clock time would suggest.
+`--timeout` runs on a monotonic clock, so time a sleeping machine spends
+asleep never counts against it.
 
 ## The two inputs
 
@@ -216,15 +209,12 @@ python3 /path/to/mitosis.py --spec docs/specs/search.md --plan-only \
   --timeout 900
 ```
 
-Decompose uses the top mapping. This run spawns exactly one model process,
-persists the Steps it returned into the run directory, and prints a report
-with a Split shape section and a Decisions section. Read four things there:
-the findings at the top of Split shape, which name what is wrong and are
-ordered worst first; the scalars on the line below them, which score the
-split itself before any brief exists; the coverage map, which lists the
-document's sections no Step claimed; and the assumptions, each a reading
-chosen where the document was underdetermined, and a Step carrying one is
-never rated `simple`.
+Decompose uses the top mapping. This run spawns one model process, persists
+its Steps and prints a report. Read four things: the Split shape findings,
+worst first; the scalars below them, which score the split before any brief
+exists; the coverage map of sections no Step claimed; and the assumptions,
+each a reading chosen where the document was underdetermined, which keeps
+its Step from being rated `simple`.
 
 No finding stops a run. Each one is printed, written into the pull request it
 belongs to, listed for the caller and given a distinct exit code.
@@ -310,7 +300,17 @@ then committed, so a commit hook that stashes unstaged files never touches a
 sibling's work; no new Lane starts in that MSP meanwhile, and a resume lands a
 `held` Lane without paying for it again. Merges of a producer's branch run no
 hooks. A git command that meets another process's lock is retried for a few
-seconds.
+seconds. When a worktree goes quiet, a change to a file whose Lane had already
+committed is kept in its own commit and named in the pull request, in
+`attention` and in the exit code, against the Lane that made it, or against
+every Lane that finished alongside it when git cannot tell which.
+
+Steps with no file in common can still depend on each other. A pair is put in
+order, the later behind the earlier, when both touch one risk marker, a
+recorded regression links them, or both add a numbered migration to one
+folder; the Coupling section lists every order added. A pair joined only by
+an import runs in parallel and is named there and in `attention` before
+anything is built: add an `after` edge where one needs the other's output.
 
 Before anything is written, mitosis checks that git has a commit identity and
 refuses with exit 3 if not. A refused Lane commit fails that Lane alone. Hooks
@@ -364,25 +364,25 @@ persisted Steps, every Worker's full stdout and stderr, and the worktrees.
 Read a Lane's log there rather than asking the Worker what it did; the
 one-line return it printed is a claim, and the git log is the record.
 
-Nothing is cleaned up after a failure except the gate's probe branch.
-Worktrees and branches survive so the work is inspectable, and a gate failure
-leaves a local commit on an unpushed branch.
+Nothing is cleaned up after a failure except the gate's probe branch;
+worktrees and branches survive so the work is inspectable.
 
 ## Resuming
 
 Pass `--resume` with the same input and run directory. Lanes already `ok`
 and MSPs already `shipped` are skipped, as is an MSP already `unchanged` whose
-producers all finished. A failed gate is re-run without rebuilding the Lane,
-and a producer whose branch was deleted after its pull request merged is still
-found through its recorded commit on the feature branch. The plan id must match: if the Steps changed, the prior results do not
+producers all finished. An MSP that did not ship is gated again without
+rebuilding its Lanes, and a producer whose branch was deleted after its pull
+request merged is still found through its recorded commit on the feature
+branch. The plan id must match: if the Steps changed, the prior results do not
 apply, and mitosis refuses rather than resume against a different plan.
 
 ## Holding the work locally
 
 Pass `--no-push` to build, gate and reconcile every MSP without publishing
 anything. Each MSP ends `committed` on its local branch, or `unchanged` when it
-adds nothing to its base: nothing is pushed and no pull request opens, so `--pr-command` is not taken, and passing it is
-refused. Run the project's own checks against those branches, then `--resume`
+adds nothing to its base: nothing is pushed and no pull request opens, so
+`--pr-command` is not taken, and passing it is refused. Run the project's own checks against those branches, then `--resume`
 without `--no-push` ships what was held. Resuming with `--no-push` again
 leaves a `committed` MSP where it is.
 

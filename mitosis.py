@@ -1,4 +1,5 @@
 import argparse
+import itertools
 import json
 import os
 import sys
@@ -18,6 +19,8 @@ EXIT_NO_BRANCHES = 5
 EXIT_RECONCILE = 6
 
 EXIT_CROSSING = 7
+
+EXIT_FOREIGN = 8
 
 EXIT_MANIFEST = 23
 
@@ -46,6 +49,7 @@ EXIT_MEANING = {
     EXIT_NO_BRANCHES: "the run created no branches",
     EXIT_RECONCILE: "reconcile found a write outside the declaration or a declared path never written",
     EXIT_CROSSING: "a pull request is open that writes files another MSP owns and also changes",
+    EXIT_FOREIGN: "a Lane changed a file another Lane of its MSP owns and had already committed",
     EXIT_MANIFEST: "a pull request is open with a package manifest that exports nothing",
     LANE_EXIT["failed"]: "a Lane failed",
     LANE_EXIT["blocked"]: "a Lane or MSP was blocked, by a predecessor or by a write across an "
@@ -86,7 +90,7 @@ REPORT_SECTIONS = (
     "Split quality",
     "Gate outcomes",
     "Reconcile findings",
-    "Unreviewed coupling pairs",
+    "Coupling",
     "Stacking exceptions",
     "Outcome",
 )
@@ -1035,21 +1039,24 @@ def reconcile_lines(plan, state):
 def coupling_lines(plan, state):
     if plan is None:
         return (NO_PLAN,)
+    ordered = plan.get("coupling_order") or []
     pairs = plan.get("coupling_review") or []
-    if not pairs:
+    if not ordered and not pairs:
         return ("none: no write-set-disjoint pair in different Lanes shares a coupling signal",)
-    verb = "ran" if state is not None else "will run"
-    lines = (
-        "%s share a signal and carry no checkpoint verdict; they %s unreviewed"
-        % (_n(len(pairs), "pair"), verb),
-    )
-    return lines + tuple(
-        "%s and %s (Lanes %s): %s"
+    verb = "ran" if state is not None else "run"
+    return tuple(
+        "%s then %s: put in order because of %s"
+        % (entry["first"], entry["then"], ", ".join(entry["signals"]))
+        for entry in ordered
+    ) + tuple(
+        "%s and %s (Lanes %s) %s in parallel with only %s between them; add an after edge if "
+        "one needs the other's output"
         % (
             pair["steps"][0],
             pair["steps"][1],
             ", ".join(str(lane) for lane in pair.get("lanes") or []),
-            ", ".join(pair.get("signals") or []),
+            verb,
+            " and ".join(pair.get("signals") or []),
         )
         for pair in pairs
     )
@@ -1126,6 +1133,8 @@ def exit_code(state, plan):
             return flagged
         if (record.get("reconcile") or {}).get("crossing"):
             return EXIT_CROSSING
+        if run.msp_foreign_writes(plan, index, lane_records):
+            return EXIT_FOREIGN
         if reconcile_dirty(record.get("reconcile")):
             return EXIT_RECONCILE
     if empty_manifests(plan.get("items") or []):
@@ -1194,6 +1203,7 @@ def _lane_summary(plan, state):
             "state": (records.get(str(index)) or {}).get("state"),
             "reason": _one_line((records.get(str(index)) or {}).get("reason")),
             "notes": ((records.get(str(index)) or {}).get("returned") or {}).get("notes"),
+            "foreign_writes": list((records.get(str(index)) or {}).get("foreign_writes") or ()),
             "stdout": (records.get(str(index)) or {}).get("stdout"),
             "stderr": (records.get(str(index)) or {}).get("stderr"),
         }
@@ -1237,11 +1247,17 @@ def _msp_summary(plan, state):
     return summaries
 
 
-def _attention(lanes, msps):
+def _attention(plan, lanes, msps):
     lines = [
-        "Lane %d (%s) is %s: %s" % (lane["lane"], lane["msp"], lane["state"], lane["reason"] or "")
+        "Lane %d (%s) is %s: %s"
+        % (lane["lane"], ", ".join(lane["steps"]), lane["state"], lane["reason"] or "")
         for lane in lanes
         if lane["state"] not in ("ok", None)
+    ] + [
+        run.foreign_sentence(plan, entry)
+        for entry in run.unique_foreign(
+            [{**entry, "lane": lane["lane"]} for lane in lanes for entry in lane["foreign_writes"]]
+        )
     ]
     for msp in msps:
         if msp["state"] not in ("shipped", run.MSP_UNCHANGED, run.MSP_COMMITTED, None):
@@ -1260,9 +1276,42 @@ def _attention(lanes, msps):
     return lines
 
 
+COUPLING_NAMED = 8
+
+
+def _coupling_summary(plan):
+    return {
+        "ordered": [dict(entry) for entry in plan.get("coupling_order") or []],
+        "parallel": [
+            {"steps": list(pair["steps"]), "signals": list(pair["signals"])}
+            for pair in plan.get("coupling_review") or []
+            if pair.get("default") == "parallel"
+        ],
+    }
+
+
+def _coupling_attention(coupling):
+    keyed = sorted((tuple(pair["signals"]), "+".join(pair["steps"])) for pair in coupling["parallel"])
+    return [
+        "%s run in parallel with only %s between them: %s%s; add an after edge where one needs "
+        "the other's output"
+        % (
+            _n(len(names), "pair") + " of Steps",
+            " and ".join(signals),
+            ", ".join(names[:COUPLING_NAMED]),
+            " and %d more" % (len(names) - COUPLING_NAMED) if len(names) > COUPLING_NAMED else "",
+        )
+        for signals, names in (
+            (signals, [name for _, name in group])
+            for signals, group in itertools.groupby(keyed, key=lambda entry: entry[0])
+        )
+    ]
+
+
 def summary(plan, state, run_dir, code):
     lanes = _lane_summary(plan or {}, state)
     msps = _msp_summary(plan or {}, state)
+    coupling = _coupling_summary(plan or {})
     return {
         "version": core.__version__,
         "plan_id": (plan or {}).get("plan_id"),
@@ -1271,7 +1320,10 @@ def summary(plan, state, run_dir, code):
         "meaning": EXIT_MEANING.get(code, "not shipped"),
         "lanes": lanes,
         "msps": msps,
-        "attention": _attention(lanes, msps) + list(manifest_lines((plan or {}).get("items") or [])),
+        "coupling": coupling,
+        "attention": _attention(plan or {}, lanes, msps)
+        + list(manifest_lines((plan or {}).get("items") or []))
+        + _coupling_attention(coupling),
     }
 
 

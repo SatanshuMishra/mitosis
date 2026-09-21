@@ -937,11 +937,66 @@ class GateExit(unittest.TestCase):
             mitosis.EXIT_RECONCILE,
         )
 
+    def a_lane_that_changed_a_siblings_file_exits_eight(self):
+        state = self._state(gate={"outcome": "pass", "blocks": False})
+        state = {
+            **state,
+            "lanes": {"0": {"state": "ok", "foreign_writes": [{"path": "impl.py", "owner": 0, "suspects": [0]}]}},
+        }
+        self.assertEqual(mitosis.exit_code(state, self.PLAN), mitosis.EXIT_FOREIGN)
+        self.assertIn("another Lane", mitosis.EXIT_MEANING[mitosis.EXIT_FOREIGN])
+
     def a_shipped_msp_whose_gate_passed_exits_zero(self):
         state = self._state(gate={"outcome": "pass", "counts": {}, "blocks": False})
         self.assertEqual(mitosis.exit_code(state, self.PLAN), mitosis.EXIT_SHIPPED)
         passing = self._state(gate={"outcome": "not-applicable", "blocks": False})
         self.assertEqual(mitosis.exit_code(passing, self.PLAN), mitosis.EXIT_SHIPPED)
+
+
+class CouplingReport(unittest.TestCase):
+    ITEMS = [
+        briefed("seven", files=["db/migrations/0007_x.sql"]),
+        briefed("eight", files=["db/migrations/0008_y.sql"]),
+        briefed("plain-a", files=["src/a.py"]),
+        briefed("plain-b", files=["src/b.py"]),
+    ]
+
+    def _plan_only(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(root, "items.json", json.dumps(self.ITEMS))
+            write(root, "graph.json", json.dumps({"src/a.py": ["src/b.py"]}))
+            return invoke(
+                root,
+                ["--items", "items.json", "--graph", "graph.json", "--plan-only",
+                 "--run-dir", os.path.join(root, "run")],
+            )
+
+    def a_strong_signal_is_ordered_and_an_import_link_is_named_before_the_build(self):
+        code, out, err = self._plan_only()
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
+        body = section(out, "Coupling")
+        self.assertIn("seven then eight: put in order because of same-migration-directory", body)
+        self.assertTrue(any(line.startswith("plain-a and plain-b") and "run in parallel" in line for line in body))
+        found = json.loads(out.splitlines()[-1])
+        self.assertEqual(
+            [(entry["first"], entry["then"]) for entry in found["coupling"]["ordered"]], [("seven", "eight")]
+        )
+        self.assertEqual(found["coupling"]["parallel"], [{"steps": ["plain-a", "plain-b"], "signals": ["import-adjacency"]}])
+        self.assertEqual(
+            found["attention"],
+            ["1 pair of Steps run in parallel with only import-adjacency between them: plain-a+plain-b; "
+             "add an after edge where one needs the other's output"],
+        )
+
+    def many_parallel_pairs_are_named_in_one_line_with_the_rest_counted(self):
+        coupling = {
+            "ordered": [],
+            "parallel": [{"steps": ["a%d" % n, "b%d" % n], "signals": ["import-adjacency"]} for n in range(10)],
+        }
+        lines = mitosis._coupling_attention(coupling)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("10 pairs of Steps", lines[0])
+        self.assertIn("and 2 more", lines[0])
 
 
 class ReportSections(unittest.TestCase):
@@ -1137,6 +1192,7 @@ def load_tests(loader, tests, pattern):
         LaneCycleFusion,
         HeldRun,
         GateExit,
+        CouplingReport,
         GraphLoading,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))

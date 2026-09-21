@@ -502,6 +502,52 @@ def _verdict(lane, tree, started, merged, out, err, code, timed_out):
     )
 
 
+def _dirty_paths(tree):
+    entries = git_run(
+        ["status", "--porcelain", "-z", "--untracked-files=all"], tree["path"]
+    ).stdout.split("\0")
+    found = ()
+    skip = False
+    for entry in entries:
+        if skip:
+            skip = False
+            continue
+        if len(entry) > 3:
+            found = found + (entry[3:],)
+            skip = entry[0] in "RC"
+    return found
+
+
+def _foreign_writes(plan, msp, tree, batch, records):
+    owners = {
+        _norm(path): index
+        for index, record in records.items()
+        if record.get("state") == "ok" and plan["lanes"][index]["msp"] == msp and index not in batch
+        for path in plan["briefs"][index]["write_set"]
+    }
+    touched = sorted(path for path in _dirty_paths(tree) if _norm(path) in owners)
+    if touched:
+        try:
+            commit_paths(
+                tree["path"],
+                touched,
+                "chore(%s): keep changes to files other Lanes own (%s)"
+                % (tree.get("label") or tree["msp"], ", ".join(touched)),
+            )
+        except GitError:
+            pass
+    return [{"path": path, "owner": owners[_norm(path)]} for path in touched]
+
+
+def _suspects(batch, held, path):
+    claimants = [
+        lane
+        for lane in batch
+        if path in (((held[lane].get("returned") or {}).get("files_changed")) or [])
+    ]
+    return claimants or list(batch)
+
+
 def _landed(plan, lane, tree, record):
     commit, reason = _land(plan, lane, tree)
     if reason is not None:
@@ -556,10 +602,25 @@ def dispatch(
         while pending or running or held:
             progressed = False
             busy = {lanes[entry[0]]["msp"] for entry in running.values()}
-            for lane in [lane for lane in held if lanes[lane]["msp"] not in busy]:
-                landed = _landed(plan, lane, tree_of[lanes[lane]["msp"]], held[lane])
-                held = {key: value for key, value in held.items() if key != lane}
-                records = settle(records, lane, landed)
+            for msp in sorted({lanes[lane]["msp"] for lane in held} - busy):
+                batch = [lane for lane in held if lanes[lane]["msp"] == msp]
+                landed = {lane: _landed(plan, lane, tree_of[msp], held[lane]) for lane in batch}
+                foreign = _foreign_writes(plan, msp, tree_of[msp], batch, records)
+                for lane in batch:
+                    records = settle(
+                        records,
+                        lane,
+                        {
+                            **landed[lane],
+                            "foreign_writes": [
+                                {**entry, "suspects": suspects}
+                                for entry in foreign
+                                for suspects in (_suspects(batch, held, entry["path"]),)
+                                if lane in suspects
+                            ],
+                        },
+                    )
+                held = {key: value for key, value in held.items() if key not in batch}
                 progressed = True
             waiting = ()
             holding = {lanes[lane]["msp"] for lane in held}
@@ -1117,7 +1178,49 @@ def pull_request_title(plan, msp):
     return "%s: %s" % (label, ", ".join(steps))
 
 
-def pull_request_body(plan, msp, base, acceptance_command, gate_result, findings, exception):
+def lane_name(plan, lane):
+    return "Lane %d (%s)" % (lane, ", ".join((plan.get("lanes") or [])[lane]["steps"]))
+
+
+def foreign_sentence(plan, entry):
+    suspects = entry.get("suspects") or [entry["lane"]]
+    who = " or ".join(lane_name(plan, lane) for lane in suspects)
+    unsure = "; they finished together, so git cannot tell which" if len(suspects) > 1 else ""
+    return "%s changed %s%s. %s owns that file and had already committed it" % (
+        who,
+        entry["path"],
+        unsure,
+        lane_name(plan, entry["owner"]),
+    )
+
+
+def _foreign_lines(plan, foreign):
+    return [
+        "%s; a Lane built alongside it may rely on the earlier version." % foreign_sentence(plan, entry)
+        for entry in unique_foreign(foreign)
+    ]
+
+
+def unique_foreign(foreign):
+    seen = {}
+    for entry in foreign:
+        key = (entry["path"], entry["owner"], tuple(entry.get("suspects") or [entry["lane"]]))
+        seen = seen if key in seen else {**seen, key: entry}
+    return list(seen.values())
+
+
+def msp_foreign_writes(plan, msp, lane_records):
+    return [
+        {**entry, "lane": index}
+        for index, lane in enumerate(plan.get("lanes") or [])
+        if lane["msp"] == msp
+        for entry in (lane_records.get(str(index)) or {}).get("foreign_writes") or []
+    ]
+
+
+def pull_request_body(
+    plan, msp, base, acceptance_command, gate_result, findings, exception, foreign=()
+):
     steps = _steps_by_name(plan)
     names = plan["msps"][msp]["steps"]
     lines = [
@@ -1158,6 +1261,7 @@ def pull_request_body(plan, msp, base, acceptance_command, gate_result, findings
                 "Merging both as they stand overwrites one with the other."
                 % (entry["path"], entry["label"])
             ]
+    lines = lines + _foreign_lines(plan, foreign)
     for gap in manifest_gaps(plan, msp):
         lines = lines + [
             "%s would ship with nothing exported: %s owns it and is built before all %d Steps "
@@ -1189,6 +1293,7 @@ def ship(
     exception=None,
     timeout=None,
     push=True,
+    foreign=(),
 ):
     label = _label(plan, msp)
     head = commit_all(tree, "chore(%s): commit the MSP's work before shipping" % label)
@@ -1207,7 +1312,9 @@ def ship(
         return {**held, "unchanged": False}
     git(["push", "-q", "-u", remote, branch], tree)
     title = pull_request_title(plan, msp)
-    body = pull_request_body(plan, msp, base, acceptance_command, gate_result, findings, exception)
+    body = pull_request_body(
+        plan, msp, base, acceptance_command, gate_result, findings, exception, foreign
+    )
     os.makedirs(log_dir, exist_ok=True)
     out = os.path.join(log_dir, "pull-request.out")
     err = os.path.join(log_dir, "pull-request.err")
@@ -1320,7 +1427,7 @@ def _reconcile_stage(plan, msp, tree, producers, trees, settings):
     return {"reconcile": findings}
 
 
-def _ship_stage(plan, msp, tree, base, exception, record, settings):
+def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=()):
     try:
         shipped = ship(
             plan,
@@ -1337,6 +1444,7 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings):
             exception,
             settings["timeout"],
             settings["push"],
+            foreign,
         )
     except (OSError, GitError, ShipError, subprocess.SubprocessError, ValueError) as error:
         return {"state": "ship-failed", "reason": str(error), "ship": None}
@@ -1382,7 +1490,16 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
         state = write_state(
             run_dir, {**state, "stacking_exceptions": state["stacking_exceptions"] + [exception]}
         )
-    shipped = _ship_stage(plan, msp, tree, base, exception, state["msps"][str(msp)], settings)
+    shipped = _ship_stage(
+        plan,
+        msp,
+        tree,
+        base,
+        exception,
+        state["msps"][str(msp)],
+        settings,
+        msp_foreign_writes(plan, msp, state["lanes"]),
+    )
     return write_state(run_dir, _msp_record(state, msp, **shipped))
 
 

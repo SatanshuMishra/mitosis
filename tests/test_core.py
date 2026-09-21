@@ -440,6 +440,50 @@ class Tiering(unittest.TestCase):
             entry for entry in review if entry["signals"] == ["same-migration-directory"]
         ])
 
+    def a_strong_coupling_signal_orders_the_pair_and_an_import_link_leaves_it_parallel(self):
+        items = [
+            step("seven", ["db/migrations/0007_add_x.sql"]),
+            step("eight", ["db/migrations/0008_add_y.sql"]),
+            step("plain-a", ["src/a.py"]),
+            step("plain-b", ["src/b.py"]),
+            step("auth-a", ["src/auth/a.py"]),
+            step("auth-b", ["lib/auth/b.py"]),
+        ]
+        history = ({"files": ["src/a.py", "src/auth/a.py"], "outcome": "failed"},)
+        plan = core.plan(items, graph={"src/a.py": ["src/b.py"]}, risk_markers=("auth/",), history=history)
+        ordered = {(entry["first"], entry["then"]): entry["signals"] for entry in plan["coupling_order"]}
+        self.assertEqual(ordered[("seven", "eight")], ["same-migration-directory"])
+        self.assertEqual(ordered[("auth-a", "auth-b")], ["shared-risk-marker"])
+        self.assertEqual(ordered[("plain-a", "auth-a")], ["recorded-regression"])
+        by_name = {item["name"]: item for item in plan["items"]}
+        self.assertEqual(by_name["eight"]["after"], ["seven"])
+        self.assertEqual(by_name["auth-b"]["after"], ["auth-a"])
+        review = {tuple(entry["steps"]): entry for entry in plan["coupling_review"]}
+        self.assertEqual(review[("plain-a", "plain-b")]["default"], "parallel")
+        self.assertEqual(review[("plain-a", "plain-b")]["signals"], ["import-adjacency"])
+        self.assertNotIn(("seven", "eight"), review)
+        self.assertFalse(any("after" in item for item in items))
+
+    def an_added_order_never_closes_a_loop(self):
+        items = [
+            step("a", ["m/0001_a.sql"], after=["c"]),
+            step("b", ["m/0002_b.sql"]),
+            step("c", ["m/0003_c.sql"]),
+        ]
+        plan = core.plan(items)
+        self.assertEqual(core.cycles(plan["items"]), ())
+        self.assertEqual(
+            [(entry["first"], entry["then"]) for entry in plan["coupling_order"]], [("a", "b")]
+        )
+        by_name = core._by_name(plan["items"])
+        for x, y in (("a", "b"), ("a", "c"), ("b", "c")):
+            self.assertTrue(core._ordered(plan["items"], by_name[x], by_name[y], by_name), (x, y))
+
+    def a_pair_already_ordered_by_an_after_edge_gets_no_verdict(self):
+        items = [step("a", ["src/a.py"]), step("b", ["src/b.py"], after=["a"])]
+        lanes = core.lane_items(items)
+        self.assertEqual(core.coupling_review(items, lanes, {"src/a.py": ["src/b.py"]}), [])
+
     def verify_mode_splits_serial_from_offloadable(self):
         items = [
             step("page", ["src/ui/page.tsx"]),
@@ -540,6 +584,9 @@ class Cost(unittest.TestCase):
 SOURCE = {"path": "docs/spec.md", "sha256": "0" * 64}
 
 
+RICH_GRAPH = {"core.py": ["run.py"], "README.md": ["SKILL.md"]}
+
+
 def rich_items():
     return [
         step("core-vocab", ["core.py"], source=dict(SOURCE), complexity="simple",
@@ -555,8 +602,8 @@ def rich_items():
 
 class Plan(unittest.TestCase):
     def the_plan_emits_exactly_the_declared_keys(self):
-        result = core.plan(rich_items(), charter="docs/charter.md", graph={"core.py": ["run.py"]})
-        self.assertEqual(set(result), set(core.PLAN_KEYS))
+        result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
+        self.assertEqual(set(result), set(core.PLAN_KEYS) - {"coupling_order"})
         self.assertEqual(list(result), [key for key in core.PLAN_KEYS if key in result])
         self.assertEqual(result["version"], core.__version__)
         self.assertEqual(result["source"], SOURCE)
@@ -634,8 +681,8 @@ class Plan(unittest.TestCase):
         self.assertNotIn("popen", source)
         self.assertIsNone(re.search(r"\bgit\b", source))
         with mock.patch.object(builtins, "open", side_effect=AssertionError("plan opened a file")):
-            result = core.plan(rich_items(), charter="docs/charter.md", graph={"core.py": ["run.py"]})
-        self.assertEqual(set(result), set(core.PLAN_KEYS))
+            result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
+        self.assertEqual(set(result), set(core.PLAN_KEYS) - {"coupling_order"})
 
     def plan_refuses_invalid_items_with_messages(self):
         with self.assertRaises(core.ValidationError) as caught:

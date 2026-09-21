@@ -23,6 +23,7 @@ PLAN_KEYS = (
     "lane_order",
     "coalesce",
     "coupling_review",
+    "coupling_order",
     "counts",
     "briefs",
 )
@@ -85,6 +86,8 @@ COUPLING_SIGNALS = (
     "recorded-regression",
     "same-migration-directory",
 )
+
+SERIALIZING_SIGNALS = ("shared-risk-marker", "recorded-regression", "same-migration-directory")
 
 COUNT_KEYS = ("missing_paths", "no_acceptance", "assumptions")
 
@@ -738,26 +741,63 @@ def _pair_signals(left, right, graph, risk_markers, history):
     return signals
 
 
+def coupling_default(signals):
+    return "serialize" if any(s in SERIALIZING_SIGNALS for s in signals) else "parallel"
+
+
+def _ordered(items, a, b, by_name):
+    return _waits_on(items, a, b, by_name) or _waits_on(items, b, a, by_name)
+
+
+def _disjoint_signals(items, a, b, graph, risk_markers, history):
+    left = frozenset(_files(items[a]))
+    right = frozenset(_files(items[b]))
+    if left & right:
+        return []
+    return _pair_signals(left, right, graph, risk_markers, history)
+
+
+def order_coupled(items, graph=None, risk_markers=(), history=()):
+    lane_of = _owners(lane_items(items), len(items))
+    current = list(items)
+    added = ()
+    for a in range(len(items)):
+        for b in range(a + 1, len(items)):
+            if lane_of[a] == lane_of[b]:
+                continue
+            signals = _disjoint_signals(items, a, b, graph, risk_markers, history)
+            if coupling_default(signals) != "serialize":
+                continue
+            if _ordered(current, a, b, _by_name(current)):
+                continue
+            first, then = items[a]["name"], items[b]["name"]
+            current = [
+                {**item, "after": list(_after(item)) + [first]} if index == b else item
+                for index, item in enumerate(current)
+            ]
+            added = added + ({"first": first, "then": then, "signals": signals},)
+    return current, list(added)
+
+
 def coupling_review(items, lanes, graph, risk_markers=(), history=()):
     lane_of = _owners(lanes, len(items))
+    by_name = _by_name(items)
     review = []
     for a in range(len(items)):
         for b in range(a + 1, len(items)):
             if lane_of[a] == lane_of[b]:
                 continue
-            left = frozenset(_files(items[a]))
-            right = frozenset(_files(items[b]))
-            if left & right:
+            signals = _disjoint_signals(items, a, b, graph, risk_markers, history)
+            if not signals or _ordered(items, a, b, by_name):
                 continue
-            signals = _pair_signals(left, right, graph, risk_markers, history)
-            if signals:
-                review.append(
-                    {
-                        "steps": [items[a]["name"], items[b]["name"]],
-                        "lanes": [lane_of[a], lane_of[b]],
-                        "signals": signals,
-                    }
-                )
+            review.append(
+                {
+                    "steps": [items[a]["name"], items[b]["name"]],
+                    "lanes": [lane_of[a], lane_of[b]],
+                    "signals": signals,
+                    "default": coupling_default(signals),
+                }
+            )
     return review
 
 
@@ -1112,6 +1152,7 @@ def plan(
     checked = validate(items, root=root)
     if checked["errors"]:
         raise ValidationError(checked["errors"])
+    items, ordered = order_coupled(items, graph, risk_markers, history)
     msps = msp_items(items)
     lanes = lane_items(items)
     owners = lane_msps(items, lanes)
@@ -1154,6 +1195,7 @@ def plan(
         "lane_order": list(lane_order(lanes, edges, items)),
         "coalesce": coalesce(items, lanes, tiers, edges, budget),
         "coupling_review": coupling_review(items, lanes, graph, risk_markers, history),
+        "coupling_order": ordered,
         "counts": checked["counts"],
         "briefs": [
             _brief(items, index, lane, owners[index], labels[owners[index]], packs, charter, source)

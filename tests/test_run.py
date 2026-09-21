@@ -91,6 +91,12 @@ for path in written:
         os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a") as handle:
         handle.write("work by lane %s\n" % lane)
+reported = list(write_set)
+if mode in ("foreign-" + lane, "sneak-" + lane):
+    with open("iface.txt", "a") as handle:
+        handle.write("shape changed by lane %s\n" % lane)
+    if mode == "foreign-" + lane:
+        reported = reported + ["iface.txt"]
 if mode == "undeclared":
     with open("stray.txt", "w") as handle:
         handle.write("undeclared\n")
@@ -103,7 +109,7 @@ if mode == "noisy":
 status = "failed" if mode == "reports-failed" else "ok"
 notes = "n" * 500 if mode == "noisy" else "done"
 if mode != "silent":
-    print(json.dumps({"item": "lane-%s" % lane, "status": status, "files_changed": write_set, "notes": notes}))
+    print(json.dumps({"item": "lane-%s" % lane, "status": status, "files_changed": reported, "notes": notes}))
 os.remove(running)
 sys.exit(3 if mode in ("crash", "crash-" + lane) else 0)
 '''
@@ -725,6 +731,64 @@ class Dispatch(RepoCase):
         ):
             self.assertFalse(run._locked(failed(stderr)), stderr)
         self.assertFalse(run._locked(failed("fatal: Unable to create '/r/.git/index.lock'", 0)))
+
+    def _interface_plan(self):
+        return core.plan(
+            [
+                step("iface", ["iface.txt"], type="contract", contract_group="g"),
+                step("server", ["server.txt"], contract_group="g", after=["iface"]),
+                step("client", ["client.txt"], contract_group="g", after=["iface"]),
+            ]
+        )
+
+    def a_lane_that_rewrites_a_landed_siblings_file_is_named_and_the_change_kept(self):
+        self.add_remote()
+        plan = self._interface_plan()
+        server, client, iface = (lane_named(plan, name) for name in ("server", "client", "iface"))
+        state = self.execute(plan, mode="foreign-%d" % server)
+        lanes = state["lanes"]
+        self.assertEqual({r["state"] for r in lanes.values()}, {"ok"})
+        self.assertEqual(
+            lanes[str(server)]["foreign_writes"],
+            [{"path": "iface.txt", "owner": iface, "suspects": [server]}],
+        )
+        self.assertEqual(lanes[str(client)]["foreign_writes"], [])
+        self.assertEqual(lanes[str(iface)]["foreign_writes"], [])
+        branch = state["msps"]["0"]["ship"]["branch"]
+        log = sh(["git", "log", "--format=%s", "main.." + branch], self.repo)
+        self.assertIn("keep changes to files other Lanes own (iface.txt)", log)
+        self.assertIn("shape changed by lane", sh(["git", "show", branch + ":iface.txt"], self.repo))
+        body = self.pull_requests()[0][3]
+        self.assertIn("Lane %d (server) changed iface.txt." % server, body)
+        self.assertIn("Lane %d (iface) owns that file" % iface, body)
+
+    def an_unclaimed_write_is_put_on_every_lane_that_finished_with_it(self):
+        plan = self._interface_plan()
+        server, client = lane_named(plan, "server"), lane_named(plan, "client")
+        state = run.execute(
+            plan, self.repo, "main", self.run_dir, self.worker_command("sneak-%d" % server),
+            self.acceptance_command(), None, 60, 2, trees_root=self.trees, no_push=True,
+        )
+        suspects = {
+            tuple(entry["suspects"])
+            for record in state["lanes"].values()
+            for entry in record.get("foreign_writes") or []
+        }
+        self.assertTrue(suspects)
+        for found in suspects:
+            self.assertIn(server, found)
+        lines = run._foreign_lines(plan, run.msp_foreign_writes(plan, 0, state["lanes"]))
+        self.assertEqual(len(lines), len(suspects))
+
+    def a_lane_that_keeps_to_its_own_files_carries_no_foreign_write(self):
+        plan = self._interface_plan()
+        state = run.execute(
+            plan, self.repo, "main", self.run_dir, self.worker_command(),
+            self.acceptance_command(), None, 60, 2, trees_root=self.trees, no_push=True,
+        )
+        self.assertEqual(
+            [record.get("foreign_writes") for record in state["lanes"].values()], [[], [], []]
+        )
 
     def worker_output_goes_to_disk_and_the_record_stays_small(self):
         plan = core.plan([step("a", ["a.txt"])])
