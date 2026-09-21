@@ -1035,6 +1035,57 @@ class Ship(RepoCase):
         self.assertEqual(self.pull_requests(), [])
         self.assertTrue(run.succeeded(state))
 
+    def a_branch_with_nothing_new_is_unchanged_after_its_base_moves_on(self):
+        self.add_remote()
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        self.commit_file(self.repo, "later.txt", "landed on main after the branch was cut\n")
+        shipped = run.ship(
+            plan,
+            0,
+            trees[0]["path"],
+            trees[0]["branch"],
+            "main",
+            self.pr_command(),
+            "origin",
+            os.path.join(self.run_dir, "ship"),
+            timeout=60,
+        )
+        self.assertTrue(shipped["unchanged"])
+        self.assertEqual(self.remote_heads(), [])
+        self.assertEqual(self.pull_requests(), [])
+
+    def a_held_unchanged_msp_is_rechecked_when_its_producer_fails_to_ship(self):
+        self.add_remote()
+        self.seed_existing("b.txt", "already done\n")
+        plan = core.plan(
+            [step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"]), step("c", ["c.txt"], after=["b"])]
+        )
+        held = run.execute(
+            plan,
+            self.repo,
+            "main",
+            self.run_dir,
+            self.worker_command("nothing-%d" % lane_named(plan, "b")),
+            self.acceptance_command(),
+            None,
+            60,
+            2,
+            trees_root=self.trees,
+            no_push=True,
+        )
+        by_step = lambda state: {plan["msps"][int(m)]["steps"][0]: r["state"] for m, r in state["msps"].items()}
+        self.assertEqual(
+            by_step(held), {"a": run.MSP_COMMITTED, "b": run.MSP_UNCHANGED, "c": run.MSP_COMMITTED}
+        )
+        refusing = os.path.join(self.tmp, "refuse-a.py")
+        write(refusing, "import sys\nsys.exit(1 if sys.argv[1] == 'mitosis/a' else 0)\n")
+        resumed = self.execute(plan, resume=True, pr="%s %s {branch}" % (shlex.quote(sys.executable), shlex.quote(refusing)))
+        self.assertEqual(
+            by_step(resumed), {"a": "ship-failed", "b": run.MSP_BLOCKED, "c": run.MSP_BLOCKED}
+        )
+        self.assertNotIn("mitosis/c", self.remote_heads())
+
     def a_dependent_of_an_unchanged_msp_targets_that_msps_base(self):
         self.add_remote()
         self.seed_existing("a.txt", "already done\n")

@@ -1084,7 +1084,7 @@ def ship(
         "pull_request": "",
         "stacking_exception": exception is not None,
     }
-    if git_ok(["diff", "--quiet", base, head], tree):
+    if git_ok(["diff", "--quiet", "%s...%s" % (base, head)], tree):
         return {**held, "unchanged": True}
     if not push:
         return {**held, "unchanged": False}
@@ -1273,6 +1273,16 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     return write_state(run_dir, _msp_record(state, msp, **shipped))
 
 
+def _settled(state, msp, producers, finished):
+    current = (state["msps"].get(str(msp)) or {}).get("state")
+    if current == "shipped":
+        return True
+    return current in finished and all(
+        (state["msps"].get(str(producer)) or {}).get("state") in finished
+        for producer in producers
+    )
+
+
 def execute(
     plan,
     repo,
@@ -1351,7 +1361,7 @@ def execute(
     producers = msp_producers(plan)
     finished = core.DELIVERED_STATES if no_push else PUBLISHED_STATES
     for msp in msp_order(plan):
-        if (state["msps"].get(str(msp)) or {}).get("state") in finished:
+        if _settled(state, msp, producers[msp], finished):
             continue
         state = _finish_msp(plan, msp, trees, producers[msp], state, settings)
     return state

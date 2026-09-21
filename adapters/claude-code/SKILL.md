@@ -333,11 +333,13 @@ The exit code is zero only when every MSP reached `shipped`, `unchanged` or
 `committed` and reconcile found nothing. Every other outcome is a distinct
 non-zero code, printed with its meaning on the report's last line. Each Lane
 ends `ok`, `failed`, `blocked` or `merge-blocked`; each MSP ends `shipped`,
-`unchanged`, `committed`, `gate-failed`, `gate-inconclusive` or `ship-failed`. An MSP is `unchanged` when
-its branch holds nothing its pull request's base does not, so nothing is pushed
-and no pull request opens; an MSP that depends on it targets that same base. The two Lane states that block
-dependents differ by the human action they need: `merge-blocked` wants a
-conflict resolved, `blocked` wants a predecessor fixed.
+`unchanged`, `committed`, `gate-failed`, `gate-inconclusive` or `ship-failed`.
+An MSP is `unchanged` when its branch adds nothing to its pull request's base,
+so nothing is pushed and no pull request opens. When mitosis chooses where a
+dependant's pull request stacks, it uses that base in place of the unchanged
+MSP's branch. The two Lane states that block dependents differ by the human
+action they need: `merge-blocked` wants a conflict resolved, `blocked` wants a
+predecessor fixed.
 
 The run directory, printed in the report, holds the plan, the state, the
 persisted Steps, every Worker's full stdout and stderr, and the worktrees.
@@ -351,17 +353,17 @@ leaves a local commit on an unpushed branch.
 ## Resuming
 
 Pass `--resume` with the same input and run directory. Lanes already `ok`
-and MSPs already `shipped` or `unchanged` are skipped, a failed gate is re-run
-without rebuilding the Lane, and a producer whose branch was deleted after its pull
-request merged is still found through its recorded commit on the feature
-branch. The plan id must match: if the Steps changed, the prior results do not
+and MSPs already `shipped` are skipped, as is an MSP already `unchanged` whose
+producers all finished. A failed gate is re-run without rebuilding the Lane,
+and a producer whose branch was deleted after its pull request merged is still
+found through its recorded commit on the feature branch. The plan id must match: if the Steps changed, the prior results do not
 apply, and mitosis refuses rather than resume against a different plan.
 
 ## Holding the work locally
 
 Pass `--no-push` to build, gate and reconcile every MSP without publishing
-anything. Each MSP ends `committed` on its local branch: nothing is pushed and
-no pull request opens, so `--pr-command` is not taken, and passing it is
+anything. Each MSP ends `committed` on its local branch, or `unchanged` when it
+adds nothing to its base: nothing is pushed and no pull request opens, so `--pr-command` is not taken, and passing it is
 refused. Run the project's own checks against those branches, then `--resume`
 without `--no-push` ships what was held. Resuming with `--no-push` again
 leaves a `committed` MSP where it is.
