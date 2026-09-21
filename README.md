@@ -94,7 +94,13 @@ must raise the version in `core.py` and `.claude-plugin/plugin.json` together
 and add its heading to `CHANGELOG.md`; the tests and continuous integration
 refuse it otherwise. Versions stay below 1.0.0 until mitosis is released.
 Merging to `main` publishes the release, and continuous integration then tags
-the merge `mitosis--v<version>`.
+the merge `mitosis--v<version>`. Keep a branch up to date with `main` before
+merging it, because a check that passed against an older `main` is not rerun.
+
+Continuous integration also refuses published text, including a pull
+request's title and body, that contains a term listed in the `DENY_TERMS`
+repository secret. A pull request from a fork cannot read that secret, so its
+check fails until the branch is pushed here.
 
 ## More
 

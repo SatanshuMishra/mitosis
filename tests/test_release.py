@@ -5,8 +5,12 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+if not os.path.isfile(os.path.join(ROOT, "scripts", "release_check.py")):
+    raise unittest.SkipTest("a bare copy of the modules carries no release check")
 
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 
@@ -64,11 +68,11 @@ class Repo(unittest.TestCase):
     def tearDown(self):
         self._directory.cleanup()
 
-    def _main(self, terms=TERM, pr_text=""):
+    def _main(self, terms=TERM, pr_text="", args=None):
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
             code = release_check.main(
-                ["--base", self.base, "--root", self.root], {"DENY_TERMS": terms, "PR_TEXT": pr_text}
+                (args or ["--base", self.base]) + ["--root", self.root], {"DENY_TERMS": terms, "PR_TEXT": pr_text}
             )
         return code, out.getvalue() + err.getvalue()
 
@@ -95,10 +99,46 @@ class VersionBump(Repo):
         _commit(self.root, {".claude-plugin/plugin.json": "{}\n", "core.py": _version("0.3.0")})
         self.assertEqual(release_check.bump_problems(self.root, self.base), ())
 
+    def anything_new_the_plugin_would_load_ships(self):
+        _commit(self.root, {"hooks/hooks.json": "{}\n"})
+        self.assertEqual(release_check.shipped_changes(self.root, self.base), ("hooks/hooks.json",))
+
+    def moving_a_shipped_file_out_of_what_ships_needs_a_bump(self):
+        _commit(self.root, {"skills/mitosis/SKILL.md": "text\n", "core.py": _version("0.2.1")})
+        released = _git(self.root, "rev-parse", "HEAD")
+        os.makedirs(os.path.join(self.root, "docs"))
+        _git(self.root, "mv", "skills/mitosis/SKILL.md", "docs/SKILL.md")
+        _git(self.root, "commit", "-q", "-m", "move")
+        self.assertIn("skills/mitosis/SKILL.md", release_check.shipped_changes(self.root, released))
+        self.assertEqual(len(release_check.bump_problems(self.root, released)), 1)
+
     def a_change_to_what_does_not_ship_needs_no_bump(self):
-        _commit(self.root, {"README.md": "# mitosis\nmore\n", "tests/test_run.py": "y = 1\n"})
+        _commit(
+            self.root,
+            {
+                "README.md": "# mitosis\nmore\n",
+                "CHANGELOG.md": "# Changelog\n",
+                "tests/test_run.py": "y = 1\n",
+                "docs/notes.md": "n\n",
+                "scripts/release_check.py": "z = 1\n",
+                ".github/workflows/ci.yml": "name: ci\n",
+            },
+        )
         self.assertEqual(release_check.shipped_changes(self.root, self.base), ())
         self.assertEqual(release_check.bump_problems(self.root, self.base), ())
+
+    def no_release_yet_means_no_bump_is_owed(self):
+        _commit(self.root, {"run.py": "x = 2\n"})
+        self.assertIsNone(release_check.last_release(self.root))
+        self.assertEqual(release_check.bump_problems(self.root, None), ())
+
+    def the_latest_release_tag_is_the_base(self):
+        _git(self.root, "tag", "mitosis--v0.2.0")
+        _commit(self.root, {"run.py": "x = 2\n", "core.py": _version("0.10.0")})
+        _git(self.root, "tag", "mitosis--v0.10.0")
+        _commit(self.root, {"run.py": "x = 3\n"})
+        self.assertEqual(release_check.last_release(self.root), "mitosis--v0.10.0")
+        self.assertEqual(len(release_check.bump_problems(self.root, "mitosis--v0.10.0")), 1)
 
 
 class DeniedTerms(Repo):
@@ -108,11 +148,34 @@ class DeniedTerms(Repo):
             release_check.denied(self.root, self.base, (TERM,)), ("denied term in docs/notes.md:2",)
         )
 
-    def a_term_in_a_path_is_found(self):
-        _commit(self.root, {"zebracorn/notes.md": "clean\n"})
+    def a_term_in_a_path_is_found_and_masked(self):
+        _commit(self.root, {"ZebraCorn/notes.md": "clean\n"})
         self.assertIn(
-            "denied term in zebracorn/notes.md (path)", release_check.denied(self.root, self.base, (TERM,))
+            "denied term in *********/notes.md (path)", release_check.denied(self.root, self.base, (TERM,))
         )
+
+    def a_term_in_text_that_is_not_utf8_is_found(self):
+        path = os.path.join(self.root, "docs", "wide.txt")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "wb") as handle:
+            handle.write("built like zebracorn\n".encode("utf-16"))
+        _git(self.root, "add", "-A")
+        _git(self.root, "commit", "-q", "-m", "wide")
+        self.assertEqual(
+            release_check.denied(self.root, self.base, (TERM,)),
+            ("denied term in docs/wide.txt (in content that is not UTF-8 text)",),
+        )
+
+    def a_term_in_a_symlink_target_is_found(self):
+        os.symlink("zebracorn-notes.md", os.path.join(self.root, "link.md"))
+        _git(self.root, "add", "-A")
+        _git(self.root, "commit", "-q", "-m", "link")
+        self.assertIn("denied term in link.md:1", release_check.denied(self.root, self.base, (TERM,)))
+
+    def with_no_release_every_commit_message_is_scanned(self):
+        _commit(self.root, {"README.md": "# mitosis\n\n"}, "zebracorn once")
+        _commit(self.root, {"README.md": "# mitosis\n\n\n"}, "clean")
+        self.assertEqual(len(release_check.commit_hits(self.root, None, (TERM,))), 1)
 
     def a_term_in_a_commit_message_since_the_base_is_found(self):
         head = _commit(self.root, {"README.md": "# mitosis\n\n"}, "match the zebracorn defaults")
@@ -127,9 +190,10 @@ class DeniedTerms(Repo):
 
     def a_term_in_the_pull_request_text_is_found(self):
         self.assertEqual(
-            release_check.denied(self.root, self.base, (TERM,), "Before this change zebracorn delivered."),
-            ("denied term in pull request title or body",),
+            release_check.text_hits("Before this change zebracorn delivered.", (TERM,)),
+            ("pull request title or body",),
         )
+        self.assertEqual(release_check.text_hits("Before this change it delivered.", (TERM,)), ())
 
     def terms_split_on_commas_and_lines(self):
         self.assertEqual(release_check.terms_from(" Alpha, beta\n\ngamma ,"), ("alpha", "beta", "gamma"))
@@ -141,11 +205,44 @@ class Main(Repo):
         self.assertEqual(self._main()[0], release_check.EXIT_OK)
 
     def a_hit_exits_one_and_never_prints_the_term(self):
-        _commit(self.root, {"run.py": "zebracorn = 2\n", "core.py": _version("0.2.1")})
+        _commit(
+            self.root,
+            {"run.py": "zebracorn = 2\n", "core.py": _version("0.2.1"), "ZebraCorn/zebracorn.py": "x\n"},
+        )
         code, output = self._main()
         self.assertEqual(code, release_check.EXIT_FAILED)
         self.assertIn("denied term in run.py:1", output)
-        self.assertNotIn(TERM, output.replace("run.py:1", ""))
+        self.assertIn("*********/*********.py (path)", output)
+        self.assertNotIn(TERM, output.lower())
+
+    def a_missing_bump_never_prints_the_term_in_a_path(self):
+        base = _commit(self.root, {"zebracorn.py": "x = 1\n", "core.py": _version("0.2.1")})
+        _commit(self.root, {"zebracorn.py": "x = 2\n"})
+        code, output = self._main(args=["--base", base])
+        self.assertEqual(code, release_check.EXIT_FAILED)
+        self.assertIn("starting with *********.py", output)
+        self.assertNotIn(TERM, output.lower())
+
+    def text_only_scans_the_pull_request_and_nothing_else(self):
+        _commit(self.root, {"run.py": "zebracorn = 2\n"})
+        self.assertEqual(self._main(args=["--text-only"], pr_text="A clean title")[0], release_check.EXIT_OK)
+        code, output = self._main(args=["--text-only"], pr_text="Like ZEBRACORN did")
+        self.assertEqual(code, release_check.EXIT_FAILED)
+        self.assertNotIn(TERM, output.lower())
+
+    def since_release_compares_with_the_latest_tag(self):
+        _git(self.root, "tag", "mitosis--v0.2.0")
+        _commit(self.root, {"run.py": "x = 2\n"})
+        self.assertEqual(self._main(args=["--since-release"])[0], release_check.EXIT_FAILED)
+        _commit(self.root, {"core.py": _version("0.2.1")})
+        self.assertEqual(self._main(args=["--since-release"])[0], release_check.EXIT_OK)
+
+    def a_failure_to_run_git_is_a_misconfiguration_that_prints_no_term(self):
+        error = FileNotFoundError(2, "No such file or directory", "/zebracorn/git")
+        with mock.patch.object(release_check, "git", side_effect=error):
+            code, output = self._main()
+        self.assertEqual(code, release_check.EXIT_MISCONFIGURED)
+        self.assertNotIn(TERM, output.lower())
 
     def a_missing_bump_exits_one(self):
         _commit(self.root, {"run.py": "x = 2\n"})

@@ -1,0 +1,21 @@
+name: pr-text
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  denied-terms:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Refuse a denied term in the title or body
+        env:
+          DENY_TERMS: ${{ secrets.DENY_TERMS }}
+          PR_TEXT: ${{ github.event.pull_request.title }} ${{ github.event.pull_request.body }}
+        run: python3 scripts/release_check.py --text-only

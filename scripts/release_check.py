@@ -9,7 +9,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 VERSION_LINE = re.compile(r'^__version__ = "(\d+)\.(\d+)\.(\d+)"$', re.M)
 
-SHIPPED = re.compile(r"^(?:[^/]+\.py|skills/.+|\.claude-plugin/.+)$")
+UNSHIPPED = re.compile(
+    r"^(?:tests/|docs/|scripts/|\.github/|(?:README\.md|CHANGELOG\.md|LICENSE|NOTICE|\.gitignore)$)"
+)
+
+RELEASE_TAGS = "mitosis--v*"
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -17,19 +21,30 @@ EXIT_MISCONFIGURED = 2
 
 
 def git(root, *args):
-    return subprocess.run(("git", "-C", root) + args, capture_output=True, check=True).stdout.decode(
-        "utf-8", "replace"
-    )
+    return subprocess.run(("git", "-C", root) + args, capture_output=True, check=True).stdout
+
+
+def _text(raw):
+    return raw.decode("utf-8", "replace")
+
+
+def _names(raw):
+    return tuple(os.fsdecode(name) for name in raw.split(b"\0") if name)
 
 
 def version_at(root, ref):
-    match = VERSION_LINE.search(git(root, "show", "%s:core.py" % ref))
+    match = VERSION_LINE.search(_text(git(root, "show", "%s:core.py" % ref)))
     return tuple(int(part) for part in match.groups()) if match else None
 
 
+def last_release(root):
+    tags = _text(git(root, "tag", "--merged", "HEAD", "--list", RELEASE_TAGS, "--sort=-v:refname")).split()
+    return tags[0] if tags else None
+
+
 def shipped_changes(root, base):
-    names = git(root, "diff", "--name-only", "-z", "%s...HEAD" % base).split("\0")
-    return tuple(name for name in names if name and SHIPPED.match(name))
+    names = _names(git(root, "diff", "--name-only", "--no-renames", "-z", "%s...HEAD" % base))
+    return tuple(name for name in names if not UNSHIPPED.match(name))
 
 
 def _dotted(version):
@@ -37,7 +52,7 @@ def _dotted(version):
 
 
 def bump_problems(root, base):
-    changed = shipped_changes(root, base)
+    changed = () if base is None else shipped_changes(root, base)
     if not changed:
         return ()
     before, after = version_at(root, base), version_at(root, "HEAD")
@@ -59,24 +74,48 @@ def _hit(text, terms):
     return any(term in lowered for term in terms)
 
 
-def _file_hits(root, name, terms):
+def masked(text, terms):
+    if not terms:
+        return text
+    pattern = re.compile("|".join(re.escape(term) for term in terms), re.I)
+    return pattern.sub(lambda match: "*" * len(match.group(0)), text)
+
+
+def _shown(name, terms):
+    return masked(name.encode("utf-8", "surrogateescape").decode("utf-8", "replace"), terms)
+
+
+def _content(root, name):
     path = os.path.join(root, name)
+    if os.path.islink(path):
+        return os.fsencode(os.readlink(path))
     if not os.path.isfile(path):
-        return ()
+        return b""
     with open(path, "rb") as handle:
-        lines = handle.read().decode("utf-8", "replace").splitlines()
-    return tuple("%s:%d" % (name, number) for number, line in enumerate(lines, 1) if _hit(line, terms))
+        return handle.read()
+
+
+def _file_hits(root, name, terms):
+    raw = _content(root, name)
+    shown = _shown(name, terms)
+    found = tuple(
+        "%s:%d" % (shown, number) for number, line in enumerate(_text(raw).splitlines(), 1) if _hit(line, terms)
+    )
+    if found or not _hit(raw.replace(b"\0", b"").decode("latin-1"), terms):
+        return found
+    return ("%s (in content that is not UTF-8 text)" % shown,)
 
 
 def tracked_hits(root, terms):
-    names = tuple(name for name in git(root, "ls-files", "-z").split("\0") if name)
-    return tuple("%s (path)" % name for name in names if _hit(name, terms)) + tuple(
+    names = _names(git(root, "ls-files", "-z"))
+    return tuple("%s (path)" % _shown(name, terms) for name in names if _hit(name, terms)) + tuple(
         hit for name in names for hit in _file_hits(root, name, terms)
     )
 
 
 def commit_hits(root, base, terms):
-    entries = git(root, "log", "-z", "--format=%h%n%B", "%s..HEAD" % base).split("\0")
+    span = "HEAD" if base is None else "%s..HEAD" % base
+    entries = _text(git(root, "log", "-z", "--format=%h%n%B", span)).split("\0")
     return tuple(
         "commit %s" % entry.split("\n", 1)[0]
         for entry in entries
@@ -84,21 +123,36 @@ def commit_hits(root, base, terms):
     )
 
 
-def denied(root, base, terms, extra_text=""):
-    found = tracked_hits(root, terms) + commit_hits(root, base, terms)
-    found = found + (("pull request title or body",) if _hit(extra_text, terms) else ())
-    return tuple("denied term in %s" % place for place in found)
+def text_hits(text, terms):
+    return ("pull request title or body",) if _hit(text, terms) else ()
+
+
+def denied(root, base, terms):
+    return tuple("denied term in %s" % place for place in tracked_hits(root, terms) + commit_hits(root, base, terms))
 
 
 def build_parser():
     parser = argparse.ArgumentParser(
         description="Refuse a release whose shipped files changed without a version bump, or whose "
         "published text contains a denied term. Terms come from DENY_TERMS, one per line or comma "
-        "separated; extra text to scan, such as a pull request's title and body, comes from PR_TEXT."
+        "separated; a pull request's title and body come from PR_TEXT."
     )
     parser.add_argument("--base", default="origin/main", help="the ref this release is compared with")
+    parser.add_argument(
+        "--since-release",
+        action="store_true",
+        help="compare with the latest release tag merged into HEAD instead of --base",
+    )
+    parser.add_argument("--text-only", action="store_true", help="scan only PR_TEXT")
     parser.add_argument("--root", default=ROOT, help="the repository to check")
     return parser
+
+
+def _problems(args, terms, env):
+    if args.text_only:
+        return tuple("denied term in %s" % place for place in text_hits(env.get("PR_TEXT", ""), terms))
+    base = last_release(args.root) if args.since_release else args.base
+    return bump_problems(args.root, base) + denied(args.root, base, terms)
 
 
 def main(argv=None, environ=None):
@@ -109,14 +163,16 @@ def main(argv=None, environ=None):
         print("release check: DENY_TERMS is empty, so the denied-term scan cannot run", file=sys.stderr)
         return EXIT_MISCONFIGURED
     try:
-        problems = bump_problems(args.root, args.base) + denied(
-            args.root, args.base, terms, env.get("PR_TEXT", "")
-        )
+        problems = _problems(args, terms, env)
     except subprocess.CalledProcessError as error:
-        print("release check: git failed: %s" % error.stderr.decode("utf-8", "replace").strip(), file=sys.stderr)
+        detail = error.stderr.decode("utf-8", "replace").strip() if error.stderr else str(error)
+        print("release check: git failed: %s" % masked(detail, terms), file=sys.stderr)
+        return EXIT_MISCONFIGURED
+    except OSError as error:
+        print("release check: %s" % masked(str(error), terms), file=sys.stderr)
         return EXIT_MISCONFIGURED
     for problem in problems:
-        print(problem)
+        print(masked(problem, terms))
     return EXIT_FAILED if problems else EXIT_OK
 
 

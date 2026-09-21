@@ -102,7 +102,9 @@ def _local_closure(start, root=ROOT):
 
 CHANGELOG_CANDIDATES = ("changelog.md", "changelog.rst", "changelog", "history.md")
 
-PLUGIN_MANIFEST = os.path.join(ROOT, ".claude-plugin", "plugin.json")
+PLUGIN_DIRECTORY = os.path.join(ROOT, ".claude-plugin")
+
+PLUGIN_MANIFEST = os.path.join(PLUGIN_DIRECTORY, "plugin.json")
 
 MARKETPLACE_MANIFEST = os.path.join(ROOT, ".claude-plugin", "marketplace.json")
 
@@ -110,18 +112,24 @@ SKILL_PATH = os.path.join(ROOT, "skills", "mitosis", "SKILL.md")
 
 SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 
+YAML_UNSAFE_START = frozenset("-?:,[]{}#&*!|>'\"%@`")
+
+
+def _in_plugin(case):
+    if not os.path.isdir(PLUGIN_DIRECTORY):
+        case.skipTest("a bare copy of the modules carries no plugin")
+    for path in (PLUGIN_MANIFEST, MARKETPLACE_MANIFEST, SKILL_PATH):
+        case.assertTrue(os.path.isfile(path), "the plugin is missing %s" % os.path.relpath(path, ROOT))
+
 
 def _skill_text(case):
-    if not os.path.isfile(PLUGIN_MANIFEST):
-        case.skipTest("a bare copy of the modules carries no plugin")
-    case.assertTrue(os.path.isfile(SKILL_PATH), "the plugin carries no skills/mitosis/SKILL.md")
-    with open(SKILL_PATH, encoding="utf-8") as handle:
+    _in_plugin(case)
+    with open(SKILL_PATH, encoding="utf-8", newline="") as handle:
         return handle.read()
 
 
 def _manifests(case):
-    if not os.path.isfile(PLUGIN_MANIFEST):
-        case.skipTest("a bare copy of the modules carries no plugin")
+    _in_plugin(case)
     with open(PLUGIN_MANIFEST, encoding="utf-8") as handle:
         plugin = json.load(handle)
     with open(MARKETPLACE_MANIFEST, encoding="utf-8") as handle:
@@ -188,6 +196,8 @@ def _changelog_head(text):
     headings = [index for index, line in enumerate(lines) if line.startswith("## ")]
     if len(headings) >= 2:
         return "\n".join(lines[headings[0]:headings[1]])
+    if headings:
+        return "\n".join(lines[headings[0]:])
     return text
 
 
@@ -262,12 +272,12 @@ class Docs(unittest.TestCase):
             )
 
     def the_skill_file_is_within_its_size_cap(self):
-        text = _skill_text(self)
-        self.assertLessEqual(len(text.encode("utf-8")), 20480)
+        _in_plugin(self)
+        self.assertLessEqual(os.path.getsize(SKILL_PATH), 20480)
 
     def the_skill_runs_the_installed_copy_and_names_no_placeholder(self):
         text = _skill_text(self)
-        commands = re.findall(r"^python3 (?!-m )(\S+) ", text, re.M)
+        commands = re.findall(r"^python3 (?!-m )(\S+)", text, re.M)
         self.assertTrue(commands)
         self.assertEqual(set(commands), {'"${CLAUDE_PLUGIN_ROOT}/mitosis.py"'})
         self.assertNotIn("/path/to", text)
@@ -282,6 +292,14 @@ class Docs(unittest.TestCase):
         self.assertTrue(front.get("description"))
         self.assertEqual(entries[0]["source"], "./")
 
+    def the_skill_frontmatter_is_plain_yaml(self):
+        front = _frontmatter(_skill_text(self))
+        self.assertEqual(sorted(front), ["description", "name"])
+        for key, value in front.items():
+            self.assertNotIn(": ", value, key)
+            self.assertNotIn(" #", value, key)
+            self.assertNotIn(value[:1], YAML_UNSAFE_START, key)
+
     def the_plugin_declares_the_version_the_code_reports(self):
         plugin, marketplace = _manifests(self)
         self.assertRegex(core.__version__, SEMVER)
@@ -290,12 +308,14 @@ class Docs(unittest.TestCase):
 
     def the_declared_version_matches_the_changelog_head(self):
         path = _changelog_path(ROOT)
-        if path is None and not os.path.isfile(PLUGIN_MANIFEST):
+        if path is None and not os.path.isdir(PLUGIN_DIRECTORY):
             self.skipTest("a bare copy of the modules carries no changelog")
         self.assertIsNotNone(path, "the plugin carries no changelog")
         with open(path, encoding="utf-8") as handle:
             head = _changelog_head(handle.read())
-        self.assertIn(core.__version__, head)
+        heading = re.match(r"^## (\S+)", head)
+        self.assertIsNotNone(heading, "the changelog has no release heading")
+        self.assertEqual(heading.group(1), core.__version__)
 
 
 def load_tests(loader, tests, pattern):
