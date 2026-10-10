@@ -914,10 +914,10 @@ open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "spawned"), "w").c
 
 
 class PullRequestFlags(unittest.TestCase):
-    def _attempt(self, *flags):
+    def _attempt(self, *flags, items=None):
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
             git_repo(root)
-            write(root, "items.json", json.dumps([briefed("alpha")]))
+            write(root, "items.json", json.dumps(items or [briefed("alpha")]))
             with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
                 code, out, err = invoke(
                     root,
@@ -989,6 +989,69 @@ class PullRequestFlags(unittest.TestCase):
                 self.assertIn("MSP %s would be titled" % label, err)
                 self.assertIn(rule, err)
                 self.assertFalse(os.path.exists(os.path.join(root, "run", run.PLAN_FILE)))
+
+    def why_lines_follow_the_composed_rules(self):
+        typed = ("--pr-type", "feat", "--pr-subject", SUBJECT)
+        for why in (
+            "Callers \u202e need it.",
+            "a<b",
+            "# A heading.",
+            "Verified: x",
+            "Supersedes x",
+            "Callers need it.\u00a0",
+            "@team",
+            "Closes #1.",
+            "See https://example.invalid.",
+            "Callers need it \u2014 now.",
+        ):
+            with self.subTest(why=ascii(why)):
+                fault = mitosis.why_fault(why)
+                self.assertIsNotNone(fault)
+                code, err, spawned = self._attempt(*typed, "--pr-why", why)
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                self.assertIn("--pr-why number 1 %s" % fault, err.splitlines()[0])
+                self.assertFalse(spawned)
+        linked = "See https://example.invalid."
+        self.assertEqual(mitosis.why_fault(linked), run.composed_fault(linked))
+        parser = mitosis.build_parser()
+        for why in ("Callers need it.", "receipt: tests/test_run.py::x"):
+            with self.subTest(why=why):
+                self.assertIsNone(mitosis.why_fault(why))
+                self.assertIsNone(
+                    mitosis.check_pull_request_flags(parser.parse_args(typed + ("--pr-why", why)))
+                )
+
+    def titles_and_subjects_follow_the_composed_rules(self):
+        for subject in ("add <?x?> parser", "fix &amp; cleanup", "ping @team", "close #12"):
+            with self.subTest(subject=subject):
+                rule = run.composed_fault(subject)
+                self.assertIsNotNone(rule)
+                code, err, spawned = self._attempt(
+                    "--pr-type", "feat", "--pr-subject", subject, "--pr-why", WHY
+                )
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                first = err.splitlines()[0]
+                self.assertIn("--pr-subject %r" % subject, first)
+                self.assertIn(rule, first)
+                self.assertFalse(spawned)
+        for label, rule in (
+            ("a<b", "holds < followed by !, /, ? or a letter"),
+            ("a&lt;b", "holds a character reference"),
+        ):
+            with self.subTest(label=label):
+                code, err, spawned = self._attempt(
+                    "--pr-type",
+                    "feat",
+                    "--pr-subject",
+                    SUBJECT,
+                    "--pr-why",
+                    WHY,
+                    items=[briefed("alpha", msp=label), briefed("beta")],
+                )
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                self.assertIn("MSP %s would be titled" % label, err)
+                self.assertIn(rule, err)
+                self.assertFalse(spawned)
 
 
 class PushOnly(unittest.TestCase):

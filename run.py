@@ -504,20 +504,21 @@ def _verdict(lane, tree, started, merged, out, err, code, timed_out):
     )
 
 
-def _dirty_paths(tree):
-    entries = git_run(
-        ["status", "--porcelain", "-z", "--untracked-files=all"], tree["path"]
-    ).stdout.split("\0")
-    found = ()
+def _status_paths(entries):
     skip = False
     for entry in entries:
         if skip:
             skip = False
-            continue
-        if len(entry) > 3:
-            found = found + (entry[3:],)
+        elif len(entry) > 3:
             skip = entry[0] in "RC"
-    return found
+            yield entry[3:]
+
+
+def _dirty_paths(tree):
+    entries = git_run(
+        ["status", "--porcelain", "-z", "--untracked-files=all"], tree["path"]
+    ).stdout.split("\0")
+    return tuple(dict.fromkeys(_status_paths(entries)))
 
 
 def _foreign_writes(plan, msp, tree, batch, records):
@@ -1034,12 +1035,8 @@ def changed_files(tree, branch, base, exclude=()):
     out = git(
         ["log", "--format=", "--name-only", "--no-renames", branch, "^" + base, *excluded], tree
     )
-    found = ()
-    for line in out.splitlines():
-        path = line.strip()
-        if path and path not in found:
-            found = found + (path,)
-    return sorted(found)
+    stripped = (line.strip() for line in out.splitlines())
+    return sorted(dict.fromkeys(path for path in stripped if path))
 
 
 def msp_owner_of(plan, path):
@@ -1182,10 +1179,26 @@ TRIM_SET = "".join(
 CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
 
 INVISIBLE_CHARACTER = re.compile(
-    r"[\u0080-\u009f­؜᠎​-‏ - ⁠-⁯﻿￹-￻]"
+    r"[\u0080-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202f\u2060-\u206f\ufeff\ufff9-\ufffb]"
 )
 
-TAG_OPENER = re.compile(r"<[!/A-Za-z]")
+TAG_OPENER = re.compile(r"<[!/?A-Za-z]")
+
+CHARACTER_REFERENCE = re.compile(r"&(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);")
+
+OUTSIDE_PRINTABLE_ASCII = re.compile(r"[^\x20-\x7e]")
+
+COMPOSED_RULES = (
+    (re.compile(r"<"), "holds <"),
+    (re.compile(r"@"), "holds @"),
+    (re.compile(r"#[0-9]"), "holds # followed by a digit"),
+    (re.compile(r"\]\("), "holds ]("),
+    (re.compile(r"!\["), "holds !["),
+    (re.compile(r"://"), "holds ://"),
+    (re.compile(r"www\.", re.IGNORECASE), "holds www."),
+)
+
+NAMEABLE_CAP = 100
 
 BLOCK_OPENERS = ("`", "~", "#", ">", "|")
 
@@ -1238,7 +1251,9 @@ def value_fault(value, cap=VALUE_CAP):
     if INVISIBLE_CHARACTER.search(value):
         return "holds an invisible or bidirectional character"
     if TAG_OPENER.search(value):
-        return "holds < followed by !, / or a letter"
+        return "holds < followed by !, /, ? or a letter"
+    if CHARACTER_REFERENCE.search(value):
+        return "holds a character reference"
     if value.startswith(BLOCK_OPENERS):
         return "begins with a markdown block opener"
     if SETEXT_UNDERLINE.fullmatch(value):
@@ -1265,16 +1280,23 @@ def receipt_token(value):
     return isinstance(value, str) and value.startswith(RECEIPT_TOKENS)
 
 
+def composed_fault(value, cap=VALUE_CAP):
+    if not isinstance(value, str):
+        return "is not text"
+    if OUTSIDE_PRINTABLE_ASCII.search(value):
+        return "holds a character outside printable ASCII"
+    fault = value_fault(value, cap)
+    if fault is not None:
+        return fault
+    return next((rule for pattern, rule in COMPOSED_RULES if pattern.search(value)), None)
+
+
 def composed_value(value, cap=VALUE_CAP):
-    return (
-        isinstance(value, str)
-        and all(" " <= character <= "~" for character in value)
-        and house_value(value, cap)
-    )
+    return composed_fault(value, cap) is None
 
 
 def title_fault(title):
-    fault = value_fault(title, TITLE_CAP)
+    fault = composed_fault(title, TITLE_CAP)
     if fault is not None:
         return fault
     if TITLE_PATTERN.fullmatch(title) is None:
@@ -1434,33 +1456,55 @@ def _risk_kinds(plan, msp, findings, exception, foreign, gate_error):
         ),
         (bool(gate_error), "the gate could not run", ()),
     )
-    return tuple((text, paths) for present, text, paths in kinds if present)
+    return tuple(
+        (text, tuple(path for path in paths if composed_value(path, NAMEABLE_CAP)), len(paths))
+        for present, text, paths in kinds
+        if present
+    )
 
 
-def _risk_clause(text, paths, limit):
-    named = tuple(path for path in paths if composed_value(path))[:limit]
-    hidden = len(paths) - len(named)
+def _risk_clause(text, nameable, total, limit):
+    named = nameable[:limit]
+    hidden = total - len(named)
     if not named:
         return text
     return "%s (%s)" % (text, _and_list(named + (("%d more" % hidden,) if hidden else ())))
 
 
 def _risk_line(kinds, limit):
-    sentence = "; ".join(_risk_clause(text, paths, limit) for text, paths in kinds)
+    sentence = "; ".join(
+        _risk_clause(text, nameable, total, limit) for text, nameable, total in kinds
+    )
     return sentence[0].upper() + sentence[1:] + "."
+
+
+def _risk_fits(kinds, limit):
+    return composed_value(_risk_line(kinds, limit))
+
+
+def _largest_fitting(kinds, low, high):
+    if low >= high:
+        return low
+    middle = (low + high + 1) // 2
+    if _risk_fits(kinds, middle):
+        return _largest_fitting(kinds, middle, high)
+    return _largest_fitting(kinds, low, middle - 1)
+
+
+def _risk_limit(kinds):
+    edges = sorted({0} | {len(nameable) for _, nameable, _ in kinds})
+    spans = tuple(zip(edges, tuple(edge - 1 for edge in edges[1:]) + (edges[-1],)))
+    low, high = next(
+        ((low, high) for low, high in reversed(spans) if _risk_fits(kinds, low)), (0, 0)
+    )
+    return _largest_fitting(kinds, low, high)
 
 
 def _risk(plan, msp, findings, exception, foreign, gate_error):
     kinds = _risk_kinds(plan, msp, findings, exception, foreign, gate_error)
     if not kinds:
         return None
-    widest = max(len(paths) for _, paths in kinds)
-    fitting = (
-        line
-        for line in (_risk_line(kinds, limit) for limit in range(widest, 0, -1))
-        if composed_value(line)
-    )
-    return next(fitting, _risk_line(kinds, 0))
+    return _risk_line(kinds, _risk_limit(kinds))
 
 
 def _block(heading, lines):
@@ -1483,12 +1527,14 @@ def foreign_sentence(plan, entry):
     )
 
 
+def _foreign_key(entry):
+    return (entry["path"], entry["owner"], tuple(entry.get("suspects") or [entry["lane"]]))
+
+
 def unique_foreign(foreign):
-    seen = {}
-    for entry in foreign:
-        key = (entry["path"], entry["owner"], tuple(entry.get("suspects") or [entry["lane"]]))
-        seen = seen if key in seen else {**seen, key: entry}
-    return list(seen.values())
+    keyed = tuple((_foreign_key(entry), entry) for entry in foreign)
+    first = dict(reversed(keyed))
+    return [first[key] for key in dict.fromkeys(key for key, _ in keyed)]
 
 
 def msp_foreign_writes(plan, msp, lane_records):

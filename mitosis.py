@@ -773,11 +773,11 @@ def subject_fault(subject):
         return "holds a character outside printable ASCII"
     if subject.endswith((".", " ")):
         return "ends with a full stop or a space"
-    return run.value_fault(subject)
+    return run.composed_fault(subject)
 
 
 def why_fault(why):
-    fault = run.value_fault(why)
+    fault = run.composed_fault(why)
     if fault is not None:
         return fault
     if not run.receipt_token(why) and not run.sentence_shaped(why):

@@ -3,6 +3,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1943,7 +1944,7 @@ class HouseFormat(unittest.TestCase):
         for text in (
             "<script>alert(1)</script>",
             "# A heading",
-            "‮Reversed text.",
+            "\u202eReversed text.",
             "Verified: x",
             "Builds a long task " + "x" * 600 + ".",
             "First line.\n\tSecond line\twith tabs.",
@@ -1995,6 +1996,179 @@ class HouseFormat(unittest.TestCase):
                 self.assertIsNotNone(section_of(body, "## Risk"))
 
 
+class HouseFormatRoundTwo(unittest.TestCase):
+    def composed_values_refuse_hidden_text_mentions_references_and_links(self):
+        import run
+
+        carriers = (
+            "Add the file <?x hidden?> safely.",
+            "Add the file <b>now</b>.",
+            "Ping @SatanshuMishra about this.",
+            "Ping the team@example about this.",
+            "Closes #1 by adding the file.",
+            "This fixes SatanshuMishra/mitosis#2 too.",
+            "Add [the setup guide](https://example.invalid/x) to the docs.",
+            "Add ![status](https://example.invalid/b.png) to the docs.",
+            "See https://example.invalid/login for details.",
+            "See www.example.invalid for details.",
+            "Add the file&#xE0061; now.",
+            "Add the&ZeroWidthSpace;file now.",
+        )
+        for carrier in carriers:
+            self.assertFalse(run.composed_value(carrier), carrier)
+            self.assertEqual(run._what_entry("impl", carrier), "Builds the impl Step.", carrier)
+        self.assertTrue(run.composed_value("Add the impl file to issue tracker 1."))
+        self.assertTrue(run.composed_value("tests/test_run.py::Ship.case (impl) is inert"))
+        self.assertTrue(run.composed_value("Add the file & its test."))
+
+    def _limited(self, call, *args):
+        def expired(signum, frame):
+            self.fail("%s ran past its 5-second limit" % call.__name__)
+
+        previous = signal.signal(signal.SIGALRM, expired)
+        signal.alarm(5)
+        try:
+            return call(*args)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+
+    def risk_line_is_built_in_linear_time(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        paths = ["dir/f-%05d.txt" % n for n in range(20000)]
+        findings = {**CLEAN_FINDINGS, "undeclared": paths}
+        for _ in range(3):
+            body = self._limited(
+                run.pull_request_body, HEADER, plan, 0, None, None, findings, None, ()
+            )
+            risk = section_of(body, "## Risk")
+            self.assertEqual(len(risk), 1)
+            line = risk[0]
+            self.assertLessEqual(len(line.encode("utf-16-le")) // 2, 500)
+            self.assertTrue(line.startswith("Reconcile found 20000 undeclared writes ("), line)
+            cut = re.search(r" and (\d+) more\)\.$", line)
+            self.assertIsNotNone(cut, line)
+            named = re.findall(r"dir/f-\d{5}\.txt", line)
+            self.assertEqual(len(named), 20000 - int(cut.group(1)))
+            self.assertEqual(named, paths[: len(named)])
+
+    def risk_line_skips_an_unnameable_path_and_counts_it(self):
+        plan = core.plan([step("a", ["a.txt"])])
+
+        def risk_of(**found):
+            body = run.pull_request_body(
+                HEADER, plan, 0, None, None, {**CLEAN_FINDINGS, **found}, None, ()
+            )
+            return section_of(body, "## Risk")
+
+        self.assertEqual(
+            risk_of(undeclared=["d/" + "x" * 470 + ".txt", "b.txt"]),
+            ["Reconcile found 2 undeclared writes (b.txt and 1 more)."],
+        )
+        undeclared = ["dir/u-%03d.txt" % n for n in range(200)]
+        unwritten = ["dir/w-%03d.txt" % n for n in range(200)]
+        risk = risk_of(undeclared=undeclared, unwritten=unwritten)
+        self.assertEqual(len(risk), 1)
+        line = risk[0]
+        units = len(line.encode("utf-16-le")) // 2
+        self.assertLessEqual(units, 500)
+        first, second = line.split("; ")
+        named_undeclared = re.findall(r"dir/u-\d{3}\.txt", first)
+        named_unwritten = re.findall(r"dir/w-\d{3}\.txt", second)
+        self.assertGreater(len(named_undeclared), 0)
+        self.assertEqual(len(named_undeclared), len(named_unwritten))
+        self.assertEqual(named_undeclared, undeclared[: len(named_undeclared)])
+        self.assertEqual(named_unwritten, unwritten[: len(named_unwritten)])
+        self.assertTrue(first.startswith("Reconcile found 200 undeclared writes ("), first)
+        self.assertTrue(first.endswith(" and %d more)" % (200 - len(named_undeclared))), first)
+        self.assertTrue(
+            second.startswith("reconcile found 200 declared paths never written ("), second
+        )
+        self.assertTrue(second.endswith(" and %d more)." % (200 - len(named_unwritten))), second)
+        self.assertGreater(units + 2 * len(", dir/u-000.txt"), 500)
+
+    def Unchanged_composed_values_stay_printable_ascii(self):
+        self.assertEqual(run._what_entry("impl", "Ship it \U0001F680 now."), "Builds the impl Step.")
+        self.assertEqual(
+            run._what_entry("caf\u00e9", "`code` first."), "Builds one Step of this change."
+        )
+        plan = core.plan(
+            [
+                step("impl", ["impl.txt"], msp="m", task="Ship it \U0001F680 now."),
+                step("caf\u00e9", ["cafe.txt"], msp="m", task="`code` first."),
+            ]
+        )
+        expected = {
+            "impl": "- Builds the impl Step.",
+            "caf\u00e9": "- Builds one Step of this change.",
+        }
+        body = run.pull_request_body(HEADER, plan, 0, None, None, None, None, ())
+        self.assertEqual(
+            section_of(body, "## What changed"),
+            [expected[name] for name in plan["msps"][0]["steps"]],
+        )
+
+    def rule_sources_hold_no_raw_invisible_character(self):
+        hidden = frozenset(
+            chr(code) for low, high in HIDDEN_RANGES for code in range(low, high + 1)
+        )
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for name in ("run.py", os.path.join("tests", "test_run.py")):
+            found = [
+                (number, "U+%04X" % ord(character))
+                for number, line in enumerate(read(os.path.join(root, name)).split("\n"), 1)
+                for character in line
+                if character in hidden
+            ]
+            self.assertEqual(found, [], name)
+        for character in ("\u00ad", "\u202e", "\ufeff"):
+            self.assertIsNotNone(
+                run.INVISIBLE_CHARACTER.search("a%sb" % character), ascii(character)
+            )
+        self.assertEqual(
+            [code for code in range(0x10000) if run.INVISIBLE_CHARACTER.fullmatch(chr(code))],
+            [code for code in range(0x10000) if chr(code) in hidden],
+        )
+
+    def title_fault_applies_the_composed_rules(self):
+        for title, rule in (
+            ("feat: add <?x?> parser", "holds < followed by !, /, ? or a letter"),
+            ("fix: fix &amp; cleanup", "holds a character reference"),
+            ("feat: ping @team", "holds @"),
+            ("fix: close #12", "holds # followed by a digit"),
+            ("feat(ship): write the parser (a&lt;b)", "holds a character reference"),
+        ):
+            self.assertEqual(run.title_fault(title), rule, title)
+        self.assertIsNone(
+            run.title_fault("feat(ship): write pull requests in the house format (core)")
+        )
+        for value, rule in (
+            ("add <?x?> parser", "holds < followed by !, /, ? or a letter"),
+            ("a&lt;b", "holds a character reference"),
+            ("a&#60;b", "holds a character reference"),
+            ("a&#X3c;b", "holds a character reference"),
+        ):
+            self.assertEqual(run.value_fault(value), rule, value)
+        self.assertIsNone(run.value_fault("Add the file & its test."))
+        self.assertEqual(run.composed_fault("Ping @team."), "holds @")
+        self.assertIsNone(run.composed_fault("Add the file & its test."))
+
+    def unique_foreign_is_linear(self):
+        entries = [
+            {"path": "dir/f-%05d.txt" % n, "owner": 1, "suspects": [0], "lane": 0}
+            for n in range(20000)
+        ]
+        for _ in range(3):
+            self.assertEqual(self._limited(run.unique_foreign, entries), entries)
+        wide = [
+            {"path": "dir/f-%06d.txt" % n, "owner": 1, "suspects": [0], "lane": 0}
+            for n in range(200000)
+        ]
+        self.assertEqual(self._limited(run.unique_foreign, wide), wide)
+        repeated = entries[:3] + [{**entries[0], "lane": 5}, {**entries[1], "note": "later"}]
+        self.assertEqual(run.unique_foreign(repeated), entries[:3])
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -2006,7 +2180,16 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Worktrees, Dispatch, Resume, Gate, Reconcile, Ship, HouseFormat):
+    for case in (
+        Worktrees,
+        Dispatch,
+        Resume,
+        Gate,
+        Reconcile,
+        Ship,
+        HouseFormat,
+        HouseFormatRoundTwo,
+    ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 
