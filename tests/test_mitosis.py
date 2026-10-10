@@ -1099,6 +1099,25 @@ class PullRequestFlags(unittest.TestCase):
             )
         )
 
+    def a_scope_and_the_help_follow_the_composed_rules(self):
+        code, err, spawned = self._attempt(
+            "--pr-type",
+            "fix",
+            "--pr-scope",
+            "gh-2fa",
+            "--pr-subject",
+            SUBJECT,
+            "--pr-why",
+            "Callers need it.",
+        )
+        self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+        self.assertIn("--pr-scope 'gh-2fa' holds GH- followed by a digit", err.splitlines()[0])
+        self.assertFalse(spawned)
+        for flag in ("--pr-why", "--pr-subject"):
+            help_text = mitosis.FLAG_SPECS[flag]["help"]
+            self.assertIn("github.com/", help_text)
+            self.assertIn("backticks", help_text)
+
 
 class PushOnly(unittest.TestCase):
     def the_json_summary_carries_each_pull_request_text(self):

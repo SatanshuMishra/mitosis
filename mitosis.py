@@ -118,8 +118,9 @@ PLACEHOLDER_HELP = {
 
 COMPOSED_HELP = (
     "refused when it holds $, a backslash, <, @, ~, *, an _ outside a word, # or GH- before a "
-    "digit, links, character references, emoji shortcodes or a run of 40 hexadecimal digits "
-    "such as a full commit hash"
+    "digit, links or github.com/, two backticks in a row or an odd number of backticks, "
+    "character references, emoji shortcodes or a run of 40 hexadecimal digits such as a full "
+    "commit hash"
 )
 
 STAGE_FLAG_NAMES = (
@@ -800,6 +801,10 @@ def check_pull_request_flags(args):
         raise Refusal(
             "--pr-scope %r does not match ^[a-z0-9][a-z0-9-]{0,15}$" % args.pr_scope
         )
+    if args.pr_scope is not None:
+        fault = run.composed_fault(args.pr_scope)
+        if fault is not None:
+            raise Refusal("--pr-scope %r %s" % (args.pr_scope, fault))
     if args.pr_subject is not None:
         fault = subject_fault(args.pr_subject)
         if fault is not None:

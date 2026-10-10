@@ -2256,6 +2256,64 @@ class HouseFormatRoundThree(unittest.TestCase):
         )
 
 
+class HouseFormatRoundFour(unittest.TestCase):
+    def composed_values_refuse_github_urls_and_unpaired_backticks(self):
+        carriers = (
+            "Port github.com/cli/cli/issues/1 handling.",
+            "Closes GitHub.com/OWNER/REPO/pull/1 now.",
+            "Use api.github.com/repos/x/y for it.",
+            "Add the `parse flag.",
+            "Add the ``parse`` flag.",
+        )
+        for carrier in carriers:
+            self.assertIsNotNone(run.composed_fault(carrier), carrier)
+            self.assertEqual(run._what_entry("impl", carrier), "Builds the impl Step.", carrier)
+        self.assertIsNone(run.composed_fault("Add the `parse` and `scan` flags."))
+        door_rules = (
+            "a://b",
+            "see www.a",
+            "github.com/a",
+            "a~b",
+            "a``b",
+            "a`b",
+            "a" + chr(0xA0) + "b",
+            "a" + chr(0x20DD),
+            "a" + chr(0x336),
+            "a" + chr(0x2800),
+        )
+        for door_rule in door_rules:
+            self.assertIsNotNone(run.value_fault(door_rule), ascii(door_rule))
+        plan = core.plan(
+            [
+                step(
+                    "a",
+                    ["a.txt"],
+                    acceptance=[
+                        {"file": "tests/github.com/x.py", "test": "case"},
+                        {"file": "tests/t.py", "test": "case`x"},
+                    ],
+                )
+            ]
+        )
+        findings = {
+            "undeclared": ["vendor/github.com/cli/cli/issues/1", "b.txt"],
+            "unwritten": [],
+            "crossing": [],
+            "fatal": False,
+        }
+        body = run.pull_request_body(HEADER, plan, 0, None, None, findings, None, ())
+        self.assertEqual(
+            section_of(body, "## Risk"), ["Reconcile found 2 undeclared writes (b.txt and 1 more)."]
+        )
+        self.assertEqual(
+            section_of(body, "## Verification"),
+            [
+                "Not verified: an acceptance test was not judged",
+                "Not verified: an acceptance test was not judged",
+            ],
+        )
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -2277,6 +2335,7 @@ def load_tests(loader, tests, pattern):
         HouseFormat,
         HouseFormatRoundTwo,
         HouseFormatRoundThree,
+        HouseFormatRoundFour,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite

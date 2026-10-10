@@ -7,6 +7,7 @@ import shutil
 import signal
 import subprocess
 import time
+import unicodedata
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
@@ -1196,13 +1197,14 @@ INLINE_CONSTRUCTS = (
     ("$", "holds $"),
 )
 
+URL_TEXT = re.compile(r"://|www\.|github\.com/", re.IGNORECASE)
+
+BLANK_SYMBOLS = frozenset(chr(code) for code in (0x2800, 0x16FE4, 0x1D159))
+
 COMPOSED_RULES = (
     (re.compile(r"<"), "holds <"),
     (re.compile(r"@"), "holds @"),
     (re.compile(r"#[0-9]"), "holds # followed by a digit"),
-    (re.compile(r"://"), "holds ://"),
-    (re.compile(r"www\.", re.IGNORECASE), "holds www."),
-    (re.compile(r"~"), "holds ~"),
     (re.compile(r"\*"), "holds *"),
     (re.compile(r"(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])"), "holds _ outside a word"),
     (re.compile(r"(?<![A-Za-z0-9])gh-[0-9]", re.IGNORECASE), "holds GH- followed by a digit"),
@@ -1247,6 +1249,16 @@ def code_units(value):
     return len(value.encode("utf-16-le", "surrogatepass")) // 2
 
 
+def blank_or_overlay(character):
+    category = unicodedata.category(character)
+    return (
+        (category == "Zs" and character != " ")
+        or category == "Me"
+        or unicodedata.combining(character) == 1
+        or character in BLANK_SYMBOLS
+    )
+
+
 def value_fault(value, cap=VALUE_CAP):
     if not isinstance(value, str):
         return "is not text"
@@ -1269,6 +1281,14 @@ def value_fault(value, cap=VALUE_CAP):
     inline = next((rule for construct, rule in INLINE_CONSTRUCTS if construct in value), None)
     if inline is not None:
         return inline
+    if URL_TEXT.search(value):
+        return "holds ://, www. or github.com/"
+    if "~" in value:
+        return "holds ~"
+    if "``" in value or value.count("`") % 2:
+        return "holds two backticks in a row or an odd number of backticks"
+    if any(blank_or_overlay(character) for character in value):
+        return "holds a space other than the plain space, an enclosing or overlay mark, or a blank-looking symbol"
     if value.startswith(BLOCK_OPENERS):
         return "begins with a markdown block opener"
     if SETEXT_UNDERLINE.fullmatch(value):
