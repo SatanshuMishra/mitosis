@@ -6,7 +6,9 @@ merge without discovering that the parallelism broke something. It validates
 the input, schedules the split, prepares an isolated worktree and branch per
 piece, dispatches a Worker into each, gates the result, reconciles what was
 actually written against the git log, and opens one draft pull request per
-piece, stacked on its predecessor where one exists.
+piece, stacked on its predecessor where one exists, or pushes each piece's
+branch and hands back its pull request's title and body for the caller to
+open.
 
 ## Inputs
 
@@ -69,7 +71,33 @@ python3 mitosis.py \
   --feature-branch main \
   --dispatch-command "worker-cli --prompt {task} --model {model}" \
   --acceptance-command "python3 -m unittest {test}" \
-  --pr-command "open-pr --branch {branch} --base {base}" \
+  --pr-command "open-pr --branch {branch} --base {base} --title {title} --body {body}" \
+  --pr-type feat \
+  --pr-scope manifest \
+  --pr-subject "validate manifests from the command line" \
+  --pr-why "A bad manifest should fail before it ships." \
+  --tier-model top=model-a \
+  --tier-model cheap=model-b \
+  --timeout 1800
+```
+
+Every title and body is written in one house format: the title is
+`<type>(<scope>): <subject>`, and the body holds What changed, Why, an
+optional Risk line and Verification. Leave out `--pr-command` and mitosis
+pushes each branch, opens nothing, ends each such MSP `pushed`, and records
+the title and body in the run's state and in its JSON summary, so the caller
+opens each pull request itself:
+
+```
+python3 mitosis.py \
+  --items items.json \
+  --charter CHARTER.md \
+  --feature-branch main \
+  --dispatch-command "worker-cli --prompt {task} --model {model}" \
+  --acceptance-command "python3 -m unittest {test}" \
+  --pr-type feat \
+  --pr-subject "validate manifests from the command line" \
+  --pr-why "A bad manifest should fail before it ships." \
   --tier-model top=model-a \
   --tier-model cheap=model-b \
   --timeout 1800

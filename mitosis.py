@@ -33,6 +33,7 @@ LANE_EXIT = {
 
 MSP_EXIT = {
     "shipped": EXIT_SHIPPED,
+    run.MSP_PUSHED: EXIT_SHIPPED,
     run.MSP_UNCHANGED: EXIT_SHIPPED,
     run.MSP_COMMITTED: EXIT_SHIPPED,
     run.MSP_BLOCKED: 11,
@@ -42,23 +43,26 @@ MSP_EXIT = {
 GATE_EXIT = {"gate-failed": 20, "gate-inconclusive": 21}
 
 EXIT_MEANING = {
-    EXIT_SHIPPED: "every MSP reached shipped, unchanged or committed, and reconcile found nothing",
+    EXIT_SHIPPED: "every MSP reached shipped, pushed, unchanged or committed, and reconcile found "
+    "nothing",
     EXIT_USAGE: "the flags did not parse",
     EXIT_REFUSED: "refused to start",
     EXIT_INCOMPLETE: "the run stopped before every Lane and MSP reached a terminal state",
     EXIT_NO_BRANCHES: "the run created no branches",
     EXIT_RECONCILE: "reconcile found a write outside the declaration or a declared path never written",
-    EXIT_CROSSING: "a pull request is open that writes files another MSP owns and also changes",
+    EXIT_CROSSING: "an MSP branch, pushed or with its pull request open, writes files another MSP "
+    "owns and also changes",
     EXIT_FOREIGN: "a Lane changed a file another Lane of its MSP owns and had already committed",
-    EXIT_MANIFEST: "a pull request is open with a package manifest that exports nothing",
+    EXIT_MANIFEST: "a branch is pushed or a pull request open with a package manifest that "
+    "exports nothing",
     LANE_EXIT["failed"]: "a Lane failed",
     LANE_EXIT["blocked"]: "a Lane or MSP was blocked, by a predecessor or by a write across an "
     "MSP boundary",
     LANE_EXIT["merge-blocked"]: "a producer branch would not merge",
-    GATE_EXIT["gate-failed"]: "a pull request is open with an acceptance property that proves "
-    "nothing: it passes with the implementation reverted",
-    GATE_EXIT["gate-inconclusive"]: "a pull request is open with an acceptance property the gate "
-    "could not judge",
+    GATE_EXIT["gate-failed"]: "a branch is pushed or a pull request open with an acceptance "
+    "property that proves nothing: it passes with the implementation reverted",
+    GATE_EXIT["gate-inconclusive"]: "a branch is pushed or a pull request open with an acceptance "
+    "property the gate could not judge",
     MSP_EXIT["ship-failed"]: "a commit, push or pull-request command failed",
 }
 
@@ -124,8 +128,13 @@ RUN_FLAGS = (
     ("--feature-branch", "feature_branch"),
     ("--dispatch-command", "dispatch_command"),
     ("--acceptance-command", "acceptance_command"),
-    ("--pr-command", "pr_command"),
     ("--timeout", "timeout"),
+)
+
+PUSH_FLAGS = (
+    ("--pr-type", "pr_type"),
+    ("--pr-subject", "pr_subject"),
+    ("--pr-why", "pr_why"),
 )
 
 FLAG_SPECS = {
@@ -210,14 +219,40 @@ FLAG_SPECS = {
     },
     "--pr-command": {
         "metavar": "TEMPLATE",
-        "help": "opens one draft pull request; placeholders %s; its last stdout line is recorded"
+        "help": "opens one draft pull request with the house title and body; placeholders %s; "
+        "its last stdout line is recorded; without it, a run allowed to push pushes each branch, "
+        "ends its MSP pushed and records the title and body for the caller"
         % PLACEHOLDER_HELP["pull-request"],
+    },
+    "--pr-type": {
+        "metavar": "TYPE",
+        "help": "the type that opens every pull-request title, one of %s; required for a run "
+        "allowed to push" % ", ".join(run.PR_TYPES),
+    },
+    "--pr-scope": {
+        "metavar": "SCOPE",
+        "help": "the optional scope in parentheses after the type: a lowercase letter or digit, "
+        "then up to 15 lowercase letters, digits or hyphens",
+    },
+    "--pr-subject": {
+        "metavar": "TEXT",
+        "help": "the title's summary: a lowercase first letter, printable ASCII, no trailing full "
+        "stop; a plan of several MSPs appends each MSP label in parentheses; required for a run "
+        "allowed to push",
+    },
+    "--pr-why": {
+        "metavar": "SENTENCE",
+        "action": "append",
+        "default": [],
+        "help": "one line of every body's Why section, beginning with an uppercase letter and "
+        "ending with . ? or !; give it 1 to %d times; required for a run allowed to push"
+        % run.SECTION_LIMIT,
     },
     "--no-push": {
         "action": "store_true",
         "help": "commit, gate and reconcile every MSP on its local branch, then stop: nothing is "
-        "pushed and no pull request opens, so --pr-command is not needed; a later --resume "
-        "without this flag ships what was held",
+        "pushed and no pull request opens, so neither --pr-command nor the pull-request text "
+        "flags are needed; a later --resume without this flag ships what was held",
     },
     "--tier-model": {
         "metavar": "TIER=MODEL",
@@ -297,7 +332,8 @@ def build_parser():
         prog="mitosis",
         add_help=False,
         description="Split a document or an items file into MSPs, build each on its own "
-        "branch, gate the work, and open one draft pull request per MSP. "
+        "branch, gate the work, and push each branch with a pull-request title and body in "
+        "the house format, opening one draft pull request per MSP when --pr-command is given. "
         "mitosis never merges.",
     )
     for name in flag_names():
@@ -701,11 +737,13 @@ def build_plan(args, items, root, charter, graph):
 
 
 def missing_run_flags(args):
-    return tuple(
-        flag
-        for flag, attribute in RUN_FLAGS
-        if getattr(args, attribute) is None and not (args.no_push and attribute == "pr_command")
-    )
+    return tuple(flag for flag, attribute in RUN_FLAGS if getattr(args, attribute) is None)
+
+
+def missing_push_flags(args):
+    if args.no_push:
+        return ()
+    return tuple(flag for flag, attribute in PUSH_FLAGS if not getattr(args, attribute))
 
 
 def refuse_unbuildable(args, repo):
@@ -718,8 +756,82 @@ def refuse_unbuildable(args, repo):
     missing = missing_run_flags(args)
     if missing:
         raise Refusal("a run needs %s; pass --plan-only to stop at the plan" % ", ".join(missing))
+    unwritten = missing_push_flags(args)
+    if unwritten:
+        raise Refusal(
+            "a run allowed to push needs %s to title and describe each pull request; pass "
+            "--no-push to hold the branches instead" % ", ".join(unwritten)
+        )
     if not run.branch_exists(repo, args.feature_branch):
         raise Refusal("--feature-branch %s is not a branch of %s" % (args.feature_branch, repo))
+
+
+def subject_fault(subject):
+    if not "a" <= subject[:1] <= "z":
+        return "does not begin with a lowercase ASCII letter"
+    if not all(" " <= character <= "~" for character in subject):
+        return "holds a character outside printable ASCII"
+    if subject.endswith((".", " ")):
+        return "ends with a full stop or a space"
+    return run.value_fault(subject)
+
+
+def why_fault(why):
+    fault = run.value_fault(why)
+    if fault is not None:
+        return fault
+    if not run.receipt_token(why) and not run.sentence_shaped(why):
+        return "does not begin with an uppercase letter and end with . ? or !"
+    return None
+
+
+def check_pull_request_flags(args):
+    if args.pr_type is not None and args.pr_type not in run.PR_TYPES:
+        raise Refusal(
+            "--pr-type %r is not one of %s" % (args.pr_type, ", ".join(run.PR_TYPES))
+        )
+    if args.pr_scope is not None and run.SCOPE_PATTERN.fullmatch(args.pr_scope) is None:
+        raise Refusal(
+            "--pr-scope %r does not match ^[a-z0-9][a-z0-9-]{0,15}$" % args.pr_scope
+        )
+    if args.pr_subject is not None:
+        fault = subject_fault(args.pr_subject)
+        if fault is not None:
+            raise Refusal("--pr-subject %r %s" % (args.pr_subject, fault))
+    whys = args.pr_why or ()
+    if len(whys) > run.SECTION_LIMIT:
+        raise Refusal(
+            "--pr-why is given %d times; a pull request's Why section holds at most %d lines"
+            % (len(whys), run.SECTION_LIMIT)
+        )
+    for index, why in enumerate(whys, 1):
+        fault = why_fault(why)
+        if fault is not None:
+            raise Refusal("--pr-why number %d %s" % (index, fault))
+
+
+def pull_request_header(args):
+    if args.pr_type is None or args.pr_subject is None:
+        return None
+    return {
+        "type": args.pr_type,
+        "scope": args.pr_scope,
+        "subject": args.pr_subject,
+        "why": tuple(args.pr_why or ()),
+    }
+
+
+def refuse_unfit_titles(header, plan):
+    if header is None:
+        return
+    for index in range(len(plan.get("msps") or [])):
+        title = run.pull_request_title(header, plan, index)
+        fault = run.title_fault(title)
+        if fault is not None:
+            raise Refusal(
+                "MSP %s would be titled %r, which %s; shorten --pr-subject or relabel the MSP"
+                % (_label(plan, index), title, fault)
+            )
 
 
 def refuse_run(args, plan, models, run_dir, repo):
@@ -1229,6 +1341,8 @@ def _msp_summary(plan, state):
                 "branch": shipped.get("branch"),
                 "base": shipped.get("base"),
                 "pull_request": shipped.get("pull_request") or None,
+                "title": shipped.get("title"),
+                "body": shipped.get("body"),
                 "gate": {
                     "outcome": gate.get("outcome"),
                     "counts": gate.get("counts") or {},
@@ -1262,11 +1376,17 @@ def _attention(plan, lanes, msps):
         )
     ]
     for msp in msps:
-        if msp["state"] not in ("shipped", run.MSP_UNCHANGED, run.MSP_COMMITTED, None):
+        if msp["state"] not in (
+            "shipped",
+            run.MSP_PUSHED,
+            run.MSP_UNCHANGED,
+            run.MSP_COMMITTED,
+            None,
+        ):
             lines.append("MSP %s is %s: %s" % (msp["msp"], msp["state"], msp["reason"] or ""))
         if msp["gate"]["unproven"]:
             lines.append(
-                "MSP %s shipped with unproven acceptance: %s"
+                "MSP %s carries unproven acceptance on its branch: %s"
                 % (msp["msp"], ", ".join(msp["gate"]["unproven"]))
             )
         if msp["gate"]["error"]:
@@ -1373,6 +1493,7 @@ def execute(args, plan, models, run_dir, repo, root):
             root=root,
             remote=REMOTE,
             no_push=args.no_push,
+            header=pull_request_header(args),
         ), None
     except (run.ConfigError, run.ResumeError) as error:
         raise Refusal(str(error))
@@ -1402,6 +1523,7 @@ def run_pipeline(args):
     root = cwd
     models = tier_models(args.tier_model)
     check_templates(args)
+    check_pull_request_flags(args)
     charter = check_charter(args.charter)
     graph = load_graph(args.graph, root)
     resolved = resolve_input(args, root, repo, models, charter, graph)
@@ -1421,6 +1543,7 @@ def run_pipeline(args):
         )
         return _summarised({"items": items}, None, run_dir, planned_code(items))
     plan = build_plan(args, items, root, charter, graph)
+    refuse_unfit_titles(pull_request_header(args), plan)
     if args.plan_only:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
         run.write_json(os.path.join(run_dir, ITEMS_FILE), items)

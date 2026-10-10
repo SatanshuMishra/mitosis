@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -147,6 +148,16 @@ print("https://example.invalid/pull/%d" % len(open(os.path.join(marker_dir, "pr"
 '''
 
 
+HEADER = {
+    "type": "feat",
+    "scope": "ship",
+    "subject": "write pull requests in the house format",
+    "why": ("Callers need it.",),
+}
+
+PR_STUB = object()
+
+
 def sha256_of(path):
     import hashlib
 
@@ -214,7 +225,7 @@ class RepoCase(unittest.TestCase):
         path = os.path.join(self.markers, "gate")
         return read(path).splitlines() if os.path.exists(path) else []
 
-    def execute(self, plan, mode="ok", accept="real", pr=None, timeout=60, **extra):
+    def execute(self, plan, mode="ok", accept="real", pr=PR_STUB, timeout=60, **extra):
         return run.execute(
             plan,
             self.repo,
@@ -222,11 +233,30 @@ class RepoCase(unittest.TestCase):
             self.run_dir,
             self.worker_command(mode),
             self.acceptance_command(accept),
-            pr or self.pr_command(),
+            self.pr_command() if pr is PR_STUB else pr,
             timeout,
             2,
             trees_root=self.trees,
-            **extra,
+            **{"header": HEADER, **extra},
+        )
+
+    def house_text(self, plan, state, msp):
+        record = state["msps"][str(msp)]
+        exception = next(
+            (entry for entry in state["stacking_exceptions"] if entry["msp"] == msp), None
+        )
+        return (
+            run.pull_request_title(HEADER, plan, msp),
+            run.pull_request_body(
+                HEADER,
+                plan,
+                msp,
+                record["gate"],
+                record.get("gate_error"),
+                record["reconcile"],
+                exception,
+                run.msp_foreign_writes(plan, msp, state["lanes"]),
+            ),
         )
 
     def state(self):
@@ -759,8 +789,11 @@ class Dispatch(RepoCase):
         self.assertIn("keep changes to files other Lanes own (iface.txt)", log)
         self.assertIn("shape changed by lane", sh(["git", "show", branch + ":iface.txt"], self.repo))
         body = self.pull_requests()[0][3]
-        self.assertIn("Lane %d (server) changed iface.txt." % server, body)
-        self.assertIn("Lane %d (iface) owns that file" % iface, body)
+        self.assertIn(
+            "\n\n## Risk\nA Lane changed 1 file another Lane of this MSP owned and had already "
+            "committed (iface.txt).\n\n",
+            body,
+        )
 
     def an_unclaimed_write_is_put_on_every_lane_that_finished_with_it(self):
         plan = self._interface_plan()
@@ -777,7 +810,10 @@ class Dispatch(RepoCase):
         self.assertTrue(suspects)
         for found in suspects:
             self.assertIn(server, found)
-        lines = run._foreign_lines(plan, run.msp_foreign_writes(plan, 0, state["lanes"]))
+        lines = [
+            run.foreign_sentence(plan, entry)
+            for entry in run.unique_foreign(run.msp_foreign_writes(plan, 0, state["lanes"]))
+        ]
         self.assertEqual(len(lines), len(suspects))
 
     def a_lane_that_keeps_to_its_own_files_carries_no_foreign_write(self):
@@ -882,6 +918,26 @@ class Resume(RepoCase):
         self.assertEqual(second["msps"]["0"], first["msps"]["0"])
         self.assertEqual(len(self.pull_requests()), 1)
 
+    def a_pushed_msp_is_not_pushed_again_on_resume(self):
+        self.add_remote()
+        plan = core.plan([gated_step(), step("b", ["b.txt"], after=["impl"])])
+        first = self.execute(plan, pr=None)
+        self.assertEqual({m["state"] for m in first["msps"].values()}, {run.MSP_PUSHED})
+        gate_runs = len(self.gate_runs())
+        self.assertGreater(gate_runs, 0)
+        heads = sh(["git", "ls-remote", "--heads", "origin"], self.repo)
+        for tree in first["worktrees"]:
+            write(os.path.join(tree["path"], "later.txt"), "written after the push\n")
+        second = self.execute(plan, pr=None, resume=True)
+        self.assertEqual(len(self.gate_runs()), gate_runs)
+        self.assertEqual(sh(["git", "ls-remote", "--heads", "origin"], self.repo), heads)
+        self.assertEqual(second["msps"], first["msps"])
+        for record in second["msps"].values():
+            self.assertEqual(record["state"], run.MSP_PUSHED)
+            self.assertTrue(record["ship"]["title"].startswith("feat(ship): "))
+            self.assertTrue(record["ship"]["body"].startswith("## What changed\n"))
+        self.assertEqual(self.pull_requests(), [])
+
     def a_merged_predecessor_satisfies_its_dependents(self):
         plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"])])
         trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
@@ -959,9 +1015,9 @@ class Gate(RepoCase):
         opened = self.pull_requests()
         self.assertEqual(len(opened), 1)
         body = opened[0][3]
-        self.assertIn("Gate: inert", body)
-        self.assertIn("passes with the implementation reverted", body)
-        self.assertIn("unproven acceptance property", body)
+        self.assertIn("\nNot verified: tests/t_impl.txt::property (impl) is inert", body)
+        self.assertNotIn("passes with the implementation reverted", body)
+        self.assertNotIn("Gate:", body)
 
     def a_step_that_changed_no_implementation_does_not_block(self):
         self.seed_existing("impl.txt", "already works\n")
@@ -1100,6 +1156,7 @@ class Gate(RepoCase):
             60,
             2,
             trees_root=self.trees,
+            header=HEADER,
         )
         self.assertEqual(state["msps"]["0"]["state"], "shipped")
         self.assertIsNone(state["msps"]["0"]["gate"])
@@ -1113,7 +1170,7 @@ class Gate(RepoCase):
         self.assertEqual(state["msps"]["0"]["state"], "shipped")
         self.assertEqual(self.remote_heads(), ["mitosis/impl"])
         body = self.pull_requests()[0][3]
-        self.assertIn("tests/t_impl.txt::property (impl): inert", body)
+        self.assertIn("tests/t_impl.txt::property (impl) is inert", body)
 
 
 class Reconcile(RepoCase):
@@ -1186,7 +1243,11 @@ class Reconcile(RepoCase):
         self.assertEqual(state["msps"]["0"]["state"], "shipped")
         opened = {pr[0]: pr[3] for pr in self.pull_requests()}
         self.assertIn(trees[0]["branch"], opened)
-        self.assertIn("writes b.txt, which MSP beta owns", opened[trees[0]["branch"]])
+        self.assertIn(
+            "\n\n## Risk\nReconcile found 1 undeclared write (b.txt); another MSP also changes 1 "
+            "file this branch writes (b.txt).\n\n",
+            opened[trees[0]["branch"]],
+        )
 
     def reconcile_ignores_the_worker_self_report(self):
         plan = core.plan([step("a", ["a.txt", "never.txt"])])
@@ -1249,18 +1310,55 @@ class Ship(RepoCase):
         self.assertTrue(os.path.isfile(os.path.join(trees[msp]["path"], "b.txt")))
         self.assertIn("producers", opened[trees[msp]["branch"]][3])
 
-    def the_pull_request_body_carries_the_acceptance_properties(self):
+    def a_pull_request_command_receives_the_house_title_and_body(self):
         self.add_remote()
         plan = core.plan([gated_step()])
         state = self.execute(plan, pr=self.pr_command())
-        self.assertEqual(state["msps"]["0"]["state"], "shipped")
-        branch, base, title, body = self.pull_requests()[0]
-        self.assertEqual(base, "main")
-        self.assertIn("tests/t_impl.txt::property", body)
-        self.assertIn("impl", title)
-        self.assertIn(self.acceptance_command("real"), body)
-        self.assertIn("draft", body.lower())
-        self.assertIn("pass", body)
+        record = state["msps"]["0"]
+        self.assertEqual(record["state"], "shipped")
+        self.assertEqual(record["ship"]["pull_request"], "https://example.invalid/pull/1")
+        title, body = self.house_text(plan, state, 0)
+        self.assertEqual(self.pull_requests(), [[record["ship"]["branch"], "main", title, body]])
+        self.assertEqual(title, "feat(ship): write pull requests in the house format")
+        self.assertIn(
+            "\nVerified: tests/t_impl.txt::property (impl) fails with the work reverted and "
+            "passes with it",
+            body,
+        )
+        self.assertNotIn("draft", body.lower())
+        self.assertNotIn(self.acceptance_command("real"), body)
+        self.assertEqual((record["ship"]["title"], record["ship"]["body"]), (title, body))
+
+    def without_a_pull_request_command_each_msp_is_pushed_and_its_text_recorded(self):
+        self.add_remote()
+        self.seed_existing("a.txt", "already done\n")
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"]), gated_step("c")])
+        index = {plan["msps"][m]["steps"][0]: m for m in range(len(plan["msps"]))}
+        state = self.execute(plan, mode="nothing-%d" % lane_named(plan, "a"), pr=None)
+        self.assertEqual(state["msps"][str(index["a"])]["state"], run.MSP_UNCHANGED)
+        self.assertEqual(self.remote_heads(), ["mitosis/b", "mitosis/c"])
+        self.assertEqual(self.pull_requests(), [])
+        for name in ("b", "c"):
+            record = state["msps"][str(index[name])]
+            self.assertEqual(record["state"], run.MSP_PUSHED)
+            self.assertIn("no pull-request command was given", record["reason"])
+            self.assertEqual(record["ship"]["pull_request"], "")
+            self.assertEqual(
+                (record["ship"]["title"], record["ship"]["body"]),
+                self.house_text(plan, state, index[name]),
+            )
+        self.assertIn(
+            "\nVerified: tests/t_impl.txt::property (c) fails with the work reverted and passes "
+            "with it",
+            state["msps"][str(index["c"])]["ship"]["body"],
+        )
+        unchanged = state["msps"][str(index["a"])]["ship"]
+        self.assertNotIn("title", unchanged)
+        self.assertNotIn("body", unchanged)
+        self.assertTrue(run.succeeded(state))
+        self.assertEqual(self.state(), state)
+        with self.assertRaises(run.ConfigError):
+            self.execute(plan, pr=None, header=None, resume=True)
 
     def a_gate_failure_no_longer_blocks_the_cluster_below_it(self):
         self.add_remote()
@@ -1297,6 +1395,7 @@ class Ship(RepoCase):
             self.pr_command(),
             "origin",
             os.path.join(self.run_dir, "ship"),
+            header=HEADER,
             timeout=60,
         )
         self.assertTrue(shipped["unchanged"])
@@ -1479,6 +1578,423 @@ class Ship(RepoCase):
         self.assertFalse(run.succeeded({"lanes": {}, "msps": {}}))
 
 
+HOUSE_TITLE = re.compile(
+    r"^(?=.{1,72}$)(feat|fix|refactor|docs|test|chore|perf|ci)(\([a-z0-9][a-z0-9-]{0,15}\))?: "
+    r"[a-z][\x20-\x7E]*[\x21-\x2D\x2F-\x7E]$"
+)
+
+JS_TRIM = frozenset(
+    chr(code)
+    for code in (
+        *range(0x09, 0x0E),
+        0x20,
+        0xA0,
+        0x1680,
+        *range(0x2000, 0x200B),
+        0x2028,
+        0x2029,
+        0x202F,
+        0x205F,
+        0x3000,
+        0xFEFF,
+    )
+)
+
+HIDDEN_RANGES = (
+    (0x80, 0x9F),
+    (0xAD, 0xAD),
+    (0x61C, 0x61C),
+    (0x180E, 0x180E),
+    (0x200B, 0x200F),
+    (0x2028, 0x202F),
+    (0x2060, 0x206F),
+    (0xFEFF, 0xFEFF),
+    (0xFFF9, 0xFFFB),
+)
+
+RECEIPT_LINE_TOKENS = ("work-type:", "test-removal:", "receipt:", "receipt-cmd:", "receipt-lock:")
+
+CLEAN_FINDINGS = {"undeclared": [], "unwritten": [], "crossing": [], "fatal": False}
+
+
+def broken_rule(value, cap=500):
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+        return "control character"
+    if not value:
+        return "empty"
+    if value[0] in JS_TRIM or value[-1] in JS_TRIM:
+        return "edge whitespace"
+    if len(value.encode("utf-16-le")) // 2 > cap:
+        return "over the cap"
+    if value.startswith("@"):
+        return "leading @"
+    if any(low <= ord(c) <= high for c in value for low, high in HIDDEN_RANGES):
+        return "invisible character"
+    if re.search(r"<[!/A-Za-z]", value):
+        return "tag opener"
+    if value[0] in "`~#>|":
+        return "block opener"
+    if set(value) <= set("=-"):
+        return "setext underline"
+    if value[:9].lower() == "verified:" or value[:13].lower() == "not verified:":
+        return "reserved field prefix"
+    if value.startswith("Supersedes "):
+        return "reserved structure prefix"
+    return None
+
+
+def reads_as_sentence(value):
+    first = value[0]
+    return first.lower() != first and first.upper() == first and value[-1] in ".?!"
+
+
+def body_problems(body):
+    found = ()
+    blocks = body.split("\n\n")
+    headings = [block.split("\n")[0] for block in blocks]
+    if headings not in (
+        ["## What changed", "## Why", "## Verification"],
+        ["## What changed", "## Why", "## Risk", "## Verification"],
+    ):
+        found = found + (("layout", headings),)
+    for block in blocks:
+        heading, *lines = block.split("\n")
+        if heading == "## What changed":
+            values = [line[2:] for line in lines]
+            found = found + tuple(("bullet", line) for line in lines if not line.startswith("- "))
+            found = found + tuple(
+                ("what sentence", value)
+                for value in values
+                if not reads_as_sentence(value) or value.startswith(RECEIPT_LINE_TOKENS)
+            )
+        elif heading == "## Why":
+            values = lines
+            found = found + tuple(
+                ("why sentence", value)
+                for value in values
+                if not value.startswith(RECEIPT_LINE_TOKENS) and not reads_as_sentence(value)
+            )
+        elif heading == "## Risk":
+            values = lines
+            found = found + ((("risk lines", lines),) if len(lines) != 1 else ())
+            found = found + tuple(
+                ("risk sentence", value) for value in values if not reads_as_sentence(value)
+            )
+        else:
+            verified = [line[len("Verified: "):] for line in lines if line.startswith("Verified: ")]
+            unproven = [
+                line[len("Not verified: "):] for line in lines if line.startswith("Not verified: ")
+            ]
+            ordered = ["Verified: " + v for v in verified] + ["Not verified: " + v for v in unproven]
+            found = found + ((("verification order", lines),) if lines != ordered else ())
+            found = found + (
+                (("verification limit", len(verified), len(unproven)),)
+                if len(verified) > 8 or len(unproven) > 8
+                else ()
+            )
+            values = verified + unproven
+        found = found + ((("limit", heading, len(values)),) if heading != "## Verification" and len(values) > 8 else ())
+        found = found + tuple((broken_rule(value), value) for value in values if broken_rule(value))
+    return found
+
+
+def section_of(body, heading):
+    blocks = [block.split("\n") for block in body.split("\n\n")]
+    found = [lines[1:] for lines in blocks if lines[0] == heading]
+    return found[0] if found else None
+
+
+class HouseFormat(unittest.TestCase):
+    def a_title_carries_the_caller_type_scope_and_subject(self):
+        one = core.plan([step("impl", ["impl.txt"])])
+        two = core.plan([step("a", ["a.txt"], msp="core"), step("b", ["b.txt"], msp="docs")])
+        index = {msp["label"]: position for position, msp in enumerate(two["msps"])}
+        titles = (
+            (run.pull_request_title(HEADER, one, 0), "feat(ship): write pull requests in the house format"),
+            (
+                run.pull_request_title({**HEADER, "scope": None}, one, 0),
+                "feat: write pull requests in the house format",
+            ),
+            (
+                run.pull_request_title(HEADER, two, index["core"]),
+                "feat(ship): write pull requests in the house format (core)",
+            ),
+            (
+                run.pull_request_title(HEADER, two, index["docs"]),
+                "feat(ship): write pull requests in the house format (docs)",
+            ),
+        )
+        for title, expected in titles:
+            self.assertEqual(title, expected)
+            self.assertIsNotNone(HOUSE_TITLE.fullmatch(title), title)
+            self.assertIsNone(broken_rule(title, 72), title)
+
+    def the_body_follows_the_house_layout_byte_for_byte(self):
+        plan = core.plan(
+            [
+                step(
+                    "impl",
+                    ["impl.txt", "tests/t.py"],
+                    task="Add the impl file.",
+                    acceptance=[{"file": "tests/t.py", "test": "case"}],
+                )
+            ]
+        )
+        gate = {"properties": [{"step": "impl", "file": "tests/t.py", "test": "case", "outcome": "pass"}]}
+        header = {"type": "feat", "scope": None, "subject": "add the impl", "why": ("Callers need it.",)}
+        self.assertEqual(
+            run.pull_request_body(header, plan, 0, gate, None, CLEAN_FINDINGS, None, ()),
+            "## What changed\n- Add the impl file.\n\n## Why\nCallers need it.\n\n## Verification\n"
+            "Verified: tests/t.py::case (impl) fails with the work reverted and passes with it",
+        )
+        self.assertEqual(
+            run.pull_request_body(header, plan, 0, gate, None, None, None, ()),
+            run.pull_request_body(header, plan, 0, gate, None, CLEAN_FINDINGS, None, ()),
+        )
+        risky = run.pull_request_body(
+            header, plan, 0, gate, None, {**CLEAN_FINDINGS, "undeclared": ["b.txt"]}, None, ()
+        )
+        self.assertEqual(
+            risky,
+            "## What changed\n- Add the impl file.\n\n## Why\nCallers need it.\n\n## Risk\n"
+            "Reconcile found 1 undeclared write (b.txt).\n\n## Verification\n"
+            "Verified: tests/t.py::case (impl) fails with the work reverted and passes with it",
+        )
+        self.assertEqual(
+            [block.split("\n")[0] for block in risky.split("\n\n")],
+            ["## What changed", "## Why", "## Risk", "## Verification"],
+        )
+        self.assertFalse(risky.endswith("\n"))
+
+    def what_changed_takes_each_task_first_sentence_or_a_fallback(self):
+        plan = core.plan(
+            [
+                step(
+                    "plain",
+                    ["plain.txt"],
+                    msp="m",
+                    task="Change run.py so titles follow the format. Then update the tests.",
+                ),
+                step("backtick", ["backtick.txt"], msp="m", task="`run.py` gets the format."),
+                step("base", ["base.txt"], msp="m", task="Point the pull request at <base> instead."),
+                step("dash", ["dash.txt"], msp="m", task="— a dash opens this task."),
+                step("<img>", ["img.txt"], msp="m", task="`x` comes first."),
+            ]
+        )
+        expected = {
+            "plain": "Change run.py so titles follow the format.",
+            "backtick": "Builds the backtick Step.",
+            "base": "Builds the base Step.",
+            "dash": "Builds the dash Step.",
+            "<img>": "Builds one Step of this change.",
+        }
+        body = run.pull_request_body(HEADER, plan, 0, None, None, None, None, ())
+        self.assertEqual(
+            section_of(body, "## What changed"),
+            ["- " + expected[name] for name in plan["msps"][0]["steps"]],
+        )
+        ten = core.plan(
+            [step("s%d" % n, ["s%d.txt" % n], msp="m", task="Do step %d." % n) for n in range(10)]
+        )
+        names = ten["msps"][0]["steps"]
+        entries = section_of(run.pull_request_body(HEADER, ten, 0, None, None, None, None, ()), "## What changed")
+        self.assertEqual(len(entries), 8)
+        self.assertEqual(entries[:7], ["- Do step %s." % name[1:] for name in names[:7]])
+        self.assertEqual(entries[7], "- Builds 3 more Steps: %s, %s and %s." % tuple(names[7:]))
+
+    def verification_lists_each_property_by_its_gate_outcome(self):
+        def gated(name, outcome=None):
+            return step(
+                name,
+                ["%s.txt" % name, "tests/%s.py" % name],
+                msp="m",
+                acceptance=[{"file": "tests/%s.py" % name, "test": "case"}],
+            )
+
+        plan = core.plan(
+            [
+                gated("q"),
+                gated("p"),
+                gated("r"),
+                gated("s"),
+                gated("u"),
+                step("n", ["n.txt"], msp="m"),
+            ]
+        )
+        outcomes = {"p": "pass", "q": "inert", "r": "inconclusive", "s": "not-applicable"}
+        gate = {
+            "properties": [
+                {"step": name, "file": "tests/%s.py" % name, "test": "case", "outcome": outcome}
+                for name, outcome in outcomes.items()
+            ]
+            + [{"step": "n", "file": None, "test": None, "outcome": "not-applicable"}]
+        }
+        stated = {
+            "q": "Not verified: tests/q.py::case (q) is inert",
+            "r": "Not verified: tests/r.py::case (r) is inconclusive",
+            "s": "Not verified: tests/s.py::case (s) is not-applicable",
+            "u": "Not verified: tests/u.py::case (u) was not judged",
+        }
+        names = plan["msps"][0]["steps"]
+        body = run.pull_request_body(HEADER, plan, 0, gate, "the runner vanished", None, None, ())
+        self.assertEqual(
+            section_of(body, "## Verification"),
+            ["Verified: tests/p.py::case (p) fails with the work reverted and passes with it"]
+            + [stated[name] for name in names if name in stated]
+            + ["Not verified: the n Step has no acceptance test", "Not verified: the gate could not run"],
+        )
+        self.assertNotIn("the runner vanished", body)
+        quiet = run.pull_request_body(HEADER, plan, 0, gate, None, None, None, ())
+        self.assertNotIn("Not verified: the gate could not run", quiet)
+        self.assertNotIn("## Risk", quiet)
+        wide = core.plan(
+            [step("w", ["w.txt"], acceptance=[{"file": "f" * 300, "test": "t" * 300}])]
+        )
+        wide_gate = {"properties": [{"step": "w", "file": "f" * 300, "test": "t" * 300, "outcome": "pass"}]}
+        self.assertEqual(
+            section_of(run.pull_request_body(HEADER, wide, 0, wide_gate, None, None, None, ()), "## Verification"),
+            ["Verified: an acceptance test fails with the work reverted and passes with it"],
+        )
+        many = core.plan(
+            [
+                step(
+                    "x",
+                    ["x.txt"],
+                    acceptance=[{"file": "tests/x%d.py" % n, "test": "case"} for n in range(10)],
+                )
+            ]
+        )
+        for outcome, last in (
+            ("pass", "Verified: 3 more acceptance tests fail with the work reverted and pass with it"),
+            ("inert", "Not verified: 3 more acceptance checks were not proven"),
+        ):
+            many_gate = {
+                "properties": [
+                    {"step": "x", "file": "tests/x%d.py" % n, "test": "case", "outcome": outcome}
+                    for n in range(10)
+                ]
+            }
+            lines = section_of(
+                run.pull_request_body(HEADER, many, 0, many_gate, None, None, None, ()), "## Verification"
+            )
+            self.assertEqual(len(lines), 8)
+            self.assertEqual(lines[7], last)
+            self.assertEqual(lines[0].split("::")[0].split(": ")[1], "tests/x0.py")
+
+    def risk_names_every_finding_kind_or_is_absent(self):
+        plain = core.plan([step("a", ["a.txt"])])
+        self.assertNotIn("## Risk", run.pull_request_body(HEADER, plain, 0, None, None, CLEAN_FINDINGS, None, ()))
+        package = core.plan(
+            [
+                step("surface", ["pkg/__init__.py", "pkg/g.py"], msp="m"),
+                step("parse", ["pkg/parse.py"], msp="m", after=["surface"]),
+            ]
+        )
+        findings = {
+            "undeclared": ["stray.txt", "b.txt"],
+            "unwritten": ["pkg/g.py"],
+            "crossing": [{"path": "b.txt", "msp": 1, "label": "beta"}],
+            "fatal": True,
+        }
+        foreign = [{"path": "pkg/parse.py", "owner": 1, "suspects": [0], "lane": 0}]
+        body = run.pull_request_body(
+            HEADER, package, 0, None, "boom", findings, {"producers": [1, 2]}, foreign
+        )
+        self.assertEqual(
+            section_of(body, "## Risk"),
+            [
+                "Reconcile found 2 undeclared writes (stray.txt and b.txt); reconcile found 1 "
+                "declared path never written (pkg/g.py); another MSP also changes 1 file this "
+                "branch writes (b.txt); a Lane changed 1 file another Lane of this MSP owned and "
+                "had already committed (pkg/parse.py); the build leaves 1 package manifest "
+                "exporting nothing (pkg/__init__.py); this MSP has 2 producers, so its base is the "
+                "feature branch; the gate could not run."
+            ],
+        )
+        hidden = run.pull_request_body(
+            HEADER, plain, 0, None, None, {**CLEAN_FINDINGS, "undeclared": ["<x"]}, None, ()
+        )
+        self.assertEqual(section_of(hidden, "## Risk"), ["Reconcile found 1 undeclared write."])
+        self.assertNotIn("<x", hidden)
+        crowded = run.pull_request_body(
+            HEADER,
+            plain,
+            0,
+            None,
+            None,
+            {**CLEAN_FINDINGS, "undeclared": ["dir/file-%03d.txt" % n for n in range(200)]},
+            None,
+            (),
+        )
+        risk = section_of(crowded, "## Risk")
+        self.assertEqual(len(risk), 1)
+        self.assertLessEqual(len(risk[0].encode("utf-16-le")) // 2, 500)
+        self.assertTrue(risk[0].startswith("Reconcile found 200 undeclared writes (dir/file-000.txt, "))
+        cut = re.search(r" and (\d+) more\)\.$", risk[0])
+        self.assertIsNotNone(cut, risk[0])
+        self.assertEqual(int(cut.group(1)) + risk[0].count("dir/file-"), 200)
+        self.assertEqual(body_problems(crowded), ())
+
+    def hostile_inputs_never_break_the_value_rules(self):
+        self.assertNotEqual(
+            body_problems("## What changed\n- lower\n\n## Why\nok\n\n## Verification\nVerified: <b"), ()
+        )
+        header = {**HEADER, "why": ("Callers need it.", "receipt: kept as written")}
+        for text in (
+            "<script>alert(1)</script>",
+            "# A heading",
+            "‮Reversed text.",
+            "Verified: x",
+            "Builds a long task " + "x" * 600 + ".",
+            "First line.\n\tSecond line\twith tabs.",
+            "case<img src=x>",
+            "Ship it \U0001F680 now.",
+            "<img>",
+        ):
+            with self.subTest(text=text):
+                plan = core.plan(
+                    [
+                        step("alpha", ["alpha.txt"], msp="m", task=text),
+                        step(
+                            text,
+                            ["hostile.txt", "tests/hostile.py"],
+                            msp="m",
+                            task=text,
+                            acceptance=[
+                                {"file": text, "test": text},
+                                {"file": "tests/hostile.py", "test": text},
+                            ],
+                        ),
+                        step(
+                            "gamma",
+                            ["gamma.txt"],
+                            msp="m",
+                            task=text,
+                            acceptance=[{"file": "tests/g.py", "test": text}],
+                        ),
+                    ]
+                )
+                gate = {
+                    "properties": [
+                        {"step": text, "file": text, "test": text, "outcome": "pass"},
+                        {"step": text, "file": "tests/hostile.py", "test": text, "outcome": "inert"},
+                        {"step": "gamma", "file": "tests/g.py", "test": text, "outcome": "inconclusive"},
+                    ]
+                }
+                findings = {
+                    "undeclared": [text, "stray.txt"],
+                    "unwritten": [text],
+                    "crossing": [{"path": text, "msp": 1, "label": text}],
+                    "fatal": True,
+                }
+                foreign = [{"path": text, "owner": 1, "suspects": [0], "lane": 0}]
+                body = run.pull_request_body(
+                    header, plan, 0, gate, text, findings, {"producers": [1, 2]}, foreign
+                )
+                self.assertEqual(body_problems(body), ())
+                self.assertIsNotNone(section_of(body, "## Risk"))
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -1490,7 +2006,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Worktrees, Dispatch, Resume, Gate, Reconcile, Ship):
+    for case in (Worktrees, Dispatch, Resume, Gate, Reconcile, Ship, HouseFormat):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

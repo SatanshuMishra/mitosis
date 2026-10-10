@@ -330,6 +330,36 @@ class Docs(unittest.TestCase):
         self.assertIsNotNone(heading, "the changelog has no release heading")
         self.assertEqual(heading.group(1), core.__version__)
 
+    def the_skill_and_changelog_describe_push_only_shipping(self):
+        flags = ("--pr-type", "--pr-scope", "--pr-subject", "--pr-why")
+        skill = _skill_text(self)
+        for name in flags + ("pushed",):
+            self.assertIn("`%s`" % name, skill)
+        readme_path = os.path.join(ROOT, "README.md")
+        if not os.path.isfile(readme_path):
+            self.skipTest("an installed copy carries no README")
+        with open(readme_path, encoding="utf-8") as handle:
+            readme = handle.read()
+        readme_examples = FENCE.findall(readme)
+        runs = [block for block in FENCE.findall(skill) + readme_examples if "--dispatch-command" in block]
+        self.assertGreaterEqual(len(runs), 3)
+        for block in runs:
+            for flag in ("--pr-type", "--pr-subject", "--pr-why"):
+                self.assertIn(flag, block)
+        self.assertTrue(
+            any("--pr-type" in block and "--pr-command" not in block for block in readme_examples)
+        )
+        self.assertGreaterEqual(tuple(int(part) for part in core.__version__.split(".")), (0, 3, 0))
+        path = _changelog_path(ROOT)
+        self.assertIsNotNone(path, "the plugin carries no changelog")
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertIn("\n## 0.3.0", text)
+        section = _changelog_head(text[text.index("\n## 0.3.0") + 1 :])
+        self.assertTrue(section.startswith("## 0.3.0"))
+        for name in flags + ("pushed",):
+            self.assertIn(name, section)
+
 
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):

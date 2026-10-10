@@ -305,6 +305,13 @@ def invoke(root, argv):
     return code, out.getvalue(), err.getvalue()
 
 
+SUBJECT = "write pull requests in the house format"
+
+WHY = "Callers need it."
+
+PR_FLAGS = ("--pr-type", "feat", "--pr-scope", "ship", "--pr-subject", SUBJECT, "--pr-why", WHY)
+
+
 def git_repo(root):
     env = {**os.environ, **ISOLATED_GIT_ENV}
     for args in (
@@ -530,6 +537,7 @@ class Staging(unittest.TestCase):
                     "probe {file} {test}",
                     "--pr-command",
                     "opener {branch}",
+                    *PR_FLAGS,
                 )
             finally:
                 mitosis.execute = kept
@@ -562,6 +570,7 @@ class Staging(unittest.TestCase):
                     "probe {file} {test}",
                     "--pr-command",
                     "opener {branch}",
+                    *PR_FLAGS,
                 ],
             )
             self.assertEqual(code, mitosis.EXIT_REFUSED)
@@ -896,10 +905,150 @@ class HeldRun(unittest.TestCase):
         self.assertEqual(code, mitosis.EXIT_REFUSED)
         self.assertIn("--no-push", err)
 
-    def a_run_that_pushes_still_needs_a_pull_request_command(self):
-        code, _, err = self._run()
-        self.assertEqual(code, mitosis.EXIT_REFUSED)
-        self.assertIn("--pr-command", err)
+
+MARKING_WORKER = r'''
+import os
+
+open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "spawned"), "w").close()
+'''
+
+
+class PullRequestFlags(unittest.TestCase):
+    def _attempt(self, *flags):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
+            git_repo(root)
+            write(root, "items.json", json.dumps([briefed("alpha")]))
+            with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
+                code, out, err = invoke(
+                    root,
+                    [
+                        "--items",
+                        "items.json",
+                        "--run-dir",
+                        os.path.join(elsewhere, "run"),
+                        "--feature-branch",
+                        "feature",
+                        "--dispatch-command",
+                        command(elsewhere, "worker.py", MARKING_WORKER, "{task}"),
+                        "--acceptance-command",
+                        "probe {file} {test}",
+                        "--timeout",
+                        "30",
+                        *flags,
+                    ],
+                )
+            return code, err, os.path.exists(os.path.join(elsewhere, "worker", "spawned"))
+
+    def a_run_that_may_push_needs_valid_pull_request_flags(self):
+        long_why = "A" + "b" * 495 + "\U0001F680\U0001F680" + "."
+        self.assertEqual(len(long_why), 499)
+        typed = ("--pr-type", "feat", "--pr-subject", SUBJECT)
+        for flag, flags in (
+            ("--pr-type", ("--pr-subject", SUBJECT, "--pr-why", WHY)),
+            ("--pr-subject", ("--pr-type", "feat", "--pr-why", WHY)),
+            ("--pr-why", typed),
+            ("--pr-type", ("--pr-type", "feature", "--pr-subject", SUBJECT, "--pr-why", WHY)),
+            ("--pr-scope", typed + ("--pr-scope", "Ship", "--pr-why", WHY)),
+            ("--pr-subject", ("--pr-type", "feat", "--pr-subject", "Write things.", "--pr-why", WHY)),
+            ("--pr-why", typed + ("--pr-why", "callers need it.")),
+            ("--pr-why", typed + ("--pr-why", long_why)),
+            ("--pr-why", typed + ("--pr-why", WHY) * 9),
+        ):
+            with self.subTest(flags=flags):
+                code, err, spawned = self._attempt(*flags)
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                self.assertIn(flag, err.splitlines()[0])
+                self.assertFalse(spawned)
+
+    def a_title_that_cannot_fit_is_refused_before_any_worker(self):
+        for items, subject, label, rule in (
+            ([briefed("alpha")], "write " + "x" * 66, "alpha", "over the 72-unit cap"),
+            ([briefed("alpha", msp="a<b"), briefed("beta")], SUBJECT, "a<b", "< followed by"),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as root:
+                write(root, "items.json", json.dumps(items))
+                code, _, err = invoke(
+                    root,
+                    [
+                        "--items",
+                        "items.json",
+                        "--plan-only",
+                        "--run-dir",
+                        os.path.join(root, "run"),
+                        "--pr-type",
+                        "feat",
+                        "--pr-scope",
+                        "ship",
+                        "--pr-subject",
+                        subject,
+                        "--pr-why",
+                        WHY,
+                    ],
+                )
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                self.assertIn("MSP %s would be titled" % label, err)
+                self.assertIn(rule, err)
+                self.assertFalse(os.path.exists(os.path.join(root, "run", run.PLAN_FILE)))
+
+
+class PushOnly(unittest.TestCase):
+    def the_json_summary_carries_each_pull_request_text(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
+            git_repo(root)
+            remote = os.path.join(elsewhere, "remote.git")
+            env = {**os.environ, **ISOLATED_GIT_ENV}
+            for args in (
+                ["git", "init", "-q", "--bare", remote],
+                ["git", "-C", root, "remote", "add", "origin", remote],
+            ):
+                subprocess.run(args, check=True, capture_output=True, env=env)
+            write(root, "items.json", json.dumps([briefed("alpha")]))
+            with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
+                code, out, err = invoke(
+                    root,
+                    [
+                        "--items",
+                        "items.json",
+                        "--run-dir",
+                        os.path.join(elsewhere, "run"),
+                        "--feature-branch",
+                        "feature",
+                        "--dispatch-command",
+                        command(elsewhere, "worker.py", HOLDING_WORKER, "{task}"),
+                        "--acceptance-command",
+                        "probe {file} {test}",
+                        "--timeout",
+                        "30",
+                        *PR_FLAGS,
+                    ],
+                )
+            heads = subprocess.run(
+                ["git", "--git-dir", remote, "for-each-ref", "--format=%(refname)"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.split()
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        found = json.loads(out.splitlines()[-1])
+        self.assertEqual(found["exit"], mitosis.EXIT_SHIPPED)
+        self.assertEqual(len(found["msps"]), 1)
+        entry = found["msps"][0]
+        self.assertEqual(entry["state"], run.MSP_PUSHED)
+        self.assertEqual(entry["branch"], "mitosis/alpha")
+        self.assertIsNone(entry["pull_request"])
+        self.assertEqual(entry["title"], "feat(ship): write pull requests in the house format")
+        self.assertEqual(
+            entry["body"],
+            "## What changed\n- Builds the alpha Step.\n\n## Why\nCallers need it.\n\n"
+            "## Verification\nNot verified: the alpha Step has no acceptance test",
+        )
+        self.assertEqual(heads, ["refs/heads/mitosis/alpha"])
+        self.assertEqual(found["attention"], [])
+        held = mitosis._msp_summary(
+            {"msps": [{"label": "alpha"}]},
+            {"msps": {"0": {"state": run.MSP_COMMITTED, "ship": {"branch": "mitosis/alpha"}}}},
+        )
+        self.assertEqual((held[0]["title"], held[0]["body"]), (None, None))
 
 
 class GateExit(unittest.TestCase):
@@ -1199,6 +1348,8 @@ def load_tests(loader, tests, pattern):
         GateExit,
         CouplingReport,
         GraphLoading,
+        PullRequestFlags,
+        PushOnly,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
