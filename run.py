@@ -1188,14 +1188,26 @@ CHARACTER_REFERENCE = re.compile(r"&(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z
 
 OUTSIDE_PRINTABLE_ASCII = re.compile(r"[^\x20-\x7e]")
 
+INLINE_CONSTRUCTS = (
+    ("\\", "holds a backslash"),
+    ("](", "holds ]("),
+    ("![", "holds !["),
+    ("]:", "holds ]:"),
+    ("$", "holds $"),
+)
+
 COMPOSED_RULES = (
     (re.compile(r"<"), "holds <"),
     (re.compile(r"@"), "holds @"),
     (re.compile(r"#[0-9]"), "holds # followed by a digit"),
-    (re.compile(r"\]\("), "holds ]("),
-    (re.compile(r"!\["), "holds !["),
     (re.compile(r"://"), "holds ://"),
     (re.compile(r"www\.", re.IGNORECASE), "holds www."),
+    (re.compile(r"~"), "holds ~"),
+    (re.compile(r"\*"), "holds *"),
+    (re.compile(r"(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])"), "holds _ outside a word"),
+    (re.compile(r"(?<![A-Za-z0-9])gh-[0-9]", re.IGNORECASE), "holds GH- followed by a digit"),
+    (re.compile(r":[a-z0-9_+-]+:"), "holds an emoji shortcode"),
+    (re.compile(r"[0-9A-Fa-f]{40}"), "holds a run of 40 hexadecimal digits"),
 )
 
 NAMEABLE_CAP = 100
@@ -1254,6 +1266,9 @@ def value_fault(value, cap=VALUE_CAP):
         return "holds < followed by !, /, ? or a letter"
     if CHARACTER_REFERENCE.search(value):
         return "holds a character reference"
+    inline = next((rule for construct, rule in INLINE_CONSTRUCTS if construct in value), None)
+    if inline is not None:
+        return inline
     if value.startswith(BLOCK_OPENERS):
         return "begins with a markdown block opener"
     if SETEXT_UNDERLINE.fullmatch(value):

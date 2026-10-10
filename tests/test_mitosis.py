@@ -1053,6 +1053,52 @@ class PullRequestFlags(unittest.TestCase):
                 self.assertIn(rule, err)
                 self.assertFalse(spawned)
 
+    def help_names_the_composed_rules(self):
+        text = mitosis.build_parser().format_help()
+        self.assertIsInstance(text, str)
+        for flag in ("--pr-why", "--pr-subject"):
+            help_text = mitosis.FLAG_SPECS[flag]["help"]
+            for term in ("printable ASCII", "$", "backslash", "GH-", "emoji", "hexadecimal"):
+                with self.subTest(flag=flag, term=term):
+                    self.assertIn(term, help_text)
+            self.assertIn(" ".join(help_text.split()), " ".join(text.split()))
+
+    def why_lines_and_subjects_refuse_math_references_and_emphasis(self):
+        typed = ("--pr-type", "feat", "--pr-subject", SUBJECT)
+        for why, rule in (
+            ("Callers need it $\\phantom{x}$ now.", "holds a backslash"),
+            ("Fixes GH-2 too.", "holds GH- followed by a digit"),
+            ("Callers need pkg/__init__.py now.", "holds _ outside a word"),
+            ("Add :rocket: support.", "holds an emoji shortcode"),
+        ):
+            with self.subTest(why=why):
+                self.assertEqual(mitosis.why_fault(why), rule)
+                code, err, spawned = self._attempt(*typed, "--pr-why", why)
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                self.assertIn("--pr-why number 1 %s" % rule, err.splitlines()[0])
+                self.assertFalse(spawned)
+        for subject, rule in (
+            ("close GH-1 with the parser", "holds GH- followed by a digit"),
+            ("add the $x$ parser", "holds $"),
+            ("add the a*b parser", "holds *"),
+        ):
+            with self.subTest(subject=subject):
+                self.assertEqual(mitosis.subject_fault(subject), rule)
+                code, err, spawned = self._attempt(
+                    "--pr-type", "feat", "--pr-subject", subject, "--pr-why", WHY
+                )
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                self.assertIn("--pr-subject %r %s" % (subject, rule), err.splitlines()[0])
+                self.assertFalse(spawned)
+        parser = mitosis.build_parser()
+        self.assertIsNone(
+            mitosis.check_pull_request_flags(
+                parser.parse_args(
+                    ("--pr-type", "feat", "--pr-subject", SUBJECT, "--pr-why", "Callers need it.")
+                )
+            )
+        )
+
 
 class PushOnly(unittest.TestCase):
     def the_json_summary_carries_each_pull_request_text(self):

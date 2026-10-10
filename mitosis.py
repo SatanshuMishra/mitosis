@@ -116,6 +116,12 @@ PLACEHOLDER_HELP = {
     "pull-request": "{branch} {base} {title} {body} {worktree} {msp} {remote}",
 }
 
+COMPOSED_HELP = (
+    "refused when it holds $, a backslash, <, @, ~, *, an _ outside a word, # or GH- before a "
+    "digit, links, character references, emoji shortcodes or a run of 40 hexadecimal digits "
+    "such as a full commit hash"
+)
+
 STAGE_FLAG_NAMES = (
     "--brief-command",
     "--decisions",
@@ -237,16 +243,16 @@ FLAG_SPECS = {
     "--pr-subject": {
         "metavar": "TEXT",
         "help": "the title's summary: a lowercase first letter, printable ASCII, no trailing full "
-        "stop; a plan of several MSPs appends each MSP label in parentheses; required for a run "
-        "allowed to push",
+        "stop; %s; a plan of several MSPs appends each MSP label in parentheses; required for a "
+        "run allowed to push" % COMPOSED_HELP,
     },
     "--pr-why": {
         "metavar": "SENTENCE",
         "action": "append",
         "default": [],
-        "help": "one line of every body's Why section, beginning with an uppercase letter and "
-        "ending with . ? or !; give it 1 to %d times; required for a run allowed to push"
-        % run.SECTION_LIMIT,
+        "help": "one line of every body's Why section in printable ASCII, beginning with an "
+        "uppercase letter and ending with . ? or !; %s; give it 1 to %d times; required for a run "
+        "allowed to push" % (COMPOSED_HELP, run.SECTION_LIMIT),
     },
     "--no-push": {
         "action": "store_true",
