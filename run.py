@@ -7,6 +7,7 @@ import shutil
 import signal
 import subprocess
 import time
+import unicodedata
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
@@ -37,7 +38,9 @@ MSP_UNCHANGED = "unchanged"
 
 MSP_COMMITTED = "committed"
 
-PUBLISHED_STATES = ("shipped", MSP_UNCHANGED)
+MSP_PUSHED = "pushed"
+
+PUBLISHED_STATES = ("shipped", MSP_PUSHED, MSP_UNCHANGED)
 
 ACCEPTANCE_FAILURE_EXIT = 1
 
@@ -502,20 +505,21 @@ def _verdict(lane, tree, started, merged, out, err, code, timed_out):
     )
 
 
-def _dirty_paths(tree):
-    entries = git_run(
-        ["status", "--porcelain", "-z", "--untracked-files=all"], tree["path"]
-    ).stdout.split("\0")
-    found = ()
+def _status_paths(entries):
     skip = False
     for entry in entries:
         if skip:
             skip = False
-            continue
-        if len(entry) > 3:
-            found = found + (entry[3:],)
+        elif len(entry) > 3:
             skip = entry[0] in "RC"
-    return found
+            yield entry[3:]
+
+
+def _dirty_paths(tree):
+    entries = git_run(
+        ["status", "--porcelain", "-z", "--untracked-files=all"], tree["path"]
+    ).stdout.split("\0")
+    return tuple(dict.fromkeys(_status_paths(entries)))
 
 
 def _foreign_writes(plan, msp, tree, batch, records):
@@ -1032,12 +1036,8 @@ def changed_files(tree, branch, base, exclude=()):
     out = git(
         ["log", "--format=", "--name-only", "--no-renames", branch, "^" + base, *excluded], tree
     )
-    found = ()
-    for line in out.splitlines():
-        path = line.strip()
-        if path and path not in found:
-            found = found + (path,)
-    return sorted(found)
+    stripped = (line.strip() for line in out.splitlines())
+    return sorted(dict.fromkeys(path for path in stripped if path))
 
 
 def msp_owner_of(plan, path):
@@ -1124,36 +1124,9 @@ def pr_base(plan, msp, feature_branch, trees, repo, settled=None):
 
 def _judged(gate_result):
     return {
-        (entry.get("file"), entry.get("test")): entry
+        (entry.get("step"), entry.get("file"), entry.get("test")): entry
         for entry in (gate_result or {}).get("properties") or []
     }
-
-
-def _property_lines(plan, msp, gate_result=None):
-    steps = _steps_by_name(plan)
-    judged = _judged(gate_result)
-    lines = ()
-    for name in plan["msps"][msp]["steps"]:
-        for entry in steps[name].get("acceptance") or []:
-            verdict = judged.get((entry["file"], entry["test"])) or {}
-            outcome = verdict.get("outcome")
-            reason = verdict.get("reason")
-            lines = lines + (
-                "- %s::%s (%s)%s%s"
-                % (
-                    entry["file"],
-                    entry["test"],
-                    name,
-                    ": %s" % outcome if outcome else "",
-                    " - %s" % reason if reason else "",
-                ),
-            )
-    return lines
-
-
-def _first_line(text):
-    stripped = (text or "").strip()
-    return stripped.splitlines()[0] if stripped else ""
 
 
 def _name_of(plan, index):
@@ -1170,12 +1143,407 @@ def manifest_gaps(plan, msp):
     ]
 
 
-def pull_request_title(plan, msp):
-    label = _label(plan, msp)
-    steps = plan["msps"][msp]["steps"]
-    if steps == [label]:
-        return label
-    return "%s: %s" % (label, ", ".join(steps))
+PR_TYPES = ("feat", "fix", "refactor", "docs", "test", "chore", "perf", "ci")
+
+TITLE_PATTERN = re.compile(
+    r"^(?=.{1,72}$)(feat|fix|refactor|docs|test|chore|perf|ci)(\([a-z0-9][a-z0-9-]{0,15}\))?: "
+    r"[a-z][\x20-\x7E]*[\x21-\x2D\x2F-\x7E]$"
+)
+
+SCOPE_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,15}")
+
+TITLE_CAP = 72
+
+VALUE_CAP = 500
+
+SECTION_LIMIT = 8
+
+RECEIPT_TOKENS = ("work-type:", "test-removal:", "receipt:", "receipt-cmd:", "receipt-lock:")
+
+TRIM_SET = "".join(
+    chr(code)
+    for code in (
+        *range(0x09, 0x0E),
+        0x20,
+        0xA0,
+        0x1680,
+        *range(0x2000, 0x200B),
+        0x2028,
+        0x2029,
+        0x202F,
+        0x205F,
+        0x3000,
+        0xFEFF,
+    )
+)
+
+CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
+
+INVISIBLE_CHARACTER = re.compile(
+    r"[\u0080-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202f\u2060-\u206f\ufeff\ufff9-\ufffb]"
+)
+
+TAG_OPENER = re.compile(r"<[!/?A-Za-z]")
+
+CHARACTER_REFERENCE = re.compile(r"&(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);")
+
+OUTSIDE_PRINTABLE_ASCII = re.compile(r"[^\x20-\x7e]")
+
+INLINE_CONSTRUCTS = (
+    ("\\", "holds a backslash"),
+    ("](", "holds ]("),
+    ("![", "holds !["),
+    ("]:", "holds ]:"),
+    ("$", "holds $"),
+)
+
+URL_TEXT = re.compile(r"://|www\.|github\.com/", re.IGNORECASE)
+
+BLANK_SYMBOLS = frozenset(chr(code) for code in (0x2800, 0x16FE4, 0x1D159))
+
+COMPOSED_RULES = (
+    (re.compile(r"<"), "holds <"),
+    (re.compile(r"@"), "holds @"),
+    (re.compile(r"#[0-9]"), "holds # followed by a digit"),
+    (re.compile(r"\*"), "holds *"),
+    (re.compile(r"(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])"), "holds _ outside a word"),
+    (re.compile(r"(?<![A-Za-z0-9])gh-[0-9]", re.IGNORECASE), "holds GH- followed by a digit"),
+    (re.compile(r":[a-z0-9_+-]+:"), "holds an emoji shortcode"),
+    (re.compile(r"[0-9A-Fa-f]{40}"), "holds a run of 40 hexadecimal digits"),
+)
+
+NAMEABLE_CAP = 100
+
+BLOCK_OPENERS = ("`", "~", "#", ">", "|")
+
+SETEXT_UNDERLINE = re.compile(r"[=-]+")
+
+RESERVED_FIELD = re.compile(r"(?:verified|not verified):", re.IGNORECASE | re.ASCII)
+
+RESERVED_STRUCTURE = "Supersedes "
+
+SENTENCE_ENDS = ".?!"
+
+SENTENCE_END = re.compile(r"[.?!](?= |$)")
+
+WHAT_HEADING = "## What changed"
+
+WHY_HEADING = "## Why"
+
+RISK_HEADING = "## Risk"
+
+VERIFICATION_HEADING = "## Verification"
+
+BULLET = "- "
+
+VERIFIED_PREFIX = "Verified: "
+
+NOT_VERIFIED_PREFIX = "Not verified: "
+
+PROVEN = "fails with the work reverted and passes with it"
+
+WHAT_FALLBACK = "Builds one Step of this change."
+
+
+def code_units(value):
+    return len(value.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def blank_or_overlay(character):
+    category = unicodedata.category(character)
+    return (
+        (category == "Zs" and character != " ")
+        or category == "Me"
+        or unicodedata.combining(character) == 1
+        or character in BLANK_SYMBOLS
+    )
+
+
+def value_fault(value, cap=VALUE_CAP):
+    if not isinstance(value, str):
+        return "is not text"
+    if CONTROL_CHARACTER.search(value):
+        return "holds a control character"
+    if value != value.strip(TRIM_SET):
+        return "has leading or trailing whitespace"
+    if not value:
+        return "is empty"
+    if code_units(value) > cap:
+        return "is %d UTF-16 code units long, over the %d-unit cap" % (code_units(value), cap)
+    if value.startswith("@"):
+        return "begins with @"
+    if INVISIBLE_CHARACTER.search(value):
+        return "holds an invisible or bidirectional character"
+    if TAG_OPENER.search(value):
+        return "holds < followed by !, /, ? or a letter"
+    if CHARACTER_REFERENCE.search(value):
+        return "holds a character reference"
+    inline = next((rule for construct, rule in INLINE_CONSTRUCTS if construct in value), None)
+    if inline is not None:
+        return inline
+    if URL_TEXT.search(value):
+        return "holds ://, www. or github.com/"
+    if "~" in value:
+        return "holds ~"
+    if "``" in value or value.count("`") % 2:
+        return "holds two backticks in a row or an odd number of backticks"
+    if any(blank_or_overlay(character) for character in value):
+        return "holds a space other than the plain space, an enclosing or overlay mark, or a blank-looking symbol"
+    if value.startswith(BLOCK_OPENERS):
+        return "begins with a markdown block opener"
+    if SETEXT_UNDERLINE.fullmatch(value):
+        return "is made only of = and -"
+    if RESERVED_FIELD.match(value):
+        return "begins with verified: or not verified:"
+    if value.startswith(RESERVED_STRUCTURE):
+        return "begins with Supersedes"
+    return None
+
+
+def house_value(value, cap=VALUE_CAP):
+    return value_fault(value, cap) is None
+
+
+def sentence_shaped(value):
+    if not isinstance(value, str) or not value:
+        return False
+    first = value[0]
+    return first.lower() != first and first.upper() == first and value[-1] in SENTENCE_ENDS
+
+
+def receipt_token(value):
+    return isinstance(value, str) and value.startswith(RECEIPT_TOKENS)
+
+
+def composed_fault(value, cap=VALUE_CAP):
+    if not isinstance(value, str):
+        return "is not text"
+    if OUTSIDE_PRINTABLE_ASCII.search(value):
+        return "holds a character outside printable ASCII"
+    fault = value_fault(value, cap)
+    if fault is not None:
+        return fault
+    return next((rule for pattern, rule in COMPOSED_RULES if pattern.search(value)), None)
+
+
+def composed_value(value, cap=VALUE_CAP):
+    return composed_fault(value, cap) is None
+
+
+def title_fault(title):
+    fault = composed_fault(title, TITLE_CAP)
+    if fault is not None:
+        return fault
+    if TITLE_PATTERN.fullmatch(title) is None:
+        return "does not match the house title pattern <type>(<scope>): <subject>"
+    return None
+
+
+def pull_request_title(header, plan, msp):
+    scope = header.get("scope")
+    subject = header["subject"]
+    labelled = (
+        "%s (%s)" % (subject, _label(plan, msp)) if len(plan.get("msps") or []) > 1 else subject
+    )
+    return "%s%s: %s" % (header["type"], "(%s)" % scope if scope else "", labelled)
+
+
+def first_sentence(task):
+    text = " ".join(str(task or "").split())
+    end = SENTENCE_END.search(text)
+    return text[: end.end()] if end else text
+
+
+def _stated(named, anonymous):
+    return named if composed_value(named) else anonymous
+
+
+def _and_list(names):
+    if len(names) < 2:
+        return "".join(names)
+    return "%s and %s" % (", ".join(names[:-1]), names[-1])
+
+
+def _what_entry(name, task):
+    sentence = first_sentence(task)
+    if (
+        composed_value(sentence)
+        and "A" <= sentence[0] <= "Z"
+        and sentence[-1] in SENTENCE_ENDS
+        and not receipt_token(sentence)
+    ):
+        return sentence
+    return _stated("Builds the %s Step." % name, WHAT_FALLBACK)
+
+
+def _what_changed(plan, msp):
+    steps = _steps_by_name(plan)
+    names = tuple(str(name) for name in plan["msps"][msp]["steps"])
+    entries = tuple(_what_entry(name, steps[name].get("task")) for name in names)
+    if len(entries) <= SECTION_LIMIT:
+        return entries
+    rest = names[SECTION_LIMIT - 1 :]
+    return entries[: SECTION_LIMIT - 1] + (
+        _stated(
+            "Builds %d more Steps: %s." % (len(rest), _and_list(rest)),
+            "Builds %d more Steps." % len(rest),
+        ),
+    )
+
+
+def _capped(values, overflow):
+    if len(values) <= SECTION_LIMIT:
+        return values
+    return values[: SECTION_LIMIT - 1] + (overflow % (len(values) - SECTION_LIMIT + 1),)
+
+
+def _unproven(outcome):
+    return "is %s" % outcome if outcome in core.GATE_OUTCOMES else "was not judged"
+
+
+def _verification(plan, msp, gate_result, gate_error):
+    steps = _steps_by_name(plan)
+    judged = _judged(gate_result)
+    names = plan["msps"][msp]["steps"]
+    properties = tuple(
+        (
+            "%s::%s (%s)" % (entry.get("file"), entry.get("test"), name),
+            (judged.get((name, entry.get("file"), entry.get("test"))) or {}).get("outcome"),
+        )
+        for name in names
+        for entry in steps[name].get("acceptance") or []
+    )
+    verified = tuple(
+        _stated("%s %s" % (where, PROVEN), "an acceptance test %s" % PROVEN)
+        for where, outcome in properties
+        if outcome == "pass"
+    )
+    unproven = (
+        tuple(
+            _stated("%s %s" % (where, _unproven(outcome)), "an acceptance test %s" % _unproven(outcome))
+            for where, outcome in properties
+            if outcome != "pass"
+        )
+        + tuple(
+            _stated("the %s Step has no acceptance test" % name, "a Step has no acceptance test")
+            for name in names
+            if not steps[name].get("acceptance")
+        )
+        + (("the gate could not run",) if gate_error else ())
+    )
+    return tuple(
+        VERIFIED_PREFIX + value
+        for value in _capped(
+            verified, "%d more acceptance tests fail with the work reverted and pass with it"
+        )
+    ) + tuple(
+        NOT_VERIFIED_PREFIX + value
+        for value in _capped(unproven, "%d more acceptance checks were not proven")
+    )
+
+
+def _plural(count, singular, plural):
+    return "%d %s" % (count, singular if count == 1 else plural)
+
+
+def _risk_kinds(plan, msp, findings, exception, foreign, gate_error):
+    found = findings or {}
+    undeclared = tuple(dict.fromkeys(found.get("undeclared") or ()))
+    unwritten = tuple(dict.fromkeys(found.get("unwritten") or ()))
+    crossing = tuple(dict.fromkeys(entry.get("path") for entry in found.get("crossing") or ()))
+    foreign_paths = tuple(dict.fromkeys(entry.get("path") for entry in unique_foreign(foreign)))
+    gaps = tuple(dict.fromkeys(gap["manifest"] for gap in manifest_gaps(plan, msp)))
+    producers = len((exception or {}).get("producers") or ())
+    kinds = (
+        (
+            bool(undeclared),
+            "reconcile found %s" % _plural(len(undeclared), "undeclared write", "undeclared writes"),
+            undeclared,
+        ),
+        (
+            bool(unwritten),
+            "reconcile found %s never written"
+            % _plural(len(unwritten), "declared path", "declared paths"),
+            unwritten,
+        ),
+        (
+            bool(crossing),
+            "another MSP also changes %s this branch writes" % _plural(len(crossing), "file", "files"),
+            crossing,
+        ),
+        (
+            bool(foreign_paths),
+            "a Lane changed %s another Lane of this MSP owned and had already committed"
+            % _plural(len(foreign_paths), "file", "files"),
+            foreign_paths,
+        ),
+        (
+            bool(gaps),
+            "the build leaves %s exporting nothing"
+            % _plural(len(gaps), "package manifest", "package manifests"),
+            gaps,
+        ),
+        (
+            exception is not None,
+            "this MSP has %s, so its base is the feature branch"
+            % _plural(producers, "producer", "producers"),
+            (),
+        ),
+        (bool(gate_error), "the gate could not run", ()),
+    )
+    return tuple(
+        (text, tuple(path for path in paths if composed_value(path, NAMEABLE_CAP)), len(paths))
+        for present, text, paths in kinds
+        if present
+    )
+
+
+def _risk_clause(text, nameable, total, limit):
+    named = nameable[:limit]
+    hidden = total - len(named)
+    if not named:
+        return text
+    return "%s (%s)" % (text, _and_list(named + (("%d more" % hidden,) if hidden else ())))
+
+
+def _risk_line(kinds, limit):
+    sentence = "; ".join(
+        _risk_clause(text, nameable, total, limit) for text, nameable, total in kinds
+    )
+    return sentence[0].upper() + sentence[1:] + "."
+
+
+def _risk_fits(kinds, limit):
+    return composed_value(_risk_line(kinds, limit))
+
+
+def _largest_fitting(kinds, low, high):
+    if low >= high:
+        return low
+    middle = (low + high + 1) // 2
+    if _risk_fits(kinds, middle):
+        return _largest_fitting(kinds, middle, high)
+    return _largest_fitting(kinds, low, middle - 1)
+
+
+def _risk_limit(kinds):
+    edges = sorted({0} | {len(nameable) for _, nameable, _ in kinds})
+    spans = tuple(zip(edges, tuple(edge - 1 for edge in edges[1:]) + (edges[-1],)))
+    low, high = next(
+        ((low, high) for low, high in reversed(spans) if _risk_fits(kinds, low)), (0, 0)
+    )
+    return _largest_fitting(kinds, low, high)
+
+
+def _risk(plan, msp, findings, exception, foreign, gate_error):
+    kinds = _risk_kinds(plan, msp, findings, exception, foreign, gate_error)
+    if not kinds:
+        return None
+    return _risk_line(kinds, _risk_limit(kinds))
+
+
+def _block(heading, lines):
+    return "\n".join((heading,) + tuple(lines)) if lines else ""
 
 
 def lane_name(plan, lane):
@@ -1194,19 +1562,14 @@ def foreign_sentence(plan, entry):
     )
 
 
-def _foreign_lines(plan, foreign):
-    return [
-        "%s; a Lane built alongside it may rely on the earlier version." % foreign_sentence(plan, entry)
-        for entry in unique_foreign(foreign)
-    ]
+def _foreign_key(entry):
+    return (entry["path"], entry["owner"], tuple(entry.get("suspects") or [entry["lane"]]))
 
 
 def unique_foreign(foreign):
-    seen = {}
-    for entry in foreign:
-        key = (entry["path"], entry["owner"], tuple(entry.get("suspects") or [entry["lane"]]))
-        seen = seen if key in seen else {**seen, key: entry}
-    return list(seen.values())
+    keyed = tuple((_foreign_key(entry), entry) for entry in foreign)
+    first = dict(reversed(keyed))
+    return [first[key] for key in dict.fromkeys(key for key, _ in keyed)]
 
 
 def msp_foreign_writes(plan, msp, lane_records):
@@ -1219,63 +1582,16 @@ def msp_foreign_writes(plan, msp, lane_records):
 
 
 def pull_request_body(
-    plan, msp, base, acceptance_command, gate_result, findings, exception, foreign=()
+    header, plan, msp, gate_result=None, gate_error=None, findings=None, exception=None, foreign=()
 ):
-    steps = _steps_by_name(plan)
-    names = plan["msps"][msp]["steps"]
-    lines = [
-        "Draft pull request opened by mitosis. mitosis never merges; a human does.",
-        "",
-        "MSP: %s" % _label(plan, msp),
-        "Base: %s" % base,
-        "Plan: %s" % plan.get("plan_id"),
-        "",
-        "Steps:",
-    ]
-    lines = lines + [
-        "- %s: %s" % (name, _first_line(steps[name].get("task")) or name) for name in names
-    ]
-    properties = _property_lines(plan, msp, gate_result)
-    lines = lines + ["", "Acceptance properties, re-runnable by a reviewer:"]
-    lines = lines + (list(properties) if properties else ["- none declared"])
-    lines = lines + ["", "Run each property with: %s" % acceptance_command]
-    silent = sum(1 for name in names if not steps[name].get("acceptance"))
-    lines = lines + ["", "Steps with no acceptance property: %d of %d" % (silent, len(names))]
-    if gate_result:
-        counts = gate_result.get("counts") or {}
-        tally = ", ".join("%d %s" % (counts.get(key, 0), key) for key in core.GATE_OUTCOMES)
-        lines = lines + ["Gate: %s (%s)" % (gate_result.get("outcome"), tally)]
-        if gate_result.get("blocks"):
-            lines = lines + [
-                "This pull request is open with an unproven acceptance property. A property is "
-                "proven only when it fails with the implementation reverted; read the list above "
-                "before trusting a green run."
-            ]
-    if findings:
-        undeclared = ", ".join(findings.get("undeclared") or []) or "none"
-        unwritten = ", ".join(findings.get("unwritten") or []) or "none"
-        lines = lines + ["Reconcile: undeclared %s; unwritten %s" % (undeclared, unwritten)]
-        for entry in findings.get("crossing") or []:
-            lines = lines + [
-                "This branch writes %s, which MSP %s owns and its pull request also changes. "
-                "Merging both as they stand overwrites one with the other."
-                % (entry["path"], entry["label"])
-            ]
-    lines = lines + _foreign_lines(plan, foreign)
-    for gap in manifest_gaps(plan, msp):
-        lines = lines + [
-            "%s would ship with nothing exported: %s owns it and is built before all %d Steps "
-            "whose modules it should export."
-            % (gap["manifest"], _name_of(plan, gap["owner"]), gap["siblings"])
-        ]
-    if exception:
-        producers = ", ".join(_label(plan, p) for p in exception["producers"])
-        lines = lines + [
-            "",
-            "Stacking exception: this MSP has %d producers (%s), so its base is the feature "
-            "branch and its diff includes their work." % (len(exception["producers"]), producers),
-        ]
-    return "\n".join(lines) + "\n"
+    risk = _risk(plan, msp, findings, exception, foreign, gate_error)
+    blocks = (
+        _block(WHAT_HEADING, tuple(BULLET + entry for entry in _what_changed(plan, msp))),
+        _block(WHY_HEADING, tuple(header.get("why") or ())),
+        _block(RISK_HEADING, (risk,) if risk else ()),
+        _block(VERIFICATION_HEADING, _verification(plan, msp, gate_result, gate_error)),
+    )
+    return "\n\n".join(block for block in blocks if block)
 
 
 def ship(
@@ -1287,8 +1603,9 @@ def ship(
     pr_command,
     remote,
     log_dir,
-    acceptance_command="",
+    header=None,
     gate_result=None,
+    gate_error=None,
     findings=None,
     exception=None,
     timeout=None,
@@ -1302,7 +1619,6 @@ def ship(
         "base": base,
         "remote": remote,
         "pushed": None,
-        "title": pull_request_title(plan, msp),
         "pull_request": "",
         "stacking_exception": exception is not None,
     }
@@ -1310,11 +1626,14 @@ def ship(
         return {**held, "unchanged": True}
     if not push:
         return {**held, "unchanged": False}
-    git(["push", "-q", "-u", remote, branch], tree)
-    title = pull_request_title(plan, msp)
+    title = pull_request_title(header, plan, msp)
     body = pull_request_body(
-        plan, msp, base, acceptance_command, gate_result, findings, exception, foreign
+        header, plan, msp, gate_result, gate_error, findings, exception, foreign
     )
+    git(["push", "-q", "-u", remote, branch], tree)
+    pushed = {**held, "pushed": head, "title": title, "body": body, "unchanged": False}
+    if pr_command is None:
+        return pushed
     os.makedirs(log_dir, exist_ok=True)
     out = os.path.join(log_dir, "pull-request.out")
     err = os.path.join(log_dir, "pull-request.err")
@@ -1336,16 +1655,7 @@ def ship(
     if code != 0:
         detail = last_line(err) or last_line(out) or ""
         raise ShipError("the pull-request command exited %d for %s: %s" % (code, branch, detail))
-    return {
-        "branch": branch,
-        "base": base,
-        "remote": remote,
-        "pushed": head,
-        "title": title,
-        "pull_request": last_line(out) or "",
-        "stacking_exception": exception is not None,
-        "unchanged": False,
-    }
+    return {**pushed, "pull_request": last_line(out) or ""}
 
 
 def _reconcile_clean(findings):
@@ -1438,13 +1748,14 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=()):
             settings["pr_command"],
             settings["remote"],
             os.path.join(settings["run_dir"], "ship", "msp-%d" % msp),
-            settings["acceptance_command"],
-            record.get("gate"),
-            record.get("reconcile"),
-            exception,
-            settings["timeout"],
-            settings["push"],
-            foreign,
+            header=settings["header"],
+            gate_result=record.get("gate"),
+            gate_error=record.get("gate_error"),
+            findings=record.get("reconcile"),
+            exception=exception,
+            timeout=settings["timeout"],
+            push=settings["push"],
+            foreign=foreign,
         )
     except (OSError, GitError, ShipError, subprocess.SubprocessError, ValueError) as error:
         return {"state": "ship-failed", "reason": str(error), "ship": None}
@@ -1460,6 +1771,13 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=()):
             "state": MSP_COMMITTED,
             "reason": "committed on %s and held: this run pushes nothing and opens no pull request"
             % shipped["branch"],
+            "ship": shipped,
+        }
+    if settings["pr_command"] is None:
+        return {
+            "state": MSP_PUSHED,
+            "reason": "pushed %s; no pull-request command was given, so the caller opens the "
+            "pull request" % shipped["branch"],
             "ship": shipped,
         }
     return {"state": "shipped", "reason": None, "ship": shipped}
@@ -1505,7 +1823,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
 
 def _settled(state, msp, producers, finished):
     current = (state["msps"].get(str(msp)) or {}).get("state")
-    if current == "shipped":
+    if current in ("shipped", MSP_PUSHED):
         return True
     return current in finished and all(
         (state["msps"].get(str(producer)) or {}).get("state") in finished
@@ -1530,12 +1848,18 @@ def execute(
     remote="origin",
     prefix=BRANCH_PREFIX,
     no_push=False,
+    header=None,
 ):
     prior = prior_state(run_dir, plan, resume)
     check_template("dispatch", worker_command)
     check_template("acceptance", acceptance_command)
-    if not no_push:
+    if not no_push and pr_command is not None:
         check_template("pull-request", pr_command)
+    if not no_push and header is None:
+        raise ConfigError(
+            "a run allowed to push needs a pull-request header holding its type, subject and "
+            "why lines, so it can title and describe each pull request"
+        )
     check_models(plan, worker_command, models)
     if timeout is None:
         raise ConfigError("a per-Lane timeout is required; mitosis has no default")
@@ -1551,6 +1875,7 @@ def execute(
         "run_dir": run_dir,
         "acceptance_command": acceptance_command,
         "pr_command": pr_command,
+        "header": header,
         "timeout": timeout,
         "remote": remote,
         "push": not no_push,

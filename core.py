@@ -6,7 +6,7 @@ import json
 import os
 import re
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 PLAN_KEYS = (
     "version",
@@ -62,13 +62,14 @@ LANE_STATES = ("ok", "failed", "blocked", "merge-blocked", "held")
 
 MSP_STATES = (
     "shipped",
+    "pushed",
     "unchanged",
     "committed",
     "ship-failed",
     "blocked",
 )
 
-DELIVERED_STATES = ("shipped", "unchanged", "committed")
+DELIVERED_STATES = ("shipped", "pushed", "unchanged", "committed")
 
 GATE_OUTCOMES = ("pass", "inert", "inconclusive", "not-applicable")
 
@@ -112,6 +113,10 @@ FLAG_NAMES = (
     "--decompose-command",
     "--acceptance-command",
     "--pr-command",
+    "--pr-type",
+    "--pr-scope",
+    "--pr-subject",
+    "--pr-why",
     "--no-push",
     "--tier-model",
     "--timeout",

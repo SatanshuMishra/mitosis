@@ -305,6 +305,13 @@ def invoke(root, argv):
     return code, out.getvalue(), err.getvalue()
 
 
+SUBJECT = "write pull requests in the house format"
+
+WHY = "Callers need it."
+
+PR_FLAGS = ("--pr-type", "feat", "--pr-scope", "ship", "--pr-subject", SUBJECT, "--pr-why", WHY)
+
+
 def git_repo(root):
     env = {**os.environ, **ISOLATED_GIT_ENV}
     for args in (
@@ -530,6 +537,7 @@ class Staging(unittest.TestCase):
                     "probe {file} {test}",
                     "--pr-command",
                     "opener {branch}",
+                    *PR_FLAGS,
                 )
             finally:
                 mitosis.execute = kept
@@ -562,6 +570,7 @@ class Staging(unittest.TestCase):
                     "probe {file} {test}",
                     "--pr-command",
                     "opener {branch}",
+                    *PR_FLAGS,
                 ],
             )
             self.assertEqual(code, mitosis.EXIT_REFUSED)
@@ -896,10 +905,278 @@ class HeldRun(unittest.TestCase):
         self.assertEqual(code, mitosis.EXIT_REFUSED)
         self.assertIn("--no-push", err)
 
-    def a_run_that_pushes_still_needs_a_pull_request_command(self):
-        code, _, err = self._run()
-        self.assertEqual(code, mitosis.EXIT_REFUSED)
-        self.assertIn("--pr-command", err)
+
+MARKING_WORKER = r'''
+import os
+
+open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "spawned"), "w").close()
+'''
+
+
+class PullRequestFlags(unittest.TestCase):
+    def _attempt(self, *flags, items=None):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
+            git_repo(root)
+            write(root, "items.json", json.dumps(items or [briefed("alpha")]))
+            with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
+                code, out, err = invoke(
+                    root,
+                    [
+                        "--items",
+                        "items.json",
+                        "--run-dir",
+                        os.path.join(elsewhere, "run"),
+                        "--feature-branch",
+                        "feature",
+                        "--dispatch-command",
+                        command(elsewhere, "worker.py", MARKING_WORKER, "{task}"),
+                        "--acceptance-command",
+                        "probe {file} {test}",
+                        "--timeout",
+                        "30",
+                        *flags,
+                    ],
+                )
+            return code, err, os.path.exists(os.path.join(elsewhere, "worker", "spawned"))
+
+    def a_run_that_may_push_needs_valid_pull_request_flags(self):
+        long_why = "A" + "b" * 495 + "\U0001F680\U0001F680" + "."
+        self.assertEqual(len(long_why), 499)
+        typed = ("--pr-type", "feat", "--pr-subject", SUBJECT)
+        for flag, flags in (
+            ("--pr-type", ("--pr-subject", SUBJECT, "--pr-why", WHY)),
+            ("--pr-subject", ("--pr-type", "feat", "--pr-why", WHY)),
+            ("--pr-why", typed),
+            ("--pr-type", ("--pr-type", "feature", "--pr-subject", SUBJECT, "--pr-why", WHY)),
+            ("--pr-scope", typed + ("--pr-scope", "Ship", "--pr-why", WHY)),
+            ("--pr-subject", ("--pr-type", "feat", "--pr-subject", "Write things.", "--pr-why", WHY)),
+            ("--pr-why", typed + ("--pr-why", "callers need it.")),
+            ("--pr-why", typed + ("--pr-why", long_why)),
+            ("--pr-why", typed + ("--pr-why", WHY) * 9),
+        ):
+            with self.subTest(flags=flags):
+                code, err, spawned = self._attempt(*flags)
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                self.assertIn(flag, err.splitlines()[0])
+                self.assertFalse(spawned)
+
+    def a_title_that_cannot_fit_is_refused_before_any_worker(self):
+        for items, subject, label, rule in (
+            ([briefed("alpha")], "write " + "x" * 66, "alpha", "over the 72-unit cap"),
+            ([briefed("alpha", msp="a<b"), briefed("beta")], SUBJECT, "a<b", "< followed by"),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as root:
+                write(root, "items.json", json.dumps(items))
+                code, _, err = invoke(
+                    root,
+                    [
+                        "--items",
+                        "items.json",
+                        "--plan-only",
+                        "--run-dir",
+                        os.path.join(root, "run"),
+                        "--pr-type",
+                        "feat",
+                        "--pr-scope",
+                        "ship",
+                        "--pr-subject",
+                        subject,
+                        "--pr-why",
+                        WHY,
+                    ],
+                )
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                self.assertIn("MSP %s would be titled" % label, err)
+                self.assertIn(rule, err)
+                self.assertFalse(os.path.exists(os.path.join(root, "run", run.PLAN_FILE)))
+
+    def why_lines_follow_the_composed_rules(self):
+        typed = ("--pr-type", "feat", "--pr-subject", SUBJECT)
+        for why in (
+            "Callers \u202e need it.",
+            "a<b",
+            "# A heading.",
+            "Verified: x",
+            "Supersedes x",
+            "Callers need it.\u00a0",
+            "@team",
+            "Closes #1.",
+            "See https://example.invalid.",
+            "Callers need it \u2014 now.",
+        ):
+            with self.subTest(why=ascii(why)):
+                fault = mitosis.why_fault(why)
+                self.assertIsNotNone(fault)
+                code, err, spawned = self._attempt(*typed, "--pr-why", why)
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                self.assertIn("--pr-why number 1 %s" % fault, err.splitlines()[0])
+                self.assertFalse(spawned)
+        linked = "See https://example.invalid."
+        self.assertEqual(mitosis.why_fault(linked), run.composed_fault(linked))
+        parser = mitosis.build_parser()
+        for why in ("Callers need it.", "receipt: tests/test_run.py::x"):
+            with self.subTest(why=why):
+                self.assertIsNone(mitosis.why_fault(why))
+                self.assertIsNone(
+                    mitosis.check_pull_request_flags(parser.parse_args(typed + ("--pr-why", why)))
+                )
+
+    def titles_and_subjects_follow_the_composed_rules(self):
+        for subject in ("add <?x?> parser", "fix &amp; cleanup", "ping @team", "close #12"):
+            with self.subTest(subject=subject):
+                rule = run.composed_fault(subject)
+                self.assertIsNotNone(rule)
+                code, err, spawned = self._attempt(
+                    "--pr-type", "feat", "--pr-subject", subject, "--pr-why", WHY
+                )
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                first = err.splitlines()[0]
+                self.assertIn("--pr-subject %r" % subject, first)
+                self.assertIn(rule, first)
+                self.assertFalse(spawned)
+        for label, rule in (
+            ("a<b", "holds < followed by !, /, ? or a letter"),
+            ("a&lt;b", "holds a character reference"),
+        ):
+            with self.subTest(label=label):
+                code, err, spawned = self._attempt(
+                    "--pr-type",
+                    "feat",
+                    "--pr-subject",
+                    SUBJECT,
+                    "--pr-why",
+                    WHY,
+                    items=[briefed("alpha", msp=label), briefed("beta")],
+                )
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                self.assertIn("MSP %s would be titled" % label, err)
+                self.assertIn(rule, err)
+                self.assertFalse(spawned)
+
+    def help_names_the_composed_rules(self):
+        text = mitosis.build_parser().format_help()
+        self.assertIsInstance(text, str)
+        for flag in ("--pr-why", "--pr-subject"):
+            help_text = mitosis.FLAG_SPECS[flag]["help"]
+            for term in ("printable ASCII", "$", "backslash", "GH-", "emoji", "hexadecimal"):
+                with self.subTest(flag=flag, term=term):
+                    self.assertIn(term, help_text)
+            self.assertIn(" ".join(help_text.split()), " ".join(text.split()))
+
+    def why_lines_and_subjects_refuse_math_references_and_emphasis(self):
+        typed = ("--pr-type", "feat", "--pr-subject", SUBJECT)
+        for why, rule in (
+            ("Callers need it $\\phantom{x}$ now.", "holds a backslash"),
+            ("Fixes GH-2 too.", "holds GH- followed by a digit"),
+            ("Callers need pkg/__init__.py now.", "holds _ outside a word"),
+            ("Add :rocket: support.", "holds an emoji shortcode"),
+        ):
+            with self.subTest(why=why):
+                self.assertEqual(mitosis.why_fault(why), rule)
+                code, err, spawned = self._attempt(*typed, "--pr-why", why)
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                self.assertIn("--pr-why number 1 %s" % rule, err.splitlines()[0])
+                self.assertFalse(spawned)
+        for subject, rule in (
+            ("close GH-1 with the parser", "holds GH- followed by a digit"),
+            ("add the $x$ parser", "holds $"),
+            ("add the a*b parser", "holds *"),
+        ):
+            with self.subTest(subject=subject):
+                self.assertEqual(mitosis.subject_fault(subject), rule)
+                code, err, spawned = self._attempt(
+                    "--pr-type", "feat", "--pr-subject", subject, "--pr-why", WHY
+                )
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                self.assertIn("--pr-subject %r %s" % (subject, rule), err.splitlines()[0])
+                self.assertFalse(spawned)
+        parser = mitosis.build_parser()
+        self.assertIsNone(
+            mitosis.check_pull_request_flags(
+                parser.parse_args(
+                    ("--pr-type", "feat", "--pr-subject", SUBJECT, "--pr-why", "Callers need it.")
+                )
+            )
+        )
+
+    def a_scope_and_the_help_follow_the_composed_rules(self):
+        code, err, spawned = self._attempt(
+            "--pr-type",
+            "fix",
+            "--pr-scope",
+            "gh-2fa",
+            "--pr-subject",
+            SUBJECT,
+            "--pr-why",
+            "Callers need it.",
+        )
+        self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+        self.assertIn("--pr-scope 'gh-2fa' holds GH- followed by a digit", err.splitlines()[0])
+        self.assertFalse(spawned)
+        for flag in ("--pr-why", "--pr-subject"):
+            help_text = mitosis.FLAG_SPECS[flag]["help"]
+            self.assertIn("github.com/", help_text)
+            self.assertIn("backticks", help_text)
+
+
+class PushOnly(unittest.TestCase):
+    def the_json_summary_carries_each_pull_request_text(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
+            git_repo(root)
+            remote = os.path.join(elsewhere, "remote.git")
+            env = {**os.environ, **ISOLATED_GIT_ENV}
+            for args in (
+                ["git", "init", "-q", "--bare", remote],
+                ["git", "-C", root, "remote", "add", "origin", remote],
+            ):
+                subprocess.run(args, check=True, capture_output=True, env=env)
+            write(root, "items.json", json.dumps([briefed("alpha")]))
+            with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
+                code, out, err = invoke(
+                    root,
+                    [
+                        "--items",
+                        "items.json",
+                        "--run-dir",
+                        os.path.join(elsewhere, "run"),
+                        "--feature-branch",
+                        "feature",
+                        "--dispatch-command",
+                        command(elsewhere, "worker.py", HOLDING_WORKER, "{task}"),
+                        "--acceptance-command",
+                        "probe {file} {test}",
+                        "--timeout",
+                        "30",
+                        *PR_FLAGS,
+                    ],
+                )
+            heads = subprocess.run(
+                ["git", "--git-dir", remote, "for-each-ref", "--format=%(refname)"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.split()
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        found = json.loads(out.splitlines()[-1])
+        self.assertEqual(found["exit"], mitosis.EXIT_SHIPPED)
+        self.assertEqual(len(found["msps"]), 1)
+        entry = found["msps"][0]
+        self.assertEqual(entry["state"], run.MSP_PUSHED)
+        self.assertEqual(entry["branch"], "mitosis/alpha")
+        self.assertIsNone(entry["pull_request"])
+        self.assertEqual(entry["title"], "feat(ship): write pull requests in the house format")
+        self.assertEqual(
+            entry["body"],
+            "## What changed\n- Builds the alpha Step.\n\n## Why\nCallers need it.\n\n"
+            "## Verification\nNot verified: the alpha Step has no acceptance test",
+        )
+        self.assertEqual(heads, ["refs/heads/mitosis/alpha"])
+        self.assertEqual(found["attention"], [])
+        held = mitosis._msp_summary(
+            {"msps": [{"label": "alpha"}]},
+            {"msps": {"0": {"state": run.MSP_COMMITTED, "ship": {"branch": "mitosis/alpha"}}}},
+        )
+        self.assertEqual((held[0]["title"], held[0]["body"]), (None, None))
 
 
 class GateExit(unittest.TestCase):
@@ -1199,6 +1476,8 @@ def load_tests(loader, tests, pattern):
         GateExit,
         CouplingReport,
         GraphLoading,
+        PullRequestFlags,
+        PushOnly,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite

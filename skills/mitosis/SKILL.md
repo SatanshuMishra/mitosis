@@ -24,7 +24,8 @@ Reach for mitosis when all three hold:
    the work present and again with the work reverted; a change with no such
    test is still built, but the run proves nothing about it and says so.
 3. A human will review each part as its own pull request. mitosis opens
-   draft pull requests and stops. Merging is the human's judgment.
+   draft pull requests, or pushes the branches for the caller to open, and
+   stops. Merging is the human's judgment.
 
 Do not reach for it when:
 
@@ -46,11 +47,12 @@ subprocess built from a command template the caller passes. Each template is
 split into argv before its placeholders are substituted, so a task containing
 quotes or newlines lands as one argument and is never reinterpreted by a shell.
 
-| Template | Spawns | Placeholders |
+| Flag | Spawns | Placeholders |
 |---|---|---|
 | `--dispatch-command` | one Worker per Lane, in its worktree | listed under --help |
 | `--acceptance-command` | one acceptance property, in a worktree | file, test, worktree |
-| `--pr-command` | one draft pull request per MSP; not taken with `--no-push` | listed under --help |
+| `--pr-command` | one draft pull request per MSP; optional, refused with `--no-push` | listed under --help |
+| `--pr-type` `--pr-scope` `--pr-subject` `--pr-why` | nothing; they write every title and body | none |
 | `--decompose-command` | the structure pass that turns a document into unbriefed Steps | prompt, model, document |
 | `--brief-command` | one Worker per unbriefed Step, writing its task | prompt, model, step, document |
 
@@ -89,31 +91,33 @@ inconclusive, not a pass. For another runner, point the template at a small
 wrapper that maps its exit codes to those three.
 
 The wrapper carries one obligation the runner alone will not meet. Reverting
-the implementation deletes whatever the work created, so in a language that
-imports by module the property's own test stops loading, and a load error is
-not a test failure. Left alone that reads as inconclusive, and a Step that
-creates a new module can then never reach `pass`. Decide it in the wrapper: a
-module missing because it was reverted means the behaviour does not exist,
-which is the property failing and exit 1. Any other load error is still
-inconclusive. Catch the whole import family, not the missing-module case
-alone: importing a name out of a package that survives raises the general
-error, so a wrapper catching only the specific one reports inconclusive on
-exactly the Steps it was written to judge.
+the implementation deletes what the work created, so a test importing a new
+module stops loading, and a load error reads as inconclusive. A module missing
+because it was reverted means the behaviour does not exist: exit 1. Any other
+load error stays inconclusive. Catch the whole import family, since importing
+a name out of a surviving package raises the general error.
 
-Whatever else writes into a worktree is yours to exclude. Editor state, build
-caches and hooks that fire on a spawned Worker all land in the tree, and the
-commit before the gate stages everything not ignored, so they arrive as
-undeclared writes against every MSP at once. Ignore them before the run: two
-MSPs that picked up the same cache will conflict when a human merges them.
+Whatever else writes into a worktree is yours to exclude: editor state, build
+caches and hooks that fire on a Worker are staged by the commit before the
+gate and arrive as undeclared writes against every MSP. Ignore them first.
 
 Three more things every run needs: `--feature-branch`, which must exist and is
-what every MSP branches from; `--timeout` in seconds, applied to every Worker,
-acceptance run and pull-request command; and the repository root as the
-working directory, because every Step path and the document path are relative
-to it. mitosis refuses to run from anywhere else.
+what every MSP branches from; `--timeout` in seconds on a monotonic clock,
+applied to every Worker, acceptance run and pull-request command; and the
+repository root as the working directory, because every Step path and the
+document path are relative to it; mitosis refuses to run from anywhere else.
 
-`--timeout` runs on a monotonic clock, so time a sleeping machine spends
-asleep never counts against it.
+Every pull request is written in the house format. The title is
+`<type>(<scope>): <subject>` from `--pr-type`, the optional `--pr-scope` and
+`--pr-subject`, with the MSP label in parentheses after the subject when the
+plan has several MSPs. The body holds What changed, one entry per Step from
+its task's first sentence; Why, the `--pr-why` lines, one to eight; Risk, only
+when reconcile, a foreign write, a manifest, stacking or the gate found
+something; and Verification, a Verified line per property the gate proved,
+then a Not verified line for every other. A run allowed to push needs
+`--pr-type`, `--pr-subject` and `--pr-why`, checked before any Worker spawns.
+Without `--pr-command` it pushes each MSP branch, opens no pull request and
+ends that MSP `pushed`, recording its title and body for the caller to open.
 
 ## The two inputs
 
@@ -184,12 +188,14 @@ python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --items plan.json \
   --dispatch-command "claude -p {task} --model {model} --permission-mode bypassPermissions" \
   --acceptance-command "python3 -m pytest {file} -k {test} -q" \
   --pr-command "gh pr create --draft --head {branch} --base {base} --title {title} --body {body}" \
+  --pr-type feat --pr-subject "validate manifests from the command line" \
+  --pr-why "A bad manifest should fail before it ships." \
   --tier-model top=claude-opus-5 --tier-model cheap=claude-sonnet-5 \
   --timeout 1800 --concurrency 4
 ```
 
 The pull-request template's last stdout line is recorded as the pull
-request; the one above prints the URL there.
+request; the one above prints the URL there. Drop `--pr-command` to push only.
 
 ### Spec: a document
 
@@ -241,13 +247,12 @@ document, nothing in mitosis merges or rewords an entry, and the list only
 ever grows: a question answered once is never re-asked.
 
 Where a document is soft, one dispatch will not tell you so. `--structure-
-samples N` runs N structure dispatches at once over the same prompt, scores
-each with the same scalars, and prints them ranked with the points on which
-they disagree: which file they split differently, and where they differ on
-MSP count or parallelism. The best-scoring sample is persisted, `--pick K`
-persists the Kth instead, and the default of 1 behaves exactly as a single
-dispatch. A disagreement over a file is the document being underdetermined
-about who owns it, which is the cheapest way to find that out.
+samples N` runs N structure dispatches at once, scores each with the same
+scalars, and prints them ranked with where they disagree: a file split
+differently, or another MSP count or parallelism. The best is persisted,
+`--pick K` persists the Kth instead, and the default of 1 is a single
+dispatch. A disagreement over a file means the document never said who owns
+it.
 
 Revise the structure once the decisions file has grown, without paying to
 rebuild every Step:
@@ -267,19 +272,9 @@ changed, added or removed cost anything at the brief stage that follows.
 When the plan reads right, run it with `--resume`. This writes a brief for
 every Step still unbriefed, in parallel, and then plans and builds; a
 revision that touched three Steps buys three brief dispatches, not a rebuild
-of all of them:
-
-```
-python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --spec docs/specs/search.md --resume \
-  --charter docs/CHARTER.md \
-  --feature-branch main \
-  --dispatch-command "claude -p {task} --model {model} --permission-mode bypassPermissions" \
-  --brief-command "claude -p --model {model} --permission-mode bypassPermissions" \
-  --acceptance-command "python3 -m pytest {file} -k {test} -q" \
-  --pr-command "gh pr create --draft --head {branch} --base {base} --title {title} --body {body}" \
-  --tier-model top=claude-opus-5 --tier-model cheap=claude-sonnet-5 \
-  --timeout 1800 --concurrency 4
-```
+of all of them. Pass the items run's flags with `--spec` and `--resume` in
+place of `--items`, plus `--brief-command` taking the structure stage's
+template.
 
 Every Step carries the document's path and hash in `source`, so each Worker
 opens the document from its own worktree, and the report's drift section says
@@ -290,7 +285,7 @@ whether the document changed after the Steps were cut from it.
 Validate, schedule, one worktree and branch per MSP under the run directory,
 one Worker per Lane with producers merged in first, then per MSP: commit,
 gate, reconcile, push, open a draft pull request stacked on its single
-predecessor, report.
+predecessor when `--pr-command` is given, report.
 
 The Lanes of one MSP share its worktree, and `--concurrency` Workers run at
 once, four by default. Each brief tells its Worker that others are writing in
@@ -326,26 +321,25 @@ counted so nobody mistakes silence for coverage. Which files count as
 implementation is derived: the MSP's write-set minus the files its acceptance
 properties name.
 
-The gate never withholds a pull request. Every verdict is written into the
-pull request body beside the property it judges, and an `inert` or
-`inconclusive` verdict sets the exit code, so the human reviewing the pull
-request decides what an unproven property is worth.
+The gate never withholds a pull request. Every verdict becomes a Verified or
+Not verified line of the body, and an `inert` or `inconclusive` verdict sets
+the exit code, so the reviewer decides what an unproven property is worth.
 
 Reconcile compares what the git log says changed against what the Steps
 declared. A write outside the declaration, or a declared path never written,
 is a finding. A write into a file another MSP owns is the serious one: both
 pull requests then change that file, so merging them as they stand overwrites
-one with the other. That sentence goes into the body of the pull request that
-made the write, and it sets the exit code.
+one with the other. The Risk line of the pull request that made the write
+names it, and it sets the exit code.
 
 ## Reading the result
 
-The exit code is zero only when every MSP reached `shipped`, `unchanged` or
-`committed`, every gate verdict was `pass` or `not-applicable`, and reconcile
-found nothing. Every other outcome is a distinct non-zero code, printed with
-its meaning on the report's last line. Each Lane ends `ok`, `failed`,
-`blocked` or `merge-blocked`; each MSP ends `shipped`, `unchanged`,
-`committed`, `ship-failed` or `blocked`.
+The exit code is zero only when every MSP reached `shipped`, `pushed`,
+`unchanged` or `committed`, every gate verdict was `pass` or `not-applicable`,
+and reconcile found nothing. Every other outcome is a distinct non-zero code,
+printed with its meaning on the report's last line. Each Lane ends `ok`,
+`failed`, `blocked` or `merge-blocked`; each MSP ends `shipped`, `pushed`,
+`unchanged`, `committed`, `ship-failed` or `blocked`.
 An MSP is `unchanged` when its branch adds nothing to its pull request's base,
 so nothing is pushed and no pull request opens. When mitosis chooses where a
 dependant's pull request stacks, it uses that base in place of the unchanged
@@ -355,8 +349,9 @@ predecessor fixed.
 
 The last line of mitosis's own output is one JSON object: the exit code and
 its meaning, every Lane with its state, reason, notes and log paths, every MSP
-with its branch, base, pull request, gate verdict and reconcile findings, and
-an `attention` list naming what a human or the calling session should look at.
+with its branch, base, pull request, title, body, gate verdict and reconcile
+findings, and an `attention` list naming what a human or the calling session
+should look at.
 An agent that dispatched mitosis reads that line rather than the report.
 
 The run directory, printed in the report, holds the plan, the state, the
@@ -370,8 +365,8 @@ worktrees and branches survive so the work is inspectable.
 ## Resuming
 
 Pass `--resume` with the same input and run directory. Lanes already `ok`
-and MSPs already `shipped` are skipped, as is an MSP already `unchanged` whose
-producers all finished. An MSP that did not ship is gated again without
+and MSPs already `shipped` or `pushed` are skipped, as is an MSP `unchanged`
+whose producers all finished. An MSP that did not ship is gated again without
 rebuilding its Lanes, and a producer whose branch was deleted after its pull
 request merged is still found through its recorded commit on the feature
 branch. The plan id must match: if the Steps changed, the prior results do not
@@ -381,10 +376,11 @@ apply, and mitosis refuses rather than resume against a different plan.
 
 Pass `--no-push` to build, gate and reconcile every MSP without publishing
 anything. Each MSP ends `committed` on its local branch, or `unchanged` when it
-adds nothing to its base: nothing is pushed and no pull request opens, so
-`--pr-command` is not taken, and passing it is refused. Run the project's own checks against those branches, then `--resume`
-without `--no-push` ships what was held. Resuming with `--no-push` again
-leaves a `committed` MSP where it is.
+adds nothing to its base: nothing is pushed and no pull request opens, so the
+pull-request flags are not needed and `--pr-command` is refused. Run the
+project's own checks against those branches, then `--resume` without
+`--no-push` ships what was held. Resuming with `--no-push` again leaves a
+`committed` MSP where it is.
 
 ## What mitosis never does
 
