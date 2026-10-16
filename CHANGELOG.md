@@ -3,6 +3,25 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.6.0 - 2026-10-16
+
+A slow acceptance test no longer runs twice on code that was already gated
+or proven.
+
+- A resume reuses an MSP's recorded gate result when that result passed, the
+  MSP's HEAD is the commit the gate ran at, and its worktree holds no
+  uncommitted change. Any other MSP is gated again, so a blocking gate is
+  always retried. Only the same run directory's state is read.
+- `--proven-head <MSP label>=<commit>`, repeatable, lets a caller that proved
+  a later head ship it without gating again, when the MSP's HEAD equals that
+  commit, its worktree is clean and a gate result that passed is recorded.
+  The pull request's Verification section then ends with a Not verified:
+  line naming the commit the gate ran at and the commit the caller proved. A
+  head that differs, or an MSP with no recorded gate result, is gated as
+  before. A value that is not a label, an equals sign and 7 to 40 lowercase
+  hexadecimal digits, or that names no MSP of the plan, exits 2 before
+  anything is built.
+
 ## 0.5.0 - 2026-10-16
 
 Every pull request body can carry the merge-danger call the pull-request

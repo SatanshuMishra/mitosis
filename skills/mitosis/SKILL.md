@@ -89,22 +89,21 @@ pytest exits 5 when it collects nothing, so a misspelled test reads as
 inconclusive, not a pass. For another runner, point the template at a small
 wrapper that maps its exit codes to those three.
 
-The wrapper carries one obligation the runner alone will not meet. Reverting
-the implementation deletes what the work created, so a test importing a new
-module stops loading, and a load error reads as inconclusive. A module missing
+The wrapper has one more duty. Reverting the implementation deletes what the
+work created, so a test importing a new module stops loading. A module missing
 because it was reverted means the behaviour does not exist: exit 1. Any other
 load error stays inconclusive. Catch the whole import family, since importing
 a name out of a surviving package raises the general error.
 
-Whatever else writes into a worktree is yours to exclude: editor state, build
-caches and hooks that fire on a Worker are staged by the commit before the
-gate and arrive as undeclared writes against every MSP. Ignore them first.
+Exclude whatever else writes into a worktree: editor state, build caches and
+hooks that fire on a Worker are staged by the pre-gate commit and arrive as
+undeclared writes against every MSP.
 
 Three more things every run needs: `--feature-branch`, which must exist and is
 what every MSP branches from; `--timeout` in seconds on a monotonic clock,
 applied to every Worker, acceptance run and pull-request command; and the
 repository root as the working directory, because every Step path and the
-document path are relative to it; mitosis refuses to run from anywhere else.
+document path are relative to it, or mitosis refuses to run.
 
 Every pull request is written in the house format. The title is
 `<type>(<scope>): <subject>` from `--pr-type`, the optional `--pr-scope` and
@@ -134,7 +133,7 @@ Two Steps that build a validator and then its command-line flag:
 [
   {
     "name": "validate-manifest",
-    "task": "Add validate_manifest(path) to app/manifest.py. It returns a list of error strings, one per missing required key, and an empty list for a complete manifest. Required keys are name, version and entry.",
+    "task": "Add validate_manifest(path) to app/manifest.py, returning one error string per missing required key (name, version, entry) and an empty list for a complete manifest.",
     "files": ["app/manifest.py", "tests/test_manifest.py"],
     "source": null,
     "acceptance": [
@@ -145,7 +144,7 @@ Two Steps that build a validator and then its command-line flag:
   },
   {
     "name": "validate-flag",
-    "task": "Add a --validate flag to app/cli.py that calls validate_manifest on the given path, prints each error on its own line, and exits 1 when the list is non-empty and 0 otherwise.",
+    "task": "Add a --validate flag to app/cli.py that prints validate_manifest's errors for the given path, one per line, and exits 1 if there are any, else 0.",
     "files": ["app/cli.py", "tests/test_cli.py"],
     "source": null,
     "acceptance": [
@@ -242,11 +241,10 @@ document. Write it into the decisions file, in your own words, and name it
 with `--decisions PATH` (default: `<document without extension>.decisions.md`
 when that file exists). The Decisions section of the report then names the
 file and counts its settled questions, or says none was supplied. That file
-binds every later structure dispatch and brief for this document, nothing in
-mitosis merges or rewords an entry, and a question answered once is never
-re-asked.
+binds every later structure dispatch and brief for this document; mitosis
+never merges or rewords an entry, and never re-asks a question answered once.
 
-Where a document is soft, one dispatch will not tell you so. `--structure-
+One dispatch will not show where a document is soft. `--structure-
 samples N` runs N structure dispatches at once, scores each with the same
 scalars, and prints them ranked with where they disagree: a file split
 differently, or another MSP count or parallelism. The best is persisted, or
@@ -264,20 +262,19 @@ python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --spec docs/specs/search.md --plan-on
 ```
 
 `--revise` hands the persisted structure back to one small dispatch, which
-returns only a delta against it. Every Step you did not complain about is
-kept exactly as it was, brief included; only the Steps the delta names as
-changed, added or removed cost anything at the brief stage that follows.
+returns only a delta against it. Every other Step is kept exactly as it
+was, brief included; only the Steps the delta names as changed, added or
+removed cost anything at the brief stage.
 
 When the plan reads right, run it with `--resume`. This writes a brief for
-every Step still unbriefed, in parallel, and then plans and builds; a
-revision that touched three Steps buys three brief dispatches, not a rebuild
-of all of them. Pass the items run's flags with `--spec` and `--resume` in
-place of `--items`, plus `--brief-command` taking the structure stage's
-template.
+every Step still unbriefed, in parallel, and then plans and builds; a revision
+that touched three Steps buys three brief dispatches. Pass the items run's
+flags with `--spec` and `--resume` in place of `--items`, plus
+`--brief-command` taking the structure stage's template.
 
 Every Step carries the document's path and hash in `source`, so each Worker
 opens the document from its own worktree, and the report's drift section says
-whether the document changed after the Steps were cut from it.
+whether the document changed since the Steps were cut.
 
 ## What a run does
 
@@ -286,7 +283,7 @@ one Worker per Lane with producers merged in first, then per MSP: commit,
 gate, reconcile, push, open a pull request stacked on its single
 predecessor when `--pr-command` is given, report.
 
-A Worker session should stay small. mitosis estimates each Lane's tokens from
+A Worker session should stay small: mitosis estimates each Lane's tokens from
 its Steps, tasks, write-set and read-set sizes, charter and document, and
 splits one above `--session-tokens` (default 150000) in Step order into
 consecutive Lanes. Each runs as a fresh session once the one before it lands,
@@ -307,12 +304,12 @@ committed is kept in its own commit and named in the pull request, in
 `attention` and in the exit code, against the Lane that made it, or against
 every Lane that finished alongside it when git cannot tell which.
 
-Steps with no file in common can still depend on each other. A pair is put in
-order, the later behind the earlier, when both touch one risk marker, a
-recorded regression links them, or both add a numbered migration to one
-folder; the Coupling section lists every order added. A pair joined only by
-an import runs in parallel and is named there and in `attention` before
-anything is built: add an `after` edge where one needs the other's output.
+Steps with no file in common can still depend on each other. A pair is ordered
+when both touch one risk marker, a recorded regression links them, or both add
+a numbered migration to one folder; the Coupling section lists every order
+added. A pair joined only by an import runs in parallel and is named there and
+in `attention` before anything is built: add an `after` edge where one needs
+the other's output.
 
 Before anything is written, mitosis checks that git has a commit identity and
 refuses with exit 3 if not. A refused Lane commit fails that Lane alone. Hooks
@@ -348,11 +345,11 @@ printed with its meaning on the report's last line. Each Lane ends `ok`,
 `failed`, `blocked` or `merge-blocked`; each MSP ends `shipped`, `pushed`,
 `unchanged`, `committed`, `ship-failed` or `blocked`.
 An MSP is `unchanged` when its branch adds nothing to its pull request's base,
-so nothing is pushed and no pull request opens. When mitosis chooses where a
-dependant's pull request stacks, it uses that base in place of the unchanged
-MSP's branch. The two Lane states that block dependents differ by the human
-action they need: `merge-blocked` wants a conflict resolved, `blocked` wants a
-predecessor fixed.
+so nothing is pushed and no pull request opens. A dependant's pull request
+stacks on that base in place of the unchanged MSP's branch. The two Lane
+states that block dependents differ by the human action they need:
+`merge-blocked` wants a conflict resolved, `blocked` wants a predecessor
+fixed.
 
 The last line of mitosis's own output is one JSON object: the exit code and
 its meaning, every Lane with its state, reason, notes and log paths, every MSP
@@ -366,18 +363,19 @@ persisted Steps, every Worker's full stdout and stderr, and the worktrees.
 Read a Lane's log there rather than asking the Worker what it did; the
 one-line return it printed is a claim, and the git log is the record.
 
-Nothing is cleaned up after a failure except the gate's probe branch;
-worktrees and branches survive so the work is inspectable.
+After a failure only the gate's probe branch is removed; worktrees and
+branches survive for inspection.
 
 ## Resuming
 
 Pass `--resume` with the same input and run directory. Lanes already `ok`
 and MSPs already `shipped` or `pushed` are skipped, as is an MSP `unchanged`
 whose producers all finished. An MSP that did not ship is gated again without
-rebuilding its Lanes, and a producer whose branch was deleted after its pull
-request merged is still found through its recorded commit on the feature
-branch. The plan id must match: if the Steps changed, the prior results do not
-apply, and mitosis refuses rather than resume against a different plan.
+rebuilding its Lanes, unless its recorded gate passed at its current HEAD
+and its worktree holds no uncommitted change; then that result is reused. A
+producer whose branch was deleted after its pull request merged is found
+through its recorded commit on the feature branch. If the Steps changed, the
+plan id differs and mitosis refuses to resume.
 
 ## Holding the work locally
 
@@ -388,6 +386,12 @@ pull-request flags are not needed and `--pr-command` is refused. Run the
 project's own checks against those branches, then `--resume` without
 `--no-push` ships what was held. Resuming with `--no-push` again leaves a
 `committed` MSP where it is.
+
+`--proven-head <MSP label>=<commit>`, repeatable, ships a later head the
+caller proved without re-gating, when it is the clean HEAD and a passing gate
+is recorded; the Verification section names both commits on a Not verified:
+line. Another head or no recorded gate gates as before; a malformed value or
+unknown label exits 2.
 
 ## Checking an installed copy
 

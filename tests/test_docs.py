@@ -360,6 +360,24 @@ class Docs(unittest.TestCase):
         for name in flags + ("pushed",):
             self.assertIn(name, section)
 
+    def test_documents_proven_head(self):
+        _in_plugin(self)
+        changelog = _changelog_path(ROOT)
+        self.assertIsNotNone(changelog, "the plugin carries no changelog")
+        for path in (os.path.join(ROOT, "README.md"), SKILL_PATH, changelog):
+            with open(path, encoding="utf-8") as handle:
+                self.assertIn("--proven-head", handle.read(), os.path.relpath(path, ROOT))
+
+    def test_version_is_0_6_0(self):
+        plugin, _ = _manifests(self)
+        self.assertEqual(core.__version__, "0.6.0")
+        self.assertEqual(plugin.get("version"), "0.6.0")
+        path = _changelog_path(ROOT)
+        self.assertIsNotNone(path, "the plugin carries no changelog")
+        with open(path, encoding="utf-8") as handle:
+            head = _changelog_head(handle.read())
+        self.assertTrue(head.startswith("## 0.6.0 "), head.splitlines()[0])
+
 
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
