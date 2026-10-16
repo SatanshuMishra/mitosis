@@ -1,6 +1,6 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: active
-Updated: 2026-10-16T21:38:23.024Z
+Updated: 2026-10-16T21:38:24.410Z
 Next ids: c3 D3 R2 S1
 
 ## Goal
@@ -28,7 +28,7 @@ Needs: D2, R1.
 
 ## Open risks
 
-- R1 mitosis recorded the gate inconclusive 12/12 because ~/.mitosis/mitosis/accept.zsh named tests as module attributes; the script now resolves the test's class, an emulated gate gave 8 pass and 4 inert, and the real gate reruns at the ship resume. Bears on c1.
+- R1 mitosis recorded the gate inconclusive 12/12 because ~/.mitosis/mitosis/accept.zsh named tests as module attributes; the script now resolves the test's class, an emulated gate gave 8 pass and 4 inert, and the real gate reruns at the ship resume. The 4 inert rows keep today's behaviour by design; 0.5.0 still pushes an inert MSP and lists each row on a Not verified line. Bears on c1.
 
 ## Settled, do not reopen
 
