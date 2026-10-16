@@ -1,6 +1,6 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: active
-Updated: 2026-10-16T22:14:34.954Z
+Updated: 2026-10-16T22:14:40.761Z
 Next ids: c3 D4 R2 S1
 
 ## Goal
@@ -14,7 +14,7 @@ A mitosis resume reuses a passing gate recorded at the same head, and a new --pr
 
 ## Where things stand
 
-MSP ship-reuses-gate is on mitosis/ship-reuses-gate, base feat/ship-reuses-gate (dfd60b6), head c293440; review round 2 is green and every advisory is fixed. The SHIP=1 resume is running.
+MSP pull request SatanshuMishra/mitosis#19 is open for the owner's review and merge; the FEATURE pull request into main does not exist yet. The pull request body's What changed repeats one boilerplate sentence three times, because each Step's task opens with the same sentence and mitosis lists each task's first sentence.
 
 ## Next step
 
