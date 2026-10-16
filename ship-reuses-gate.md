@@ -1,7 +1,7 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: active
-Updated: 2026-10-16T21:08:03.151Z
-Next ids: c3 D2 R1 S1
+Updated: 2026-10-16T21:12:04.479Z
+Next ids: c3 D3 R1 S1
 
 ## Goal
 
@@ -24,7 +24,7 @@ Needs: D1.
 
 ## Decisions in force
 
-- D1 interphase hand-off: build the handed-off ship-reuses-gate spec: Build the spec as handed off: run --plan-only, then the first build on the FEATURE branch, with any later gap filled from the Intent lines and recorded as an assumption.
+- D2 interphase hand-off: build the handed-off spec as one MSP: One MSP, ship-reuses-gate, built as three Worker sessions in a row on its branch (plan 6f008d7094cf); recorded as an assumption in the MSP's assumptions file.
 
 ## Open risks
 
