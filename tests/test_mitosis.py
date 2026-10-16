@@ -953,12 +953,42 @@ class PullRequestFlags(unittest.TestCase):
             ("--pr-why", typed + ("--pr-why", "callers need it.")),
             ("--pr-why", typed + ("--pr-why", long_why)),
             ("--pr-why", typed + ("--pr-why", WHY) * 9),
+            ("--pr-why", typed + ("--pr-why", "Door: two-way.")),
+            ("--pr-why", typed + ("--pr-why", "Blast radius: docs.")),
+            ("--pr-door", typed + ("--pr-why", WHY, "--pr-door", "two-way")),
+            ("--pr-blast-radius", typed + ("--pr-why", WHY, "--pr-blast-radius", "Docs only.")),
+            (
+                "--pr-door",
+                typed + ("--pr-why", WHY, "--pr-door", "sliding", "--pr-blast-radius", "Docs only."),
+            ),
+            (
+                "--pr-blast-radius",
+                typed + ("--pr-why", WHY, "--pr-door", "two-way", "--pr-blast-radius", "docs only"),
+            ),
+            (
+                "--pr-blast-radius",
+                typed + ("--pr-why", WHY, "--pr-door", "one-way", "--pr-blast-radius", "See www.x."),
+            ),
         ):
             with self.subTest(flags=flags):
                 code, err, spawned = self._attempt(*flags)
                 self.assertEqual(code, mitosis.EXIT_REFUSED, err)
                 self.assertIn(flag, err.splitlines()[0])
                 self.assertFalse(spawned)
+
+    def a_door_call_reaches_the_header_with_its_blast_radius(self):
+        parser = mitosis.build_parser()
+        typed = ("--pr-type", "feat", "--pr-subject", SUBJECT, "--pr-why", WHY)
+        called = parser.parse_args(
+            typed + ("--pr-door", "one-way", "--pr-blast-radius", "Every stored manifest.")
+        )
+        self.assertIsNone(mitosis.check_pull_request_flags(called))
+        header = mitosis.pull_request_header(called)
+        self.assertEqual(
+            (header["door"], header["blast_radius"]), ("one-way", "Every stored manifest.")
+        )
+        bare = mitosis.pull_request_header(parser.parse_args(typed))
+        self.assertEqual((bare["door"], bare["blast_radius"]), (None, None))
 
     def a_title_that_cannot_fit_is_refused_before_any_worker(self):
         for items, subject, label, rule in (

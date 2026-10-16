@@ -226,7 +226,7 @@ FLAG_SPECS = {
     },
     "--pr-command": {
         "metavar": "TEMPLATE",
-        "help": "opens one draft pull request with the house title and body; placeholders %s; "
+        "help": "opens one pull request with the house title and body; placeholders %s; "
         "its last stdout line is recorded; without it, a run allowed to push pushes each branch, "
         "ends its MSP pushed and records the title and body for the caller"
         % PLACEHOLDER_HELP["pull-request"],
@@ -254,6 +254,18 @@ FLAG_SPECS = {
         "help": "one line of every body's Why section in printable ASCII, beginning with an "
         "uppercase letter and ending with . ? or !; %s; give it 1 to %d times; required for a run "
         "allowed to push" % (COMPOSED_HELP, run.SECTION_LIMIT),
+    },
+    "--pr-door": {
+        "metavar": "DOOR",
+        "help": "the merge-danger call that opens every body's Risk section, one of %s: a "
+        "two-way door is cheap to roll back, a one-way door is destructive or hard to reverse; "
+        "given together with --pr-blast-radius or not at all" % ", ".join(run.PR_DOORS),
+    },
+    "--pr-blast-radius": {
+        "metavar": "SENTENCE",
+        "help": "what a bad merge would reach, the Risk line after the door call, in printable "
+        "ASCII, beginning with an uppercase letter and ending with . ? or !; %s; given together "
+        "with --pr-door or not at all" % COMPOSED_HELP,
     },
     "--no-push": {
         "action": "store_true",
@@ -348,7 +360,7 @@ def build_parser():
         add_help=False,
         description="Split a document or an items file into MSPs, build each on its own "
         "branch, gate the work, and push each branch with a pull-request title and body in "
-        "the house format, opening one draft pull request per MSP when --pr-command is given. "
+        "the house format, opening one pull request per MSP when --pr-command is given. "
         "mitosis never merges.",
     )
     for name in flag_names():
@@ -811,6 +823,15 @@ def why_fault(why):
     return None
 
 
+def blast_radius_fault(blast_radius):
+    fault = run.composed_fault(blast_radius)
+    if fault is not None:
+        return fault
+    if not run.sentence_shaped(blast_radius):
+        return "does not begin with an uppercase letter and end with . ? or !"
+    return None
+
+
 def check_pull_request_flags(args):
     if args.pr_type is not None and args.pr_type not in run.PR_TYPES:
         raise Refusal(
@@ -838,6 +859,18 @@ def check_pull_request_flags(args):
         fault = why_fault(why)
         if fault is not None:
             raise Refusal("--pr-why number %d %s" % (index, fault))
+    if (args.pr_door is None) != (args.pr_blast_radius is None):
+        raise Refusal(
+            "--pr-door and --pr-blast-radius go together or not at all; a door call without its "
+            "blast radius, or a blast radius without its door call, tells a reviewer half the "
+            "merge danger"
+        )
+    if args.pr_door is not None and args.pr_door not in run.PR_DOORS:
+        raise Refusal("--pr-door %r is not one of %s" % (args.pr_door, ", ".join(run.PR_DOORS)))
+    if args.pr_blast_radius is not None:
+        fault = blast_radius_fault(args.pr_blast_radius)
+        if fault is not None:
+            raise Refusal("--pr-blast-radius %r %s" % (args.pr_blast_radius, fault))
 
 
 def pull_request_header(args):
@@ -848,6 +881,8 @@ def pull_request_header(args):
         "scope": args.pr_scope,
         "subject": args.pr_subject,
         "why": tuple(args.pr_why or ()),
+        "door": args.pr_door,
+        "blast_radius": args.pr_blast_radius,
     }
 
 

@@ -1159,6 +1159,8 @@ def manifest_gaps(plan, msp):
 
 PR_TYPES = ("feat", "fix", "refactor", "docs", "test", "chore", "perf", "ci")
 
+PR_DOORS = ("one-way", "two-way")
+
 TITLE_PATTERN = re.compile(
     r"^(?=.{1,72}$)(feat|fix|refactor|docs|test|chore|perf|ci)(\([a-z0-9][a-z0-9-]{0,15}\))?: "
     r"[a-z][\x20-\x7E]*[\x21-\x2D\x2F-\x7E]$"
@@ -1232,7 +1234,9 @@ BLOCK_OPENERS = ("`", "~", "#", ">", "|")
 
 SETEXT_UNDERLINE = re.compile(r"[=-]+")
 
-RESERVED_FIELD = re.compile(r"(?:verified|not verified):", re.IGNORECASE | re.ASCII)
+RESERVED_FIELD = re.compile(
+    r"(?:verified|not verified|door|blast radius):", re.IGNORECASE | re.ASCII
+)
 
 RESERVED_STRUCTURE = "Supersedes "
 
@@ -1245,6 +1249,10 @@ WHAT_HEADING = "## What changed"
 WHY_HEADING = "## Why"
 
 RISK_HEADING = "## Risk"
+
+DOOR_PREFIX = "Door: "
+
+BLAST_RADIUS_PREFIX = "Blast radius: "
 
 VERIFICATION_HEADING = "## Verification"
 
@@ -1308,7 +1316,7 @@ def value_fault(value, cap=VALUE_CAP):
     if SETEXT_UNDERLINE.fullmatch(value):
         return "is made only of = and -"
     if RESERVED_FIELD.match(value):
-        return "begins with verified: or not verified:"
+        return "begins with verified:, not verified:, door: or blast radius:"
     if value.startswith(RESERVED_STRUCTURE):
         return "begins with Supersedes"
     return None
@@ -1595,6 +1603,14 @@ def msp_foreign_writes(plan, msp, lane_records):
     ]
 
 
+def merge_danger(header):
+    door = header.get("door")
+    blast_radius = header.get("blast_radius")
+    if door is None or blast_radius is None:
+        return ()
+    return (DOOR_PREFIX + door, BLAST_RADIUS_PREFIX + blast_radius)
+
+
 def pull_request_body(
     header, plan, msp, gate_result=None, gate_error=None, findings=None, exception=None, foreign=()
 ):
@@ -1602,7 +1618,7 @@ def pull_request_body(
     blocks = (
         _block(WHAT_HEADING, tuple(BULLET + entry for entry in _what_changed(plan, msp))),
         _block(WHY_HEADING, tuple(header.get("why") or ())),
-        _block(RISK_HEADING, (risk,) if risk else ()),
+        _block(RISK_HEADING, merge_danger(header) + ((risk,) if risk else ())),
         _block(VERIFICATION_HEADING, _verification(plan, msp, gate_result, gate_error)),
     )
     return "\n\n".join(block for block in blocks if block)

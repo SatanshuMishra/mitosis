@@ -1,11 +1,11 @@
 # mitosis
 
 mitosis takes work that one agent would grind through serially, splits it so
-several agents run on it at once, and produces draft pull requests a human can
+several agents run on it at once, and produces pull requests a human can
 merge without discovering that the parallelism broke something. It validates
 the input, schedules the split, prepares an isolated worktree and branch per
 piece, dispatches a Worker into each, gates the result, reconciles what was
-actually written against the git log, and opens one draft pull request per
+actually written against the git log, and opens one pull request per
 piece, stacked on its predecessor where one exists, or pushes each piece's
 branch and hands back its pull request's title and body for the caller to
 open.
@@ -76,6 +76,8 @@ python3 mitosis.py \
   --pr-scope manifest \
   --pr-subject "validate manifests from the command line" \
   --pr-why "A bad manifest should fail before it ships." \
+  --pr-door two-way \
+  --pr-blast-radius "Manifest validation only; a revert restores the old command." \
   --tier-model top=model-a \
   --tier-model cheap=model-b \
   --timeout 1800
@@ -83,7 +85,11 @@ python3 mitosis.py \
 
 Every title and body is written in one house format: the title is
 `<type>(<scope>): <subject>`, and the body holds What changed, Why, an
-optional Risk line and Verification. Leave out `--pr-command` and mitosis
+optional Risk section and Verification. The Risk section opens with a
+`Door:` line and a `Blast radius:` line when `--pr-door` and
+`--pr-blast-radius` are given, which go together or not at all, then holds a
+line naming what reconcile, the gate or stacking found, when they found
+something. Leave out `--pr-command` and mitosis
 pushes each branch, opens nothing, ends each such MSP `pushed`, and records
 the title and body in the run's state and in its JSON summary, so the caller
 opens each pull request itself:
