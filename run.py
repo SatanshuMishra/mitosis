@@ -1777,6 +1777,19 @@ def _gate_stage(plan, msp, tree, settings):
     return {"gate": result, "gate_error": None}
 
 
+def _reusable_gate(prior, tree):
+    recorded = prior.get("gate")
+    if not isinstance(recorded, dict) or recorded.get("blocks") is not False:
+        return None
+    head = git_run(["rev-parse", "HEAD"], tree["path"])
+    status = git_run(["status", "--porcelain"], tree["path"])
+    if head.returncode != 0 or status.returncode != 0 or status.stdout.strip():
+        return None
+    if head.stdout.strip() != recorded.get("commit"):
+        return None
+    return recorded
+
+
 def _reconcile_stage(plan, msp, tree, producers, trees, settings):
     findings = reconcile(
         plan,
@@ -1838,6 +1851,7 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=()):
 def _finish_msp(plan, msp, trees, producers, state, settings):
     run_dir = settings["run_dir"]
     tree = trees[msp]
+    prior = state["msps"].get(str(msp)) or {}
     state = {
         **state,
         "msps": {**state["msps"], str(msp): {}},
@@ -1848,7 +1862,13 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     block = _lane_block(plan, msp, state) or _producer_block(plan, msp, state, producers)
     if block is not None:
         return write_state(run_dir, _msp_record(state, msp, **block))
-    state = write_state(run_dir, _msp_record(state, msp, **_gate_stage(plan, msp, tree, settings)))
+    reused = _reusable_gate(prior, tree)
+    gated = (
+        {"gate": reused, "gate_error": None}
+        if reused is not None
+        else _gate_stage(plan, msp, tree, settings)
+    )
+    state = write_state(run_dir, _msp_record(state, msp, **gated))
     reconciled = _reconcile_stage(plan, msp, tree, producers, trees, settings)
     state = write_state(run_dir, _msp_record(state, msp, **reconciled))
     if reconciled.get("state") == MSP_BLOCKED:

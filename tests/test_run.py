@@ -1174,6 +1174,46 @@ class Gate(RepoCase):
         self.assertIn("tests/t_impl.txt::property (impl) is inert", body)
 
 
+class GateReuse(RepoCase):
+    def held_run(self, accept="real"):
+        self.add_remote()
+        plan = core.plan([gated_step()])
+        held = self.execute(plan, accept=accept, no_push=True)
+        self.assertEqual(held["msps"]["0"]["state"], run.MSP_COMMITTED)
+        gate_runs = len(self.gate_runs())
+        self.assertGreater(gate_runs, 0)
+        return plan, held, gate_runs
+
+    def test_resume_at_the_gated_head_runs_no_acceptance(self):
+        plan, held, gate_runs = self.held_run()
+        resumed = self.execute(plan, resume=True)
+        self.assertEqual(len(self.gate_runs()), gate_runs)
+        self.assertEqual(resumed["msps"]["0"]["state"], "shipped")
+        self.assertEqual(resumed["msps"]["0"]["gate"], held["msps"]["0"]["gate"])
+
+    def test_resume_after_a_new_commit_gates_again(self):
+        plan, held, gate_runs = self.held_run()
+        tree = held["worktrees"][0]["path"]
+        new_head = self.commit_file(tree, "impl.txt", "work by lane 0\nmore work\n")
+        resumed = self.execute(plan, resume=True)
+        self.assertGreater(len(self.gate_runs()), gate_runs)
+        self.assertEqual(resumed["msps"]["0"]["gate"]["commit"], new_head)
+
+    def test_resume_with_an_uncommitted_change_gates_again(self):
+        plan, held, gate_runs = self.held_run()
+        tree = held["worktrees"][0]["path"]
+        write(os.path.join(tree, "impl.txt"), "work by lane 0\nuncommitted work\n")
+        self.execute(plan, resume=True)
+        self.assertGreater(len(self.gate_runs()), gate_runs)
+
+    def test_resume_after_a_blocking_gate_gates_again(self):
+        plan, held, gate_runs = self.held_run(accept="exit7")
+        self.assertEqual(held["msps"]["0"]["gate"]["outcome"], "inconclusive")
+        resumed = self.execute(plan, accept="real", resume=True)
+        self.assertGreater(len(self.gate_runs()), gate_runs)
+        self.assertEqual(resumed["msps"]["0"]["gate"]["outcome"], "pass")
+
+
 class Reconcile(RepoCase):
     def an_undeclared_file_is_reported_from_the_git_diff(self):
         plan = core.plan([step("a", ["a.txt"])])
@@ -2494,6 +2534,7 @@ def load_tests(loader, tests, pattern):
         Dispatch,
         Resume,
         Gate,
+        GateReuse,
         Reconcile,
         Ship,
         HouseFormat,
