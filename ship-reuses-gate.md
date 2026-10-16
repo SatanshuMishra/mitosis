@@ -1,6 +1,6 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: active
-Updated: 2026-10-16T21:49:21.295Z
+Updated: 2026-10-16T21:58:50.437Z
 Next ids: c3 D3 R2 S1
 
 ## Goal
@@ -14,11 +14,11 @@ A mitosis resume reuses a passing gate recorded at the same head, and a new --pr
 
 ## Where things stand
 
-Build 1 committed MSP ship-reuses-gate at 24af33c on mitosis/ship-reuses-gate, base feat/ship-reuses-gate (dfd60b6). Suite passes on 3.14 and 3.9. Round 1 verdict is loop: blockers C1 (proof line capped out of Verification), S1 (untracked files hidden from the clean check) and M1 (gate inconclusive); advisories C2 (label regex too narrow) and C3 (helper held_run collected as a test). Diagnoses: M1 fixable and fixed in the acceptance script; C1 fixable by giving _capped closing lines it always keeps last; S1 diagnosis is running.
+MSP ship-reuses-gate is on mitosis/ship-reuses-gate, base feat/ship-reuses-gate (dfd60b6), head e6e74c9, which fixes round 1's blockers C1 and S1 and advisories C2 and C3 with four receipt tests that were red first; suite passes on 3.14 and 3.9 (507 tests). M1 is fixed in the acceptance script outside the repository. All three diagnoses classed their class fixable.
 
 ## Next step
 
-Read the three diagnoses in review/diagnosis/, then fix each fixable class on mitosis/ship-reuses-gate with a receipt test that fails first, fix C2 and C3, and review round 2.
+Review round 2 of MSP ship-reuses-gate on 24af33c..e6e74c9: code-reviewer and security-reviewer (the fix touches the gate-skip control), then candidates, validator, record and verdict.
 
 Needs: R1.
 
