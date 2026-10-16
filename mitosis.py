@@ -2,6 +2,7 @@ import argparse
 import itertools
 import json
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -129,7 +130,10 @@ STAGE_FLAG_NAMES = (
     "--structure-samples",
     "--pick",
     "--revise",
+    "--proven-head",
 )
+
+PROVEN_HEAD = re.compile(r"^([^=\s]+)=([0-9a-f]{7,40})$")
 
 RUN_FLAGS = (
     ("--feature-branch", "feature_branch"),
@@ -172,8 +176,17 @@ FLAG_SPECS = {
     "--resume": {
         "action": "store_true",
         "help": "continue the run in --run-dir: with --spec, load the persisted structure and "
-        "brief every Step still unbriefed before planning; Lanes already ok are skipped "
-        "and a failed gate is re-run; the plan id must match",
+        "brief every Step still unbriefed before planning; Lanes already ok are skipped, "
+        "a gate that blocked is re-run, and a passing gate recorded at the MSP's current HEAD "
+        "with no uncommitted change is reused; the plan id must match",
+    },
+    "--proven-head": {
+        "metavar": "LABEL=COMMIT",
+        "action": "append",
+        "default": [],
+        "help": "ship the MSP named LABEL without re-gating when its HEAD equals COMMIT and a "
+        "gate result that did not block is recorded for it; otherwise it is gated as without "
+        "this flag; repeatable",
     },
     "--plan-only": {
         "action": "store_true",
@@ -346,6 +359,10 @@ FLAG_SPECS = {
 
 
 class Refusal(Exception):
+    pass
+
+
+class UnknownProvenHead(Exception):
     pass
 
 
@@ -897,6 +914,17 @@ def refuse_unfit_titles(header, plan):
                 "MSP %s would be titled %r, which %s; shorten --pr-subject or relabel the MSP"
                 % (_label(plan, index), title, fault)
             )
+
+
+def proven_heads(values, plan):
+    labels = {run._label(plan, index): index for index in range(len(plan.get("msps") or []))}
+    pairs = tuple(PROVEN_HEAD.fullmatch(value).groups() for value in values)
+    unknown = next((label for label, _ in pairs if label not in labels), None)
+    if unknown is not None:
+        raise UnknownProvenHead(
+            "--proven-head names MSP %s, which the plan does not hold" % unknown
+        )
+    return {labels[label]: commit for label, commit in pairs}
 
 
 def refuse_run(args, plan, models, run_dir, repo):
@@ -1610,6 +1638,7 @@ def execute(args, plan, models, run_dir, repo, root):
             remote=REMOTE,
             no_push=args.no_push,
             header=pull_request_header(args),
+            proven_heads=proven_heads(args.proven_head, plan),
         ), None
     except (run.ConfigError, run.ResumeError) as error:
         raise Refusal(str(error))
@@ -1659,6 +1688,7 @@ def run_pipeline(args):
         )
         return _summarised({"items": items}, None, run_dir, planned_code(items))
     plan = build_plan(args, items, root, charter, graph, run_dir)
+    proven_heads(args.proven_head, plan)
     refuse_unfit_titles(pull_request_header(args), plan)
     if args.plan_only:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
@@ -1705,8 +1735,19 @@ def main(argv=None):
             "--pick %d names a sample that will not exist; --structure-samples is %d"
             % (args.pick, args.structure_samples)
         )
+    malformed = next(
+        (value for value in args.proven_head if PROVEN_HEAD.fullmatch(value) is None), None
+    )
+    if malformed is not None:
+        parser.error(
+            "--proven-head %r is not LABEL=COMMIT with a commit of 7 to 40 lowercase "
+            "hexadecimal digits" % malformed
+        )
     try:
         return run_pipeline(args)
+    except UnknownProvenHead as unknown:
+        _print(("mitosis: %s" % unknown, "exit %d: %s" % (EXIT_USAGE, EXIT_MEANING[EXIT_USAGE])), sys.stderr)
+        return EXIT_USAGE
     except Refusal as refusal:
         _print(("mitosis: %s" % refusal, "exit %d: %s" % (EXIT_REFUSED, EXIT_MEANING[EXIT_REFUSED])), sys.stderr)
         return EXIT_REFUSED

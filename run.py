@@ -1445,7 +1445,17 @@ def _unproven(outcome):
     return "is %s" % outcome if outcome in core.GATE_OUTCOMES else "was not judged"
 
 
-def _verification(plan, msp, gate_result, gate_error):
+def _proof(gate_result, proven_head):
+    gated = (gate_result or {}).get("commit") or ""
+    if proven_head is None or proven_head == gated:
+        return ()
+    return (
+        "mitosis gated commit %s; the caller proved commit %s without a new gate."
+        % (gated[:12], proven_head[:12]),
+    )
+
+
+def _verification(plan, msp, gate_result, gate_error, proven_head=None):
     steps = _steps_by_name(plan)
     judged = _judged(gate_result)
     names = plan["msps"][msp]["steps"]
@@ -1474,6 +1484,7 @@ def _verification(plan, msp, gate_result, gate_error):
             if not steps[name].get("acceptance")
         )
         + (("the gate could not run",) if gate_error else ())
+        + _proof(gate_result, proven_head)
     )
     return tuple(
         VERIFIED_PREFIX + value
@@ -1634,14 +1645,24 @@ def merge_danger(header):
 
 
 def pull_request_body(
-    header, plan, msp, gate_result=None, gate_error=None, findings=None, exception=None, foreign=()
+    header,
+    plan,
+    msp,
+    gate_result=None,
+    gate_error=None,
+    findings=None,
+    exception=None,
+    foreign=(),
+    proven_head=None,
 ):
     risk = _risk(plan, msp, findings, exception, foreign, gate_error)
     blocks = (
         _block(WHAT_HEADING, tuple(BULLET + entry for entry in _what_changed(plan, msp))),
         _block(WHY_HEADING, tuple(header.get("why") or ())),
         _block(RISK_HEADING, merge_danger(header) + ((risk,) if risk else ())),
-        _block(VERIFICATION_HEADING, _verification(plan, msp, gate_result, gate_error)),
+        _block(
+            VERIFICATION_HEADING, _verification(plan, msp, gate_result, gate_error, proven_head)
+        ),
     )
     return "\n\n".join(block for block in blocks if block)
 
@@ -1663,6 +1684,7 @@ def ship(
     timeout=None,
     push=True,
     foreign=(),
+    proven_head=None,
 ):
     label = _label(plan, msp)
     head = commit_all(tree, "chore(%s): commit the MSP's work before shipping" % label)
@@ -1680,7 +1702,7 @@ def ship(
         return {**held, "unchanged": False}
     title = pull_request_title(header, plan, msp)
     body = pull_request_body(
-        header, plan, msp, gate_result, gate_error, findings, exception, foreign
+        header, plan, msp, gate_result, gate_error, findings, exception, foreign, proven_head
     )
     git(["push", "-q", "-u", remote, branch], tree)
     pushed = {**held, "pushed": head, "title": title, "body": body, "unchanged": False}
@@ -1777,17 +1799,35 @@ def _gate_stage(plan, msp, tree, settings):
     return {"gate": result, "gate_error": None}
 
 
-def _reusable_gate(prior, tree):
+def _passing_gate(prior):
     recorded = prior.get("gate")
     if not isinstance(recorded, dict) or recorded.get("blocks") is not False:
         return None
+    return recorded
+
+
+def _clean_head(tree):
     head = git_run(["rev-parse", "HEAD"], tree["path"])
     status = git_run(["status", "--porcelain"], tree["path"])
     if head.returncode != 0 or status.returncode != 0 or status.stdout.strip():
         return None
-    if head.stdout.strip() != recorded.get("commit"):
+    return head.stdout.strip() or None
+
+
+def _reusable_gate(prior, tree):
+    recorded = _passing_gate(prior)
+    if recorded is None or _clean_head(tree) != recorded.get("commit"):
         return None
     return recorded
+
+
+def _proven_head(prior, tree, proven):
+    if proven is None or _passing_gate(prior) is None:
+        return None
+    head = _clean_head(tree)
+    if head is None or not head.startswith(proven):
+        return None
+    return head
 
 
 def _reconcile_stage(plan, msp, tree, producers, trees, settings):
@@ -1821,6 +1861,7 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=()):
             timeout=settings["timeout"],
             push=settings["push"],
             foreign=foreign,
+            proven_head=record.get("proven_head"),
         )
     except (OSError, GitError, ShipError, subprocess.SubprocessError, ValueError) as error:
         return {"state": "ship-failed", "reason": str(error), "ship": None}
@@ -1862,13 +1903,15 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     block = _lane_block(plan, msp, state) or _producer_block(plan, msp, state, producers)
     if block is not None:
         return write_state(run_dir, _msp_record(state, msp, **block))
-    reused = _reusable_gate(prior, tree)
+    proven_head = _proven_head(prior, tree, settings["proven_heads"].get(msp))
+    reused = _passing_gate(prior) if proven_head is not None else _reusable_gate(prior, tree)
     gated = (
         {"gate": reused, "gate_error": None}
         if reused is not None
         else _gate_stage(plan, msp, tree, settings)
     )
-    state = write_state(run_dir, _msp_record(state, msp, **gated))
+    proof = {} if proven_head is None else {"proven_head": proven_head}
+    state = write_state(run_dir, _msp_record(state, msp, **gated, **proof))
     reconciled = _reconcile_stage(plan, msp, tree, producers, trees, settings)
     state = write_state(run_dir, _msp_record(state, msp, **reconciled))
     if reconciled.get("state") == MSP_BLOCKED:
@@ -1921,6 +1964,7 @@ def execute(
     prefix=BRANCH_PREFIX,
     no_push=False,
     header=None,
+    proven_heads=None,
 ):
     prior = prior_state(run_dir, plan, resume)
     header = carried_header(header, prior)
@@ -1952,6 +1996,7 @@ def execute(
         "timeout": timeout,
         "remote": remote,
         "push": not no_push,
+        "proven_heads": dict(proven_heads or {}),
     }
     os.makedirs(run_dir, exist_ok=True)
     write_json(os.path.join(run_dir, PLAN_FILE), plan)
