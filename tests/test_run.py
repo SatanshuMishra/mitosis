@@ -1361,6 +1361,26 @@ class Ship(RepoCase):
         with self.assertRaises(run.ConfigError):
             self.execute(plan, pr=None, header=None, resume=True)
 
+    def a_resume_keeps_the_door_call_the_run_recorded(self):
+        self.add_remote()
+        plan = core.plan([step("a", ["a.txt"])])
+        guarded = {**HEADER, "door": "two-way", "blast_radius": "Docs only."}
+        held = self.execute(plan, pr=None, header=guarded, no_push=True)
+        self.assertEqual(held["merge_danger"], {"door": "two-way", "blast_radius": "Docs only."})
+        shipped = self.execute(plan, pr=None, header=HEADER, resume=True)
+        self.assertEqual(shipped["merge_danger"], held["merge_danger"])
+        self.assertEqual(
+            section_of(shipped["msps"]["0"]["ship"]["body"], "## Risk")[:2],
+            ["Door: two-way", "Blast radius: Docs only."],
+        )
+        with self.assertRaises(run.ResumeError):
+            self.execute(
+                plan,
+                pr=None,
+                header={**HEADER, "door": "one-way", "blast_radius": "Docs only."},
+                resume=True,
+            )
+
     def a_gate_failure_no_longer_blocks_the_cluster_below_it(self):
         self.add_remote()
         plan = core.plan([gated_step(), step("b", ["b.txt"], after=["impl"])])
@@ -1697,6 +1717,11 @@ def body_problems(body):
             )
             values = [line[len("Blast radius: "):] for line in radius] + rest
             found = found + ((("risk lines", lines),) if not lines or len(rest) > 1 else ())
+            found = found + tuple(
+                ("posing merge-danger line", line)
+                for line in rest
+                if re.match(r"(?i)(door|blast radius):", line)
+            )
             found = found + tuple(
                 ("risk sentence", value) for value in values if not reads_as_sentence(value)
             )

@@ -969,6 +969,11 @@ class PullRequestFlags(unittest.TestCase):
                 "--pr-blast-radius",
                 typed + ("--pr-why", WHY, "--pr-door", "one-way", "--pr-blast-radius", "See www.x."),
             ),
+            (
+                "--pr-blast-radius",
+                typed
+                + ("--pr-why", WHY, "--pr-door", "two-way", "--pr-blast-radius", "Blast radius: docs."),
+            ),
         ):
             with self.subTest(flags=flags):
                 code, err, spawned = self._attempt(*flags)

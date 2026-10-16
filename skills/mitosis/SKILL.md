@@ -111,8 +111,8 @@ Every pull request is written in the house format. The title is
 `--pr-subject`, with the MSP label in parentheses after the subject when the
 plan has several MSPs. The body holds What changed, one entry per Step from
 its task's first sentence; Why, the `--pr-why` lines, one to eight; Risk, the
-door and blast-radius lines, then a line when reconcile, a foreign write, a
-manifest, stacking or the gate found something; and Verification, a Verified
+door and blast-radius lines if given, then a line if reconcile, a foreign
+write, a manifest, stacking or the gate found something; and Verification, a Verified
 line per property the gate proved, then a Not verified line for every other.
 A run allowed to push needs `--pr-type`, `--pr-subject` and `--pr-why`,
 checked before any Worker spawns. Without `--pr-command` it pushes each MSP

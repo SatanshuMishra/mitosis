@@ -791,6 +791,28 @@ def prior_state(run_dir, plan, resume):
     return state
 
 
+def merge_danger_pair(header):
+    if header is None or header.get("door") is None:
+        return None
+    return {"door": header["door"], "blast_radius": header.get("blast_radius")}
+
+
+def carried_header(header, prior):
+    recorded = (prior or {}).get("merge_danger")
+    given = merge_danger_pair(header)
+    if header is None or recorded is None:
+        return header
+    if given is None:
+        return {**header, **recorded}
+    if given != recorded:
+        raise ResumeError(
+            "this run recorded --pr-door %s and --pr-blast-radius %r; a resume passes the same "
+            "pair or neither, so every pull request of one run carries one door call"
+            % (recorded["door"], recorded["blast_radius"])
+        )
+    return header
+
+
 def msp_producers(plan):
     lanes = plan.get("lanes") or []
     producers = {index: () for index in range(len(plan.get("msps") or []))}
@@ -1881,6 +1903,7 @@ def execute(
     header=None,
 ):
     prior = prior_state(run_dir, plan, resume)
+    header = carried_header(header, prior)
     check_template("dispatch", worker_command)
     check_template("acceptance", acceptance_command)
     if not no_push and pr_command is not None:
@@ -1924,6 +1947,7 @@ def execute(
             "lanes": dict((prior or {}).get("lanes") or {}),
             "msps": dict((prior or {}).get("msps") or {}),
             "stacking_exceptions": list((prior or {}).get("stacking_exceptions") or []),
+            "merge_danger": merge_danger_pair(header),
         },
     )
     trees = prepare_worktrees(

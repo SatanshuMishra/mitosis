@@ -13,7 +13,9 @@ plugin renders, and mitosis no longer describes its pull requests as drafts.
   `Door:` line and a `Blast radius:` line, ahead of any line reconcile, the
   gate or stacking writes. One without the other, a door outside the two
   values, or a blast radius that is not a house sentence is refused before
-  any Worker spawns.
+  any Worker spawns. The run state records the pair, a resume that leaves
+  both flags out carries it over, and a resume that passes a different pair
+  is refused, so every pull request of one run carries one door call.
 - A Why line, the subject, or any other value beginning with `door:` or
   `blast radius:` is refused, as `verified:` already was, so no value can
   pose as a merge-danger line.
