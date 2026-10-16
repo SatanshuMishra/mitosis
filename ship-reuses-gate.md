@@ -1,6 +1,6 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: parked
-Updated: 2026-10-16T23:42:03.564Z
+Updated: 2026-10-16T23:45:31.894Z
 Next ids: c3 D4 R2 S1
 
 ## Goal
@@ -14,13 +14,11 @@ A mitosis resume reuses a passing gate recorded at the same head, and a new --pr
 
 ## Where things stand
 
-Integration: SatanshuMishra/mitosis#19 merged into feat/ship-reuses-gate (b6fb1a4); pipeline integration-ready reports ready. lighthouse:test on feat/ship-reuses-gate against main is next; failures are diagnosed per class before any fix, with no round cap, and --final only for a failure diagnosed blocked.
+Integration: SatanshuMishra/mitosis#19 merged into feat/ship-reuses-gate (b6fb1a4); pipeline integration-ready reports ready. lighthouse:test is running with results in ~/.mitosis/mitosis/ship-reuses-gate/lighthouse: a profile written by lighthouse:init is published on feat/ship-reuses-gate (a2d59af); every new-behaviour path and both neighbours passed; the suite on core and FEATURE is running. Failures are diagnosed per class before any fix, with no round cap, and --final only for a failure diagnosed blocked.
 
 ## Next step
 
-The owner starts Integration by saying the MSP pull request merged (SatanshuMishra/mitosis#19 into feat/ship-reuses-gate); then resume_thread ship-reuses-gate, read ~/.mitosis/mitosis/ship-reuses-gate/CHARTER.md, sync, run pipeline integration-ready and lighthouse:test as the pipeline:run skill's Integration says.
-
-Needs: D3.
+When lighthouse suite finishes, write lighthouse/findings.json, run lighthouse verdict, and on green run lighthouse pr and open the FEATURE pull request through the GitHub MCP create_pull_request tool.
 
 ## Decisions in force
 
