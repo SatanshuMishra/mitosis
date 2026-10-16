@@ -1,6 +1,6 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: active
-Updated: 2026-10-16T22:13:05.602Z
+Updated: 2026-10-16T22:14:34.954Z
 Next ids: c3 D4 R2 S1
 
 ## Goal
@@ -9,7 +9,7 @@ A mitosis resume reuses a passing gate recorded at the same head, and a new --pr
 
 ## Done when
 
-- [ ] c1 The MSP pull request is open into the FEATURE branch, ready for review (or draft only when a diagnosis classes a blocker blocked), assigned to the owner
+- [x] c1 The MSP pull request is open into the FEATURE branch, ready for review (or draft only when a diagnosis classes a blocker blocked), assigned to the owner evidence: https://github.com/SatanshuMishra/mitosis/pull/19 open from mitosis/ship-reuses-gate (c293440) into feat/ship-reuses-gate, draft false, assigned SatanshuMishra, review comment posted
 - [x] c2 Every confirmed blocker is fixed with a receipt test that fails first, or named at the top of a draft pull request evidence: round 2 verdict green (review/round-2/ship-reuses-gate.verdict.json): C1 and S1 fixed at e6e74c9 with receipt tests HouseFormat.the_verification_section_ends_with_its_closing_lines_past_the_limit and GateReuse.test_resume_with_a_file_git_status_hides_gates_again / ..._submodule_move_... red at 24af33c and green after; M1 fixed in the acceptance script, red-then-green on all 12 rows
 
 ## Where things stand
@@ -29,7 +29,6 @@ Needs: D3, R1.
 
 ## Open risks
 
-- R1 mitosis recorded the gate inconclusive 12/12 because ~/.mitosis/mitosis/accept.zsh named tests as module attributes; the script now resolves the test's class, an emulated gate gave 8 pass and 4 inert, and the real gate reruns at the ship resume. The 4 inert rows keep today's behaviour by design; 0.5.0 still pushes an inert MSP and lists each row on a Not verified line. Bears on c1.
 
 ## Settled, do not reopen
 
