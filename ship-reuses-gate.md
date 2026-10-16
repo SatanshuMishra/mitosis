@@ -1,6 +1,6 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: active
-Updated: 2026-10-16T21:45:50.936Z
+Updated: 2026-10-16T21:49:21.295Z
 Next ids: c3 D3 R2 S1
 
 ## Goal
@@ -14,7 +14,7 @@ A mitosis resume reuses a passing gate recorded at the same head, and a new --pr
 
 ## Where things stand
 
-Build 1 committed MSP ship-reuses-gate at 24af33c on mitosis/ship-reuses-gate, base feat/ship-reuses-gate (dfd60b6). Suite passes on 3.14 and 3.9. Round 1 verdict is loop: blockers C1 (proof line capped out of Verification), S1 (untracked files hidden from the clean check) and M1 (gate inconclusive); advisories C2 (label regex too narrow) and C3 (helper held_run collected as a test). One Opus diagnosis per defect class is running.
+Build 1 committed MSP ship-reuses-gate at 24af33c on mitosis/ship-reuses-gate, base feat/ship-reuses-gate (dfd60b6). Suite passes on 3.14 and 3.9. Round 1 verdict is loop: blockers C1 (proof line capped out of Verification), S1 (untracked files hidden from the clean check) and M1 (gate inconclusive); advisories C2 (label regex too narrow) and C3 (helper held_run collected as a test). Diagnoses: M1 fixable and fixed in the acceptance script; C1 fixable by giving _capped closing lines it always keeps last; S1 diagnosis is running.
 
 ## Next step
 
