@@ -1,6 +1,6 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: active
-Updated: 2026-10-16T21:12:04.479Z
+Updated: 2026-10-16T21:12:05.097Z
 Next ids: c3 D3 R1 S1
 
 ## Goal
@@ -18,9 +18,9 @@ Not started.
 
 ## Next step
 
-Run the first build with ~/.mitosis/mitosis/ship-reuses-gate/run.zsh after --plan-only passes clean.
+Run the first build with ~/.mitosis/mitosis/ship-reuses-gate/run.zsh, then review round 1 of MSP ship-reuses-gate.
 
-Needs: D1.
+Needs: D2.
 
 ## Decisions in force
 
