@@ -1,6 +1,6 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: parked
-Updated: 2026-10-16T23:45:31.894Z
+Updated: 2026-10-16T23:49:43.575Z
 Next ids: c3 D4 R2 S1
 
 ## Goal
@@ -14,11 +14,11 @@ A mitosis resume reuses a passing gate recorded at the same head, and a new --pr
 
 ## Where things stand
 
-Integration: SatanshuMishra/mitosis#19 merged into feat/ship-reuses-gate (b6fb1a4); pipeline integration-ready reports ready. lighthouse:test is running with results in ~/.mitosis/mitosis/ship-reuses-gate/lighthouse: a profile written by lighthouse:init is published on feat/ship-reuses-gate (a2d59af); every new-behaviour path and both neighbours passed; the suite on core and FEATURE is running. Failures are diagnosed per class before any fix, with no round cap, and --final only for a failure diagnosed blocked.
+Integration done: lighthouse verdict green (suite passed on main and FEATURE, every new-behaviour path and the plain-build and release-check neighbours passed; the skill-selection neighbour unproven, needing a signed-in session). FEATURE pull request SatanshuMishra/mitosis#20 is open from feat/ship-reuses-gate into main, ready for review, assigned to the owner, not merged. The FEATURE branch carries the lighthouse profile commit a2d59af; the owner's untracked .lighthouse/profile.json in the checkout differs from it.
 
 ## Next step
 
-When lighthouse suite finishes, write lighthouse/findings.json, run lighthouse verdict, and on green run lighthouse pr and open the FEATURE pull request through the GitHub MCP create_pull_request tool.
+The owner starts Clean-up by saying the FEATURE pull request merged.
 
 ## Decisions in force
 
@@ -36,4 +36,5 @@ When lighthouse suite finishes, write lighthouse/findings.json, run lighthouse v
 - Run home: ~/.mitosis/mitosis/ship-reuses-gate/
 - Run dir: ~/.mitosis/runs/mitosis/ship-reuses-gate
 - Build with the installed mitosis 0.5.0 at ~/.claude/plugins/cache/mitosis/mitosis/0.5.0/mitosis.py, never the checkout
+- Lighthouse results, report.md and verdict.json: ~/.mitosis/mitosis/ship-reuses-gate/lighthouse
 - Review loop: no round cap; a confirmed blocker leaves the loop only when a fresh diagnosis agent classes it blocked by a named constraint (decisions file)
