@@ -6,7 +6,7 @@ import json
 import os
 import re
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 PLAN_KEYS = (
     "version",
@@ -119,6 +119,8 @@ FLAG_NAMES = (
     "--pr-scope",
     "--pr-subject",
     "--pr-why",
+    "--pr-door",
+    "--pr-blast-radius",
     "--no-push",
     "--tier-model",
     "--timeout",

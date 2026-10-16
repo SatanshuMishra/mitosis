@@ -3,6 +3,26 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.5.0 - 2026-10-16
+
+Every pull request body can carry the merge-danger call the pull-request
+plugin renders, and mitosis no longer describes its pull requests as drafts.
+
+- `--pr-door` takes one-way or two-way and `--pr-blast-radius` takes a
+  sentence; given together, they open every body's Risk section as a
+  `Door:` line and a `Blast radius:` line, ahead of any line reconcile, the
+  gate or stacking writes. One without the other, a door outside the two
+  values, or a blast radius that is not a house sentence is refused before
+  any Worker spawns. The run state records the pair, a resume that leaves
+  both flags out carries it over, and a resume that passes a different pair
+  is refused, so every pull request of one run carries one door call.
+- A Why line, the subject, or any other value beginning with `door:` or
+  `blast radius:` is refused, as `verified:` already was, so no value can
+  pose as a merge-danger line.
+- The `--pr-command` help, the skill, the README and the plugin manifests
+  speak of pull requests, not draft pull requests, and the skill's example
+  command no longer opens a draft.
+
 ## 0.4.0 - 2026-10-15
 
 A Lane too large for one Worker session is built as several fresh sessions

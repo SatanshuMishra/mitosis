@@ -1,12 +1,12 @@
 ---
 name: mitosis
-description: Use when one repository holds two or more changes that touch different files, or a document whose sections each become code, and the work should ship as separately reviewable draft pull requests built in parallel. Splits the work, builds each part on its own branch, checks that every named acceptance test actually fails without the work, opens one draft pull request per part, and never merges.
+description: Use when one repository holds two or more changes that touch different files, or a document whose sections each become code, and the work should ship as separately reviewable pull requests built in parallel. Splits the work, builds each part on its own branch, checks that every named acceptance test actually fails without the work, opens one pull request per part, and never merges.
 ---
 
 # mitosis
 
 mitosis takes work that one agent would grind through serially, splits it so
-several agents run at once, and produces draft pull requests a human can merge
+several agents run at once, and produces pull requests a human can merge
 without discovering that the parallelism broke something. A model may produce
 anything; a model may judge nothing. Every gate in mitosis is a program.
 
@@ -24,7 +24,7 @@ Reach for mitosis when all three hold:
    the work present and again with the work reverted; a change with no such
    test is still built, but the run proves nothing about it and says so.
 3. A human will review each part as its own pull request. mitosis opens
-   draft pull requests, or pushes the branches for the caller to open, and
+   pull requests, or pushes the branches for the caller to open, and
    stops. Merging is the human's judgment.
 
 Do not reach for it when:
@@ -51,8 +51,8 @@ quotes or newlines lands as one argument and is never reinterpreted by a shell.
 |---|---|---|
 | `--dispatch-command` | one Worker per Lane, in its worktree | listed under --help |
 | `--acceptance-command` | one acceptance property, in a worktree | file, test, worktree |
-| `--pr-command` | one draft pull request per MSP; optional, refused with `--no-push` | listed under --help |
-| `--pr-type` `--pr-scope` `--pr-subject` `--pr-why` | nothing; they write every title and body | none |
+| `--pr-command` | one pull request per MSP; optional, refused with `--no-push` | listed under --help |
+| `--pr-type` `--pr-scope` `--pr-subject` `--pr-why` `--pr-door` `--pr-blast-radius` | nothing; they write every title and body | none |
 | `--decompose-command` | the structure pass that turns a document into unbriefed Steps | prompt, model, document |
 | `--brief-command` | one Worker per unbriefed Step, writing its task | prompt, model, step, document |
 
@@ -110,13 +110,14 @@ Every pull request is written in the house format. The title is
 `<type>(<scope>): <subject>` from `--pr-type`, the optional `--pr-scope` and
 `--pr-subject`, with the MSP label in parentheses after the subject when the
 plan has several MSPs. The body holds What changed, one entry per Step from
-its task's first sentence; Why, the `--pr-why` lines, one to eight; Risk, only
-when reconcile, a foreign write, a manifest, stacking or the gate found
-something; and Verification, a Verified line per property the gate proved,
-then a Not verified line for every other. A run allowed to push needs
-`--pr-type`, `--pr-subject` and `--pr-why`, checked before any Worker spawns.
-Without `--pr-command` it pushes each MSP branch, opens no pull request and
-ends that MSP `pushed`, recording its title and body for the caller to open.
+its task's first sentence; Why, the `--pr-why` lines, one to eight; Risk, the
+door and blast-radius lines if given, then a line if reconcile, a foreign
+write, a manifest, stacking or the gate found something; and Verification, a Verified
+line per property the gate proved, then a Not verified line for every other.
+A run allowed to push needs `--pr-type`, `--pr-subject` and `--pr-why`,
+checked before any Worker spawns. Without `--pr-command` it pushes each MSP
+branch and ends that MSP `pushed`, recording its title and body for the
+caller to open.
 
 ## The two inputs
 
@@ -186,7 +187,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --items plan.json \
   --feature-branch main \
   --dispatch-command "claude -p {task} --model {model} --permission-mode bypassPermissions" \
   --acceptance-command "python3 -m pytest {file} -k {test} -q" \
-  --pr-command "gh pr create --draft --head {branch} --base {base} --title {title} --body {body}" \
+  --pr-command "gh pr create --head {branch} --base {base} --title {title} --body {body}" \
   --pr-type feat --pr-subject "validate manifests from the command line" \
   --pr-why "A bad manifest should fail before it ships." \
   --tier-model top=claude-opus-5 --tier-model cheap=claude-sonnet-5 \
@@ -282,7 +283,7 @@ whether the document changed after the Steps were cut from it.
 
 Validate, schedule, one worktree and branch per MSP under the run directory,
 one Worker per Lane with producers merged in first, then per MSP: commit,
-gate, reconcile, push, open a draft pull request stacked on its single
+gate, reconcile, push, open a pull request stacked on its single
 predecessor when `--pr-command` is given, report.
 
 A Worker session should stay small. mitosis estimates each Lane's tokens from

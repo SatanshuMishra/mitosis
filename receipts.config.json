@@ -31,10 +31,10 @@
     "staging_query_patterns": [],
     "observe": {
       "confirmed": true,
-      "surface": "the mitosis command (python3 mitosis.py, or the installed plugin's copy): its plan report on stdout, the one-line JSON summary on stdout's last line, its exit code, and what it leaves in the target repository - MSP branches and worktrees, Lane commits, draft pull requests opened through --pr-command, and the run directory",
+      "surface": "the mitosis command (python3 mitosis.py, or the installed plugin's copy): its plan report on stdout, the one-line JSON summary on stdout's last line, its exit code, and what it leaves in the target repository - MSP branches and worktrees, Lane commits, pull requests opened through --pr-command, and the run directory",
       "value": "the exit code and the JSON summary's exit, meaning, lanes, msps, coupling and attention fields; the report's sections; the branch heads, commit messages and pull request bodies a run leaves behind",
       "observe_by": "unittest for units; for end to end, running mitosis.py against a scratch git repository with stub dispatch, acceptance and pull-request commands and a local bare remote, then reading stdout, the exit code and git",
-      "terminal_action": "a full run, not --plan-only, that ends with each MSP shipped as a draft pull request through --pr-command, or committed on its local branch under --no-push; for a document, --spec with --plan-only and then --resume",
+      "terminal_action": "a full run, not --plan-only, that ends with each MSP shipped as a pull request through --pr-command, or committed on its local branch under --no-push; for a document, --spec with --plan-only and then --resume",
       "build_artifact": "the installed plugin copy, whose python3 mitosis.py --version must equal the version in .claude-plugin/plugin.json and core.__version__; in a checkout, python3 mitosis.py --version at the commit",
       "twin": "skills/mitosis/SKILL.md, README.md and CHANGELOG.md restate the flags, Lane and MSP states, exit codes and landing-commit message that core.py, run.py and mitosis.py define; core.__version__, .claude-plugin/plugin.json and CHANGELOG.md carry one version; tests/test_docs.py holds them together",
       "dependent": "the Claude Code session that invokes the skill and reads stdout's last line as JSON; the caller's --dispatch-command, --acceptance-command and --pr-command templates; runs resumed with --resume; installed plugin copies, which update only on a version bump; the CI release check",

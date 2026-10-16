@@ -1361,6 +1361,26 @@ class Ship(RepoCase):
         with self.assertRaises(run.ConfigError):
             self.execute(plan, pr=None, header=None, resume=True)
 
+    def a_resume_keeps_the_door_call_the_run_recorded(self):
+        self.add_remote()
+        plan = core.plan([step("a", ["a.txt"])])
+        guarded = {**HEADER, "door": "two-way", "blast_radius": "Docs only."}
+        held = self.execute(plan, pr=None, header=guarded, no_push=True)
+        self.assertEqual(held["merge_danger"], {"door": "two-way", "blast_radius": "Docs only."})
+        shipped = self.execute(plan, pr=None, header=HEADER, resume=True)
+        self.assertEqual(shipped["merge_danger"], held["merge_danger"])
+        self.assertEqual(
+            section_of(shipped["msps"]["0"]["ship"]["body"], "## Risk")[:2],
+            ["Door: two-way", "Blast radius: Docs only."],
+        )
+        with self.assertRaises(run.ResumeError):
+            self.execute(
+                plan,
+                pr=None,
+                header={**HEADER, "door": "one-way", "blast_radius": "Docs only."},
+                resume=True,
+            )
+
     def a_gate_failure_no_longer_blocks_the_cluster_below_it(self):
         self.add_remote()
         plan = core.plan([gated_step(), step("b", ["b.txt"], after=["impl"])])
@@ -1643,7 +1663,7 @@ def broken_rule(value, cap=500):
         return "block opener"
     if set(value) <= set("=-"):
         return "setext underline"
-    if value[:9].lower() == "verified:" or value[:13].lower() == "not verified:":
+    if value.lower().startswith(("verified:", "not verified:", "door:", "blast radius:")):
         return "reserved field prefix"
     if value.startswith("Supersedes "):
         return "reserved structure prefix"
@@ -1682,8 +1702,26 @@ def body_problems(body):
                 if not value.startswith(RECEIPT_LINE_TOKENS) and not reads_as_sentence(value)
             )
         elif heading == "## Risk":
-            values = lines
-            found = found + ((("risk lines", lines),) if len(lines) != 1 else ())
+            called = lines[:1] != [] and lines[0].startswith("Door: ")
+            door, radius = (lines[0], lines[1:2]) if called else (None, [])
+            rest = lines[2:] if called else lines
+            found = found + (
+                (("door call", lines[:2]),)
+                if called
+                and (
+                    door[len("Door: "):] not in ("one-way", "two-way")
+                    or not radius
+                    or not radius[0].startswith("Blast radius: ")
+                )
+                else ()
+            )
+            values = [line[len("Blast radius: "):] for line in radius] + rest
+            found = found + ((("risk lines", lines),) if not lines or len(rest) > 1 else ())
+            found = found + tuple(
+                ("posing merge-danger line", line)
+                for line in rest
+                if re.match(r"(?i)(door|blast radius):", line)
+            )
             found = found + tuple(
                 ("risk sentence", value) for value in values if not reads_as_sentence(value)
             )
@@ -1887,6 +1925,25 @@ class HouseFormat(unittest.TestCase):
             self.assertEqual(len(lines), 8)
             self.assertEqual(lines[7], last)
             self.assertEqual(lines[0].split("::")[0].split(": ")[1], "tests/x0.py")
+
+    def the_door_call_and_blast_radius_open_the_risk_section(self):
+        plain = core.plan([step("a", ["a.txt"])])
+        guarded = {**HEADER, "door": "two-way", "blast_radius": "Docs only."}
+        quiet = run.pull_request_body(guarded, plain, 0, None, None, CLEAN_FINDINGS, None, ())
+        self.assertEqual(section_of(quiet, "## Risk"), ["Door: two-way", "Blast radius: Docs only."])
+        self.assertEqual(body_problems(quiet), ())
+        risky = run.pull_request_body(
+            guarded, plain, 0, None, None, {**CLEAN_FINDINGS, "undeclared": ["b.txt"]}, None, ()
+        )
+        self.assertEqual(
+            section_of(risky, "## Risk"),
+            ["Door: two-way", "Blast radius: Docs only.", "Reconcile found 1 undeclared write (b.txt)."],
+        )
+        self.assertEqual(body_problems(risky), ())
+        half = run.pull_request_body(
+            {**HEADER, "door": "two-way"}, plain, 0, None, None, CLEAN_FINDINGS, None, ()
+        )
+        self.assertNotIn("## Risk", half)
 
     def risk_names_every_finding_kind_or_is_absent(self):
         plain = core.plan([step("a", ["a.txt"])])
