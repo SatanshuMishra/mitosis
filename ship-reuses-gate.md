@@ -1,6 +1,6 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: active
-Updated: 2026-10-16T21:07:59.888Z
+Updated: 2026-10-16T21:08:03.151Z
 Next ids: c3 D2 R1 S1
 
 ## Goal
@@ -18,7 +18,9 @@ Not started.
 
 ## Next step
 
-Record the interphase hand-off boundary, cut the FEATURE branch with pipeline feature-branch (type feat), write the run home and run --plan-only.
+Run the first build with ~/.mitosis/mitosis/ship-reuses-gate/run.zsh after --plan-only passes clean.
+
+Needs: D1.
 
 ## Decisions in force
 
