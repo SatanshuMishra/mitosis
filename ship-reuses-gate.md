@@ -1,6 +1,6 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
-Status: active
-Updated: 2026-10-16T22:14:40.761Z
+Status: parked
+Updated: 2026-10-16T22:14:46.125Z
 Next ids: c3 D4 R2 S1
 
 ## Goal
@@ -18,9 +18,9 @@ MSP pull request SatanshuMishra/mitosis#19 is open for the owner's review and me
 
 ## Next step
 
-Run SHIP=1 ~/.mitosis/mitosis/ship-reuses-gate/run.zsh --resume, then open the MSP pull request through the GitHub MCP create_pull_request tool with mitosis's title and body, assign the owner and post review/ship-reuses-gate.comment.md.
+The owner starts Integration by saying the MSP pull request merged (SatanshuMishra/mitosis#19 into feat/ship-reuses-gate); then resume_thread ship-reuses-gate, read ~/.mitosis/mitosis/ship-reuses-gate/CHARTER.md, sync, run pipeline integration-ready and lighthouse:test as the pipeline:run skill's Integration says.
 
-Needs: D3, R1.
+Needs: D3.
 
 ## Decisions in force
 
