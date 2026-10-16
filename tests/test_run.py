@@ -2327,7 +2327,10 @@ def session_items():
 
 
 def one_step_sessions(items):
-    return max(core.estimate_tokens(items, (index,), {}, {}) for index in range(len(items))) + 1
+    return max(
+        core.estimate_tokens(items, (index,), {}, {}, earlier=tuple(range(index)))
+        for index in range(len(items))
+    ) + 1
 
 
 class Sessions(RepoCase):

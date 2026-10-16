@@ -1084,7 +1084,7 @@ def oversized_sessions(plan):
 def oversized_lines(plan):
     return tuple(
         "Lane %d holds Step %s alone at about %d estimated tokens, above the %d one session "
-        "should hold; only splitting the Step makes it smaller"
+        "should hold, and a session holds at least one Step"
         % (index, name, tokens, plan["session_tokens"])
         for index, name, tokens in oversized_sessions(plan)
     )
@@ -1096,9 +1096,9 @@ def session_lines(plan):
         return ()
     runs = session_runs(plan)
     if not runs:
-        return ("every Lane fits one Worker session of %d estimated tokens" % limit,) + (
-            oversized_lines(plan)
-        )
+        if oversized_sessions(plan):
+            return oversized_lines(plan)
+        return ("every Lane fits one Worker session of %d estimated tokens" % limit,)
     return tuple(
         "Lanes %d to %d are one Lane of MSP %s estimated above %d tokens, built as %d fresh "
         "Worker sessions in a row on its branch, each continuing from the work committed before it"

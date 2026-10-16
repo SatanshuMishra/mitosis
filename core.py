@@ -914,14 +914,24 @@ def _task_tokens(item):
     return _tokens(len(str(item.get("task") or "").encode("utf-8")))
 
 
-def estimate_tokens(items, steps, sizes, packs, cap=CONTEXT_CAP, shared=()):
+def _built_tokens(size):
+    return NEW_FILE_TOKENS if size is None else _tokens(size)
+
+
+def estimate_tokens(items, steps, sizes, packs, cap=CONTEXT_CAP, shared=(), earlier=()):
     write_set = tuple(dict.fromkeys(path for i in steps for path in _files(items[i])))
-    read_set, _ = _lane_read_set(items, steps, packs, cap)
+    built = tuple(
+        path
+        for path in dict.fromkeys(path for i in earlier for path in _files(items[i]))
+        if path not in write_set
+    )
+    read_set, _ = _lane_read_set(items, steps, packs, cap, built)
     return (
         SESSION_BASE_TOKENS
         + sum(_tokens(sizes.get(path)) for path in dict.fromkeys(shared))
         + sum(STEP_TOKENS + _task_tokens(items[i]) for i in steps)
         + sum(_write_tokens(sizes.get(path)) for path in write_set)
+        + sum(_built_tokens(sizes.get(path)) for path in built)
         + sum(_tokens(sizes.get(path)) for path in read_set)
     )
 
@@ -931,7 +941,8 @@ def session_batches(lane, estimate, limit):
     current = ()
     for index in lane:
         grown = current + (index,)
-        if current and estimate(grown) > limit:
+        earlier = tuple(i for batch in batches for i in batch)
+        if current and estimate(grown, earlier=earlier) > limit:
             batches = batches + (current,)
             current = (index,)
         else:
@@ -1230,8 +1241,8 @@ def brief_text(brief):
         )
         if session.get("built"):
             header.append(
-                "Built and committed on this branch by earlier sessions, read before you build "
-                "on them: %s" % ", ".join(session["built"])
+                "Built and committed on this branch by earlier sessions, read what you build "
+                "on: %s" % ", ".join(session["built"])
             )
         if session.get("later"):
             header.append(
@@ -1416,7 +1427,7 @@ def plan(
                 "steps": [items[i]["name"] for i in lane],
                 "tier": lane_tiers[index],
                 "cost": lane_cost(items, lane),
-                "tokens": estimate(lane),
+                "tokens": estimate(lane, earlier=places[index]["earlier"]),
                 **(
                     {"session": [places[index]["index"], places[index]["count"]]}
                     if places[index]["count"] > 1

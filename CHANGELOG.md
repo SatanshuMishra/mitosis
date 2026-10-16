@@ -10,7 +10,8 @@ in a row on its MSP's branch.
 
 - Every Lane carries an estimate of the tokens its session will hold, from
   its Step count, the length of each task, the sizes of its write-set and
-  read-set files, and the charter and document every session reads.
+  read-set files, the charter and document every session reads, and, for a
+  later session of a split Lane, the files the earlier sessions wrote.
 - A Lane estimated above the new `--session-tokens` flag, 150000 by default,
   is split in its Step order into consecutive Lanes. Each waits on the one
   before it, runs once that one has landed, may edit every file the earlier
@@ -21,7 +22,9 @@ in a row on its MSP's branch.
   and its sessions, and names a Step whose estimate alone is above the limit.
   The JSON summary gives each Lane its session position.
 - Gate, reconcile and ship are unchanged, since they work per MSP. A resume
-  skips every session already `ok` and continues from the next one.
+  skips every session already `ok` and continues from the next one. A file a
+  session left half-written when it failed stays out of another Lane's
+  landing, so the next run of that session finishes it.
 - The plan records the file sizes it measured, and a resume plans from those
   sizes, so a file that changed in the checkout after the run started does
   not change the plan id.

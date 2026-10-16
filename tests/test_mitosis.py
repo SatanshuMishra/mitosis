@@ -1451,7 +1451,10 @@ def shared_lane_items(count):
 
 
 def one_step_limit(items):
-    return max(core.estimate_tokens(items, (index,), {}, {}) for index in range(len(items))) + 1
+    return max(
+        core.estimate_tokens(items, (index,), {}, {}, earlier=tuple(range(index)))
+        for index in range(len(items))
+    ) + 1
 
 
 class SessionReport(unittest.TestCase):
@@ -1495,6 +1498,14 @@ class SessionReport(unittest.TestCase):
         self.assertEqual([lane["session"] for lane in found["lanes"]], [None])
 
     def a_step_alone_above_the_limit_is_named_for_attention(self):
+        code, out, err = self._plan_only([briefed("big")], "--session-tokens", "1")
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
+        body = section(out, "Split quality")
+        self.assertFalse(any(line.startswith("every Lane fits") for line in body))
+        found = json.loads(out.splitlines()[-1])
+        self.assertEqual(len(found["attention"]), 1)
+        self.assertTrue(found["attention"][0].startswith("Lane 0 holds Step big alone at about "))
+        self.assertIn(found["attention"][0], body)
         code, out, err = self._plan_only(shared_lane_items(2), "--session-tokens", "1")
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
         found = json.loads(out.splitlines()[-1])

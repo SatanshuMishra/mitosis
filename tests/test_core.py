@@ -920,9 +920,10 @@ class Sessions(unittest.TestCase):
 
     def an_oversized_lane_is_split_in_step_order_into_sessions_that_run_in_a_row(self):
         items = shared_lane(6, complexity="simple")
-        limit = core.estimate_tokens(items, (0, 1), {}, {}) + 1
+        limit = core.estimate_tokens(items, (4, 5), {}, {}, earlier=(0, 1, 2, 3)) + 1
         result = core.plan(items, session_tokens=limit)
         self.assertEqual(lane_steps(result), [["s0", "s1"], ["s2", "s3"], ["s4", "s5"]])
+        self.assertEqual(result["lanes"][2]["tokens"], limit - 1)
         self.assertEqual([lane["session"] for lane in result["lanes"]], [[1, 3], [2, 3], [3, 3]])
         self.assertEqual({lane["msp"] for lane in result["lanes"]}, {0})
         self.assertEqual(len(result["msps"]), 1)
@@ -963,7 +964,7 @@ class Sessions(unittest.TestCase):
         self.assertEqual(second["session"], {"index": 2, "count": 3, "built": ["s0"], "later": ["s2"]})
         self.assertEqual([s["name"] for s in second["steps"]], ["s1"])
         self.assertTrue(second["text"].startswith("Lane 1 of MSP s0\nSession 2 of 3: "))
-        self.assertIn("by earlier sessions, read before you build on them: s0\n", second["text"])
+        self.assertIn("by earlier sessions, read what you build on: s0\n", second["text"])
         self.assertIn("Left for later sessions, do not start them: s2\n", second["text"])
         self.assertNotIn("Left for later sessions", third["text"])
         self.assertNotIn("earlier sessions", first["text"])
@@ -1001,6 +1002,19 @@ class Sessions(unittest.TestCase):
             alone = core.plan([step("a", ["a.py"])], root=root)
             reading = core.plan([step("a", ["a.py"])], root=root, graph={"a.py": ["near.py"]})
             self.assertEqual(reading["lanes"][0]["tokens"] - alone["lanes"][0]["tokens"], 1000)
+
+    def a_later_session_counts_what_earlier_sessions_wrote(self):
+        with tempfile.TemporaryDirectory() as root:
+            for index in range(3):
+                with open(os.path.join(root, "f%d.py" % index), "w") as handle:
+                    handle.write("x" * 40000)
+            items = [step("s%d" % i, ["shared.py", "f%d.py" % i]) for i in range(3)]
+            result = core.plan(items, root=root, session_tokens=1)
+        alone = core.SESSION_BASE_TOKENS + core.STEP_TOKENS + core._tokens(len("do s0"))
+        alone = alone + core.NEW_FILE_TOKENS + core.EDIT_PASSES * 10000
+        self.assertEqual(
+            [lane["tokens"] for lane in result["lanes"]], [alone, alone + 10000, alone + 20000]
+        )
 
     def a_step_alone_above_the_limit_is_its_own_session(self):
         items = shared_lane(3)
