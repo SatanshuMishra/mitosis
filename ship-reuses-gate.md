@@ -1,6 +1,6 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: active
-Updated: 2026-10-16T22:12:49.449Z
+Updated: 2026-10-16T22:12:52.457Z
 Next ids: c3 D4 R2 S1
 
 ## Goal
@@ -10,7 +10,7 @@ A mitosis resume reuses a passing gate recorded at the same head, and a new --pr
 ## Done when
 
 - [ ] c1 The MSP pull request is open into the FEATURE branch, ready for review (or draft only when a diagnosis classes a blocker blocked), assigned to the owner
-- [ ] c2 Every confirmed blocker is fixed with a receipt test that fails first, or named at the top of a draft pull request
+- [x] c2 Every confirmed blocker is fixed with a receipt test that fails first, or named at the top of a draft pull request evidence: round 2 verdict green (review/round-2/ship-reuses-gate.verdict.json): C1 and S1 fixed at e6e74c9 with receipt tests HouseFormat.the_verification_section_ends_with_its_closing_lines_past_the_limit and GateReuse.test_resume_with_a_file_git_status_hides_gates_again / ..._submodule_move_... red at 24af33c and green after; M1 fixed in the acceptance script, red-then-green on all 12 rows
 
 ## Where things stand
 
@@ -18,9 +18,9 @@ MSP ship-reuses-gate is on mitosis/ship-reuses-gate, base feat/ship-reuses-gate 
 
 ## Next step
 
-Review round 2 of MSP ship-reuses-gate on 24af33c..e6e74c9: code-reviewer and security-reviewer (the fix touches the gate-skip control), then candidates, validator, record and verdict.
+Run SHIP=1 ~/.mitosis/mitosis/ship-reuses-gate/run.zsh --resume, then open the MSP pull request through the GitHub MCP create_pull_request tool with mitosis's title and body, assign the owner and post review/ship-reuses-gate.comment.md.
 
-Needs: R1.
+Needs: D3, R1.
 
 ## Decisions in force
 
