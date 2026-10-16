@@ -25,6 +25,8 @@ PLAN_KEYS = (
     "coupling_review",
     "coupling_order",
     "counts",
+    "session_tokens",
+    "sizes",
     "briefs",
 )
 
@@ -633,6 +635,18 @@ GLOB_CHARACTERS = "*?["
 
 CONTEXT_CAP = 40
 
+SESSION_TOKENS = 150000
+
+BYTES_PER_TOKEN = 4
+
+SESSION_BASE_TOKENS = 20000
+
+STEP_TOKENS = 10000
+
+EDIT_PASSES = 2
+
+NEW_FILE_TOKENS = 2000
+
 RISKY_OUTCOMES = ("reverted", "speculative", "failed", "regressed")
 
 TRAPS_FOR_RISK = 2
@@ -863,6 +877,99 @@ def lane_cost(items, lane):
     return sum(item_cost(items[i]) for i in lane)
 
 
+def _measured(path, root):
+    if root is None or any(character in path for character in GLOB_CHARACTERS):
+        return None
+    full = os.path.join(root, path)
+    try:
+        return os.path.getsize(full) if os.path.isfile(full) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _recorded_size(value):
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def file_sizes(paths, root, known=None):
+    recorded = known if isinstance(known, dict) else {}
+    return {
+        path: _recorded_size(recorded[path]) if path in recorded else _measured(path, root)
+        for path in dict.fromkeys(paths)
+    }
+
+
+def _tokens(size):
+    return -(-int(size or 0) // BYTES_PER_TOKEN)
+
+
+def _write_tokens(size):
+    return NEW_FILE_TOKENS if size is None else EDIT_PASSES * _tokens(size)
+
+
+def _task_tokens(item):
+    return _tokens(len(str(item.get("task") or "").encode("utf-8")))
+
+
+def estimate_tokens(items, steps, sizes, packs, cap=CONTEXT_CAP, shared=()):
+    write_set = tuple(dict.fromkeys(path for i in steps for path in _files(items[i])))
+    read_set, _ = _lane_read_set(items, steps, packs, cap)
+    return (
+        SESSION_BASE_TOKENS
+        + sum(_tokens(sizes.get(path)) for path in dict.fromkeys(shared))
+        + sum(STEP_TOKENS + _task_tokens(items[i]) for i in steps)
+        + sum(_write_tokens(sizes.get(path)) for path in write_set)
+        + sum(_tokens(sizes.get(path)) for path in read_set)
+    )
+
+
+def session_batches(lane, estimate, limit):
+    batches = ()
+    current = ()
+    for index in lane:
+        grown = current + (index,)
+        if current and estimate(grown) > limit:
+            batches = batches + (current,)
+            current = (index,)
+        else:
+            current = grown
+    return batches + (current,) if current else batches
+
+
+def _session_spans(groups):
+    spans = ()
+    start = 0
+    for group in groups:
+        spans = spans + tuple((start, start + len(group) - 1) for _ in group)
+        start = start + len(group)
+    return spans
+
+
+def chained_after(edges, groups):
+    spans = _session_spans(groups)
+    chained = {
+        int(consumer): tuple(
+            sorted(
+                {
+                    int(producer) if spans[int(producer)] == spans[int(consumer)]
+                    else spans[int(producer)][1]
+                    for producer in producers
+                }
+            )
+        )
+        for consumer, producers in edges.items()
+    }
+    for session, (first, _) in enumerate(spans):
+        if session > first:
+            chained = {
+                **chained,
+                session: tuple(sorted(set(chained.get(session, ())) | {session - 1})),
+            }
+    return dict(sorted(chained.items()))
+
+
 NODE_LINK_KEYS = ("links", "edges")
 
 CODE_FILE_TYPE = "code"
@@ -1084,8 +1191,8 @@ def _step_brief(item):
     return {key: item[key] for key in keys if key in item}
 
 
-def _lane_read_set(items, lane, packs, cap=CONTEXT_CAP):
-    write_set = frozenset(path for i in lane for path in _files(items[i]))
+def _lane_read_set(items, lane, packs, cap=CONTEXT_CAP, owned=()):
+    write_set = frozenset(path for i in lane for path in _files(items[i])) | frozenset(owned)
     read = ()
     for i in lane:
         for path in packs.get(items[i]["name"], {}).get("paths", ()):
@@ -1113,6 +1220,22 @@ def brief_text(brief):
             "Document: %s (open it from your worktree; it carries what no Step owns)"
             % brief["document"]
         )
+    session = brief.get("session")
+    if session:
+        header.append(
+            "Session %d of %d: these Steps are part of one Lane too large for one Worker "
+            "session, so fresh sessions build it in a row on one branch"
+            % (session["index"], session["count"])
+        )
+        if session.get("built"):
+            header.append(
+                "Built and committed on this branch by earlier sessions, read before you build "
+                "on them: %s" % ", ".join(session["built"])
+            )
+        if session.get("later"):
+            header.append(
+                "Left for later sessions, do not start them: %s" % ", ".join(session["later"])
+            )
     body = ["Steps, in this order:"]
     for position, item in enumerate(brief["steps"], 1):
         body.append("")
@@ -1148,13 +1271,23 @@ def brief_text(brief):
     return "\n\n".join("\n".join(part) for part in (header, body, footer)) + "\n"
 
 
-def _brief(items, lane_index, lane, msp_index, msp_label, packs, charter, source, cap=CONTEXT_CAP):
-    write_set = ()
-    for i in lane:
-        for path in _files(items[i]):
-            if path not in write_set:
-                write_set = write_set + (path,)
-    read_set, read_overflow = _lane_read_set(items, lane, packs, cap)
+def _brief(
+    items,
+    lane_index,
+    lane,
+    msp_index,
+    msp_label,
+    packs,
+    charter,
+    source,
+    cap=CONTEXT_CAP,
+    earlier=(),
+    session=None,
+):
+    write_set = tuple(
+        dict.fromkeys(path for i in tuple(lane) + tuple(earlier) for path in _files(items[i]))
+    )
+    read_set, read_overflow = _lane_read_set(items, lane, packs, cap, write_set)
     partial = {
         "lane": lane_index,
         "msp": msp_index,
@@ -1166,6 +1299,7 @@ def _brief(items, lane_index, lane, msp_index, msp_label, packs, charter, source
         "charter": charter,
         "document": source.get("path") if isinstance(source, dict) else None,
         "return_contract": RETURN_CONTRACT,
+        **({"session": session} if session else {}),
     }
     return {**partial, "text": brief_text(partial)}
 
@@ -1176,6 +1310,44 @@ def _present(value):
     if isinstance(value, (list, tuple, dict)) and not value:
         return False
     return True
+
+
+def _session_places(groups):
+    return tuple(
+        {
+            "index": position,
+            "count": len(group),
+            "earlier": tuple(i for batch in group[: position - 1] for i in batch),
+            "later": tuple(i for batch in group[position:] for i in batch),
+        }
+        for group in groups
+        for position in range(1, len(group) + 1)
+    )
+
+
+def _session(items, place):
+    if place["count"] < 2:
+        return None
+    return {
+        "index": place["index"],
+        "count": place["count"],
+        "built": [items[i]["name"] for i in place["earlier"]],
+        "later": [items[i]["name"] for i in place["later"]],
+    }
+
+
+def _session_review(review, items, lanes):
+    lane_of = _owners(lanes, len(items))
+    by_name = _by_name(items)
+    return [{**pair, "lanes": [lane_of[by_name[name]] for name in pair["steps"]]} for pair in review]
+
+
+def _sized_paths(items, packs, shared):
+    return (
+        tuple(path for item in items for path in _files(item))
+        + tuple(path for pack in packs.values() for path in pack.get("paths", ()))
+        + tuple(shared)
+    )
 
 
 def plan(
@@ -1189,15 +1361,15 @@ def plan(
     history=(),
     budget=3,
     root=None,
+    session_tokens=SESSION_TOKENS,
+    sizes=None,
 ):
     checked = validate(items, root=root)
     if checked["errors"]:
         raise ValidationError(checked["errors"])
     items, ordered = order_coupled(items, graph, risk_markers, history)
     msps = msp_items(items)
-    lanes = lane_items(items)
-    owners = lane_msps(items, lanes)
-    edges = lane_after(items, lanes)
+    whole = lane_items(items)
     tiers = {
         item["name"]: tier_for(
             _files(item), risk_markers, item.get("complexity"), item.get("assumptions"), history
@@ -1207,6 +1379,24 @@ def plan(
     packs = context_packs(items, graph, hops, cap)
     labels = tuple(_msp_label(items, msp) for msp in msps)
     source = items[0].get("source") if items else None
+    shared = tuple(
+        path
+        for path in (charter, source.get("path") if isinstance(source, dict) else None)
+        if isinstance(path, str) and path
+    )
+    measured = file_sizes(_sized_paths(items, packs, shared), root, sizes)
+    estimate = functools.partial(
+        estimate_tokens, items, sizes=measured, packs=packs, cap=cap, shared=shared
+    )
+    groups = tuple(session_batches(lane, estimate, session_tokens) for lane in whole)
+    lanes = tuple(batch for group in groups for batch in group)
+    places = _session_places(groups)
+    group_tiers = tuple(
+        "top" if any(tiers[items[i]["name"]] == "top" for i in lane) else "cheap" for lane in whole
+    )
+    lane_tiers = tuple(group_tiers[g] for g, group in enumerate(groups) for _ in group)
+    owners = lane_msps(items, lanes)
+    edges = chained_after(lane_after(items, lanes), groups)
     body = {
         "version": __version__,
         "source": source,
@@ -1223,8 +1413,14 @@ def plan(
             {
                 "msp": owners[index],
                 "steps": [items[i]["name"] for i in lane],
-                "tier": "top" if any(tiers[items[i]["name"]] == "top" for i in lane) else "cheap",
+                "tier": lane_tiers[index],
                 "cost": lane_cost(items, lane),
+                "tokens": estimate(lane),
+                **(
+                    {"session": [places[index]["index"], places[index]["count"]]}
+                    if places[index]["count"] > 1
+                    else {}
+                ),
             }
             for index, lane in enumerate(lanes)
         ],
@@ -1235,11 +1431,27 @@ def plan(
         "context_packs": packs,
         "lane_order": list(lane_order(lanes, edges, items)),
         "coalesce": coalesce(items, lanes, tiers, edges, budget),
-        "coupling_review": coupling_review(items, lanes, graph, risk_markers, history),
+        "coupling_review": _session_review(
+            coupling_review(items, whole, graph, risk_markers, history), items, lanes
+        ),
         "coupling_order": ordered,
         "counts": checked["counts"],
+        "session_tokens": session_tokens,
+        "sizes": measured,
         "briefs": [
-            _brief(items, index, lane, owners[index], labels[owners[index]], packs, charter, source, cap)
+            _brief(
+                items,
+                index,
+                lane,
+                owners[index],
+                labels[owners[index]],
+                packs,
+                charter,
+                source,
+                cap,
+                places[index]["earlier"],
+                _session(items, places[index]),
+            )
             for index, lane in enumerate(lanes)
         ],
     }
