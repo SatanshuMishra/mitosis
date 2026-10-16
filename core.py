@@ -125,6 +125,7 @@ FLAG_NAMES = (
     "--concurrency",
     "--context-hops",
     "--context-cap",
+    "--session-tokens",
     "--graph",
     "--risk-markers",
     "--serial-markers",
