@@ -65,14 +65,13 @@ claude -p {task} --model {model} --permission-mode bypassPermissions
 
 The brief already carries the charter path, the document path, the Steps in
 order, the write-set, the read-set and the return contract; the Worker needs
-nothing else. It must print the one-line JSON return the brief ends with, and
-a Claude Code Worker prints its final message last, so this template satisfies
-that. Narration after it, or a code fence around it, is tolerated: the last
+nothing else. It must print the brief's one-line JSON return last, as a Claude
+Code Worker's final message is. Narration after it, or a code fence around it, is tolerated: the last
 line that parses as a JSON object is the return.
 
 Tiers are labels, not models. When the dispatch template uses the model
 placeholder, every tier the plan assigns must be mapped, or mitosis refuses
-to start rather than let a Lane run on whatever the default is:
+to start:
 
 ```
 --tier-model top=claude-opus-5 --tier-model cheap=claude-sonnet-5
@@ -227,8 +226,8 @@ belongs to, listed for the caller and given a distinct exit code.
 
 `manifest-exports-nothing` means the file that declares what a package exports
 is written by a Step built before the modules it must export, so it would ship
-empty and the package would have no public interface. Every test still passes
-when this happens, which is why a program has to say so. Give that file to a
+empty and the package would have no public interface, while every test still
+passes. Give that file to a
 Step with an `after` edge reaching every Step whose modules it exports.
 
 `lane-cycle` means Lanes that waited on each other, so one Worker builds them
@@ -242,17 +241,16 @@ document. Write it into the decisions file, in your own words, and name it
 with `--decisions PATH` (default: `<document without extension>.decisions.md`
 when that file exists). The Decisions section of the report then names the
 file and counts its settled questions, or says none was supplied. That file
-is binding on every later structure dispatch and every brief for this
-document, nothing in mitosis merges or rewords an entry, and the list only
-ever grows: a question answered once is never re-asked.
+binds every later structure dispatch and brief for this document, nothing in
+mitosis merges or rewords an entry, and a question answered once is never
+re-asked.
 
 Where a document is soft, one dispatch will not tell you so. `--structure-
 samples N` runs N structure dispatches at once, scores each with the same
 scalars, and prints them ranked with where they disagree: a file split
-differently, or another MSP count or parallelism. The best is persisted,
-`--pick K` persists the Kth instead, and the default of 1 is a single
-dispatch. A disagreement over a file means the document never said who owns
-it.
+differently, or another MSP count or parallelism. The best is persisted, or
+the Kth with `--pick K`. A disagreement over a file means the document never
+said who owns it.
 
 Revise the structure once the decisions file has grown, without paying to
 rebuild every Step:
@@ -286,6 +284,14 @@ Validate, schedule, one worktree and branch per MSP under the run directory,
 one Worker per Lane with producers merged in first, then per MSP: commit,
 gate, reconcile, push, open a draft pull request stacked on its single
 predecessor when `--pr-command` is given, report.
+
+A Worker session should stay small. mitosis estimates each Lane's tokens from
+its Steps, tasks, write-set and read-set sizes, charter and document, and
+splits one above `--session-tokens` (default 150000) in Step order into
+consecutive Lanes. Each runs as a fresh session once the one before it lands,
+may edit what earlier sessions wrote, and is told which Steps they built; a
+resume starts at the first not `ok`. The split quality section names each
+split and any Step too large alone.
 
 The Lanes of one MSP share its worktree, and `--concurrency` Workers run at
 once, four by default. Each brief tells its Worker that others are writing in
@@ -381,12 +387,6 @@ pull-request flags are not needed and `--pr-command` is refused. Run the
 project's own checks against those branches, then `--resume` without
 `--no-push` ships what was held. Resuming with `--no-push` again leaves a
 `committed` MSP where it is.
-
-## What mitosis never does
-
-Merge. Run the full test suite. Name a model, hold a key or link an SDK.
-Judge a document's quality; it reports how cleanly one decomposed and never
-refuses one. Clean up after a failure, beyond the probe branch.
 
 ## Checking an installed copy
 
