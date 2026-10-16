@@ -1,7 +1,7 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: active
-Updated: 2026-10-16T22:05:57.884Z
-Next ids: c3 D3 R2 S1
+Updated: 2026-10-16T22:12:49.449Z
+Next ids: c3 D4 R2 S1
 
 ## Goal
 
@@ -25,6 +25,7 @@ Needs: R1.
 ## Decisions in force
 
 - D2 interphase hand-off: build the handed-off spec as one MSP: One MSP, ship-reuses-gate, built as three Worker sessions in a row on its branch (plan 6f008d7094cf); recorded as an assumption in the MSP's assumptions file.
+- D3 ship: push MSP ship-reuses-gate and open its pull request ready for review: Ship: resume with SHIP=1 so mitosis gates again with the fixed acceptance script and pushes mitosis/ship-reuses-gate, then open the pull request into feat/ship-reuses-gate, ready for review and assigned to the owner, and post the review comment.
 
 ## Open risks
 
