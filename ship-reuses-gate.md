@@ -1,6 +1,6 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: parked
-Updated: 2026-10-16T22:14:46.125Z
+Updated: 2026-10-16T23:42:03.564Z
 Next ids: c3 D4 R2 S1
 
 ## Goal
@@ -14,7 +14,7 @@ A mitosis resume reuses a passing gate recorded at the same head, and a new --pr
 
 ## Where things stand
 
-MSP pull request SatanshuMishra/mitosis#19 is open for the owner's review and merge; the FEATURE pull request into main does not exist yet. The pull request body's What changed repeats one boilerplate sentence three times, because each Step's task opens with the same sentence and mitosis lists each task's first sentence.
+Integration: SatanshuMishra/mitosis#19 merged into feat/ship-reuses-gate (b6fb1a4); pipeline integration-ready reports ready. lighthouse:test on feat/ship-reuses-gate against main is next; failures are diagnosed per class before any fix, with no round cap, and --final only for a failure diagnosed blocked.
 
 ## Next step
 
