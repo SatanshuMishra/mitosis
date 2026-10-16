@@ -1,6 +1,6 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: active
-Updated: 2026-10-16T21:37:08.151Z
+Updated: 2026-10-16T21:38:23.024Z
 Next ids: c3 D3 R2 S1
 
 ## Goal
@@ -14,7 +14,7 @@ A mitosis resume reuses a passing gate recorded at the same head, and a new --pr
 
 ## Where things stand
 
-Build 1 committed MSP ship-reuses-gate at 24af33c on mitosis/ship-reuses-gate, base feat/ship-reuses-gate (dfd60b6). Suite passes on 3.14 and 3.9. Review round 1 (code, security, conformance) is running.
+Build 1 committed MSP ship-reuses-gate at 24af33c on mitosis/ship-reuses-gate, base feat/ship-reuses-gate (dfd60b6). Suite passes on 3.14 and 3.9. Review round 1: conformance found all three criteria met; code and security reviews are running.
 
 ## Next step
 
