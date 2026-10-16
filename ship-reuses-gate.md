@@ -1,6 +1,6 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: active
-Updated: 2026-10-16T21:12:49.661Z
+Updated: 2026-10-16T21:12:51.236Z
 Next ids: c3 D3 R1 S1
 
 ## Goal
