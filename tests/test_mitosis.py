@@ -1214,6 +1214,172 @@ class PushOnly(unittest.TestCase):
         self.assertEqual((held[0]["title"], held[0]["body"]), (None, None))
 
 
+COUNTING_ACCEPTANCE = r'''
+import os
+import sys
+
+with open(sys.argv[1], "a") as handle:
+    handle.write("%s %s\n" % (sys.argv[2], sys.argv[3]))
+sys.exit(0 if os.path.exists("alpha.py") and "work" in open("alpha.py").read() else 1)
+'''
+
+
+def git_out(cwd, *args):
+    return subprocess.run(
+        ["git", "-C", cwd, *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, **ISOLATED_GIT_ENV},
+    ).stdout.strip()
+
+
+class ProvenHead(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.elsewhere = tempfile.mkdtemp()
+        self.run_dir = os.path.join(self.elsewhere, "run")
+        self.counter = os.path.join(self.elsewhere, "acceptance-calls")
+        git_repo(self.root)
+        remote = os.path.join(self.elsewhere, "remote.git")
+        subprocess.run(
+            ["git", "init", "-q", "--bare", remote],
+            check=True,
+            capture_output=True,
+            env={**os.environ, **ISOLATED_GIT_ENV},
+        )
+        git_out(self.root, "remote", "add", "origin", remote)
+        step = briefed(
+            "alpha",
+            files=["alpha.py", "alpha_check.txt"],
+            acceptance=[{"file": "alpha_check.txt", "test": "property"}],
+        )
+        write(self.root, "items.json", json.dumps([step]))
+
+    def tearDown(self):
+        subprocess.run(["rm", "-rf", self.root, self.elsewhere], check=True)
+
+    def _invoke(self, *extra):
+        with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
+            return invoke(
+                self.root,
+                [
+                    "--items",
+                    "items.json",
+                    "--run-dir",
+                    self.run_dir,
+                    "--feature-branch",
+                    "feature",
+                    "--dispatch-command",
+                    command(self.elsewhere, "worker.py", HOLDING_WORKER, "{task}"),
+                    "--acceptance-command",
+                    command(
+                        self.elsewhere,
+                        "accept.py",
+                        COUNTING_ACCEPTANCE,
+                        shlex.quote(self.counter),
+                        "{file}",
+                        "{test}",
+                    ),
+                    "--timeout",
+                    "30",
+                    *PR_FLAGS,
+                    *extra,
+                ],
+            )
+
+    def _calls(self):
+        if not os.path.exists(self.counter):
+            return 0
+        with open(self.counter, encoding="utf-8") as handle:
+            return len(handle.read().splitlines())
+
+    def _held(self):
+        code, out, err = self._invoke("--no-push")
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        self.assertGreater(self._calls(), 0)
+        tree = read_json(os.path.join(self.run_dir, run.STATE_FILE))["worktrees"][0]["path"]
+        return tree, git_out(tree, "rev-parse", "HEAD")
+
+    def _new_commit(self, tree):
+        write(tree, "alpha.py", "work\nmore work\n")
+        git_out(tree, "commit", "-q", "-a", "-m", "more work")
+        return git_out(tree, "rev-parse", "HEAD")
+
+    def _no_build(self):
+        branches = git_out(self.root, "for-each-ref", "--format=%(refname)", "refs/heads/mitosis/")
+        self.assertEqual(branches, "")
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "trees")))
+
+    def test_proven_head_ships_without_gating(self):
+        tree, _ = self._held()
+        calls = self._calls()
+        new_head = self._new_commit(tree)
+        code, out, err = self._invoke("--resume", "--proven-head", "alpha=" + new_head)
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        self.assertEqual(self._calls(), calls)
+        found = json.loads(out.splitlines()[-1])
+        self.assertEqual(found["msps"][0]["state"], run.MSP_PUSHED)
+
+    def test_proven_head_body_names_both_commits(self):
+        tree, gated = self._held()
+        new_head = self._new_commit(tree)
+        code, out, err = self._invoke("--resume", "--proven-head", "alpha=" + new_head)
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        body = json.loads(out.splitlines()[-1])["msps"][0]["body"]
+        self.assertEqual(
+            body.splitlines()[-1],
+            "Not verified: mitosis gated commit %s; the caller proved commit %s without a new gate."
+            % (gated[:12], new_head[:12]),
+        )
+
+    def test_a_different_head_gates_again(self):
+        tree, gated = self._held()
+        calls = self._calls()
+        self._new_commit(tree)
+        code, out, err = self._invoke("--resume", "--proven-head", "alpha=" + gated)
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        self.assertGreater(self._calls(), calls)
+
+    def test_no_recorded_gate_gates(self):
+        tree, gated = self._held()
+        calls = self._calls()
+        path = os.path.join(self.run_dir, run.STATE_FILE)
+        state = read_json(path)
+        record = state["msps"]["0"]
+        ungated = {**state, "msps": {**state["msps"], "0": {**record, "gate": None}}}
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(ungated, handle)
+        code, out, err = self._invoke("--resume", "--proven-head", "alpha=" + gated)
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        self.assertGreater(self._calls(), calls)
+
+    def a_label_holding_a_space_or_an_equals_sign_splits_at_the_last_equals_sign(self):
+        self.assertEqual(
+            mitosis.PROVEN_HEAD.fullmatch("add login=abcdef1").groups(), ("add login", "abcdef1")
+        )
+        self.assertEqual(mitosis.PROVEN_HEAD.fullmatch("a=b=abcdef1").groups(), ("a=b", "abcdef1"))
+
+    def test_refuses_a_malformed_proven_head(self):
+        code, out, err = self._invoke("--proven-head", "core-abc")
+        self.assertEqual(code, mitosis.EXIT_USAGE, out + err)
+        self._no_build()
+
+    def test_refuses_an_unknown_msp_label(self):
+        commit = git_out(self.root, "rev-parse", "HEAD")
+        code, out, err = self._invoke("--proven-head", "nosuch=" + commit)
+        self.assertEqual(code, mitosis.EXIT_USAGE, out + err)
+        self.assertEqual(
+            err.splitlines(),
+            [
+                "mitosis: --proven-head names MSP nosuch, which the plan does not hold",
+                "exit 2: the flags did not parse",
+            ],
+        )
+        self._no_build()
+        self.assertEqual(self._calls(), 0)
+
+
 class GateExit(unittest.TestCase):
     PLAN = {
         "plan_id": "p",
@@ -1633,6 +1799,7 @@ def load_tests(loader, tests, pattern):
         GraphLoading,
         PullRequestFlags,
         PushOnly,
+        ProvenHead,
         SessionReport,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))

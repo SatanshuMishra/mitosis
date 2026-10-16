@@ -112,6 +112,23 @@ python3 mitosis.py \
 Run `python3 mitosis.py --help` for every flag; this is one path through it,
 not the full surface.
 
+## Holding and resuming a run
+
+`--no-push` builds, gates and reconciles every MSP and publishes nothing;
+`--resume` with the same input and run directory continues a run, and
+without `--no-push` ships what was held. A resume reuses an MSP's recorded
+gate result when it passed, the MSP's HEAD is the commit the gate ran at and
+its worktree holds no uncommitted change; otherwise the MSP is gated again.
+
+A caller that proved a later head itself names it with
+`--proven-head <MSP label>=<commit>`, once per MSP. mitosis ships that head
+without gating again when the MSP's HEAD equals the commit, its worktree is
+clean and a passing gate result is recorded, and the pull request's
+Verification section names both commits on a Not verified: line. A head that
+differs, or an MSP with no recorded gate result, is gated as before; a
+malformed value or a label the plan does not hold exits 2 before anything is
+built.
+
 ## Tests
 
 ```
