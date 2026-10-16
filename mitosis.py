@@ -133,7 +133,7 @@ STAGE_FLAG_NAMES = (
     "--proven-head",
 )
 
-PROVEN_HEAD = re.compile(r"^([^=\s]+)=([0-9a-f]{7,40})$")
+PROVEN_HEAD = re.compile(r"^(.+)=([0-9a-f]{7,40})$")
 
 RUN_FLAGS = (
     ("--feature-branch", "feature_branch"),

@@ -1435,10 +1435,11 @@ def _what_changed(plan, msp):
     )
 
 
-def _capped(values, overflow):
-    if len(values) <= SECTION_LIMIT:
-        return values
-    return values[: SECTION_LIMIT - 1] + (overflow % (len(values) - SECTION_LIMIT + 1),)
+def _capped(values, overflow, closing=()):
+    room = SECTION_LIMIT - len(closing)
+    if len(values) <= room:
+        return values + closing
+    return values[: room - 1] + (overflow % (len(values) - room + 1),) + closing
 
 
 def _unproven(outcome):
@@ -1483,9 +1484,8 @@ def _verification(plan, msp, gate_result, gate_error, proven_head=None):
             for name in names
             if not steps[name].get("acceptance")
         )
-        + (("the gate could not run",) if gate_error else ())
-        + _proof(gate_result, proven_head)
     )
+    closing = (("the gate could not run",) if gate_error else ()) + _proof(gate_result, proven_head)
     return tuple(
         VERIFIED_PREFIX + value
         for value in _capped(
@@ -1493,7 +1493,7 @@ def _verification(plan, msp, gate_result, gate_error, proven_head=None):
         )
     ) + tuple(
         NOT_VERIFIED_PREFIX + value
-        for value in _capped(unproven, "%d more acceptance checks were not proven")
+        for value in _capped(unproven, "%d more acceptance checks were not proven", closing)
     )
 
 
@@ -1806,28 +1806,26 @@ def _passing_gate(prior):
     return recorded
 
 
-def _clean_head(tree):
-    head = git_run(["rev-parse", "HEAD"], tree["path"])
-    status = git_run(["status", "--porcelain"], tree["path"])
-    if head.returncode != 0 or status.returncode != 0 or status.stdout.strip():
+def _committed_head(plan, msp, tree):
+    try:
+        return commit_all(
+            tree["path"], "chore(%s): commit the MSP's work before the gate" % _label(plan, msp)
+        )
+    except GitError:
         return None
-    return head.stdout.strip() or None
 
 
-def _reusable_gate(prior, tree):
+def _reusable_gate(prior, head):
     recorded = _passing_gate(prior)
-    if recorded is None or _clean_head(tree) != recorded.get("commit"):
+    if recorded is None or head is None or head != recorded.get("commit"):
         return None
     return recorded
 
 
-def _proven_head(prior, tree, proven):
-    if proven is None or _passing_gate(prior) is None:
+def _proven_head(prior, head, proven):
+    if proven is None or head is None or _passing_gate(prior) is None:
         return None
-    head = _clean_head(tree)
-    if head is None or not head.startswith(proven):
-        return None
-    return head
+    return head if head.startswith(proven) else None
 
 
 def _reconcile_stage(plan, msp, tree, producers, trees, settings):
@@ -1903,8 +1901,9 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     block = _lane_block(plan, msp, state) or _producer_block(plan, msp, state, producers)
     if block is not None:
         return write_state(run_dir, _msp_record(state, msp, **block))
-    proven_head = _proven_head(prior, tree, settings["proven_heads"].get(msp))
-    reused = _passing_gate(prior) if proven_head is not None else _reusable_gate(prior, tree)
+    head = _committed_head(plan, msp, tree)
+    proven_head = _proven_head(prior, head, settings["proven_heads"].get(msp))
+    reused = _passing_gate(prior) if proven_head is not None else _reusable_gate(prior, head)
     gated = (
         {"gate": reused, "gate_error": None}
         if reused is not None

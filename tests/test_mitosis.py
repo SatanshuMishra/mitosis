@@ -1354,6 +1354,12 @@ class ProvenHead(unittest.TestCase):
         self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
         self.assertGreater(self._calls(), calls)
 
+    def a_label_holding_a_space_or_an_equals_sign_splits_at_the_last_equals_sign(self):
+        self.assertEqual(
+            mitosis.PROVEN_HEAD.fullmatch("add login=abcdef1").groups(), ("add login", "abcdef1")
+        )
+        self.assertEqual(mitosis.PROVEN_HEAD.fullmatch("a=b=abcdef1").groups(), ("a=b", "abcdef1"))
+
     def test_refuses_a_malformed_proven_head(self):
         code, out, err = self._invoke("--proven-head", "core-abc")
         self.assertEqual(code, mitosis.EXIT_USAGE, out + err)

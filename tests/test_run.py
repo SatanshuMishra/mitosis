@@ -1175,7 +1175,7 @@ class Gate(RepoCase):
 
 
 class GateReuse(RepoCase):
-    def held_run(self, accept="real"):
+    def _held_run(self, accept="real"):
         self.add_remote()
         plan = core.plan([gated_step()])
         held = self.execute(plan, accept=accept, no_push=True)
@@ -1185,14 +1185,14 @@ class GateReuse(RepoCase):
         return plan, held, gate_runs
 
     def test_resume_at_the_gated_head_runs_no_acceptance(self):
-        plan, held, gate_runs = self.held_run()
+        plan, held, gate_runs = self._held_run()
         resumed = self.execute(plan, resume=True)
         self.assertEqual(len(self.gate_runs()), gate_runs)
         self.assertEqual(resumed["msps"]["0"]["state"], "shipped")
         self.assertEqual(resumed["msps"]["0"]["gate"], held["msps"]["0"]["gate"])
 
     def test_resume_after_a_new_commit_gates_again(self):
-        plan, held, gate_runs = self.held_run()
+        plan, held, gate_runs = self._held_run()
         tree = held["worktrees"][0]["path"]
         new_head = self.commit_file(tree, "impl.txt", "work by lane 0\nmore work\n")
         resumed = self.execute(plan, resume=True)
@@ -1200,18 +1200,52 @@ class GateReuse(RepoCase):
         self.assertEqual(resumed["msps"]["0"]["gate"]["commit"], new_head)
 
     def test_resume_with_an_uncommitted_change_gates_again(self):
-        plan, held, gate_runs = self.held_run()
+        plan, held, gate_runs = self._held_run()
         tree = held["worktrees"][0]["path"]
         write(os.path.join(tree, "impl.txt"), "work by lane 0\nuncommitted work\n")
         self.execute(plan, resume=True)
         self.assertGreater(len(self.gate_runs()), gate_runs)
 
     def test_resume_after_a_blocking_gate_gates_again(self):
-        plan, held, gate_runs = self.held_run(accept="exit7")
+        plan, held, gate_runs = self._held_run(accept="exit7")
         self.assertEqual(held["msps"]["0"]["gate"]["outcome"], "inconclusive")
         resumed = self.execute(plan, accept="real", resume=True)
         self.assertGreater(len(self.gate_runs()), gate_runs)
         self.assertEqual(resumed["msps"]["0"]["gate"]["outcome"], "pass")
+
+    def test_resume_with_a_file_git_status_hides_gates_again(self):
+        plan, held, gate_runs = self._held_run()
+        tree = held["worktrees"][0]["path"]
+        sh(["git", "config", "status.showUntrackedFiles", "no"], tree)
+        write(os.path.join(tree, "ungated.txt"), "never gated\n")
+        resumed = self.execute(plan, resume=True)
+        record = resumed["msps"]["0"]
+        self.assertGreater(len(self.gate_runs()), gate_runs)
+        self.assertEqual(record["state"], "shipped")
+        self.assertEqual(record["gate"]["commit"], record["ship"]["pushed"])
+        self.assertIn(
+            "ungated.txt",
+            sh(["git", "ls-tree", "--name-only", record["gate"]["commit"]], tree).splitlines(),
+        )
+
+    def test_resume_with_a_submodule_move_git_status_hides_gates_again(self):
+        source = os.path.join(self.tmp, "dependency")
+        sh(["git", "init", "-q", "-b", "main", source], self.tmp)
+        self.commit_file(source, "dep.txt", "1\n")
+        sh(
+            ["git", "-c", "protocol.file.allow=always", "submodule", "add", "-q", source, "dep"],
+            self.repo,
+        )
+        sh(["git", "commit", "-q", "-m", "add the dependency"], self.repo)
+        plan, held, gate_runs = self._held_run()
+        tree = held["worktrees"][0]["path"]
+        sh(["git", "-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init"], tree)
+        sh(["git", "config", "diff.ignoreSubmodules", "all"], tree)
+        self.commit_file(os.path.join(tree, "dep"), "dep.txt", "2\n")
+        resumed = self.execute(plan, resume=True)
+        record = resumed["msps"]["0"]
+        self.assertGreater(len(self.gate_runs()), gate_runs)
+        self.assertEqual(record["gate"]["commit"], record["ship"]["pushed"])
 
 
 class Reconcile(RepoCase):
@@ -1790,6 +1824,52 @@ def section_of(body, heading):
 
 
 class HouseFormat(unittest.TestCase):
+    def the_verification_section_ends_with_its_closing_lines_past_the_limit(self):
+        gated_commit = "a" * 40
+        proven_commit = "b" * 40
+        plan = core.plan(
+            [
+                step(
+                    "impl",
+                    ["impl.txt", "tests/impl.py"],
+                    msp="m",
+                    acceptance=[{"file": "tests/impl.py", "test": "case"}],
+                )
+            ]
+            + [step("bare%d" % n, ["bare%d.txt" % n], msp="m") for n in range(8)]
+        )
+        gate = {
+            "commit": gated_commit,
+            "blocks": False,
+            "properties": [
+                {"step": "impl", "file": "tests/impl.py", "test": "case", "outcome": "pass"}
+            ]
+            + [
+                {"step": "bare%d" % n, "file": None, "test": None, "outcome": "not-applicable"}
+                for n in range(8)
+            ],
+        }
+        closings = (
+            (
+                run.pull_request_body(
+                    HEADER, plan, 0, gate, None, CLEAN_FINDINGS, None, (), proven_commit
+                ),
+                "Not verified: mitosis gated commit %s; the caller proved commit %s without a new gate."
+                % (gated_commit[:12], proven_commit[:12]),
+            ),
+            (
+                run.pull_request_body(HEADER, plan, 0, gate, "boom", CLEAN_FINDINGS, None, ()),
+                "Not verified: the gate could not run",
+            ),
+        )
+        for body, closing in closings:
+            lines = section_of(body, "## Verification")
+            unproven = [line for line in lines if line.startswith("Not verified: ")]
+            self.assertEqual(lines[-1], closing)
+            self.assertEqual(len(unproven), 8)
+            self.assertEqual(unproven[-2], "Not verified: 2 more acceptance checks were not proven")
+            self.assertEqual(body_problems(body), ())
+
     def a_title_carries_the_caller_type_scope_and_subject(self):
         one = core.plan([step("impl", ["impl.txt"])])
         two = core.plan([step("a", ["a.txt"], msp="core"), step("b", ["b.txt"], msp="docs")])
