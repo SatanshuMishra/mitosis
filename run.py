@@ -1009,10 +1009,12 @@ def _gate_result(properties, implementation, commit, reverted):
     }
 
 
+def commit_before_gate(plan, msp, tree):
+    return commit_all(tree, "chore(%s): commit the MSP's work before the gate" % _label(plan, msp))
+
+
 def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None):
-    commit = commit_all(
-        tree, "chore(%s): commit the MSP's work before the gate" % _label(plan, msp)
-    )
+    commit = commit_before_gate(plan, msp, tree)
     properties = msp_properties(
         plan, msp, steps_without_implementation_change(plan, msp, tree, base)
     )
@@ -1808,9 +1810,7 @@ def _passing_gate(prior):
 
 def _committed_head(plan, msp, tree):
     try:
-        return commit_all(
-            tree["path"], "chore(%s): commit the MSP's work before the gate" % _label(plan, msp)
-        )
+        return commit_before_gate(plan, msp, tree["path"])
     except GitError:
         return None
 
