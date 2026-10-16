@@ -1446,6 +1446,126 @@ class LaneCycleFusion(unittest.TestCase):
                 self.assertTrue(lines[-1].startswith("exit %d:" % code))
 
 
+def shared_lane_items(count):
+    return [briefed("s%d" % i, files=["shared.py", "f%d.py" % i]) for i in range(count)]
+
+
+def one_step_limit(items):
+    return max(
+        core.estimate_tokens(items, (index,), {}, {}, earlier=tuple(range(index)))
+        for index in range(len(items))
+    ) + 1
+
+
+class SessionReport(unittest.TestCase):
+    def _plan_only(self, items, *extra):
+        with tempfile.TemporaryDirectory() as root:
+            write(root, "items.json", json.dumps(items))
+            return invoke(
+                root,
+                ["--items", "items.json", "--plan-only", "--run-dir", os.path.join(root, "run"), *extra],
+            )
+
+    def the_plan_only_report_shows_an_oversized_lane_built_as_sessions(self):
+        items = shared_lane_items(3)
+        limit = one_step_limit(items)
+        code, out, err = self._plan_only(items, "--session-tokens", str(limit))
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
+        body = section(out, "Split quality")
+        self.assertIn(
+            "Lanes 0 to 2 are one Lane of MSP s0 estimated above %d tokens, built as 3 fresh "
+            "Worker sessions in a row on its branch, each continuing from the work committed "
+            "before it" % limit,
+            body,
+        )
+        lane_lines = [line for line in body if line.startswith("Lane ")]
+        self.assertEqual(len(lane_lines), 3)
+        for index, line in enumerate(lane_lines):
+            self.assertTrue(line.endswith(", session %d of 3: s%d" % (index + 1, index)), line)
+            self.assertIn(", about ", line)
+        found = json.loads(out.splitlines()[-1])
+        self.assertEqual([lane["session"] for lane in found["lanes"]], [[1, 3], [2, 3], [3, 3]])
+        self.assertEqual(found["attention"], [])
+
+    def a_lane_that_fits_reports_one_session_and_no_split(self):
+        code, out, err = self._plan_only(shared_lane_items(3))
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
+        body = section(out, "Split quality")
+        self.assertIn(
+            "every Lane fits one Worker session of %d estimated tokens" % core.SESSION_TOKENS, body
+        )
+        found = json.loads(out.splitlines()[-1])
+        self.assertEqual([lane["session"] for lane in found["lanes"]], [None])
+
+    def a_step_alone_above_the_limit_is_named_for_attention(self):
+        code, out, err = self._plan_only([briefed("big")], "--session-tokens", "1")
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
+        body = section(out, "Split quality")
+        self.assertFalse(any(line.startswith("every Lane fits") for line in body))
+        found = json.loads(out.splitlines()[-1])
+        self.assertEqual(len(found["attention"]), 1)
+        self.assertTrue(found["attention"][0].startswith("Lane 0 holds Step big alone at about "))
+        self.assertIn(found["attention"][0], body)
+        code, out, err = self._plan_only(shared_lane_items(2), "--session-tokens", "1")
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
+        found = json.loads(out.splitlines()[-1])
+        self.assertEqual(len(found["attention"]), 2)
+        for index, line in enumerate(found["attention"]):
+            self.assertTrue(line.startswith("Lane %d holds Step s%d alone at about " % (index, index)), line)
+            self.assertIn("above the 1 one session should hold", line)
+        self.assertIn(found["attention"][0], section(out, "Split quality"))
+
+    def a_session_limit_below_one_is_a_usage_error(self):
+        code, _, err = self._plan_only(shared_lane_items(1), "--session-tokens", "0")
+        self.assertEqual(code, mitosis.EXIT_USAGE)
+        self.assertIn("--session-tokens", err)
+
+    def a_resume_plans_from_the_sizes_the_run_recorded(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
+            env = {**os.environ, **ISOLATED_GIT_ENV}
+            write(root, "alpha.py", "a" * 100)
+            for args in (
+                ["git", "init", "-q", root],
+                ["git", "-C", root, "add", "-A"],
+                ["git", "-C", root, "commit", "-q", "-m", "seed"],
+                ["git", "-C", root, "branch", "feature"],
+            ):
+                subprocess.run(args, check=True, capture_output=True, env=env)
+            write(elsewhere, "items.json", json.dumps([briefed("alpha")]))
+
+            def attempt(worker, *extra):
+                with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
+                    return invoke(
+                        root,
+                        [
+                            "--items",
+                            os.path.join(elsewhere, "items.json"),
+                            "--run-dir",
+                            os.path.join(elsewhere, "run"),
+                            "--feature-branch",
+                            "feature",
+                            "--dispatch-command",
+                            command(elsewhere, "worker.py", worker, "{task}"),
+                            "--acceptance-command",
+                            "probe {file} {test}",
+                            "--timeout",
+                            "30",
+                            "--no-push",
+                            *extra,
+                        ],
+                    )
+
+            code, out, err = attempt("import sys\nsys.exit(4)\n")
+            self.assertEqual(code, 10, out + err)
+            failed = json.loads(out.splitlines()[-1])
+            write(root, "alpha.py", "a" * 400000)
+            code, out, err = attempt(HOLDING_WORKER, "--resume")
+            self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+            resumed = json.loads(out.splitlines()[-1])
+            self.assertEqual(resumed["plan_id"], failed["plan_id"])
+            self.assertEqual([lane["state"] for lane in resumed["lanes"]], ["ok"])
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -1478,6 +1598,7 @@ def load_tests(loader, tests, pattern):
         GraphLoading,
         PullRequestFlags,
         PushOnly,
+        SessionReport,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite

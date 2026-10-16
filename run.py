@@ -523,13 +523,27 @@ def _dirty_paths(tree):
 
 
 def _foreign_writes(plan, msp, tree, batch, records):
-    owners = {
-        _norm(path): index
-        for index, record in records.items()
-        if record.get("state") == "ok" and plan["lanes"][index]["msp"] == msp and index not in batch
+    siblings = [
+        index
+        for index, lane in enumerate(plan["lanes"])
+        if lane["msp"] == msp and index not in batch
+    ]
+    unsettled = frozenset(
+        _norm(path)
+        for index in siblings
+        if (records.get(index) or {}).get("state") != "ok"
         for path in plan["briefs"][index]["write_set"]
-    }
-    touched = sorted(path for path in _dirty_paths(tree) if _norm(path) in owners)
+    )
+    owners = {}
+    for index in sorted(siblings, reverse=True):
+        if (records.get(index) or {}).get("state") == "ok":
+            for path in plan["briefs"][index]["write_set"]:
+                owners = {**owners, _norm(path): index}
+    touched = sorted(
+        path
+        for path in _dirty_paths(tree)
+        if _norm(path) in owners and _norm(path) not in unsettled
+    )
     if touched:
         try:
             commit_paths(

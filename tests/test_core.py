@@ -895,6 +895,172 @@ class GraphInput(unittest.TestCase):
         self.assertEqual(adjacency, {"src/a.py": ["src/b.py"], "src/b.py": ["src/a.py"]})
 
 
+def shared_lane(count, **extra):
+    return [step("s%d" % i, ["shared.py", "f%d.py" % i], **extra) for i in range(count)]
+
+
+def lane_steps(result):
+    return [lane["steps"] for lane in result["lanes"]]
+
+
+class Sessions(unittest.TestCase):
+    def a_lane_within_the_limit_is_one_session_with_its_estimate(self):
+        result = core.plan(shared_lane(3))
+        self.assertEqual(lane_steps(result), [["s0", "s1", "s2"]])
+        self.assertNotIn("session", result["lanes"][0])
+        self.assertNotIn("session", result["briefs"][0])
+        self.assertNotIn("Session ", result["briefs"][0]["text"])
+        expected = (
+            core.SESSION_BASE_TOKENS
+            + 3 * (core.STEP_TOKENS + core._tokens(len("do s0")))
+            + 4 * core.NEW_FILE_TOKENS
+        )
+        self.assertEqual(result["lanes"][0]["tokens"], expected)
+        self.assertEqual(result["session_tokens"], core.SESSION_TOKENS)
+
+    def an_oversized_lane_is_split_in_step_order_into_sessions_that_run_in_a_row(self):
+        items = shared_lane(6, complexity="simple")
+        limit = core.estimate_tokens(items, (4, 5), {}, {}, earlier=(0, 1, 2, 3)) + 1
+        result = core.plan(items, session_tokens=limit)
+        self.assertEqual(lane_steps(result), [["s0", "s1"], ["s2", "s3"], ["s4", "s5"]])
+        self.assertEqual(result["lanes"][2]["tokens"], limit - 1)
+        self.assertEqual([lane["session"] for lane in result["lanes"]], [[1, 3], [2, 3], [3, 3]])
+        self.assertEqual({lane["msp"] for lane in result["lanes"]}, {0})
+        self.assertEqual(len(result["msps"]), 1)
+        self.assertEqual(result["lane_after"], {"1": [0], "2": [1]})
+        self.assertEqual(result["lane_order"], [0, 1, 2])
+        for lane in result["lanes"]:
+            self.assertLessEqual(lane["tokens"], limit)
+
+    def a_lane_takes_its_steps_in_dependency_order_before_it_is_split(self):
+        items = [
+            step("late", ["shared.py", "late.py"], after=["early"]),
+            step("early", ["shared.py", "early.py"]),
+            step("middle", ["shared.py", "middle.py"], after=["early"]),
+        ]
+        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
+        result = core.plan(items, session_tokens=limit)
+        self.assertEqual(lane_steps(result), [["early"], ["late"], ["middle"]])
+        self.assertEqual(result["lane_after"], {"1": [0], "2": [0, 1]})
+
+    def every_session_keeps_the_lanes_tier(self):
+        items = shared_lane(2, complexity="simple") + [
+            step("risky", ["shared.py", "auth.py"], complexity="simple")
+        ]
+        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
+        result = core.plan(items, risk_markers=("auth",), session_tokens=limit)
+        self.assertEqual(len(result["lanes"]), 3)
+        self.assertEqual([lane["tier"] for lane in result["lanes"]], ["top", "top", "top"])
+        self.assertEqual(result["tiers"]["s0"], "cheap")
+
+    def a_later_session_owns_what_earlier_sessions_wrote_and_is_told_what_they_built(self):
+        items = shared_lane(3)
+        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
+        result = core.plan(items, session_tokens=limit)
+        first, second, third = result["briefs"]
+        self.assertEqual(first["write_set"], ["shared.py", "f0.py"])
+        self.assertEqual(second["write_set"], ["shared.py", "f1.py", "f0.py"])
+        self.assertEqual(third["write_set"], ["shared.py", "f2.py", "f0.py", "f1.py"])
+        self.assertEqual(second["session"], {"index": 2, "count": 3, "built": ["s0"], "later": ["s2"]})
+        self.assertEqual([s["name"] for s in second["steps"]], ["s1"])
+        self.assertTrue(second["text"].startswith("Lane 1 of MSP s0\nSession 2 of 3: "))
+        self.assertIn("by earlier sessions, read what you build on: s0\n", second["text"])
+        self.assertIn("Left for later sessions, do not start them: s2\n", second["text"])
+        self.assertNotIn("Left for later sessions", third["text"])
+        self.assertNotIn("earlier sessions", first["text"])
+        self.assertEqual(second["text"], core.brief_text(second))
+
+    def a_lane_waiting_on_a_split_lane_waits_for_its_last_session(self):
+        items = shared_lane(3) + [step("after", ["after.py"], after=["s0"])]
+        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
+        result = core.plan(items, session_tokens=limit)
+        consumer = next(i for i, lane in enumerate(result["lanes"]) if lane["steps"] == ["after"])
+        self.assertEqual(result["lane_after"][str(consumer)], [2])
+
+    def file_sizes_task_length_and_the_charter_raise_the_estimate(self):
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "big.py"), "w") as handle:
+                handle.write("x" * 40000)
+            with open(os.path.join(root, "charter.md"), "w") as handle:
+                handle.write("y" * 8000)
+            small = core.plan([step("a", ["big.py"])], root=None)["lanes"][0]["tokens"]
+            sized = core.plan([step("a", ["big.py"])], root=root)
+            self.assertEqual(sized["sizes"], {"big.py": 40000})
+            self.assertEqual(
+                sized["lanes"][0]["tokens"] - small,
+                core.EDIT_PASSES * 10000 - core.NEW_FILE_TOKENS,
+            )
+            chartered = core.plan([step("a", ["big.py"])], root=root, charter="charter.md")
+            self.assertEqual(chartered["lanes"][0]["tokens"] - sized["lanes"][0]["tokens"], 2000)
+            wordy = core.plan([step("a", ["big.py"], task="t" * 4000)], root=root)
+            self.assertEqual(wordy["lanes"][0]["tokens"] - sized["lanes"][0]["tokens"], 1000 - 1)
+
+    def a_read_set_counts_toward_the_estimate(self):
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "near.py"), "w") as handle:
+                handle.write("z" * 4000)
+            alone = core.plan([step("a", ["a.py"])], root=root)
+            reading = core.plan([step("a", ["a.py"])], root=root, graph={"a.py": ["near.py"]})
+            self.assertEqual(reading["lanes"][0]["tokens"] - alone["lanes"][0]["tokens"], 1000)
+
+    def a_later_session_counts_what_earlier_sessions_wrote(self):
+        with tempfile.TemporaryDirectory() as root:
+            for index in range(3):
+                with open(os.path.join(root, "f%d.py" % index), "w") as handle:
+                    handle.write("x" * 40000)
+            items = [step("s%d" % i, ["shared.py", "f%d.py" % i]) for i in range(3)]
+            result = core.plan(items, root=root, session_tokens=1)
+        alone = core.SESSION_BASE_TOKENS + core.STEP_TOKENS + core._tokens(len("do s0"))
+        alone = alone + core.NEW_FILE_TOKENS + core.EDIT_PASSES * 10000
+        self.assertEqual(
+            [lane["tokens"] for lane in result["lanes"]], [alone, alone + 10000, alone + 20000]
+        )
+
+    def a_step_alone_above_the_limit_is_its_own_session(self):
+        items = shared_lane(3)
+        result = core.plan(items, session_tokens=1)
+        self.assertEqual(lane_steps(result), [["s0"], ["s1"], ["s2"]])
+        self.assertTrue(all(lane["tokens"] > 1 for lane in result["lanes"]))
+
+    def recorded_sizes_win_over_the_files_on_disk_so_a_resume_plans_the_same(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "a.py")
+            with open(path, "w") as handle:
+                handle.write("a" * 100)
+            first = core.plan([step("a", ["a.py"])], root=root)
+            with open(path, "a") as handle:
+                handle.write("a" * 100000)
+            grown = core.plan([step("a", ["a.py"])], root=root)
+            again = core.plan([step("a", ["a.py"])], root=root, sizes=first["sizes"])
+        self.assertNotEqual(grown["plan_id"], first["plan_id"])
+        self.assertEqual(again["plan_id"], first["plan_id"])
+        self.assertEqual(again["sizes"], {"a.py": 100})
+
+    def a_recorded_size_that_is_not_a_byte_count_reads_as_unknown(self):
+        self.assertEqual(
+            core.file_sizes(("a.py", "b.py", "c.py"), None, {"a.py": -1, "b.py": True, "c.py": 7}),
+            {"a.py": None, "b.py": None, "c.py": 7},
+        )
+
+    def a_coupling_pair_names_the_sessions_its_steps_run_in(self):
+        items = shared_lane(3) + [step("near", ["near.py"])]
+        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
+        result = core.plan(items, graph={"f2.py": ["near.py"]}, session_tokens=limit)
+        pairs = result["coupling_review"]
+        self.assertEqual([pair["steps"] for pair in pairs], [["s2", "near"]])
+        self.assertEqual(pairs[0]["lanes"], [2, 3])
+
+    def steps_of_one_lane_are_never_reviewed_as_a_coupled_pair(self):
+        items = [
+            step("a", ["shared.py", "a.py"]),
+            step("b", ["shared.py", "b.py"]),
+        ]
+        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
+        result = core.plan(items, graph={"a.py": ["b.py"]}, session_tokens=limit)
+        self.assertEqual(len(result["lanes"]), 2)
+        self.assertNotIn("coupling_review", result)
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -906,7 +1072,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, SharedTree, ReadSetCap):
+    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, SharedTree, ReadSetCap, Sessions):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

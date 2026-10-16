@@ -2314,6 +2314,113 @@ class HouseFormatRoundFour(unittest.TestCase):
         )
 
 
+def session_items():
+    return [
+        step(
+            "s0",
+            ["impl.txt", "tests/t_impl.txt", "a0.txt"],
+            acceptance=[{"file": "tests/t_impl.txt", "test": "property"}],
+        ),
+        step("s1", ["impl.txt", "a1.txt"]),
+        step("s2", ["impl.txt", "a2.txt"]),
+    ]
+
+
+def one_step_sessions(items):
+    return max(
+        core.estimate_tokens(items, (index,), {}, {}, earlier=tuple(range(index)))
+        for index in range(len(items))
+    ) + 1
+
+
+class Sessions(RepoCase):
+    def _plan(self):
+        items = session_items()
+        plan = core.plan(items, session_tokens=one_step_sessions(items))
+        self.assertEqual([lane["steps"] for lane in plan["lanes"]], [["s0"], ["s1"], ["s2"]])
+        self.assertEqual([lane["session"] for lane in plan["lanes"]], [[1, 3], [2, 3], [3, 3]])
+        self.assertEqual(plan["lane_after"], {"1": [0], "2": [1]})
+        return plan
+
+    def _landings(self, state):
+        branch = state["worktrees"][0]["branch"]
+        return sh(["git", "log", "--reverse", "--format=%s", "main.." + branch], self.repo).splitlines()
+
+    def an_oversized_lane_builds_as_fresh_sessions_in_a_row_on_one_branch(self):
+        plan = self._plan()
+        state = self.execute(plan, accept="real", pr=None, no_push=True)
+        lanes = state["lanes"]
+        self.assertEqual([lanes[str(i)]["state"] for i in range(3)], ["ok", "ok", "ok"])
+        self.assertEqual([self.marker(i).count("ran") for i in range(3)], [1, 1, 1])
+        self.assertEqual(
+            self._landings(state),
+            ["chore(s0): land Lane %d (s%d)" % (i, i) for i in range(3)],
+        )
+        tree = state["worktrees"][0]["path"]
+        for earlier, later in ((0, 1), (1, 2)):
+            self.assertLessEqual(lanes[str(earlier)]["finished"], lanes[str(later)]["started"])
+            sh(
+                ["git", "merge-base", "--is-ancestor", lanes[str(earlier)]["commit"], lanes[str(later)]["commit"]],
+                tree,
+            )
+        self.assertIn("a0.txt", self.marker(1))
+        self.assertIn("a1.txt", self.marker(2))
+        msp = state["msps"]["0"]
+        self.assertEqual(msp["state"], run.MSP_COMMITTED)
+        self.assertEqual(msp["gate"]["outcome"], "pass")
+        self.assertEqual(msp["reconcile"]["undeclared"], [])
+        self.assertEqual(msp["reconcile"]["unwritten"], [])
+        self.assertEqual(msp["reconcile"]["crossing"], [])
+        self.assertTrue(run.succeeded(state))
+
+    def a_resume_mid_lane_continues_from_the_next_unbuilt_session(self):
+        plan = self._plan()
+        first = self.execute(plan, mode="crash-1", accept="real", pr=None, no_push=True)
+        self.assertEqual(
+            [first["lanes"][str(i)]["state"] for i in range(3)], ["ok", "failed", "blocked"]
+        )
+        self.assertIsNone(self.marker(2))
+        self.assertEqual(first["msps"]["0"]["state"], run.MSP_BLOCKED)
+        second = self.execute(plan, accept="real", pr=None, no_push=True, resume=True)
+        self.assertEqual(second["lanes"]["0"], first["lanes"]["0"])
+        self.assertEqual([self.marker(i).count("ran") for i in range(3)], [1, 2, 1])
+        self.assertEqual([second["lanes"][str(i)]["state"] for i in range(3)], ["ok", "ok", "ok"])
+        self.assertEqual(
+            self._landings(second),
+            ["chore(s0): land Lane %d (s%d)" % (i, i) for i in range(3)],
+        )
+        self.assertEqual(second["msps"]["0"]["state"], run.MSP_COMMITTED)
+        self.assertEqual(second["msps"]["0"]["gate"]["outcome"], "pass")
+        self.assertTrue(run.succeeded(second))
+
+    def a_failed_session_leaves_its_edits_out_of_another_lanes_landing(self):
+        items = [
+            step("s0", ["impl.txt", "a0.txt"], msp="m"),
+            step("s1", ["impl.txt", "a1.txt"], msp="m"),
+            step("y", ["y.txt"], msp="m"),
+        ]
+        plan = core.plan(items, session_tokens=one_step_sessions(items[:2]))
+        self.assertEqual([lane["steps"] for lane in plan["lanes"]], [["s0"], ["s1"], ["y"]])
+        self.assertEqual(plan["lane_order"][:2], [0, 1])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        records = self.dispatch(plan, trees, mode="crash-1", concurrency=1)
+        self.assertEqual([records[i]["state"] for i in range(3)], ["ok", "failed", "ok"])
+        self.assertEqual(records[2]["foreign_writes"], [])
+        tree = trees[0]["path"]
+        subjects = sh(["git", "log", "--format=%s", "main.." + trees[0]["branch"]], tree)
+        self.assertNotIn("keep changes", subjects)
+        self.assertIn("impl.txt", sh(["git", "status", "--porcelain"], tree))
+        self.assertEqual(run.msp_foreign_writes(plan, 0, {str(k): v for k, v in records.items()}), [])
+
+    def a_resume_after_every_session_landed_builds_nothing_again(self):
+        plan = self._plan()
+        first = self.execute(plan, accept="real", pr=None, no_push=True)
+        second = self.execute(plan, accept="real", pr=None, no_push=True, resume=True)
+        self.assertEqual([self.marker(i).count("ran") for i in range(3)], [1, 1, 1])
+        self.assertEqual(second["lanes"], first["lanes"])
+        self.assertEqual(self._landings(second), self._landings(first))
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -2336,6 +2443,7 @@ def load_tests(loader, tests, pattern):
         HouseFormatRoundTwo,
         HouseFormatRoundThree,
         HouseFormatRoundFour,
+        Sessions,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
