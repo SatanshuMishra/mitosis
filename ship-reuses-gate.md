@@ -1,6 +1,6 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: active
-Updated: 2026-10-16T21:12:51.236Z
+Updated: 2026-10-16T21:37:06.171Z
 Next ids: c3 D3 R1 S1
 
 ## Goal
@@ -14,13 +14,13 @@ A mitosis resume reuses a passing gate recorded at the same head, and a new --pr
 
 ## Where things stand
 
-FEATURE branch feat/ship-reuses-gate is cut from main at dfd60b6 and pushed. Run home is written; --plan-only passed clean as one MSP in three Worker sessions. The first build is running.
+Build 1 committed MSP ship-reuses-gate at 24af33c on mitosis/ship-reuses-gate, base feat/ship-reuses-gate (dfd60b6). Suite passes on 3.14 and 3.9. Review round 1 (code, security, conformance) is running.
 
 ## Next step
 
-Run the first build with ~/.mitosis/mitosis/ship-reuses-gate/run.zsh, then review round 1 of MSP ship-reuses-gate.
+Collect round 1 findings into review/round-1/ship-reuses-gate.findings.json, then run pipeline candidates, the validator, record and verdict.
 
-Needs: D2.
+Needs: D2, R1.
 
 ## Decisions in force
 
