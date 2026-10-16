@@ -1,7 +1,7 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: active
-Updated: 2026-10-16T21:07:55.254Z
-Next ids: c3 D1 R1 S1
+Updated: 2026-10-16T21:07:59.888Z
+Next ids: c3 D2 R1 S1
 
 ## Goal
 
@@ -21,6 +21,8 @@ Not started.
 Record the interphase hand-off boundary, cut the FEATURE branch with pipeline feature-branch (type feat), write the run home and run --plan-only.
 
 ## Decisions in force
+
+- D1 interphase hand-off: build the handed-off ship-reuses-gate spec: Build the spec as handed off: run --plan-only, then the first build on the FEATURE branch, with any later gap filled from the Intent lines and recorded as an assumption.
 
 ## Open risks
 
