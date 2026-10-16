@@ -1,7 +1,7 @@
 # ship-reuses-gate: Ship reuses a proven gate (mitosis S2, full lane)
 Status: active
-Updated: 2026-10-16T21:37:06.171Z
-Next ids: c3 D3 R1 S1
+Updated: 2026-10-16T21:37:08.151Z
+Next ids: c3 D3 R2 S1
 
 ## Goal
 
@@ -27,6 +27,8 @@ Needs: D2, R1.
 - D2 interphase hand-off: build the handed-off spec as one MSP: One MSP, ship-reuses-gate, built as three Worker sessions in a row on its branch (plan 6f008d7094cf); recorded as an assumption in the MSP's assumptions file.
 
 ## Open risks
+
+- R1 mitosis recorded the gate inconclusive 12/12 because ~/.mitosis/mitosis/accept.zsh named tests as module attributes; the script now resolves the test's class, an emulated gate gave 8 pass and 4 inert, and the real gate reruns at the ship resume. Bears on c1.
 
 ## Settled, do not reopen
 
