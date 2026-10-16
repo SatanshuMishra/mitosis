@@ -2390,6 +2390,25 @@ class Sessions(RepoCase):
         self.assertEqual(second["msps"]["0"]["gate"]["outcome"], "pass")
         self.assertTrue(run.succeeded(second))
 
+    def a_failed_session_leaves_its_edits_out_of_another_lanes_landing(self):
+        items = [
+            step("s0", ["impl.txt", "a0.txt"], msp="m"),
+            step("s1", ["impl.txt", "a1.txt"], msp="m"),
+            step("y", ["y.txt"], msp="m"),
+        ]
+        plan = core.plan(items, session_tokens=one_step_sessions(items[:2]))
+        self.assertEqual([lane["steps"] for lane in plan["lanes"]], [["s0"], ["s1"], ["y"]])
+        self.assertEqual(plan["lane_order"][:2], [0, 1])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        records = self.dispatch(plan, trees, mode="crash-1", concurrency=1)
+        self.assertEqual([records[i]["state"] for i in range(3)], ["ok", "failed", "ok"])
+        self.assertEqual(records[2]["foreign_writes"], [])
+        tree = trees[0]["path"]
+        subjects = sh(["git", "log", "--format=%s", "main.." + trees[0]["branch"]], tree)
+        self.assertNotIn("keep changes", subjects)
+        self.assertIn("impl.txt", sh(["git", "status", "--porcelain"], tree))
+        self.assertEqual(run.msp_foreign_writes(plan, 0, {str(k): v for k, v in records.items()}), [])
+
     def a_resume_after_every_session_landed_builds_nothing_again(self):
         plan = self._plan()
         first = self.execute(plan, accept="real", pr=None, no_push=True)
