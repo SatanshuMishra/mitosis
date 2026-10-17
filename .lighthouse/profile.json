@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "sources": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/pr-text.yml",
+    ".claude-plugin/plugin.json",
+    ".claude-plugin/marketplace.json",
+    "receipts.config.json",
+    "README.md",
+    "skills/mitosis/SKILL.md",
+    "scripts/release_check.py",
+    "mitosis.py"
+  ],
+  "suite": {
+    "command": "python3 -m unittest discover tests",
+    "junit": null,
+    "timeout_minutes": null
+  },
+  "surfaces": [
+    {
+      "name": "mitosis command",
+      "kind": "command-line program",
+      "paths": [
+        "mitosis.py",
+        "run.py",
+        "core.py",
+        "decompose.py",
+        "briefs.py",
+        "shape.py"
+      ],
+      "driver": "python3 mitosis.py run from a scratch git repository with a local bare remote and stub dispatch, acceptance and pull-request commands (the way tests/test_mitosis.py drives it); read stdout's last JSON line, the exit code, the run directory's state.json and the branches, commits and pull request bodies it leaves",
+      "available": true,
+      "sign_in": {
+        "method": "none",
+        "command": null
+      },
+      "credentials": [],
+      "trials": 1
+    },
+    {
+      "name": "mitosis skill",
+      "kind": "Claude Code plugin skill",
+      "paths": [
+        "skills/mitosis/SKILL.md",
+        ".claude-plugin/plugin.json",
+        ".claude-plugin/marketplace.json"
+      ],
+      "driver": "claude -p with --plugin-dir set to the build's worktree and --output-format stream-json, started from a scratch folder, sending a plain request to split and build work in a scratch repository with --plan-only; read which skill handled it from the transcript",
+      "available": true,
+      "sign_in": {
+        "method": "none",
+        "command": null
+      },
+      "credentials": [],
+      "trials": 3
+    },
+    {
+      "name": "release check",
+      "kind": "command-line script run by CI",
+      "paths": [
+        "scripts/release_check.py",
+        "core.py",
+        ".claude-plugin/plugin.json",
+        "CHANGELOG.md"
+      ],
+      "driver": "python3 scripts/release_check.py --base <commit> from the worktree root, reading its exit code and output",
+      "available": true,
+      "sign_in": {
+        "method": "none",
+        "command": null
+      },
+      "credentials": [],
+      "trials": 1
+    }
+  ],
+  "credentials": {
+    "file": null,
+    "names": {}
+  },
+  "facts": {
+    "python": {
+      "value": "python3 3.9 or later; CI runs 3.9 and 3.14",
+      "confirmed": true,
+      "recheck": "read .github/workflows/ci.yml matrix"
+    },
+    "claude_cli": {
+      "value": "the claude command is on PATH and signed in for the mitosis skill surface",
+      "confirmed": false,
+      "recheck": "run claude --version and claude -p 'ok'"
+    },
+    "deny_terms": {
+      "value": "CI's denied-terms scan reads the DENY_TERMS repository secret, which is not available locally",
+      "confirmed": true,
+      "recheck": "read the release-check job in .github/workflows/ci.yml"
+    }
+  },
+  "off_limits": [
+    "pushing to the GitHub remote or opening, editing or merging real pull requests",
+    "running real model Workers through a dispatch command that calls a model, beyond a --plan-only skill run",
+    "writing under ~/.claude, ~/.mitosis or ~/.lighthouse, which live sessions and pipeline runs read",
+    "creating release tags"
+  ]
+}
