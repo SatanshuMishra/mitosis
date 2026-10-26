@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: active
-Updated: 2026-10-26T23:26:13.347Z
+Updated: 2026-10-26T23:39:14.477Z
 Next ids: c5 D1 R1 S1
 
 ## Goal
@@ -16,11 +16,11 @@ Mitosis records events and a run summary personalised to its purpose (split work
 
 ## Where things stand
 
-Stage 1 of pipeline:run, full lane. Checkout synced on main. Lighthouse readiness is ready (claude_cli answered). receipts.config.json is already committed, so no receipts set-up or receipts commit is needed. The shared reference writer is on neither origin/feat/unified-metrics nor origin/main yet.
+Stage 1, interphase Phase 9: the interview is done with delegated answers and an approved read-back; the spec, record and items are rendered and pass check_spec and check_items; the one spec-reviewer pass is running. Lighthouse readiness is ready and receipts.config.json is already committed, so Stage 2 needs no receipts commit. The shared reference writer is on neither pipeline ref yet.
 
 ## Next step
 
-Invoke pipeline:run and run Stage 1: interphase:feature full-lane interview for slug mitosis-metrics, answering every round as the owner's delegated answer citing I1 to I6 or a binding decision.
+Apply the spec-reviewer's real findings, re-render and re-check, then run interphase Phase 10 hand-off and go on to Stage 2 set-up.
 
 ## Decisions in force
 
