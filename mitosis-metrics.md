@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
-Status: active
-Updated: 2026-10-26T23:52:06.820Z
+Status: parked
+Updated: 2026-10-26T23:52:12.515Z
 Next ids: c5 D2 R5 S1
 
 ## Goal
@@ -22,7 +22,7 @@ Stage 2, before the first build: interphase handed off and plan-only passes; no 
 
 Wait until, in /Users/satanshumishra/Documents/DevLabs/pipeline, git fetch -q origin && git ls-tree --name-only origin/main -- pipeline_tool/metrics_writer.py metrics/fixtures/cases.json metrics/fixtures/expected.json metrics/schema/line.schema.json metrics/schema/catalogue.schema.json docs/metrics-format.md lists all six paths, or the same against origin/feat/unified-metrics does. Then resume_thread mitosis-metrics, replace PENDING on the Reference line of ~/.mitosis/mitosis/mitosis-metrics/CHARTER.md with that ref and its commit (origin/main when it holds all six), check run.zsh against the then-current pipeline:run skill and installed mitosis version, run ~/.mitosis/mitosis/mitosis-metrics/run.zsh, and carry the rest of pipeline:run (review, validate, fix, ship) to the last pull request.
 
-Needs: D1.
+Needs: D1, R1, R2, R3, R4.
 
 ## Decisions in force
 
