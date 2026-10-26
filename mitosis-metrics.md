@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: active
-Updated: 2026-10-26T23:39:14.477Z
+Updated: 2026-10-26T23:39:17.797Z
 Next ids: c5 D1 R1 S1
 
 ## Goal
@@ -33,3 +33,4 @@ Apply the spec-reviewer's real findings, re-render and re-check, then run interp
 - Pipeline spec (format description until the writer lands): /Users/satanshumishra/Documents/DevLabs/pipeline/docs/specs/unified-metrics.md
 - Pipeline decisions (intent I1 to I6): /Users/satanshumishra/Documents/DevLabs/pipeline/docs/specs/unified-metrics.decisions.md
 - Writer check, in the pipeline checkout: git fetch -q origin && git ls-tree --name-only origin/feat/unified-metrics -- pipeline_tool/metrics_writer.py metrics/metrics-writer.ts docs/metrics-format.md, and the same against origin/main
+- Spec, decisions (I1 to I7 and every delegated answer), record and items: /Users/satanshumishra/Documents/DevLabs/mitosis/docs/specs/mitosis-metrics.{md,decisions.md,record.json,items.json}
