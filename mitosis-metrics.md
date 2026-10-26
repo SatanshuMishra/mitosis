@@ -1,7 +1,7 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: active
-Updated: 2026-10-26T23:51:33.751Z
-Next ids: c5 D2 R1 S1
+Updated: 2026-10-26T23:51:42.792Z
+Next ids: c5 D2 R5 S1
 
 ## Goal
 
@@ -20,13 +20,20 @@ Stage 1, interphase Phase 9: the interview is done with delegated answers and an
 
 ## Next step
 
-Apply the spec-reviewer's real findings, re-render and re-check, then run interphase Phase 10 hand-off and go on to Stage 2 set-up.
+Wait until, in /Users/satanshumishra/Documents/DevLabs/pipeline, git fetch -q origin && git ls-tree --name-only origin/main -- pipeline_tool/metrics_writer.py metrics/fixtures/cases.json metrics/fixtures/expected.json metrics/schema/line.schema.json metrics/schema/catalogue.schema.json docs/metrics-format.md lists all six paths, or the same against origin/feat/unified-metrics does. Then resume_thread mitosis-metrics, replace PENDING on the Reference line of ~/.mitosis/mitosis/mitosis-metrics/CHARTER.md with that ref and its commit (origin/main when it holds all six), check run.zsh against the then-current pipeline:run skill and installed mitosis version, run ~/.mitosis/mitosis/mitosis-metrics/run.zsh, and carry the rest of pipeline:run (review, validate, fix, ship) to the last pull request.
+
+Needs: D1.
 
 ## Decisions in force
 
 - D1 Interphase hand-off: hold the first build until the shared reference writer lands: Hold the first build until the shared writer files exist; the next session writes the resolved ref and commit on the CHARTER's Reference line, then runs ~/.mitosis/mitosis/mitosis-metrics/run.zsh and the rest of pipeline:run.
 
 ## Open risks
+
+- R1 The Steps copy the reference writer, fixtures, schemas and format document byte for byte; if any copied text holds a term in the repository's DENY_TERMS secret, the CI release check fails and the copy may not be edited. The secret is unreadable here, so this is unproven. Bears on c3.
+- R2 Plan-only flags the session-placeholder, record-metrics and metrics-skill-and-docs Steps at about 230k, 265k and 251k estimated tokens, above the 150k one Worker session should hold; each is one Step, so mitosis cannot split it further.
+- R3 run.zsh pins the installed mitosis 0.6.0 path and exports PIPELINE_EVENTS as pipeline 0.10.0's run skill says; once the pipeline's unified-metrics change ships, the run skill exports PLUGIN_METRICS_PARENT instead, so run.zsh must follow the skill current at build time.
+- R4 mitosis counts the invoking session's messages inside its span, because the pipeline spec leaves a child's span out of the parent's own spend; if the pipeline's merged implementation differs, that window is double counted or dropped.
 
 ## Settled, do not reopen
 
