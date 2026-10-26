@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: active
-Updated: 2026-10-26T23:51:42.792Z
+Updated: 2026-10-26T23:51:59.466Z
 Next ids: c5 D2 R5 S1
 
 ## Goal
@@ -9,10 +9,10 @@ Mitosis records events and a run summary personalised to its purpose (split work
 
 ## Done when
 
-- [ ] c1 The spec, decisions file, record and items for mitosis-metrics are in docs/specs/ and the glossary and decision records interphase wrote are uncommitted in the checkout
-- [ ] c2 The FEATURE branch is pushed and the run home ~/.mitosis/mitosis/mitosis-metrics/ holds CHARTER.md, worker-rules.txt, dispatch.zsh, run.zsh and accept.zsh exists
-- [ ] c3 run.zsh --plan-only passes with no fatal finding
-- [ ] c4 The thread is parked with a next step gated on the shared reference writer existing on origin/feat/unified-metrics or origin/main
+- [x] c1 The spec, decisions file, record and items for mitosis-metrics are in docs/specs/ and the glossary and decision records interphase wrote are uncommitted in the checkout evidence: docs/specs/mitosis-metrics.md, .decisions.md, .record.json (status handed-off) and .items.json exist; check_record --complete, check_spec and check_items pass; GLOSSARY.md and docs/adr/0001 to 0003 show as untracked in git status
+- [x] c2 The FEATURE branch is pushed and the run home ~/.mitosis/mitosis/mitosis-metrics/ holds CHARTER.md, worker-rules.txt, dispatch.zsh, run.zsh and accept.zsh exists evidence: git ls-remote shows refs/heads/feat/mitosis-metrics at d655c7a; ~/.mitosis/mitosis/mitosis-metrics holds CHARTER.md, worker-rules.txt, dispatch.zsh, run.zsh, items.json, graph.json and feature.json; ~/.mitosis/mitosis/accept.zsh exists
+- [x] c3 run.zsh --plan-only passes with no fatal finding evidence: run.zsh --plan-only exited 0 with plan_id 306926ac7a29, one MSP, five Steps, no fatal finding; its log is plan-1.log in the run home
+- [x] c4 The thread is parked with a next step gated on the shared reference writer existing on origin/feat/unified-metrics or origin/main evidence: the next step names the six-path ls-tree check on origin/main or origin/feat/unified-metrics and the run.zsh command, recorded with D1, and the thread is parked with it
 
 ## Where things stand
 
