@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: active
-Updated: 2026-10-26T23:24:15.650Z
+Updated: 2026-10-26T23:26:00.936Z
 Next ids: c5 D1 R1 S1
 
 ## Goal
@@ -16,7 +16,7 @@ Mitosis records events and a run summary personalised to its purpose (split work
 
 ## Where things stand
 
-Not started.
+Stage 1 of pipeline:run, full lane. Checkout synced on main. Lighthouse readiness is ready (claude_cli answered). receipts.config.json is already committed, so no receipts set-up or receipts commit is needed. The shared reference writer is on neither origin/feat/unified-metrics nor origin/main yet.
 
 ## Next step
 
