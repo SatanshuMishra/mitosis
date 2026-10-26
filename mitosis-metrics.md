@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: active
-Updated: 2026-10-26T23:26:03.386Z
+Updated: 2026-10-26T23:26:13.347Z
 Next ids: c5 D1 R1 S1
 
 ## Goal
@@ -32,3 +32,4 @@ Invoke pipeline:run and run Stage 1: interphase:feature full-lane interview for 
 
 - Pipeline spec (format description until the writer lands): /Users/satanshumishra/Documents/DevLabs/pipeline/docs/specs/unified-metrics.md
 - Pipeline decisions (intent I1 to I6): /Users/satanshumishra/Documents/DevLabs/pipeline/docs/specs/unified-metrics.decisions.md
+- Writer check, in the pipeline checkout: git fetch -q origin && git ls-tree --name-only origin/feat/unified-metrics -- pipeline_tool/metrics_writer.py metrics/metrics-writer.ts docs/metrics-format.md, and the same against origin/main
