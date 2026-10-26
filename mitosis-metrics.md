@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: active
-Updated: 2026-10-26T23:39:17.797Z
+Updated: 2026-10-26T23:44:42.845Z
 Next ids: c5 D1 R1 S1
 
 ## Goal
@@ -16,7 +16,7 @@ Mitosis records events and a run summary personalised to its purpose (split work
 
 ## Where things stand
 
-Stage 1, interphase Phase 9: the interview is done with delegated answers and an approved read-back; the spec, record and items are rendered and pass check_spec and check_items; the one spec-reviewer pass is running. Lighthouse readiness is ready and receipts.config.json is already committed, so Stage 2 needs no receipts commit. The shared reference writer is on neither pipeline ref yet.
+Stage 1, interphase Phase 9: the interview is done with delegated answers and an approved read-back; the spec, record and items are rendered and pass check_spec and check_items; the one spec-reviewer pass is running. GLOSSARY.md and docs/adr/0001 to 0003 are written, uncommitted. FEATURE branch feat/mitosis-metrics is pushed at d655c7a. The run home holds feature.json, CHARTER.md (its Reference line reads PENDING), worker-rules.txt, dispatch.zsh, run.zsh and graph.json; items.json and plan-only wait on the review fixes. Lighthouse readiness is ready and receipts.config.json is already committed, so Stage 2 needs no receipts commit. The shared reference writer is on neither pipeline ref yet.
 
 ## Next step
 
