@@ -26,6 +26,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/duckdb"
           curl -fsSL -o "$RUNNER_TEMP/duckdb/duckdb.zip" https://github.com/duckdb/duckdb/releases/download/v1.5.6/duckdb_cli-linux-amd64.zip
+          echo "6e89deac1ebbc36eed0291caf8b567b030c7b86ac35998f71854e22b3c5d5e2f  $RUNNER_TEMP/duckdb/duckdb.zip" | sha256sum -c -
           unzip -q "$RUNNER_TEMP/duckdb/duckdb.zip" -d "$RUNNER_TEMP/duckdb"
           echo "$RUNNER_TEMP/duckdb" >> "$GITHUB_PATH"
       - name: Run the suite
