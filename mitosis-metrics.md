@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T07:58:38.621Z
+Updated: 2026-10-27T07:58:40.292Z
 Next ids: c8 D3 R5 S1
 
 ## Goal
@@ -23,7 +23,7 @@ Stage 3 round 2 for MSP mitosis-metrics at head 97de1cb: every round 1 blocker (
 
 ## Next step
 
-When both round 2 reviewers return, save their arrays under review/round-2/raw/, write review/round-2/mitosis-metrics.findings.json, then run candidates, the validator if any candidate exists, record and verdict for round 2.
+When the round 2 validator returns, save its array as review/round-2/mitosis-metrics.verdicts.json, then run pipeline record and pipeline verdict for round 2; on green, run pipeline rerun-plan and go to Ship.
 
 Needs: D2, R1, R4.
 
