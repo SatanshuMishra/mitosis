@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T07:58:40.292Z
+Updated: 2026-10-27T08:00:34.644Z
 Next ids: c8 D3 R5 S1
 
 ## Goal
@@ -23,7 +23,7 @@ Stage 3 round 2 for MSP mitosis-metrics at head 97de1cb: every round 1 blocker (
 
 ## Next step
 
-When the round 2 validator returns, save its array as review/round-2/mitosis-metrics.verdicts.json, then run pipeline record and pipeline verdict for round 2; on green, run pipeline rerun-plan and go to Ship.
+When the 42 gated acceptance tests rerun-plan named finish running alone at 97de1cb (results in review/round-2/rerun.txt, proofs recorded), go to Ship: commit GLOSSARY.md and docs/adr/0001-0003 in the MSP worktree, write the comment, promote, record the ship boundary, run SHIP=1 run.zsh --resume --proven-head, then open, assign and comment the pull request and park.
 
 Needs: D2, R1, R4.
 
