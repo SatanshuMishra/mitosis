@@ -10,8 +10,7 @@ several agents run at once, and produces pull requests a human can merge
 without discovering that the parallelism broke something. A model may produce
 anything; a model may judge nothing. Every gate in mitosis is a program.
 
-This file says when to reach for it and how to invoke it; --help describes
-every flag.
+This file says when to reach for it and how; --help describes every flag.
 
 ## When to reach for it
 
@@ -60,14 +59,13 @@ A Worker spawned from this skill, with the Lane brief as its whole prompt
 and the model chosen by tier:
 
 ```
-claude -p {task} --model {model} --permission-mode bypassPermissions
+claude -p {task} --model {model} --session-id {session_id} --permission-mode bypassPermissions
 ```
 
-The brief already carries the charter path, the document path, the Steps in
-order, the write-set, the read-set and the return contract; the Worker needs
-nothing else. It must print the brief's one-line JSON return last, as a Claude
-Code Worker's final message is. Narration after it, or a code fence around it, is tolerated: the last
-line that parses as a JSON object is the return.
+The brief carries all the Worker needs: the charter and document paths, the
+Steps in order, write-set, read-set and return contract. The last
+line of its output that parses as a JSON object is its return, so narration
+after it or a fence around it is tolerated.
 
 Tiers are labels, not models. When the dispatch template uses the model
 placeholder, every tier the plan assigns must be mapped, or mitosis refuses
@@ -96,14 +94,14 @@ load error stays inconclusive. Catch the whole import family, since importing
 a name out of a surviving package raises the general error.
 
 Exclude whatever else writes into a worktree: editor state, build caches and
-hooks that fire on a Worker are staged by the pre-gate commit and arrive as
+hooks firing on a Worker are staged by the pre-gate commit and arrive as
 undeclared writes against every MSP.
 
 Three more things every run needs: `--feature-branch`, which must exist and is
 what every MSP branches from; `--timeout` in seconds on a monotonic clock,
 applied to every Worker, acceptance run and pull-request command; and the
-repository root as the working directory, because every Step path and the
-document path are relative to it, or mitosis refuses to run.
+repository root as the working directory, since every path is relative to it,
+or mitosis refuses to run.
 
 Every pull request is written in the house format. The title is
 `<type>(<scope>): <subject>` from `--pr-type`, the optional `--pr-scope` and
@@ -111,8 +109,8 @@ Every pull request is written in the house format. The title is
 plan has several MSPs. The body holds What changed, one entry per Step from
 its task's first sentence; Why, the `--pr-why` lines, one to eight; Risk, the
 door and blast-radius lines if given, then a line if reconcile, a foreign
-write, a manifest, stacking or the gate found something; and Verification, a Verified
-line per property the gate proved, then a Not verified line for every other.
+write, a manifest, stacking or the gate found something; and Verification, a
+Verified line per property the gate proved, then a Not verified line for every other.
 A run allowed to push needs `--pr-type`, `--pr-subject` and `--pr-why`,
 checked before any Worker spawns. Without `--pr-command` it pushes each MSP
 branch and ends that MSP `pushed`, recording its title and body for the
@@ -193,8 +191,8 @@ python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --items plan.json \
   --timeout 1800 --concurrency 4
 ```
 
-The pull-request template's last stdout line is recorded as the pull
-request; the one above prints the URL there. Drop `--pr-command` to push only.
+The pull-request template's last stdout line, here the URL, is recorded as
+the pull request. Drop `--pr-command` to push only.
 
 ### Spec: a document
 
@@ -226,30 +224,27 @@ belongs to, listed for the caller and given a distinct exit code.
 
 `manifest-exports-nothing` means the file that declares what a package exports
 is written by a Step built before the modules it must export, so it would ship
-empty and the package would have no public interface, while every test still
-passes. Give that file to a
-Step with an `after` edge reaching every Step whose modules it exports.
+empty while every test still passes. Give that file to a Step with an `after`
+edge reaching every Step whose modules it exports.
 
 `lane-cycle` means Lanes that waited on each other, so one Worker builds them
 all in one sitting. mitosis never refuses a knot: MSPs that wait on each other
-become one MSP and one pull request, and Lanes that wait on each other become
-one Lane. The work still ships, in sequence instead of in parallel, and
+become one MSP, and Lanes that wait on each other one Lane. The work still
+ships, in sequence instead of in parallel, and
 `lane_cycles` and `fused_without_overlap` count what that cost.
 
 An assumption you would have decided differently does not go back into the
 document. Write it into the decisions file, in your own words, and name it
 with `--decisions PATH` (default: `<document without extension>.decisions.md`
-when that file exists). The Decisions section of the report then names the
-file and counts its settled questions, or says none was supplied. That file
-binds every later structure dispatch and brief for this document; mitosis
-never merges or rewords an entry, and never re-asks a question answered once.
+when that file exists); the report's Decisions section counts its settled
+questions. That file binds every later structure dispatch and brief for this
+document; mitosis never rewords an entry or re-asks a question answered once.
 
 One dispatch will not show where a document is soft. `--structure-
 samples N` runs N structure dispatches at once, scores each with the same
 scalars, and prints them ranked with where they disagree: a file split
 differently, or another MSP count or parallelism. The best is persisted, or
-the Kth with `--pick K`. A disagreement over a file means the document never
-said who owns it.
+the Kth with `--pick K`. A file in dispute is one the document never assigned.
 
 Revise the structure once the decisions file has grown, without paying to
 rebuild every Step:
@@ -261,10 +256,9 @@ python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --spec docs/specs/search.md --plan-on
   --timeout 900
 ```
 
-`--revise` hands the persisted structure back to one small dispatch, which
-returns only a delta against it. Every other Step is kept exactly as it
-was, brief included; only the Steps the delta names as changed, added or
-removed cost anything at the brief stage.
+`--revise` hands the persisted structure to one small dispatch that returns
+only a delta; every other Step is kept as it was, brief included, so only the
+Steps the delta changes, adds or removes cost a brief.
 
 When the plan reads right, run it with `--resume`. This writes a brief for
 every Step still unbriefed, in parallel, and then plans and builds; a revision
@@ -284,12 +278,12 @@ gate, reconcile, push, open a pull request stacked on its single
 predecessor when `--pr-command` is given, report.
 
 A Worker session should stay small: mitosis estimates each Lane's tokens from
-its Steps, tasks, write-set and read-set sizes, charter and document, and
-splits one above `--session-tokens` (default 150000) in Step order into
-consecutive Lanes. Each runs as a fresh session once the one before it lands,
-may edit what earlier sessions wrote, and is told which Steps they built; a
-resume starts at the first not `ok`. The split quality section names each
-split and any Step too large alone.
+its Steps, tasks, write-set, read-set, charter and document, and splits one
+above `--session-tokens` (default 150000) in Step order into consecutive
+Lanes. Each runs as a fresh session once the one before it lands, may edit
+what earlier sessions wrote, and is told which Steps they built; a resume
+starts at the first not `ok`. The split quality section names each split and
+any Step too large alone.
 
 The Lanes of one MSP share its worktree, and `--concurrency` Workers run at
 once, four by default. Each brief tells its Worker that others are writing in
@@ -298,8 +292,7 @@ alone. A finished Lane is `held` until no Worker is running in its worktree,
 then committed, so a commit hook that stashes unstaged files never touches a
 sibling's work; no new Lane starts in that MSP meanwhile, and a resume lands a
 `held` Lane without paying for it again. Merges of a producer's branch run no
-hooks. A git command that meets another process's lock is retried for a few
-seconds. When a worktree goes quiet, a change to a file whose Lane had already
+hooks, and a git command meeting another process's lock is retried. When a worktree goes quiet, a change to a file whose Lane had already
 committed is kept in its own commit and named in the pull request, in
 `attention` and in the exit code, against the Lane that made it, or against
 every Lane that finished alongside it when git cannot tell which.
@@ -313,15 +306,15 @@ the other's output.
 
 Before anything is written, mitosis checks that git has a commit identity and
 refuses with exit 3 if not. A refused Lane commit fails that Lane alone. Hooks
-see each Lane's landing message, `chore(<MSP>): land Lane <n> (<Steps>)`, so a
+see each Lane's message, `chore(<MSP>): land Lane <n> (<Steps>)`, so a
 hook that refuses that form fails every Lane after its Worker has run.
 
 The gate runs each acceptance property twice, with the work present and with
 the implementation reverted on a probe branch. `pass` means the property
 failed without the work, so it is load-bearing. `inert` means it passed
 without the work, so it proves nothing. `inconclusive` means reverting broke
-the build. `not-applicable` means the Step declared no property, which is
-counted so nobody mistakes silence for coverage. Which files count as
+the build. `not-applicable` means the Step declared no property, counted so
+silence is never mistaken for coverage. Which files count as
 implementation is derived: the MSP's write-set minus the files its acceptance
 properties name.
 
@@ -331,9 +324,8 @@ the exit code, so the reviewer decides what an unproven property is worth.
 
 Reconcile compares what the git log says changed against what the Steps
 declared. A write outside the declaration, or a declared path never written,
-is a finding. A write into a file another MSP owns is the serious one: both
-pull requests then change that file, so merging them as they stand overwrites
-one with the other. The Risk line of the pull request that made the write
+is a finding. A write into a file another MSP owns is the serious one: merging
+both pull requests as they stand overwrites one with the other. The Risk line of the pull request that made the write
 names it, and it sets the exit code.
 
 ## Reading the result
@@ -345,8 +337,8 @@ printed with its meaning on the report's last line. Each Lane ends `ok`,
 `failed`, `blocked` or `merge-blocked`; each MSP ends `shipped`, `pushed`,
 `unchanged`, `committed`, `ship-failed` or `blocked`.
 An MSP is `unchanged` when its branch adds nothing to its pull request's base,
-so nothing is pushed and no pull request opens. A dependant's pull request
-stacks on that base in place of the unchanged MSP's branch. The two Lane
+so nothing is pushed or opened, and a dependant's pull request stacks on that
+base instead. The two Lane
 states that block dependents differ by the human action they need:
 `merge-blocked` wants a conflict resolved, `blocked` wants a predecessor
 fixed.
@@ -354,14 +346,13 @@ fixed.
 The last line of mitosis's own output is one JSON object: the exit code and
 its meaning, every Lane with its state, reason, notes and log paths, every MSP
 with its branch, base, pull request, title, body, gate verdict and reconcile
-findings, and an `attention` list naming what a human or the calling session
-should look at.
-An agent that dispatched mitosis reads that line rather than the report.
+findings, and an `attention` list of what a human or the caller should look
+at. An agent that dispatched mitosis reads that line, not the report.
 
 The run directory, printed in the report, holds the plan, the state, the
 persisted Steps, every Worker's full stdout and stderr, and the worktrees.
-Read a Lane's log there rather than asking the Worker what it did; the
-one-line return it printed is a claim, and the git log is the record.
+Read a Lane's log there, not the Worker's account; its return is a claim, and
+the git log is the record.
 
 After a failure only the gate's probe branch is removed; worktrees and
 branches survive for inspection.
@@ -379,10 +370,10 @@ plan id differs and mitosis refuses to resume.
 
 ## Holding the work locally
 
-Pass `--no-push` to build, gate and reconcile every MSP without publishing
-anything. Each MSP ends `committed` on its local branch, or `unchanged` when it
-adds nothing to its base: nothing is pushed and no pull request opens, so the
-pull-request flags are not needed and `--pr-command` is refused. Run the
+Pass `--no-push` to build, gate and reconcile every MSP and publish nothing.
+Each MSP ends `committed` on its local branch, or `unchanged` when it
+adds nothing to its base. Nothing is pushed or opened, so the pull-request
+flags are not needed and `--pr-command` is refused. Run the
 project's own checks against those branches, then `--resume` without
 `--no-push` ships what was held. Resuming with `--no-push` again leaves a
 `committed` MSP where it is.
@@ -392,6 +383,17 @@ caller proved without re-gating, when it is the clean HEAD and a passing gate
 is recorded; the Verification section names both commits on a Not verified:
 line. Another head or no recorded gate gates as before; a malformed value or
 unknown label exits 2.
+
+## Metrics
+
+Each invocation is one run in the metrics store, `~/.plugin-metrics` or
+`PLUGIN_METRICS_DIR`: events at its boundaries and one summary of the split,
+parallelism, gates, MSP states and own spend. Each Worker, structure and brief
+call gets a fresh `{session_id}` placeholder on the dispatch, decompose and
+brief templates; given to claude -p --session-id as above, it names the
+transcript the call is priced from. Every command mitosis starts gets
+`PLUGIN_METRICS_PARENT` naming the run. The metrics skill reads these records
+to answer how mitosis performs.
 
 ## Checking an installed copy
 

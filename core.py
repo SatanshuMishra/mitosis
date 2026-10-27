@@ -6,7 +6,7 @@ import json
 import os
 import re
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 PLAN_KEYS = (
     "version",
