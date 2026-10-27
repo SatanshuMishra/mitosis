@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T07:33:28.849Z
+Updated: 2026-10-27T07:33:46.030Z
 Next ids: c8 D3 R5 S1
 
 ## Goal
@@ -19,7 +19,7 @@ Mitosis records events and a run summary personalised to its purpose (split work
 
 ## Where things stand
 
-Stage 3 round 1 for MSP mitosis-metrics at head c29b657, diagnosis step: the verdict is diagnose with blockers C1 (spend_by_model sum over JSON), C2 (a resume counts a held Lane it did not dispatch) and M1 to M4 (tests/test_docs.py imports metrics_writer at module load), and advisories C7 and S4 (DuckDB download unchecked in CI) and C8 (duplicated code). Three Opus diagnosis agents are diagnosing the kinds mitosis gate, resume counts inherited lanes and sql type inference.
+Stage 3 round 1 for MSP mitosis-metrics at head c29b657, diagnosis step: the verdict is diagnose with blockers C1 (spend_by_model sum over JSON), C2 (a resume counts a held Lane it did not dispatch) and M1 to M4 (tests/test_docs.py imports metrics_writer at module load), and advisories C7 and S4 (DuckDB download unchecked in CI) and C8 (duplicated code). Three Opus diagnosis agents are diagnosing the kinds mitosis gate, resume counts inherited lanes and sql type inference. The C7 and S4 fix pins the DuckDB v1.5.6 duckdb_cli-linux-amd64.zip to sha256 6e89deac1ebbc36eed0291caf8b567b030c7b86ac35998f71854e22b3c5d5e2f, the digest GitHub's release API publishes.
 
 ## Next step
 
