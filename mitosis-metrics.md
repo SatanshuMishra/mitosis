@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T08:25:15.464Z
+Updated: 2026-10-27T08:25:17.712Z
 Next ids: c8 D4 R5 S1
 
 ## Goal
@@ -23,7 +23,7 @@ Integration is stopped early: pipeline integration-ready passes (SatanshuMishra/
 
 ## Next step
 
-The owner starts Integration by saying the MSP pull request SatanshuMishra/mitosis#21 merged into feat/mitosis-metrics: then resume this thread, read ~/.mitosis/mitosis/mitosis-metrics/CHARTER.md, and run the pipeline:run skill's Integration section (lighthouse tests feat/mitosis-metrics and opens the FEATURE pull request).
+After the weekly usage limit resets (4pm America/Edmonton), resume this thread and run the pipeline:run Integration again: invoke lighthouse:test with --repo /Users/satanshumishra/Documents/DevLabs/mitosis --core main --feature feat/mitosis-metrics --spec /Users/satanshumishra/Documents/DevLabs/mitosis/docs/specs/mitosis-metrics.md --results ~/.mitosis/mitosis/mitosis-metrics/lighthouse/run-2, without --previous since run 1 left no findings, then open the FEATURE pull request it composes.
 
 Needs: R1, R4.
 
