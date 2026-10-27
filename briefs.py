@@ -201,8 +201,12 @@ def _frozen(document):
     return decompose.freeze(document)
 
 
-def _argv(template, prompt, name, frozen, model):
-    substitutions = {decompose.PROMPT_PLACEHOLDER: prompt, STEP_PLACEHOLDER: name}
+def _argv(template, prompt, name, frozen, model, session_id):
+    substitutions = {
+        decompose.PROMPT_PLACEHOLDER: prompt,
+        STEP_PLACEHOLDER: name,
+        decompose.SESSION_PLACEHOLDER: session_id,
+    }
     if frozen is not None:
         substitutions = {**substitutions, decompose.DOCUMENT_PLACEHOLDER: frozen["path"]}
     if model is not None:
@@ -222,7 +226,7 @@ def _job(step, template, frozen, structure, models, packs, charter, decisions, l
     )
     model = (models or {}).get(tier_for(step))
     return {
-        "argv": _argv(template, prompt, name, frozen, model),
+        "argv_for": lambda session_id: _argv(template, prompt, name, frozen, model, session_id),
         "prompt": prompt,
         "log": os.path.join(log_dir, name + ".log") if log_dir else None,
     }
@@ -265,6 +269,8 @@ def write(
     packs=None,
     charter=None,
     decisions=None,
+    env=None,
+    on_sessions=None,
 ):
     frozen = _frozen(document)
     whole = items if structure is None else structure
@@ -279,7 +285,10 @@ def write(
         concurrency,
         root,
         lambda index, one: not _outcome(todo[index]["name"], one)["errors"],
+        env=env,
     )
+    if on_sessions is not None:
+        on_sessions([session for one in spawned for session in one["session_ids"]])
     outcomes = {step["name"]: _outcome(step["name"], one) for step, one in zip(todo, spawned)}
     return {
         "items": [_rebuild(item, outcomes) for item in items],

@@ -3,6 +3,41 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.7.0 - 2026-10-27
+
+mitosis records metrics about its own runs, and a new metrics skill answers
+how it is performing from them.
+
+- Every invocation of the mitosis command is one run in the metrics store,
+  `~/.plugin-metrics`, or `PLUGIN_METRICS_DIR` when it is set, once its run
+  directory is known: a plan, a build, a resume or a ship. It appends events
+  at the boundaries of its work, the run's start and end, the structure and
+  brief stages, the plan, each Lane, each gate, reconcile and each MSP, and
+  replaces one run summary holding the split, the parallelism, the gate
+  outcomes, the MSP states and its own spend. The store holds run metadata
+  only, never a task, a brief, a Worker's output or file contents.
+- A run's own spend is priced when its summary is written, by exact model id
+  in the five token kinds, from the price table `prices.json` and its date.
+  A model the table lacks keeps its tokens with no price, and a call whose
+  transcript is not found is counted in `sessions_missing`, so
+  `spend_complete` says whether the figure is whole.
+- Every Worker dispatch, structure call and brief call gets a fresh session
+  id, offered as the `{session_id}` placeholder on the dispatch, decompose
+  and brief templates, for `claude -p --session-id {session_id}`. A Lane
+  records it as `session_id`, and its spend is read from that session's
+  transcript.
+- Every command mitosis starts gets `PLUGIN_METRICS_PARENT` naming the run,
+  so a run another tool records under it is listed among its children, with
+  that child's own spend kept apart.
+- `catalogue.json` describes mitosis's purpose, its objectives, every event
+  and field it writes and six named queries, and is copied into the store.
+  The metrics skill reads it first and answers through the duckdb command
+  over plugin=mitosis alone; without DuckDB it names `brew install duckdb`
+  and stops.
+- A metrics write that fails prints one line on stderr and never changes the
+  exit code or the last JSON line.
+- `docs/metrics-format.md` describes the shared record format.
+
 ## 0.6.0 - 2026-10-16
 
 A slow acceptance test no longer runs twice on code that was already gated

@@ -5,8 +5,9 @@ import itertools
 import json
 import os
 import re
+import uuid
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 PLAN_KEYS = (
     "version",
@@ -1472,3 +1473,11 @@ def plan(
     kept = {key: body[key] for key in PLAN_KEYS if key in body and _present(body[key])}
     identified = {**kept, "plan_id": plan_id_for(kept)}
     return {key: identified[key] for key in PLAN_KEYS if key in identified}
+
+
+def new_session_id():
+    return str(uuid.uuid4())
+
+
+def carried_session(argv, session):
+    return session if any(session in word for word in argv) else None

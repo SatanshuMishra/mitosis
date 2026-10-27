@@ -1,4 +1,6 @@
 import ast
+import functools
+import hashlib
 import json
 import os
 import re
@@ -58,16 +60,57 @@ def _public_callables(*modules):
     )
 
 
-VOCABULARY_WORDS = frozenset(
-    core.PLAN_KEYS
-    + core.ITEM_FIELDS
-    + core.LANE_STATES
-    + core.MSP_STATES
-    + core.GATE_OUTCOMES
-    + shape.SCALAR_KEYS
-    + shape.FINDING_KINDS
-    + _public_callables(core, shape, briefs, decompose, mitosis)
-)
+def _field_names(fields):
+    return tuple(
+        name
+        for key, entry in fields.items()
+        for name in (key,)
+        + _field_names(entry.get("fields") or {})
+        + _field_names((entry.get("items") or {}).get("fields") or {})
+    )
+
+
+def _catalogue_names(path):
+    with open(path, encoding="utf-8") as handle:
+        catalogue = json.load(handle)
+    return (
+        tuple(catalogue["events"])
+        + tuple(name for entry in catalogue["events"].values() for name in _field_names(entry["fields"]))
+        + _field_names(catalogue["summary"]["fields"])
+    )
+
+
+@functools.lru_cache(maxsize=None)
+def vocabulary_words():
+    import metrics_writer
+
+    return frozenset(
+        core.PLAN_KEYS
+        + core.ITEM_FIELDS
+        + core.LANE_STATES
+        + core.MSP_STATES
+        + core.GATE_OUTCOMES
+        + shape.SCALAR_KEYS
+        + shape.FINDING_KINDS
+        + _public_callables(core, shape, briefs, decompose, mitosis)
+        + metrics_writer.ENVELOPE
+        + metrics_writer.TOKEN_KINDS
+        + _catalogue_names(os.path.join(ROOT, "catalogue.json"))
+    )
+
+FORMAT_DOCUMENT = "docs/metrics-format.md"
+
+REFERENCE_SOURCE = os.path.join(ROOT, "tests", "fixtures", "metrics", "source.json")
+
+
+def _recorded_sha256(path):
+    with open(REFERENCE_SOURCE, encoding="utf-8") as handle:
+        files = json.load(handle)["files"]
+    return next(entry["sha256"] for entry in files if entry["path"] == path)
+
+
+def _sha256(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 def _local_imports(module, root=ROOT):
     with open(os.path.join(root, module + ".py"), encoding="utf-8") as handle:
@@ -111,6 +154,8 @@ PLUGIN_MANIFEST = os.path.join(PLUGIN_DIRECTORY, "plugin.json")
 MARKETPLACE_MANIFEST = os.path.join(ROOT, ".claude-plugin", "marketplace.json")
 
 SKILL_PATH = os.path.join(ROOT, "skills", "mitosis", "SKILL.md")
+
+METRICS_SKILL_PATH = os.path.join(ROOT, "skills", "metrics", "SKILL.md")
 
 SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 
@@ -170,23 +215,33 @@ def _looks_like_identifier(token, has_trigger_word):
     return compound or has_trigger_word
 
 
-def _unknown_identifiers(text):
-    unknown = []
-    for line in FENCE.sub("", text).splitlines():
-        has_trigger_word = any(word in line.lower() for word in TRIGGER_WORDS)
-        for token in INLINE_CODE.findall(line):
-            if not _looks_like_identifier(token, has_trigger_word):
-                continue
-            if FLAG_SHAPE.match(token):
-                if token not in mitosis.flag_names():
-                    unknown.append(token)
-            elif token not in VOCABULARY_WORDS:
-                unknown.append(token)
-    return unknown
+def _named_identifiers(text):
+    return [
+        token
+        for line in FENCE.sub("", text).splitlines()
+        for has_trigger_word in (any(word in line.lower() for word in TRIGGER_WORDS),)
+        for token in INLINE_CODE.findall(line)
+        if _looks_like_identifier(token, has_trigger_word)
+    ]
+
+
+def _unknown_identifiers(text, accepted=frozenset()):
+    return [
+        token
+        for token in _named_identifiers(text)
+        if token not in accepted
+        and (token not in mitosis.flag_names() if FLAG_SHAPE.match(token) else token not in vocabulary_words())
+    ]
+
+
+def _own_identifiers(text):
+    if _sha256(text) == _recorded_sha256(FORMAT_DOCUMENT):
+        return frozenset(_named_identifiers(text))
+    return frozenset()
 
 
 def _linted_identifiers(text):
-    return _unknown_identifiers(GENERATED_BLOCK.sub("", text))
+    return _unknown_identifiers(GENERATED_BLOCK.sub("", text), _own_identifiers(text))
 
 
 def _changelog_path(root):
@@ -211,7 +266,7 @@ class Docs(unittest.TestCase):
     def every_identifier_named_in_a_document_exists_in_core(self):
         offenses = {}
         for path in _markdown_files(ROOT):
-            with open(path, encoding="utf-8") as handle:
+            with open(path, encoding="utf-8", newline="") as handle:
                 text = handle.read()
             unknown = _linted_identifiers(text)
             if unknown:
@@ -368,16 +423,51 @@ class Docs(unittest.TestCase):
             with open(path, encoding="utf-8") as handle:
                 self.assertIn("--proven-head", handle.read(), os.path.relpath(path, ROOT))
 
-    def test_version_is_0_6_0(self):
+    def test_version_is_0_7_0(self):
         plugin, _ = _manifests(self)
-        self.assertEqual(core.__version__, "0.6.0")
-        self.assertEqual(plugin.get("version"), "0.6.0")
+        self.assertEqual(core.__version__, "0.7.0")
+        self.assertEqual(plugin.get("version"), "0.7.0")
         path = _changelog_path(ROOT)
         self.assertIsNotNone(path, "the plugin carries no changelog")
         with open(path, encoding="utf-8") as handle:
             head = _changelog_head(handle.read())
-        self.assertTrue(head.startswith("## 0.6.0 "), head.splitlines()[0])
+        self.assertTrue(head.startswith("## 0.7.0 "), head.splitlines()[0])
 
+    def test_documents_metrics(self):
+        _in_plugin(self)
+        for path in (os.path.join(ROOT, "README.md"), SKILL_PATH):
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+            for name in ("~/.plugin-metrics", "PLUGIN_METRICS_DIR", "PLUGIN_METRICS_PARENT", "{session_id}"):
+                self.assertIn(name, text, os.path.relpath(path, ROOT))
+        with open(METRICS_SKILL_PATH, encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertEqual(_frontmatter(text).get("name"), "metrics")
+        for name in ("catalogue.json", "plugin=mitosis", "duckdb", "brew install duckdb"):
+            self.assertIn(name, text)
+
+    def test_changed_format_copy_loses_its_vocabulary(self):
+        with open(os.path.join(ROOT, FORMAT_DOCUMENT), encoding="utf-8", newline="") as handle:
+            original = handle.read()
+        own = sorted(
+            set(_named_identifiers(original))
+            - vocabulary_words()
+            - set(mitosis.flag_names())
+        )
+        self.assertTrue(own, "the format document names no identifier of its own")
+        with tempfile.TemporaryDirectory() as folder:
+            copy = os.path.join(folder, "metrics-format.md")
+            changed = original[:2] + original[2].swapcase() + original[3:]
+            for text, expected in ((original, []), (changed, own)):
+                with open(copy, "w", encoding="utf-8", newline="") as handle:
+                    handle.write(text)
+                with open(copy, encoding="utf-8", newline="") as handle:
+                    self.assertEqual(sorted(set(_linted_identifiers(handle.read()))), expected)
+
+    def test_format_document_is_the_reference_copy(self):
+        with open(os.path.join(ROOT, FORMAT_DOCUMENT), "rb") as handle:
+            digest = hashlib.sha256(handle.read()).hexdigest()
+        self.assertEqual(digest, _recorded_sha256(FORMAT_DOCUMENT))
 
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):

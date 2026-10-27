@@ -42,9 +42,11 @@ claude plugin marketplace add SatanshuMishra/mitosis
 claude plugin install mitosis@mitosis
 ```
 
-The plugin carries the skill and the six modules it runs — `core.py`,
-`shape.py`, `decompose.py`, `briefs.py`, `run.py`, `mitosis.py` — which need
-Python 3.9 or later and nothing else.
+The plugin carries the skill and the nine modules it runs — `core.py`,
+`shape.py`, `decompose.py`, `briefs.py`, `run.py`, `mitosis.py`, `metrics.py`,
+`spend.py`, `metrics_writer.py` — and the two data files they read,
+`prices.json` and `catalogue.json`, which need Python 3.9 or later and nothing
+else.
 
 To update, refresh the marketplace, update the plugin, and restart:
 
@@ -128,6 +130,42 @@ Verification section names both commits on a Not verified: line. A head that
 differs, or an MSP with no recorded gate result, is gated as before; a
 malformed value or a label the plan does not hold exits 2 before anything is
 built.
+
+## Metrics
+
+mitosis records metrics about its own work in the metrics store on this
+machine, the folder `~/.plugin-metrics`, or the folder `PLUGIN_METRICS_DIR`
+names when it is set. Each invocation of the mitosis command is one run, from
+the moment its run directory is known to its exit, so a plan, a build, a
+resume and a ship are four runs, joined by their `plan_id` and `run_dir`. A
+run appends events at the boundaries of its work and replaces one run summary
+holding how the work split, how parallel the Lanes ran, how the gates came
+out, how each MSP ended and the run's own spend. The store holds run metadata
+only, never a task, a brief, a Worker's output or file contents, and a
+metrics write that fails prints one line on stderr without changing the exit
+code or the last JSON line.
+
+mitosis gives every Worker dispatch, structure call and brief call a fresh
+session id, offered as the `{session_id}` placeholder on the dispatch,
+decompose and brief templates. Pass it to the model command so that call's
+transcript is named by it, and mitosis prices the call from that transcript
+when the summary is written:
+
+```
+claude -p {task} --model {model} --session-id {session_id} --permission-mode bypassPermissions
+```
+
+A template without the placeholder still runs; its calls are counted in
+`sessions_missing` and add no spend. mitosis gives `PLUGIN_METRICS_PARENT`,
+set to `mitosis/<run id>`, to every command it starts, so a run another tool
+records from inside one of them names its parent, is listed among the run's
+children, and keeps its spend apart from mitosis's own.
+
+`catalogue.json` describes every event and field mitosis writes and carries
+named queries, and is copied into the store. The plugin's metrics skill,
+`skills/metrics/SKILL.md`, answers how mitosis is performing from those
+records through the duckdb command. `docs/metrics-format.md` describes the
+record format.
 
 ## Tests
 
