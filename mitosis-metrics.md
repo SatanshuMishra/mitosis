@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T10:29:54.353Z
+Updated: 2026-10-27T10:30:27.797Z
 Next ids: c8 D4 R5 S1
 
 ## Goal
@@ -25,7 +25,7 @@ Integration is done: lighthouse run 2 is green with 31 of 31 paths passed and op
 
 The owner starts Clean-up by saying the FEATURE pull request SatanshuMishra/mitosis#22 merged: resume this thread, read the run home CHARTER.md, Sync, run pipeline metrics --run mitosis-metrics --repo /Users/satanshumishra/Documents/DevLabs/mitosis --save, then pipeline clean --repo /Users/satanshumishra/Documents/DevLabs/mitosis --slug mitosis-metrics, as the pipeline:run Clean-up section says.
 
-Needs: R1, R4.
+Needs: R4.
 
 ## Decisions in force
 
@@ -34,7 +34,6 @@ Needs: R1, R4.
 
 ## Open risks
 
-- R1 The Steps copy the reference writer, fixtures, schemas and format document byte for byte; if any copied text holds a term in the repository's DENY_TERMS secret, the CI release check fails and the copy may not be edited. The secret is unreadable here, so this is unproven. Bears on c3.
 - R4 mitosis counts the invoking session's messages inside its span, because the pipeline spec leaves a child's span out of the parent's own spend; if the pipeline's merged implementation differs, that window is double counted or dropped.
 
 ## Settled, do not reopen
