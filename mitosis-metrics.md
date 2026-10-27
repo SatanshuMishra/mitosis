@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T07:19:15.068Z
+Updated: 2026-10-27T07:22:50.226Z
 Next ids: c8 D3 R5 S1
 
 ## Goal
@@ -19,7 +19,7 @@ Mitosis records events and a run summary personalised to its purpose (split work
 
 ## Where things stand
 
-Stage 3 round 1 for MSP mitosis-metrics: diff, obligations (51), 54 gate proofs and the assumptions file are written in the run home's review folder, the full suite passed at head c29b657 on Python 3.15 and 3.9 (561 tests each), conformance-auditor returned no findings (5.15 not applicable), and code-reviewer and security-reviewer are reviewing. Four mitosis findings M1 to M4 (HIGH, tests/test_docs.py imports metrics_writer at module load, so the gate could not judge four docs tests) wait in the scratchpad's round1-mitosis.json to join the round's findings. A Lane reported that an early test run wrote the real ~/.plugin-metrics and removed it; the folder is absent now, and round 1 judges test isolation (criterion 5.17).
+Stage 3 round 1 for MSP mitosis-metrics: diff, obligations (51), 54 gate proofs and the assumptions file are written in the run home's review folder, the full suite passed at head c29b657 on Python 3.15 and 3.9 (561 tests each), conformance-auditor returned no findings (5.15 not applicable), security-reviewer returned five LOW findings S1 to S5 (saved under review/round-1/raw/ with the threats appended to the obligations file), and code-reviewer is reviewing. Four mitosis findings M1 to M4 (HIGH, tests/test_docs.py imports metrics_writer at module load, so the gate could not judge four docs tests) wait in the scratchpad's round1-mitosis.json to join the round's findings. A Lane reported that an early test run wrote the real ~/.plugin-metrics and removed it; the folder is absent now, and round 1 judges test isolation (criterion 5.17).
 
 ## Next step
 
