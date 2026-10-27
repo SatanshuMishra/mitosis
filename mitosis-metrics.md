@@ -1,7 +1,7 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T06:28:19.631Z
-Next ids: c5 D2 R5 S1
+Updated: 2026-10-27T06:28:31.504Z
+Next ids: c5 D3 R5 S1
 
 ## Goal
 
@@ -26,7 +26,7 @@ Needs: D1, R1, R2, R4.
 
 ## Decisions in force
 
-- D1 Interphase hand-off: hold the first build until the shared reference writer lands: Hold the first build until the shared writer files exist; the next session writes the resolved ref and commit on the CHARTER's Reference line, then runs ~/.mitosis/mitosis/mitosis-metrics/run.zsh and the rest of pipeline:run.
+- D2 Interphase hand-off: start the first build from the shared writer on origin/feat/unified-metrics: Build now from origin/feat/unified-metrics at a39ab110c1e3c42305123e8d8176ae588b3a9bb0, named on the CHARTER's Reference line; plan-only passed with plan_id 6a96e4ac61c7.
 
 ## Open risks
 
