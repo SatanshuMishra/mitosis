@@ -1,4 +1,5 @@
 import ast
+import functools
 import hashlib
 import json
 import os
@@ -12,7 +13,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import briefs
 import core
 import decompose
-import metrics_writer
 import mitosis
 import shape
 
@@ -80,19 +80,23 @@ def _catalogue_names(path):
     )
 
 
-VOCABULARY_WORDS = frozenset(
-    core.PLAN_KEYS
-    + core.ITEM_FIELDS
-    + core.LANE_STATES
-    + core.MSP_STATES
-    + core.GATE_OUTCOMES
-    + shape.SCALAR_KEYS
-    + shape.FINDING_KINDS
-    + _public_callables(core, shape, briefs, decompose, mitosis)
-    + metrics_writer.ENVELOPE
-    + metrics_writer.TOKEN_KINDS
-    + _catalogue_names(os.path.join(ROOT, "catalogue.json"))
-)
+@functools.lru_cache(maxsize=None)
+def vocabulary_words():
+    import metrics_writer
+
+    return frozenset(
+        core.PLAN_KEYS
+        + core.ITEM_FIELDS
+        + core.LANE_STATES
+        + core.MSP_STATES
+        + core.GATE_OUTCOMES
+        + shape.SCALAR_KEYS
+        + shape.FINDING_KINDS
+        + _public_callables(core, shape, briefs, decompose, mitosis)
+        + metrics_writer.ENVELOPE
+        + metrics_writer.TOKEN_KINDS
+        + _catalogue_names(os.path.join(ROOT, "catalogue.json"))
+    )
 
 FORMAT_DOCUMENT = "docs/metrics-format.md"
 
@@ -226,7 +230,7 @@ def _unknown_identifiers(text, accepted=frozenset()):
         token
         for token in _named_identifiers(text)
         if token not in accepted
-        and (token not in mitosis.flag_names() if FLAG_SHAPE.match(token) else token not in VOCABULARY_WORDS)
+        and (token not in mitosis.flag_names() if FLAG_SHAPE.match(token) else token not in vocabulary_words())
     ]
 
 
@@ -447,7 +451,7 @@ class Docs(unittest.TestCase):
             original = handle.read()
         own = sorted(
             set(_named_identifiers(original))
-            - VOCABULARY_WORDS
+            - vocabulary_words()
             - set(mitosis.flag_names())
         )
         self.assertTrue(own, "the format document names no identifier of its own")
