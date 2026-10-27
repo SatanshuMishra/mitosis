@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T08:03:25.654Z
+Updated: 2026-10-27T08:03:33.161Z
 Next ids: c8 D4 R5 S1
 
 ## Goal
@@ -23,9 +23,9 @@ Ship for MSP mitosis-metrics: the branch reviewed green at 97de1cb and holds the
 
 ## Next step
 
-When the ship run in ship-1.log ends pushed, read the MSP's title, body, branch and base from its last JSON line, open the pull request with create_pull_request ready for review, assign it to the owner, post review/mitosis-metrics.comment.md, then park.
+The owner starts Integration by saying the MSP pull request SatanshuMishra/mitosis#21 merged into feat/mitosis-metrics: then resume this thread, read ~/.mitosis/mitosis/mitosis-metrics/CHARTER.md, and run the pipeline:run skill's Integration section (lighthouse tests feat/mitosis-metrics and opens the FEATURE pull request).
 
-Needs: D3, R1.
+Needs: R1, R4.
 
 ## Decisions in force
 
