@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T08:03:33.161Z
+Updated: 2026-10-27T08:14:55.555Z
 Next ids: c8 D4 R5 S1
 
 ## Goal
@@ -19,7 +19,7 @@ Mitosis records events and a run summary personalised to its purpose (split work
 
 ## Where things stand
 
-Ship for MSP mitosis-metrics: the branch reviewed green at 97de1cb and holds the glossary and decision records commit 3c716d4 on top. The ship run (log ship-1.log in the run home) is gating the branch again, since the recorded gate at c29b657 blocks on 4 inconclusive verdicts, and then pushes it. The declared skill views are proven on the local DuckDB 2.0 build only; CI pins 1.5.6.
+Integration: SatanshuMishra/mitosis#21 is merged, so origin/feat/mitosis-metrics is at cd2827b; the checkout's main is synced with origin. The declared skill views are proven on the local DuckDB 2.0 build only; CI pins 1.5.6.
 
 ## Next step
 
