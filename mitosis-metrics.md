@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T07:49:22.997Z
+Updated: 2026-10-27T07:56:03.828Z
 Next ids: c8 D3 R5 S1
 
 ## Goal
@@ -19,11 +19,11 @@ Mitosis records events and a run summary personalised to its purpose (split work
 
 ## Where things stand
 
-Stage 3 round 2 for MSP mitosis-metrics at head 97de1cb: every round 1 blocker (C1, C2, M1 to M4) and advisory (C7, S4, C8) is fixed on mitosis/mitosis-metrics with its receipt green and its selecting check empty, and the full suite is running at that head before code-reviewer and security-reviewer start. The declared skill views are proven on the local DuckDB 2.0 build only; CI pins 1.5.6.
+Stage 3 round 2 for MSP mitosis-metrics at head 97de1cb: every round 1 blocker (C1, C2, M1 to M4) and advisory (C7, S4, C8) is fixed on mitosis/mitosis-metrics with its receipt green and its selecting check empty; the full suite passed at that head (564 tests on Python 3.15 and 3.9), and code-reviewer and security-reviewer are reviewing round 2. The declared skill views are proven on the local DuckDB 2.0 build only; CI pins 1.5.6.
 
 ## Next step
 
-When the round 2 suite run finishes (review/round-2/mitosis-metrics.suite.txt in the run home), render code-reviewer and security-reviewer briefs for round 2 with previous_head c29b657b870798fa8c106dabe21c7b7b9c072fa0, earlier_findings review/round-1/mitosis-metrics.md and the three round 1 diagnosis files, dispatch them, then collect, validate, record and verdict round 2.
+When both round 2 reviewers return, save their arrays under review/round-2/raw/, write review/round-2/mitosis-metrics.findings.json, then run candidates, the validator if any candidate exists, record and verdict for round 2.
 
 Needs: D2, R1, R4.
 
