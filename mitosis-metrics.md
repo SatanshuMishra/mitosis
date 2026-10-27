@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T08:14:55.555Z
+Updated: 2026-10-27T08:25:15.464Z
 Next ids: c8 D4 R5 S1
 
 ## Goal
@@ -19,7 +19,7 @@ Mitosis records events and a run summary personalised to its purpose (split work
 
 ## Where things stand
 
-Integration: SatanshuMishra/mitosis#21 is merged, so origin/feat/mitosis-metrics is at cd2827b; the checkout's main is synced with origin. The declared skill views are proven on the local DuckDB 2.0 build only; CI pins 1.5.6.
+Integration is stopped early: pipeline integration-ready passes (SatanshuMishra/mitosis#21 merged), but lighthouse run 1 ended blocked without a verdict because its child session hit the account's weekly usage limit (resets 4pm America/Edmonton) while driving the metrics-skill trials; its suite had passed on both branches. Its worktrees are released, and its profile publish moved origin/feat/mitosis-metrics to 2712cbf. The declared skill views are proven on the local DuckDB 2.0 build only; CI pins 1.5.6.
 
 ## Next step
 
