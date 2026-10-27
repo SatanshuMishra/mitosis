@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T10:30:38.505Z
+Updated: 2026-10-27T19:02:15.290Z
 Next ids: c8 D4 R5 S1
 
 ## Goal
@@ -19,7 +19,7 @@ Mitosis records events and a run summary personalised to its purpose (split work
 
 ## Where things stand
 
-Integration is done: lighthouse run 2 is green with 31 of 31 paths passed and opened the FEATURE pull request SatanshuMishra/mitosis#22 (feat/mitosis-metrics into main, ready for review, assigned to the owner), waiting for the owner to merge it. Its CI passes: tests on Python 3.9 and 3.14 with the pinned DuckDB, denied-terms and release-check.
+Mitosis metrics are on main at 708fc1a through SatanshuMishra/mitosis#22. Clean-up removed the run's branches, worktree, run folders and spec files and kept nothing; the frozen run report is ~/.mitosis/mitosis/reports/mitosis-metrics.json.
 
 ## Next step
 
