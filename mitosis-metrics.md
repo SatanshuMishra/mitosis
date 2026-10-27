@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T07:27:25.894Z
+Updated: 2026-10-27T07:27:26.972Z
 Next ids: c8 D3 R5 S1
 
 ## Goal
@@ -23,7 +23,7 @@ Stage 3 round 1 for MSP mitosis-metrics at head c29b657, Validate step: review/r
 
 ## Next step
 
-When the round 1 suite run finishes (review/round-1/mitosis-metrics.suite.txt in the run home), dispatch code-reviewer, conformance-auditor and security-reviewer with the briefs in review/round-1/briefs/, collect findings with M findings for the 4 inconclusive gate tests, then run pipeline candidates, validator, record and verdict.
+When the validator returns, save its array as review/round-1/mitosis-metrics.verdicts.json in the run home, run pipeline record and pipeline verdict for round 1, then diagnose, fix or ship per its outcome.
 
 Needs: D2, R1, R4.
 
