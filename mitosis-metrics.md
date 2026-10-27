@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T07:36:56.091Z
+Updated: 2026-10-27T07:39:39.058Z
 Next ids: c8 D3 R5 S1
 
 ## Goal
@@ -19,11 +19,11 @@ Mitosis records events and a run summary personalised to its purpose (split work
 
 ## Where things stand
 
-Stage 3 round 1 for MSP mitosis-metrics at head c29b657, diagnosis step: the verdict is diagnose with blockers C1 (spend_by_model sum over JSON), C2 (a resume counts a held Lane it did not dispatch) and M1 to M4 (tests/test_docs.py imports metrics_writer at module load), and advisories C7 and S4 (DuckDB download unchecked in CI) and C8 (duplicated code). Diagnoses recorded as fixable: mitosis gate (make tests/test_docs.py's vocabulary a lazy cached function so the module loads without metrics_writer or catalogue.json; selecting check review/round-1/select-mitosis-gate.py) and resume counts inherited lanes (metrics.dispatch_ended keeps only Lanes in seen dispatched or never started; receipt review/round-1/repro-held.py, selecting check select-resume-lanes.py). The sql type inference diagnosis is still running. The C7 and S4 fix pins the DuckDB v1.5.6 duckdb_cli-linux-amd64.zip to sha256 6e89deac1ebbc36eed0291caf8b567b030c7b86ac35998f71854e22b3c5d5e2f, the digest GitHub's release API publishes.
+Fix pass after round 1 (verdict loop) in the MSP worktree. The red receipts are committed at 86d2496: tests.test_metrics_run.Summary.test_resume_does_not_count_a_lane_left_held (C2) and tests.test_metrics_queries.SingleRunStores (C1); the mitosis gate kind's receipt is the selecting check review/round-1/select-mitosis-gate.py, which lists tests/test_docs.py now. Fixes to make, each diagnosed fixable in review/round-1/*.diagnosis.json: tests/test_docs.py vocabulary as a lazy cached function; metrics.dispatch_ended counting only Lanes this invocation dispatched or settled without starting; declared columns from catalogue.json in both skill views. Advisories: pin the DuckDB v1.5.6 linux-amd64 zip to sha256 6e89deac1ebbc36eed0291caf8b567b030c7b86ac35998f71854e22b3c5d5e2f (C7, S4) and remove the duplicated code C8 names.
 
 ## Next step
 
-Save each diagnosis as review/round-1/mitosis-metrics.<kind slug>.diagnosis.json in the run home, record it with pipeline diagnosis, rerun pipeline verdict, then in the MSP worktree commit a failing receipt test per fixable kind, the class fix, and the fixes for C7, S4 and C8, and review again as round 2.
+Make the three class fixes and the advisory fixes, show each receipt green and each selecting check empty, commit naming the ids, then run round 2 review.
 
 Needs: D2, R1, R4.
 
