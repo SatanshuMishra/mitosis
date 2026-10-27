@@ -144,7 +144,7 @@ def invoke(root, argv):
     return code, out.getvalue(), err.getvalue()
 
 
-def scratch_run(items, *flags, worker_config=None):
+def scratch_run(items, *flags, worker_config=None, session="{session_id}"):
     with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
         git_repo(root)
         write(root, "items.json", json.dumps(items))
@@ -154,7 +154,7 @@ def scratch_run(items, *flags, worker_config=None):
                 "--feature-branch",
                 "feature",
                 "--dispatch-command",
-                command(elsewhere, "worker.py", WORKER, "{task}", "{lane}", "{session_id}"),
+                command(elsewhere, "worker.py", WORKER, "{task}", "{lane}", session),
                 "--acceptance-command",
                 command(elsewhere, "accept.py", ACCEPTANCE, "{file}", "{test}"),
                 "--timeout",
@@ -167,19 +167,44 @@ def scratch_run(items, *flags, worker_config=None):
 
 
 @contextlib.contextmanager
-def written_store():
+def store_holding(*runs):
     with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as store:
         os.makedirs(os.path.join(home, ".claude", "projects"))
         with unittest.mock.patch.dict(os.environ, {**ISOLATED_GIT_ENV, "HOME": home}):
             for name in UNSET_FOR_RUNS:
                 os.environ.pop(name, None)
             os.environ["PLUGIN_METRICS_DIR"] = store
-            runs = (
-                scratch_run([briefed("alpha"), briefed("beta")], "--no-push", worker_config={"failing_lanes": ["1"]}),
-                scratch_run([gated_alpha()], "--no-push", worker_config={"model": "claude-sonnet-5-5"}),
-                scratch_run([briefed("alpha"), briefed("beta")], "--plan-only"),
-            )
-        yield home, store, runs
+            results = tuple(run() for run in runs)
+        yield home, store, results
+
+
+def failing_lane_run():
+    return scratch_run([briefed("alpha"), briefed("beta")], "--no-push", worker_config={"failing_lanes": ["1"]})
+
+
+def priced_run():
+    return scratch_run([gated_alpha()], "--no-push", worker_config={"model": "claude-sonnet-5-5"})
+
+
+def plan_only_run():
+    return scratch_run([briefed("alpha"), briefed("beta")], "--plan-only")
+
+
+def unlinked_run():
+    return scratch_run([briefed("alpha")], "--no-push", worker_config={}, session="none")
+
+
+def written_store():
+    return store_holding(failing_lane_run, priced_run, plan_only_run)
+
+
+SINGLE_RUN_STORES = (
+    ("plan-only", plan_only_run, 0),
+    ("build without session_id", unlinked_run, 0),
+    ("build with a failing Lane", failing_lane_run, 10),
+)
+
+LANE_END_COLUMNS = ["run", "repo", "lane", "msp", "tier", "model", "state", "seconds"]
 
 
 def skill_blocks():
@@ -247,6 +272,33 @@ class SkillSql(unittest.TestCase):
                 self.assertEqual(completed.returncode, 0, block + "\n" + completed.stderr)
             failing = run_duckdb(self, home, setup + "\nSELECT no_such_column FROM summaries;\n")
             self.assertNotEqual(failing.returncode, 0)
+
+
+class SingleRunStores(unittest.TestCase):
+    def test_queries_run_over_a_store_of_one_run(self):
+        with open(CATALOGUE_PATH, encoding="utf-8") as handle:
+            queries = json.load(handle)["queries"]
+        blocks = skill_blocks()
+        lane_end = [block for block in blocks if "'lane.end'" in block]
+        self.assertEqual(len(lane_end), 1)
+        for label, run, expected in SINGLE_RUN_STORES:
+            with self.subTest(store=label), store_holding(run) as (home, store, results):
+                self.assertEqual([code for code, _, _ in results], [expected], [out + err for _, out, err in results])
+                setup = "\n".join(substituted(block, store) for block in view_blocks(blocks))
+                answers = {}
+                for query in queries:
+                    completed = run_duckdb(self, home, setup + "\n" + query["sql"] + ";\n")
+                    self.assertEqual(completed.returncode, 0, query["name"] + ": " + completed.stderr)
+                    answers[query["name"]] = csv_rows(completed.stdout)
+                    self.assertEqual(answers[query["name"]][0], QUERY_COLUMNS[query["name"]], query["name"])
+                for block in blocks:
+                    completed = run_duckdb(self, home, setup + "\n" + substituted(block, store) + "\n")
+                    self.assertEqual(completed.returncode, 0, block + "\n" + completed.stderr)
+                ended = run_duckdb(self, home, setup + "\n" + substituted(lane_end[0], store) + "\n")
+                if label == "build without session_id":
+                    self.assertEqual(answers["spend_by_model"], [QUERY_COLUMNS["spend_by_model"]])
+                if label == "plan-only":
+                    self.assertEqual(csv_rows(ended.stdout), [LANE_END_COLUMNS])
 
 
 if __name__ == "__main__":

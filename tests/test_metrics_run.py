@@ -655,6 +655,32 @@ class Summary(unittest.TestCase):
         self.assertEqual(second["lane_seconds"], 0)
         self.assertEqual(set(second["lane_states"].values()), {0})
 
+    def test_resume_does_not_count_a_lane_left_held(self):
+        import run
+
+        config = {"all": {"transcript": {"model": "claude-sonnet-5-5", "output": 1000000}}}
+        with isolated() as (home, store), scratch() as (root, elsewhere):
+            template = worker(elsewhere, config, "{session_id}")
+            with unittest.mock.patch.object(run, "_landed", side_effect=RuntimeError("killed before landing")):
+                with self.assertRaises(RuntimeError):
+                    build(root, elsewhere, [briefed("alpha")], template, "--no-push")
+            state = read_json(os.path.join(elsewhere, "run", "state.json"))
+            self.assertEqual({lane: entry["state"] for lane, entry in state["lanes"].items()}, {"0": "held"})
+            code, out, err = build(root, elsewhere, [briefed("alpha")], template, "--resume", "--no-push")
+            self.assertEqual(code, 0, out + err)
+            resumed = {summary["mode"]: summary for summary in summaries_of(store)}["resume"]
+            resumed_events = [
+                line["event"]
+                for path in store_files(store, "event")
+                if run_id_of(path) == resumed["run"]
+                for line in read_lines(path)
+            ]
+        self.assertNotIn("lane.end", resumed_events)
+        self.assertEqual(resumed["usd"], 0)
+        self.assertEqual(resumed["lane_runs"], [])
+        self.assertEqual(resumed["lane_seconds"], 0)
+        self.assertEqual(set(resumed["lane_states"].values()), {0})
+
 
 class Children(unittest.TestCase):
     def test_commands_get_the_run_as_parent(self):
