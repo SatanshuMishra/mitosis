@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T08:01:24.152Z
+Updated: 2026-10-27T08:01:26.850Z
 Next ids: c8 D3 R5 S1
 
 ## Goal
@@ -23,7 +23,7 @@ Ship for MSP mitosis-metrics: the branch reviewed green at 97de1cb and holds the
 
 ## Next step
 
-When the 42 gated acceptance tests rerun-plan named finish running alone at 97de1cb (results in review/round-2/rerun.txt, proofs recorded), go to Ship: commit GLOSSARY.md and docs/adr/0001-0003 in the MSP worktree, write the comment, promote, record the ship boundary, run SHIP=1 run.zsh --resume --proven-head, then open, assign and comment the pull request and park.
+Write review/mitosis-metrics.comment.md from pipeline comment, run pipeline promote, record the ship boundary, run SHIP=1 run.zsh --resume --proven-head mitosis-metrics=97de1cbf1ffbe930ca92ba23cb52683ee891997e, then open, assign and comment the pull request and park.
 
 Needs: D2, R1, R4.
 
