@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T07:13:05.090Z
+Updated: 2026-10-27T07:13:11.495Z
 Next ids: c8 D3 R5 S1
 
 ## Goal
@@ -19,7 +19,7 @@ Mitosis records events and a run summary personalised to its purpose (split work
 
 ## Where things stand
 
-Stage 2, first build running in the background from plan 6a96e4ac61c7. The CHARTER's Reference line names origin/feat/unified-metrics at a39ab110c1e3c42305123e8d8176ae588b3a9bb0, where the shared writer files are; origin/main does not hold them. The writer's public functions match what the spec names, prices.json is unchanged, and run.zsh matches the installed pipeline 0.10.0 run skill and mitosis 0.6.0.
+Stage 3 round 1 for MSP mitosis-metrics: diff, obligations (51), 54 gate proofs and the assumptions file are written in the run home's review folder, and the full suite is running at head c29b657 before the reviewers start. A Lane reported that an early test run wrote the real ~/.plugin-metrics and removed it; the folder is absent now, and round 1 judges test isolation (criterion 5.17).
 
 ## Next step
 
