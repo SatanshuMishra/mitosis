@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T07:27:26.972Z
+Updated: 2026-10-27T07:33:28.849Z
 Next ids: c8 D3 R5 S1
 
 ## Goal
@@ -19,11 +19,11 @@ Mitosis records events and a run summary personalised to its purpose (split work
 
 ## Where things stand
 
-Stage 3 round 1 for MSP mitosis-metrics at head c29b657, Validate step: review/round-1/mitosis-metrics.findings.json holds 17 findings (code-reviewer C1 to C8 with two MEDIUM, security-reviewer S1 to S5 LOW, conformance-auditor none, mitosis M1 to M4 HIGH because tests/test_docs.py imports metrics_writer at module load), pipeline candidates listed 13, and the validator is judging them. The suite passed on Python 3.15 and 3.9 and the real ~/.plugin-metrics stays absent.
+Stage 3 round 1 for MSP mitosis-metrics at head c29b657, diagnosis step: the verdict is diagnose with blockers C1 (spend_by_model sum over JSON), C2 (a resume counts a held Lane it did not dispatch) and M1 to M4 (tests/test_docs.py imports metrics_writer at module load), and advisories C7 and S4 (DuckDB download unchecked in CI) and C8 (duplicated code). Three Opus diagnosis agents are diagnosing the kinds mitosis gate, resume counts inherited lanes and sql type inference.
 
 ## Next step
 
-When the validator returns, save its array as review/round-1/mitosis-metrics.verdicts.json in the run home, run pipeline record and pipeline verdict for round 1, then diagnose, fix or ship per its outcome.
+Save each diagnosis as review/round-1/mitosis-metrics.<kind slug>.diagnosis.json in the run home, record it with pipeline diagnosis, rerun pipeline verdict, then in the MSP worktree commit a failing receipt test per fixable kind, the class fix, and the fixes for C7, S4 and C8, and review again as round 2.
 
 Needs: D2, R1, R4.
 
