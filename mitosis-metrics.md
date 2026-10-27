@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T07:48:55.660Z
+Updated: 2026-10-27T07:49:22.997Z
 Next ids: c8 D3 R5 S1
 
 ## Goal
@@ -19,7 +19,7 @@ Mitosis records events and a run summary personalised to its purpose (split work
 
 ## Where things stand
 
-Fix pass after round 1 (verdict loop) in the MSP worktree. The red receipts are committed at 86d2496: tests.test_metrics_run.Summary.test_resume_does_not_count_a_lane_left_held (C2) and tests.test_metrics_queries.SingleRunStores (C1); the mitosis gate kind's receipt is the selecting check review/round-1/select-mitosis-gate.py, which lists tests/test_docs.py now. Fixes to make, each diagnosed fixable in review/round-1/*.diagnosis.json: tests/test_docs.py vocabulary as a lazy cached function; metrics.dispatch_ended counting only Lanes this invocation dispatched or settled without starting; declared columns from catalogue.json in both skill views. Advisories: pin the DuckDB v1.5.6 linux-amd64 zip to sha256 6e89deac1ebbc36eed0291caf8b567b030c7b86ac35998f71854e22b3c5d5e2f (C7, S4) and remove the duplicated code C8 names.
+Stage 3 round 2 for MSP mitosis-metrics at head 97de1cb: every round 1 blocker (C1, C2, M1 to M4) and advisory (C7, S4, C8) is fixed on mitosis/mitosis-metrics with its receipt green and its selecting check empty, and the full suite is running at that head before code-reviewer and security-reviewer start. The declared skill views are proven on the local DuckDB 2.0 build only; CI pins 1.5.6.
 
 ## Next step
 
