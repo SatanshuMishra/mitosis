@@ -1,0 +1,36 @@
+{
+  "ref": "origin/feat/unified-metrics",
+  "commit": "a39ab110c1e3c42305123e8d8176ae588b3a9bb0",
+  "files": [
+    {
+      "path": "metrics_writer.py",
+      "source": "pipeline_tool/metrics_writer.py",
+      "sha256": "426c43dd938c8d02bd26cc73c1fd1519139029512f989d74ff9381d46365bd09"
+    },
+    {
+      "path": "tests/fixtures/metrics/cases.json",
+      "source": "metrics/fixtures/cases.json",
+      "sha256": "41148e7ded3e8953daecb0cd237289fa6d61a56404e2e357dd5150d4bb9d299b"
+    },
+    {
+      "path": "tests/fixtures/metrics/expected.json",
+      "source": "metrics/fixtures/expected.json",
+      "sha256": "bf86703837e5870789366e1b74e8bfa9c3809d8a282649df359ea7e8d4b4ebef"
+    },
+    {
+      "path": "tests/fixtures/metrics/line.schema.json",
+      "source": "metrics/schema/line.schema.json",
+      "sha256": "9c651f481b118fe5b06c44f25aac1d5e107e7f7b621e1b4fdd3a4fbb4bb406b0"
+    },
+    {
+      "path": "tests/fixtures/metrics/catalogue.schema.json",
+      "source": "metrics/schema/catalogue.schema.json",
+      "sha256": "f2952113cb36030777975ad6618b35b599d91eb66f4175509f318930bc8129a6"
+    },
+    {
+      "path": "docs/metrics-format.md",
+      "source": "docs/metrics-format.md",
+      "sha256": "a00142a2515764be2327535b86f81228dce8194a626aaeb7068b5c94ff1440e3"
+    }
+  ]
+}
