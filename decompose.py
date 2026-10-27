@@ -614,7 +614,7 @@ def _write_log(log, out, err):
         handle.write(b"--- stdout ---\n" + out + b"\n--- stderr ---\n" + err)
 
 
-def spawn(argv, prompt, timeout, cwd=None, log=None):
+def spawn(argv, prompt, timeout, cwd=None, log=None, env=None):
     try:
         process = subprocess.Popen(
             argv,
@@ -622,6 +622,7 @@ def spawn(argv, prompt, timeout, cwd=None, log=None):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=cwd,
+            env=env,
             start_new_session=True,
         )
     except OSError as failure:
@@ -654,12 +655,12 @@ def _attempt(job):
     return argv, session if any(session in word for word in argv) else None
 
 
-def spawn_many(jobs, timeout, concurrency, cwd=None):
+def spawn_many(jobs, timeout, concurrency, cwd=None, env=None):
     workers = concurrency if isinstance(concurrency, int) and concurrency > 0 else 1
     attempts = [_attempt(job) for job in jobs]
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         pending = [
-            pool.submit(spawn, argv, job["prompt"], timeout, cwd=cwd, log=job.get("log"))
+            pool.submit(spawn, argv, job["prompt"], timeout, cwd=cwd, log=job.get("log"), env=env)
             for job, (argv, _) in zip(jobs, attempts)
         ]
         return [
@@ -668,18 +669,25 @@ def spawn_many(jobs, timeout, concurrency, cwd=None):
         ]
 
 
-def spawn_until(jobs, timeout, concurrency, cwd, accepts, attempts=None):
+def spawn_until(jobs, timeout, concurrency, cwd, accepts, attempts=None, env=None):
     rounds = DISPATCH_ATTEMPTS if attempts is None else max(1, attempts)
     results = {}
     outstanding = tuple(range(len(jobs)))
     for _ in range(rounds):
         if not outstanding:
             break
-        spawned = spawn_many([jobs[index] for index in outstanding], timeout, concurrency, cwd=cwd)
+        spawned = spawn_many(
+            [jobs[index] for index in outstanding], timeout, concurrency, cwd=cwd, env=env
+        )
         results = {
             **results,
             **{
-                index: {**one, "attempts": results.get(index, {}).get("attempts", 0) + 1}
+                index: {
+                    **one,
+                    "attempts": results.get(index, {}).get("attempts", 0) + 1,
+                    "session_ids": results.get(index, {}).get("session_ids", [])
+                    + [one.get("session_id")],
+                }
                 for index, one in zip(outstanding, spawned)
             },
         }
@@ -1026,6 +1034,8 @@ def sample_structures(
     log=None,
     decisions=None,
     prior=None,
+    env=None,
+    on_sessions=None,
 ):
     count = samples if isinstance(samples, int) and samples > 0 else 1
     frozen = freeze(document)
@@ -1042,7 +1052,9 @@ def sample_structures(
         for sample_log in logs
     ]
     accepts = _returned_a_delta if prior else _returned_a_structure
-    spawned = spawn_until(jobs, timeout, count, root, accepts)
+    spawned = spawn_until(jobs, timeout, count, root, accepts, env=env)
+    if on_sessions is not None:
+        on_sessions([session for one in spawned for session in one["session_ids"]])
     return [
         _assemble_structure(frozen, one, sample_log, root, prior)
         for one, sample_log in zip(spawned, logs)

@@ -269,6 +269,8 @@ def write(
     packs=None,
     charter=None,
     decisions=None,
+    env=None,
+    on_sessions=None,
 ):
     frozen = _frozen(document)
     whole = items if structure is None else structure
@@ -283,7 +285,10 @@ def write(
         concurrency,
         root,
         lambda index, one: not _outcome(todo[index]["name"], one)["errors"],
+        env=env,
     )
+    if on_sessions is not None:
+        on_sessions([session for one in spawned for session in one["session_ids"]])
     outcomes = {step["name"]: _outcome(step["name"], one) for step, one in zip(todo, spawned)}
     return {
         "items": [_rebuild(item, outcomes) for item in items],

@@ -42,9 +42,11 @@ claude plugin marketplace add SatanshuMishra/mitosis
 claude plugin install mitosis@mitosis
 ```
 
-The plugin carries the skill and the six modules it runs — `core.py`,
-`shape.py`, `decompose.py`, `briefs.py`, `run.py`, `mitosis.py` — which need
-Python 3.9 or later and nothing else.
+The plugin carries the skill and the nine modules it runs — `core.py`,
+`shape.py`, `decompose.py`, `briefs.py`, `run.py`, `mitosis.py`, `metrics.py`,
+`spend.py`, `metrics_writer.py` — and the two data files they read,
+`prices.json` and `catalogue.json`, which need Python 3.9 or later and nothing
+else.
 
 To update, refresh the marketplace, update the plugin, and restart:
 
