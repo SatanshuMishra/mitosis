@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
-Status: parked
-Updated: 2026-10-27T19:02:17.863Z
+Status: done
+Updated: 2026-10-27T19:02:20.313Z
 Next ids: c8 D4 R5 S1
 
 ## Goal
