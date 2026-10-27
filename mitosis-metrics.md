@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T07:13:11.495Z
+Updated: 2026-10-27T07:17:25.673Z
 Next ids: c8 D3 R5 S1
 
 ## Goal
@@ -19,7 +19,7 @@ Mitosis records events and a run summary personalised to its purpose (split work
 
 ## Where things stand
 
-Stage 3 round 1 for MSP mitosis-metrics: diff, obligations (51), 54 gate proofs and the assumptions file are written in the run home's review folder, and the full suite is running at head c29b657 before the reviewers start. A Lane reported that an early test run wrote the real ~/.plugin-metrics and removed it; the folder is absent now, and round 1 judges test isolation (criterion 5.17).
+Stage 3 round 1 for MSP mitosis-metrics: diff, obligations (51), 54 gate proofs and the assumptions file are written in the run home's review folder, the full suite passed at head c29b657 on Python 3.15 and 3.9 (561 tests each), and code-reviewer, security-reviewer and conformance-auditor are reviewing. A Lane reported that an early test run wrote the real ~/.plugin-metrics and removed it; the folder is absent now, and round 1 judges test isolation (criterion 5.17).
 
 ## Next step
 
