@@ -115,43 +115,33 @@ def run_of(path, suffix):
     return partition(plugin_folder), partition(repo_folder), os.path.basename(path)[: -len(suffix)]
 
 
-def child_event_runs(root, parent):
+def child_records(root, parent, kind, suffix):
     found = ()
-    for path in store_files(root, "event", metrics_writer.EVENT_SUFFIX):
+    for path in store_files(root, kind, suffix):
         try:
             lines = read_lines(path)
         except (OSError, ValueError) as error:
-            warn_failure("reading child run " + path, error)
+            warn_failure("reading child " + kind + " " + path, error)
             continue
         if not lines or lines[0].get("parent") != parent:
             continue
-        plugin, repo, name = run_of(path, metrics_writer.EVENT_SUFFIX)
-        found = found + (
-            {
-                "plugin": plugin,
-                "repo": repo,
-                "run": name,
-                "session": lines[0].get("session"),
-                "start": lines[0].get("ts"),
-                "end": lines[-1].get("ts"),
-            },
-        )
+        plugin, repo, name = run_of(path, suffix)
+        found = found + (({"plugin": plugin, "repo": repo, "run": name}, lines),)
     return found
+
+
+def child_event_runs(root, parent):
+    return tuple(
+        {**place, "session": lines[0].get("session"), "start": lines[0].get("ts"), "end": lines[-1].get("ts")}
+        for place, lines in child_records(root, parent, "event", metrics_writer.EVENT_SUFFIX)
+    )
 
 
 def child_summary_runs(root, parent):
-    found = ()
-    for path in store_files(root, "summary", metrics_writer.SUMMARY_SUFFIX):
-        try:
-            lines = read_lines(path)
-        except (OSError, ValueError) as error:
-            warn_failure("reading child summary " + path, error)
-            continue
-        if not lines or lines[0].get("parent") != parent:
-            continue
-        plugin, repo, name = run_of(path, metrics_writer.SUMMARY_SUFFIX)
-        found = found + ({"plugin": plugin, "repo": repo, "run": name, "usd": lines[0].get("usd")},)
-    return found
+    return tuple(
+        {**place, "usd": lines[0].get("usd")}
+        for place, lines in child_records(root, parent, "summary", metrics_writer.SUMMARY_SUFFIX)
+    )
 
 
 def children_of(root, parent):
@@ -344,33 +334,37 @@ class Run:
         )
         self.append("lane.start", fields)
 
+    def lane_end_fields(self, lane, record, **ending):
+        return {
+            **self.lane_fields(lane, record.get("msp"), self.tier_of(lane), record.get("session_id")),
+            "state": record.get("state"),
+            **ending,
+            "seconds": lane_seconds(record),
+        }
+
     def lane_runs(self):
-        settled = self.seen["settled"]
         return [
-            {
-                **self.lane_fields(lane, record.get("msp"), self.tier_of(lane), record.get("session_id")),
-                "state": record.get("state"),
-                "seconds": lane_seconds(record),
-            }
-            for lane, record in sorted(settled.items())
+            self.lane_end_fields(lane, record)
+            for lane, record in sorted(self.seen["settled"].items())
             if record.get("started") is not None
         ]
 
     def dispatch_ended(self, record):
-        settled = {int(lane): entry for lane, entry in (record.get("lanes") or {}).items()}
+        dispatched = self.seen["dispatched"]
+        settled = {
+            int(lane): entry
+            for lane, entry in (record.get("lanes") or {}).items()
+            if int(lane) in dispatched or entry.get("started") is None
+        }
         self.remember(settled=settled)
         for lane, entry in sorted(settled.items()):
-            if entry.get("started") is None:
+            if lane not in dispatched:
                 continue
             self.append(
                 "lane.end",
-                {
-                    **self.lane_fields(lane, entry.get("msp"), self.tier_of(lane), entry.get("session_id")),
-                    "state": entry.get("state"),
-                    "exit": entry.get("exit"),
-                    "timed_out": bool(entry.get("timed_out")),
-                    "seconds": lane_seconds(entry),
-                },
+                self.lane_end_fields(
+                    lane, entry, exit=entry.get("exit"), timed_out=bool(entry.get("timed_out"))
+                ),
             )
         self.write_summary(None, None)
 

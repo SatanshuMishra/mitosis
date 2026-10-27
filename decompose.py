@@ -7,7 +7,6 @@ import re
 import shlex
 import signal
 import subprocess
-import uuid
 
 import core
 import shape
@@ -643,16 +642,12 @@ def spawn(argv, prompt, timeout, cwd=None, log=None, env=None):
     }
 
 
-def new_session_id():
-    return str(uuid.uuid4())
-
-
 def _attempt(job):
     if "argv_for" not in job:
         return job["argv"], None
-    session = new_session_id()
+    session = core.new_session_id()
     argv = job["argv_for"](session)
-    return argv, session if any(session in word for word in argv) else None
+    return argv, core.carried_session(argv, session)
 
 
 def spawn_many(jobs, timeout, concurrency, cwd=None, env=None):
@@ -969,7 +964,7 @@ def decompose(
 ):
     frozen = freeze(document)
     prompt = render_prompt(frozen, inventory(root, cap), graph, charter)
-    argv = _argv_for(frozen, template, prompt, model, new_session_id())
+    argv = _argv_for(frozen, template, prompt, model, core.new_session_id())
     spawned = spawn(argv, prompt, timeout, cwd=root, log=log)
     return _assemble(frozen, spawned, log, root)
 

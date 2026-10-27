@@ -8,7 +8,6 @@ import signal
 import subprocess
 import time
 import unicodedata
-import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
@@ -715,11 +714,11 @@ def dispatch(
                     continue
                 out = os.path.join(lane_dir, "%d.out" % lane)
                 err = os.path.join(lane_dir, "%d.err" % lane)
-                session = str(uuid.uuid4())
+                session = core.new_session_id()
                 argv = build_argv(
                     command, _worker_values(plan, lane, tree, models, run_dir, session)
                 )
-                carried = session if any(session in word for word in argv) else None
+                carried = core.carried_session(argv, session)
                 future = pool.submit(run_command, argv, tree["path"], timeout, out, err, env)
                 running = {**running, future: (lane, now(), merged, out, err, carried)}
                 notify(
