@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T08:01:20.475Z
+Updated: 2026-10-27T08:01:24.152Z
 Next ids: c8 D3 R5 S1
 
 ## Goal
@@ -19,7 +19,7 @@ Mitosis records events and a run summary personalised to its purpose (split work
 
 ## Where things stand
 
-Stage 3 round 2 for MSP mitosis-metrics at head 97de1cb: every round 1 blocker (C1, C2, M1 to M4) and advisory (C7, S4, C8) is fixed on mitosis/mitosis-metrics with its receipt green and its selecting check empty; the full suite passed at that head (564 tests on Python 3.15 and 3.9), both round 2 reviewers returned no finding, and the validator is re-checking the two carried blockers P1 (sql type inference) and P2 (resume counts inherited lanes). The declared skill views are proven on the local DuckDB 2.0 build only; CI pins 1.5.6.
+Ship for MSP mitosis-metrics: the branch reviewed green at 97de1cb and holds the glossary and decision records commit 3c716d4 on top. The recorded gate at c29b657 blocks (4 inconclusive), so the ship run gates the branch again rather than reusing it. The declared skill views are proven on the local DuckDB 2.0 build only; CI pins 1.5.6.
 
 ## Next step
 
