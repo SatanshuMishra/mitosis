@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T10:29:49.834Z
+Updated: 2026-10-27T10:29:54.353Z
 Next ids: c8 D4 R5 S1
 
 ## Goal
@@ -23,7 +23,7 @@ Integration is done: lighthouse run 2 is green with 31 of 31 paths passed and op
 
 ## Next step
 
-After the weekly usage limit resets (4pm America/Edmonton), resume this thread and run the pipeline:run Integration again: invoke lighthouse:test with --repo /Users/satanshumishra/Documents/DevLabs/mitosis --core main --feature feat/mitosis-metrics --spec /Users/satanshumishra/Documents/DevLabs/mitosis/docs/specs/mitosis-metrics.md --results ~/.mitosis/mitosis/mitosis-metrics/lighthouse/run-2, without --previous since run 1 left no findings, then open the FEATURE pull request it composes.
+The owner starts Clean-up by saying the FEATURE pull request SatanshuMishra/mitosis#22 merged: resume this thread, read the run home CHARTER.md, Sync, run pipeline metrics --run mitosis-metrics --repo /Users/satanshumishra/Documents/DevLabs/mitosis --save, then pipeline clean --repo /Users/satanshumishra/Documents/DevLabs/mitosis --slug mitosis-metrics, as the pipeline:run Clean-up section says.
 
 Needs: R1, R4.
 
