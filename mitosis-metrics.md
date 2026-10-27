@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T06:29:13.995Z
+Updated: 2026-10-27T07:13:05.090Z
 Next ids: c8 D3 R5 S1
 
 ## Goal
@@ -13,7 +13,7 @@ Mitosis records events and a run summary personalised to its purpose (split work
 - [x] c2 The FEATURE branch is pushed and the run home ~/.mitosis/mitosis/mitosis-metrics/ holds CHARTER.md, worker-rules.txt, dispatch.zsh, run.zsh and accept.zsh exists evidence: git ls-remote shows refs/heads/feat/mitosis-metrics at d655c7a; ~/.mitosis/mitosis/mitosis-metrics holds CHARTER.md, worker-rules.txt, dispatch.zsh, run.zsh, items.json, graph.json and feature.json; ~/.mitosis/mitosis/accept.zsh exists
 - [x] c3 run.zsh --plan-only passes with no fatal finding evidence: run.zsh --plan-only exited 0 with plan_id 306926ac7a29, one MSP, five Steps, no fatal finding; its log is plan-1.log in the run home
 - [x] c4 The thread is parked with a next step gated on the shared reference writer existing on origin/feat/unified-metrics or origin/main evidence: the next step names the six-path ls-tree check on origin/main or origin/feat/unified-metrics and the run.zsh command, recorded with D1, and the thread is parked with it
-- [ ] c5 The first build commits the mitosis-metrics MSP on its branch
+- [x] c5 The first build commits the mitosis-metrics MSP on its branch evidence: build-1.log last JSON line: MSP mitosis-metrics committed on mitosis/mitosis-metrics at c29b657, five Lanes ok, reconcile empty, gate 50 pass and 4 inconclusive (tests/test_docs.py imports metrics_writer at module load)
 - [ ] c6 The MSP's review verdict is green or blocked, with every confirmed advisory fixed
 - [ ] c7 The MSP pull request is open against feat/mitosis-metrics, assigned to the owner, with its review comment posted
 
@@ -23,9 +23,9 @@ Stage 2, first build running in the background from plan 6a96e4ac61c7. The CHART
 
 ## Next step
 
-Wait for the first build, started with ~/.mitosis/mitosis/mitosis-metrics/run.zsh (plan_id 6a96e4ac61c7, log build-1.log in the run home), read its last JSON line, then run pipeline:run Stage 3 review, Validate, fixes and Ship to the MSP pull request.
+When the round 1 suite run finishes (review/round-1/mitosis-metrics.suite.txt in the run home), dispatch code-reviewer, conformance-auditor and security-reviewer with the briefs in review/round-1/briefs/, collect findings with M findings for the 4 inconclusive gate tests, then run pipeline candidates, validator, record and verdict.
 
-Needs: D2, R1, R2, R4.
+Needs: D2, R1, R4.
 
 ## Decisions in force
 
@@ -34,7 +34,6 @@ Needs: D2, R1, R2, R4.
 ## Open risks
 
 - R1 The Steps copy the reference writer, fixtures, schemas and format document byte for byte; if any copied text holds a term in the repository's DENY_TERMS secret, the CI release check fails and the copy may not be edited. The secret is unreadable here, so this is unproven. Bears on c3.
-- R2 Plan-only flags the session-placeholder, record-metrics and metrics-skill-and-docs Steps at about 230k, 265k and 251k estimated tokens, above the 150k one Worker session should hold; each is one Step, so mitosis cannot split it further.
 - R4 mitosis counts the invoking session's messages inside its span, because the pipeline spec leaves a child's span out of the parent's own spend; if the pipeline's merged implementation differs, that window is double counted or dropped.
 
 ## Settled, do not reopen
