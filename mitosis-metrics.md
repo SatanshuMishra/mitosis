@@ -1,7 +1,7 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T08:01:26.850Z
-Next ids: c8 D3 R5 S1
+Updated: 2026-10-27T08:02:06.686Z
+Next ids: c8 D4 R5 S1
 
 ## Goal
 
@@ -30,6 +30,7 @@ Needs: D2, R1, R4.
 ## Decisions in force
 
 - D2 Interphase hand-off: start the first build from the shared writer on origin/feat/unified-metrics: Build now from origin/feat/unified-metrics at a39ab110c1e3c42305123e8d8176ae588b3a9bb0, named on the CHARTER's Reference line; plan-only passed with plan_id 6a96e4ac61c7.
+- D3 Ship boundary: push MSP mitosis-metrics and open its pull request against feat/mitosis-metrics: Ship now: run SHIP=1 run.zsh --resume --proven-head mitosis-metrics=97de1cbf1ffbe930ca92ba23cb52683ee891997e, open the pull request ready for review against feat/mitosis-metrics, assign it to the owner and post the review comment.
 
 ## Open risks
 
