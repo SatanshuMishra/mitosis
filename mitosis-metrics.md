@@ -1,7 +1,7 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T06:28:34.249Z
-Next ids: c5 D3 R5 S1
+Updated: 2026-10-27T06:29:13.995Z
+Next ids: c8 D3 R5 S1
 
 ## Goal
 
@@ -13,10 +13,13 @@ Mitosis records events and a run summary personalised to its purpose (split work
 - [x] c2 The FEATURE branch is pushed and the run home ~/.mitosis/mitosis/mitosis-metrics/ holds CHARTER.md, worker-rules.txt, dispatch.zsh, run.zsh and accept.zsh exists evidence: git ls-remote shows refs/heads/feat/mitosis-metrics at d655c7a; ~/.mitosis/mitosis/mitosis-metrics holds CHARTER.md, worker-rules.txt, dispatch.zsh, run.zsh, items.json, graph.json and feature.json; ~/.mitosis/mitosis/accept.zsh exists
 - [x] c3 run.zsh --plan-only passes with no fatal finding evidence: run.zsh --plan-only exited 0 with plan_id 306926ac7a29, one MSP, five Steps, no fatal finding; its log is plan-1.log in the run home
 - [x] c4 The thread is parked with a next step gated on the shared reference writer existing on origin/feat/unified-metrics or origin/main evidence: the next step names the six-path ls-tree check on origin/main or origin/feat/unified-metrics and the run.zsh command, recorded with D1, and the thread is parked with it
+- [ ] c5 The first build commits the mitosis-metrics MSP on its branch
+- [ ] c6 The MSP's review verdict is green or blocked, with every confirmed advisory fixed
+- [ ] c7 The MSP pull request is open against feat/mitosis-metrics, assigned to the owner, with its review comment posted
 
 ## Where things stand
 
-Stage 2, first build starting: the shared writer files are on the pipeline's origin/feat/unified-metrics at a39ab110c1e3c42305123e8d8176ae588b3a9bb0 and not on origin/main, and the CHARTER's Reference line names that ref and commit. The writer's public functions (append_event, write_summary, write_catalogue, prune, run_id, store_root) match what the spec names, and prices.json is unchanged at date 2026-10-06. run.zsh matches the installed pipeline 0.10.0 run skill and mitosis 0.6.0, which are still the newest installed.
+Stage 2, first build running in the background from plan 6a96e4ac61c7. The CHARTER's Reference line names origin/feat/unified-metrics at a39ab110c1e3c42305123e8d8176ae588b3a9bb0, where the shared writer files are; origin/main does not hold them. The writer's public functions match what the spec names, prices.json is unchanged, and run.zsh matches the installed pipeline 0.10.0 run skill and mitosis 0.6.0.
 
 ## Next step
 
@@ -42,4 +45,4 @@ Needs: D2, R1, R2, R4.
 - Pipeline decisions (intent I1 to I6): /Users/satanshumishra/Documents/DevLabs/pipeline/docs/specs/unified-metrics.decisions.md
 - Shared writer source: pipeline checkout at origin/feat/unified-metrics, commit a39ab110c1e3c42305123e8d8176ae588b3a9bb0
 - Spec, decisions (I1 to I7 and every delegated answer), record and items: /Users/satanshumishra/Documents/DevLabs/mitosis/docs/specs/mitosis-metrics.{md,decisions.md,record.json,items.json}
-- Run home: ~/.mitosis/mitosis/mitosis-metrics/; acceptance script: ~/.mitosis/mitosis/accept.zsh
+- Run home: ~/.mitosis/mitosis/mitosis-metrics/ (CHARTER.md, run.zsh, build-1.log, rounds.md); acceptance script: ~/.mitosis/mitosis/accept.zsh
