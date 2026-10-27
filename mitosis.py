@@ -105,13 +105,16 @@ NO_PLAN = (
     "--resume writes the briefs and builds the plan"
 )
 
-BRIEF_PLACEHOLDERS = ("prompt", "model", "step", "document")
+BRIEF_PLACEHOLDERS = ("prompt", "model", "step", "document", "session_id")
 
 TEMPLATE_PLACEHOLDERS = {"brief": BRIEF_PLACEHOLDERS}
 
 PLACEHOLDER_HELP = {
-    "dispatch": "{task} {model} {tier} {worktree} {branch} {lane} {msp} {charter} {document} {run_dir}",
-    "decompose": "{prompt} {model} {document}",
+    "dispatch": (
+        "{task} {model} {tier} {worktree} {branch} {lane} {msp} {charter} {document} {run_dir} "
+        "{session_id}"
+    ),
+    "decompose": "{prompt} {model} {document} {session_id}",
     "brief": " ".join("{%s}" % key for key in BRIEF_PLACEHOLDERS),
     "acceptance": "{file} {test} {worktree}",
     "pull-request": "{branch} {base} {title} {body} {worktree} {msp} {remote}",

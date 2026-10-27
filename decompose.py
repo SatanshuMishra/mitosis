@@ -7,6 +7,7 @@ import re
 import shlex
 import signal
 import subprocess
+import uuid
 
 import core
 import shape
@@ -18,7 +19,8 @@ DISPATCH_ATTEMPTS = 2
 PROMPT_PLACEHOLDER = "{prompt}"
 MODEL_PLACEHOLDER = "{model}"
 DOCUMENT_PLACEHOLDER = "{document}"
-PLACEHOLDERS = (PROMPT_PLACEHOLDER, MODEL_PLACEHOLDER, DOCUMENT_PLACEHOLDER)
+SESSION_PLACEHOLDER = "{session_id}"
+PLACEHOLDERS = (PROMPT_PLACEHOLDER, MODEL_PLACEHOLDER, DOCUMENT_PLACEHOLDER, SESSION_PLACEHOLDER)
 
 SKIPPED_DIRS = (".git", "node_modules", "__pycache__")
 
@@ -640,14 +642,30 @@ def spawn(argv, prompt, timeout, cwd=None, log=None):
     }
 
 
+def new_session_id():
+    return str(uuid.uuid4())
+
+
+def _attempt(job):
+    if "argv_for" not in job:
+        return job["argv"], None
+    session = new_session_id()
+    argv = job["argv_for"](session)
+    return argv, session if any(session in word for word in argv) else None
+
+
 def spawn_many(jobs, timeout, concurrency, cwd=None):
     workers = concurrency if isinstance(concurrency, int) and concurrency > 0 else 1
+    attempts = [_attempt(job) for job in jobs]
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         pending = [
-            pool.submit(spawn, job["argv"], job["prompt"], timeout, cwd=cwd, log=job.get("log"))
-            for job in jobs
+            pool.submit(spawn, argv, job["prompt"], timeout, cwd=cwd, log=job.get("log"))
+            for job, (argv, _) in zip(jobs, attempts)
         ]
-        return [future.result() for future in pending]
+        return [
+            {**future.result(), "session_id": session}
+            for future, (_, session) in zip(pending, attempts)
+        ]
 
 
 def spawn_until(jobs, timeout, concurrency, cwd, accepts, attempts=None):
@@ -897,8 +915,12 @@ def _empty_errors(frozen, items):
     return ["the decompose Worker returned no Steps for a document that has content"]
 
 
-def _argv_for(frozen, template, prompt, model):
-    substitutions = {PROMPT_PLACEHOLDER: prompt, DOCUMENT_PLACEHOLDER: frozen["path"]}
+def _argv_for(frozen, template, prompt, model, session_id):
+    substitutions = {
+        PROMPT_PLACEHOLDER: prompt,
+        DOCUMENT_PLACEHOLDER: frozen["path"],
+        SESSION_PLACEHOLDER: session_id,
+    }
     if model is not None:
         substitutions = {**substitutions, MODEL_PLACEHOLDER: model}
     return build_argv(template, substitutions)
@@ -939,7 +961,7 @@ def decompose(
 ):
     frozen = freeze(document)
     prompt = render_prompt(frozen, inventory(root, cap), graph, charter)
-    argv = _argv_for(frozen, template, prompt, model)
+    argv = _argv_for(frozen, template, prompt, model, new_session_id())
     spawned = spawn(argv, prompt, timeout, cwd=root, log=log)
     return _assemble(frozen, spawned, log, root)
 
@@ -1010,9 +1032,15 @@ def sample_structures(
     prompt = render_structure_prompt(
         frozen, inventory(root, cap), graph, charter, decisions, prior
     )
-    argv = _argv_for(frozen, template, prompt, model)
     logs = _sample_logs(log, count)
-    jobs = [{"argv": argv, "prompt": prompt, "log": sample_log} for sample_log in logs]
+    jobs = [
+        {
+            "argv_for": lambda session_id: _argv_for(frozen, template, prompt, model, session_id),
+            "prompt": prompt,
+            "log": sample_log,
+        }
+        for sample_log in logs
+    ]
     accepts = _returned_a_delta if prior else _returned_a_structure
     spawned = spawn_until(jobs, timeout, count, root, accepts)
     return [

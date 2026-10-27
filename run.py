@@ -8,6 +8,7 @@ import signal
 import subprocess
 import time
 import unicodedata
+import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
@@ -60,6 +61,7 @@ LANE_RECORD_KEYS = (
     "commit",
     "started",
     "finished",
+    "session_id",
 )
 
 
@@ -219,8 +221,9 @@ TEMPLATE_PLACEHOLDERS = {
         "charter",
         "document",
         "run_dir",
+        "session_id",
     ),
-    "decompose": ("prompt", "model", "document"),
+    "decompose": ("prompt", "model", "document", "session_id"),
     "acceptance": ("file", "test", "worktree"),
     "pull-request": ("branch", "base", "title", "body", "worktree", "msp", "remote"),
 }
@@ -428,7 +431,7 @@ def _cross_producers(plan, lane, producers, trees, records):
     return seen
 
 
-def _worker_values(plan, lane, tree, models, run_dir):
+def _worker_values(plan, lane, tree, models, run_dir, session_id):
     brief = plan["briefs"][lane]
     tier = plan["lanes"][lane].get("tier")
     return {
@@ -442,6 +445,7 @@ def _worker_values(plan, lane, tree, models, run_dir):
         "charter": brief.get("charter"),
         "document": brief.get("document"),
         "run_dir": run_dir,
+        "session_id": session_id,
     }
 
 
@@ -485,7 +489,7 @@ def _land(plan, lane, tree):
     return commit, None
 
 
-def _verdict(lane, tree, started, merged, out, err, code, timed_out):
+def _verdict(lane, tree, started, merged, out, err, code, timed_out, session_id):
     returned = last_return(out)
     state, reason = lane_verdict(code, returned, timed_out)
     return lane_record(
@@ -502,6 +506,7 @@ def _verdict(lane, tree, started, merged, out, err, code, timed_out):
         commit=None,
         started=started,
         finished=now(),
+        session_id=session_id,
     )
 
 
@@ -695,19 +700,25 @@ def dispatch(
                     continue
                 out = os.path.join(lane_dir, "%d.out" % lane)
                 err = os.path.join(lane_dir, "%d.err" % lane)
-                argv = build_argv(command, _worker_values(plan, lane, tree, models, run_dir))
+                session = str(uuid.uuid4())
+                argv = build_argv(
+                    command, _worker_values(plan, lane, tree, models, run_dir, session)
+                )
+                carried = session if any(session in word for word in argv) else None
                 future = pool.submit(run_command, argv, tree["path"], timeout, out, err)
-                running = {**running, future: (lane, now(), merged, out, err)}
+                running = {**running, future: (lane, now(), merged, out, err, carried)}
                 progressed = True
             pending = list(waiting)
             if running:
                 done, _ = wait(list(running), return_when=FIRST_COMPLETED)
                 for future in done:
-                    lane, started, merged, out, err = running[future]
+                    lane, started, merged, out, err, session = running[future]
                     running = {f: v for f, v in running.items() if f is not future}
                     code, timed_out = future.result()
                     tree = tree_of[lanes[lane]["msp"]]
-                    judged = _verdict(lane, tree, started, merged, out, err, code, timed_out)
+                    judged = _verdict(
+                        lane, tree, started, merged, out, err, code, timed_out, session
+                    )
                     if judged["state"] == "ok":
                         held = {**held, lane: judged}
                         if on_lane is not None:
