@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T08:25:17.712Z
+Updated: 2026-10-27T08:26:10.807Z
 Next ids: c8 D4 R5 S1
 
 ## Goal
@@ -43,6 +43,6 @@ Needs: R1, R4.
 
 - Pipeline spec: /Users/satanshumishra/Documents/DevLabs/pipeline/docs/specs/unified-metrics.md
 - Pipeline decisions (intent I1 to I6): /Users/satanshumishra/Documents/DevLabs/pipeline/docs/specs/unified-metrics.decisions.md
-- Shared writer source: pipeline checkout at origin/feat/unified-metrics, commit a39ab110c1e3c42305123e8d8176ae588b3a9bb0
+- Shared writer source: pipeline checkout at origin/main (42b6145), whose six copied files are byte-identical to commit a39ab110c1e3c42305123e8d8176ae588b3a9bb0; origin/feat/unified-metrics is deleted
 - Spec, decisions (I1 to I7 and every delegated answer), record and items: /Users/satanshumishra/Documents/DevLabs/mitosis/docs/specs/mitosis-metrics.{md,decisions.md,record.json,items.json}
 - Run home: ~/.mitosis/mitosis/mitosis-metrics/ (CHARTER.md, run.zsh, build-1.log, rounds.md, review/ with each round's diff, suite output, briefs, findings and verdicts); acceptance script: ~/.mitosis/mitosis/accept.zsh
