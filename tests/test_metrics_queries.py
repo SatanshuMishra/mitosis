@@ -37,6 +37,8 @@ STORE_IN_SKILL = "~/.plugin-metrics"
 
 SQL_BLOCK = re.compile(r"^```sql\n(.*?)^```", re.S | re.M)
 
+DECLARED_COLUMN = re.compile(r"^\s+'([a-z][a-z0-9_]*)': '", re.M)
+
 QUERY_COLUMNS = {
     "recent_runs": ["run", "mode", "exit", "steps", "msps", "wall_seconds", "usd"],
     "lane_states": ["state", "lanes"],
@@ -272,6 +274,25 @@ class SkillSql(unittest.TestCase):
                 self.assertEqual(completed.returncode, 0, block + "\n" + completed.stderr)
             failing = run_duckdb(self, home, setup + "\nSELECT no_such_column FROM summaries;\n")
             self.assertNotEqual(failing.returncode, 0)
+
+
+class DeclaredViews(unittest.TestCase):
+    def test_views_declare_every_described_field(self):
+        import metrics_writer
+
+        with open(CATALOGUE_PATH, encoding="utf-8") as handle:
+            catalogue = json.load(handle)
+        envelope = [name for name in metrics_writer.ENVELOPE if name != "repo"]
+        event_fields = list(
+            dict.fromkeys(name for entry in catalogue["events"].values() for name in entry["fields"])
+        )
+        declared = {
+            block.split()[4]: DECLARED_COLUMN.findall(block)
+            for block in view_blocks(skill_blocks())
+            if block.upper().startswith("CREATE")
+        }
+        self.assertEqual(declared["events"], envelope + event_fields)
+        self.assertEqual(declared["summaries"], envelope + list(catalogue["summary"]["fields"]))
 
 
 class SingleRunStores(unittest.TestCase):

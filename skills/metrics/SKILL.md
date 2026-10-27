@@ -37,7 +37,10 @@ answer.
 Run every query in one duckdb session that starts with these three blocks,
 with `~/.plugin-metrics` replaced by the value of `PLUGIN_METRICS_DIR` when it
 is set. The time zone comes first, because DuckDB prints timestamps in local
-time otherwise.
+time otherwise. The two views name every field the catalogue describes with
+its type, so a query reads the same columns over any store, even one whose
+runs never wrote a field; a field the catalogue does not describe is not in
+them.
 
 ```sql
 SET TimeZone = 'UTC';
@@ -46,13 +49,99 @@ SET TimeZone = 'UTC';
 ```sql
 CREATE OR REPLACE VIEW events AS
 SELECT * FROM read_json('~/.plugin-metrics/plugin=mitosis/kind=event/repo=*/*.jsonl',
-    format = 'newline_delimited', hive_partitioning = true, union_by_name = true);
+    format = 'newline_delimited', hive_partitioning = true, union_by_name = true,
+    columns = {
+        'v': 'BIGINT',
+        'ts': 'TIMESTAMPTZ',
+        'plugin': 'VARCHAR',
+        'plugin_version': 'VARCHAR',
+        'kind': 'VARCHAR',
+        'event': 'VARCHAR',
+        'run': 'VARCHAR',
+        'parent': 'VARCHAR',
+        'session': 'VARCHAR',
+        'mode': 'VARCHAR',
+        'input': 'VARCHAR',
+        'concurrency': 'BIGINT',
+        'plan_id': 'VARCHAR',
+        'run_dir': 'VARCHAR',
+        'tier_models': 'STRUCT("tier" VARCHAR, "model" VARCHAR)[]',
+        'stage': 'VARCHAR',
+        'seconds': 'DOUBLE',
+        'calls': 'BIGINT',
+        'steps': 'BIGINT',
+        'lanes': 'BIGINT',
+        'msps': 'BIGINT',
+        'clusters': 'BIGINT',
+        'lane_width': 'BIGINT',
+        'fatal': 'BIGINT',
+        'lane': 'BIGINT',
+        'msp': 'VARCHAR',
+        'tier': 'VARCHAR',
+        'model': 'VARCHAR',
+        'session_id': 'VARCHAR',
+        'state': 'VARCHAR',
+        'exit': 'BIGINT',
+        'timed_out': 'BOOLEAN',
+        'outcome': 'VARCHAR',
+        'reused': 'BOOLEAN',
+        'undeclared': 'BIGINT',
+        'unwritten': 'BIGINT',
+        'crossing': 'BIGINT',
+        'meaning': 'VARCHAR'
+    });
 ```
 
 ```sql
 CREATE OR REPLACE VIEW summaries AS
 SELECT * FROM read_json('~/.plugin-metrics/plugin=mitosis/kind=summary/repo=*/*.json',
-    format = 'newline_delimited', hive_partitioning = true, union_by_name = true);
+    format = 'newline_delimited', hive_partitioning = true, union_by_name = true,
+    columns = {
+        'v': 'BIGINT',
+        'ts': 'TIMESTAMPTZ',
+        'plugin': 'VARCHAR',
+        'plugin_version': 'VARCHAR',
+        'kind': 'VARCHAR',
+        'event': 'VARCHAR',
+        'run': 'VARCHAR',
+        'parent': 'VARCHAR',
+        'session': 'VARCHAR',
+        'mode': 'VARCHAR',
+        'input': 'VARCHAR',
+        'exit': 'BIGINT',
+        'meaning': 'VARCHAR',
+        'plan_id': 'VARCHAR',
+        'run_dir': 'VARCHAR',
+        'steps': 'BIGINT',
+        'lanes': 'BIGINT',
+        'msps': 'BIGINT',
+        'clusters': 'BIGINT',
+        'lane_width': 'BIGINT',
+        'peak_parallel': 'BIGINT',
+        'concurrency': 'BIGINT',
+        'lane_states': 'STRUCT("ok" BIGINT, "failed" BIGINT, "blocked" BIGINT, "merge_blocked" BIGINT, "held" BIGINT)',
+        'timed_out': 'BIGINT',
+        'lane_seconds': 'DOUBLE',
+        'wall_seconds': 'DOUBLE',
+        'msp_states': 'STRUCT("shipped" BIGINT, "pushed" BIGINT, "unchanged" BIGINT, "committed" BIGINT, "ship_failed" BIGINT, "blocked" BIGINT)',
+        'gates': 'STRUCT("pass" BIGINT, "inert" BIGINT, "inconclusive" BIGINT, "not_applicable" BIGINT)',
+        'gates_reused': 'BIGINT',
+        'reconcile': 'STRUCT("undeclared" BIGINT, "unwritten" BIGINT, "crossing" BIGINT, "fatal" BIGINT)',
+        'foreign_writes': 'BIGINT',
+        'stacking_exceptions': 'BIGINT',
+        'tier_models': 'STRUCT("tier" VARCHAR, "model" VARCHAR)[]',
+        'lane_runs': 'STRUCT("lane" BIGINT, "msp" VARCHAR, "tier" VARCHAR, "model" VARCHAR, "session_id" VARCHAR, "state" VARCHAR, "seconds" DOUBLE)[]',
+        'msp_runs': 'STRUCT("msp" VARCHAR, "state" VARCHAR, "gate" VARCHAR, "reconcile_clean" BOOLEAN)[]',
+        'usd': 'DOUBLE',
+        'tokens': 'STRUCT("input" BIGINT, "cache_write_5m" BIGINT, "cache_write_1h" BIGINT, "cache_read" BIGINT, "output" BIGINT)',
+        'spend': 'STRUCT("source" VARCHAR, "model" VARCHAR, "tokens" STRUCT("input" BIGINT, "cache_write_5m" BIGINT, "cache_write_1h" BIGINT, "cache_read" BIGINT, "output" BIGINT), "usd" DOUBLE)[]',
+        'prices_date': 'VARCHAR',
+        'unpriced_models': 'VARCHAR[]',
+        'sessions_missing': 'BIGINT',
+        'spend_complete': 'BOOLEAN',
+        'children': 'STRUCT("plugin" VARCHAR, "run" VARCHAR, "usd" DOUBLE, "missing" BOOLEAN)[]',
+        'spend_scope': 'VARCHAR'
+    });
 ```
 
 Pass the blocks and the query on standard input, so quoting stays intact:
