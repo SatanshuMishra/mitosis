@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T06:28:31.504Z
+Updated: 2026-10-27T06:28:34.249Z
 Next ids: c5 D3 R5 S1
 
 ## Goal
@@ -22,7 +22,7 @@ Stage 2, first build starting: the shared writer files are on the pipeline's ori
 
 Wait for the first build, started with ~/.mitosis/mitosis/mitosis-metrics/run.zsh (plan_id 6a96e4ac61c7, log build-1.log in the run home), read its last JSON line, then run pipeline:run Stage 3 review, Validate, fixes and Ship to the MSP pull request.
 
-Needs: D1, R1, R2, R4.
+Needs: D2, R1, R2, R4.
 
 ## Decisions in force
 
