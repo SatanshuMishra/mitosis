@@ -1,6 +1,6 @@
 # mitosis-metrics: Mitosis metrics on the shared plugin-metrics store
 Status: parked
-Updated: 2026-10-27T07:39:39.058Z
+Updated: 2026-10-27T07:48:55.660Z
 Next ids: c8 D3 R5 S1
 
 ## Goal
@@ -23,7 +23,7 @@ Fix pass after round 1 (verdict loop) in the MSP worktree. The red receipts are 
 
 ## Next step
 
-Make the three class fixes and the advisory fixes, show each receipt green and each selecting check empty, commit naming the ids, then run round 2 review.
+When the round 2 suite run finishes (review/round-2/mitosis-metrics.suite.txt in the run home), render code-reviewer and security-reviewer briefs for round 2 with previous_head c29b657b870798fa8c106dabe21c7b7b9c072fa0, earlier_findings review/round-1/mitosis-metrics.md and the three round 1 diagnosis files, dispatch them, then collect, validate, record and verdict round 2.
 
 Needs: D2, R1, R4.
 
