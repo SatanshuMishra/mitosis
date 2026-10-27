@@ -295,11 +295,16 @@ def invoke(root, argv):
     os.chdir(root)
     out, err = io.StringIO(), io.StringIO()
     try:
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            try:
-                code = mitosis.main(argv)
-            except SystemExit as stop:
-                code = stop.code
+        with tempfile.TemporaryDirectory() as store, unittest.mock.patch.dict(
+            os.environ, {"PLUGIN_METRICS_DIR": store}
+        ):
+            os.environ.pop("PLUGIN_METRICS_PARENT", None)
+            os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                try:
+                    code = mitosis.main(argv)
+                except SystemExit as stop:
+                    code = stop.code
     finally:
         os.chdir(before)
     return code, out.getvalue(), err.getvalue()

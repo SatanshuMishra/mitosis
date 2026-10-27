@@ -1,0 +1,2261 @@
+{
+  "format": 1,
+  "plugin": "mitosis",
+  "purpose": "mitosis splits a batch of changes or a document into parts built in parallel, gates each acceptance test on failing without the work, and opens one pull request per part.",
+  "objectives": [
+    {
+      "id": "split",
+      "text": "Split the work into independently reviewable MSPs whose branches write exactly their declared files.",
+      "measured_by": [
+        "plan.steps",
+        "plan.lanes",
+        "plan.msps",
+        "plan.clusters",
+        "reconcile.undeclared",
+        "reconcile.crossing",
+        "summary.reconcile",
+        "summary.foreign_writes",
+        "summary.stacking_exceptions"
+      ]
+    },
+    {
+      "id": "parallel",
+      "text": "Build the Lanes in parallel.",
+      "measured_by": [
+        "plan.lane_width",
+        "summary.peak_parallel",
+        "summary.concurrency",
+        "summary.lane_states",
+        "summary.lane_seconds",
+        "summary.wall_seconds",
+        "lane.end.seconds"
+      ]
+    },
+    {
+      "id": "gate",
+      "text": "Gate every acceptance test on actually failing without the work.",
+      "measured_by": [
+        "gate.outcome",
+        "gate.reused",
+        "summary.gates",
+        "summary.gates_reused"
+      ]
+    },
+    {
+      "id": "pull_requests",
+      "text": "Open one pull request per MSP.",
+      "measured_by": [
+        "msp.end.state",
+        "summary.msp_states",
+        "summary.msp_runs"
+      ]
+    },
+    {
+      "id": "spend",
+      "text": "Carry the run's own spend, priced at write time by exact model id in the five token kinds.",
+      "measured_by": [
+        "summary.usd",
+        "summary.tokens",
+        "summary.spend",
+        "summary.prices_date",
+        "summary.unpriced_models",
+        "summary.sessions_missing",
+        "summary.spend_complete",
+        "summary.children"
+      ]
+    }
+  ],
+  "events": {
+    "run.start": {
+      "description": "Written once when an invocation's run directory is known, before any stage runs.",
+      "writer": "mitosis.run_pipeline",
+      "readers": [
+        "owner",
+        "pipeline"
+      ],
+      "questions": [
+        "Which invocations ran, in which mode, and with which models?"
+      ],
+      "fields": {
+        "mode": {
+          "type": "enum",
+          "description": "What kind of invocation this was.",
+          "measured_from": "The flags: --plan-only, --resume and --no-push.",
+          "unit": "none",
+          "includes": "The invocation's mode.",
+          "excludes": "Nothing else.",
+          "reading": "plan-only stops before the build; build is a first build; resume continues a run directory without pushing; ship is a resume allowed to push.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which invocations planned, built, resumed or shipped?",
+          "values": [
+            "plan-only",
+            "build",
+            "resume",
+            "ship"
+          ]
+        },
+        "input": {
+          "type": "enum",
+          "description": "Which front end the work came through.",
+          "measured_from": "Whether --items or --spec was given.",
+          "unit": "none",
+          "includes": "The input kind.",
+          "excludes": "The input's content.",
+          "reading": "items is a Steps file; spec is a document turned into Steps.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Did the work arrive as Steps or as a document?",
+          "values": [
+            "items",
+            "spec"
+          ]
+        },
+        "concurrency": {
+          "type": "integer",
+          "description": "The most Workers allowed to run at once.",
+          "measured_from": "The --concurrency flag.",
+          "unit": "count",
+          "includes": "The cap for the brief stage and the build.",
+          "excludes": "How many actually ran at once, which peak_parallel records.",
+          "reading": "A cap, not a measure; compare it with peak_parallel.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "How much parallelism was allowed?"
+        },
+        "plan_id": {
+          "type": "string",
+          "description": "The id of the plan this invocation built, shared by every invocation of one run directory.",
+          "measured_from": "The plan_id mitosis computes from the validated Steps and its own version.",
+          "unit": "id",
+          "includes": "The plan built by this invocation.",
+          "excludes": "Nothing else.",
+          "reading": "Null when no plan was built, as in run.start or a plan-only structure stage; two runs with one plan_id are invocations of the same plan.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which invocations built, resumed and shipped the same plan?"
+        },
+        "run_dir": {
+          "type": "string",
+          "description": "The run directory this invocation used.",
+          "measured_from": "--run-dir, or the default under the runs folder.",
+          "unit": "text",
+          "includes": "The folder's path.",
+          "excludes": "Its content.",
+          "reading": "Invocations with one run_dir and plan_id continue one run.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which invocations continued the same run directory?"
+        },
+        "tier_models": {
+          "type": "array",
+          "description": "Every tier mapped to a model with --tier-model.",
+          "measured_from": "The --tier-model flags.",
+          "unit": "none",
+          "includes": "Mapped tiers only.",
+          "excludes": "Tiers left unmapped.",
+          "reading": "An empty list means no tier was mapped.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which model did each tier use?",
+          "items": {
+            "type": "object",
+            "description": "One tier and its model.",
+            "measured_from": "One --tier-model flag.",
+            "unit": "none",
+            "includes": "The pair.",
+            "excludes": "Nothing else.",
+            "reading": "One record per mapped tier.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "Which model did this tier use?",
+            "fields": {
+              "tier": {
+                "type": "enum",
+                "description": "The tier the plan gave the Lane.",
+                "measured_from": "The plan's Lane tier, set by blast radius and complexity.",
+                "unit": "none",
+                "includes": "The tier only.",
+                "excludes": "The model, which is a separate field.",
+                "reading": "top Lanes carry risk markers or complex work; cheap Lanes the rest.",
+                "readers": [
+                  "owner",
+                  "pipeline"
+                ],
+                "question": "Which tier did the Lane run at?",
+                "values": [
+                  "top",
+                  "cheap"
+                ]
+              },
+              "model": {
+                "type": "string",
+                "description": "The model id mapped to the tier.",
+                "measured_from": "The --tier-model value.",
+                "unit": "id",
+                "includes": "The id as given.",
+                "excludes": "The model a Worker actually used.",
+                "reading": "An exact model id.",
+                "readers": [
+                  "owner",
+                  "pipeline"
+                ],
+                "question": "Which model was mapped?"
+              }
+            }
+          }
+        }
+      }
+    },
+    "stage.end": {
+      "description": "Written when the structure stage or the brief stage has run its Workers.",
+      "writer": "mitosis.structure_document and mitosis.brief_structure",
+      "readers": [
+        "owner",
+        "pipeline"
+      ],
+      "questions": [
+        "How long did the structure and brief stages take, and how many Workers did they spawn?"
+      ],
+      "fields": {
+        "stage": {
+          "type": "enum",
+          "description": "Which stage ended.",
+          "measured_from": "The stage mitosis ran.",
+          "unit": "none",
+          "includes": "One stage.",
+          "excludes": "Nothing else.",
+          "reading": "structure turns a document into Steps; brief writes each Step's task.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which stage is this?",
+          "values": [
+            "structure",
+            "brief"
+          ]
+        },
+        "seconds": {
+          "type": "number",
+          "description": "How long the stage took.",
+          "measured_from": "The difference between the stage's start and its Workers' return on mitosis's clock.",
+          "unit": "seconds",
+          "includes": "Wall time of the stage.",
+          "excludes": "Time spent outside the stage.",
+          "reading": "Higher means longer; 0 means it took under a second or was reused.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "How long did the stage take?"
+        },
+        "calls": {
+          "type": "integer",
+          "description": "The number of spawn attempts the stage made.",
+          "measured_from": "Counted by mitosis as it ran.",
+          "unit": "count",
+          "includes": "Every sample and every retry.",
+          "excludes": "Steps already briefed, which spawn nothing.",
+          "reading": "0 means none; higher means more.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "How many Worker calls did the stage buy?"
+        }
+      }
+    },
+    "plan": {
+      "description": "Written when an invocation builds a plan from validated Steps.",
+      "writer": "mitosis.run_pipeline",
+      "readers": [
+        "owner",
+        "pipeline"
+      ],
+      "questions": [
+        "How did mitosis split the work?"
+      ],
+      "fields": {
+        "plan_id": {
+          "type": "string",
+          "description": "The id of the plan this invocation built, shared by every invocation of one run directory.",
+          "measured_from": "The plan_id mitosis computes from the validated Steps and its own version.",
+          "unit": "id",
+          "includes": "The plan built by this invocation.",
+          "excludes": "Nothing else.",
+          "reading": "Null when no plan was built, as in run.start or a plan-only structure stage; two runs with one plan_id are invocations of the same plan.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which invocations built, resumed and shipped the same plan?"
+        },
+        "steps": {
+          "type": "integer",
+          "description": "The number of Steps the plan or the structure holds.",
+          "measured_from": "Counted by mitosis as it ran.",
+          "unit": "count",
+          "includes": "Every Step, briefed or not.",
+          "excludes": "Steps of earlier plans.",
+          "reading": "With no plan built, the structure's Step count; null when neither exists.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "How much work did the split receive?"
+        },
+        "lanes": {
+          "type": "integer",
+          "description": "The number of Lanes the plan holds.",
+          "measured_from": "Counted by mitosis as it ran.",
+          "unit": "count",
+          "includes": "Every Lane of the plan, built or not.",
+          "excludes": "Lanes of other plans.",
+          "reading": "Null when no plan was built.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "How many Lanes did the split make?"
+        },
+        "msps": {
+          "type": "integer",
+          "description": "The number of MSPs the plan holds.",
+          "measured_from": "Counted by mitosis as it ran.",
+          "unit": "count",
+          "includes": "Every MSP of the plan.",
+          "excludes": "MSPs of other plans.",
+          "reading": "Each MSP is one branch and one pull request; null when no plan was built.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "How many reviewable parts did the split make?"
+        },
+        "clusters": {
+          "type": "integer",
+          "description": "The number of clusters the plan holds.",
+          "measured_from": "Counted by mitosis as it ran.",
+          "unit": "count",
+          "includes": "Every cluster of MSPs one agent walks in order.",
+          "excludes": "Nothing else.",
+          "reading": "Null when no plan was built.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "How was the work grouped?"
+        },
+        "lane_width": {
+          "type": "integer",
+          "description": "The planned Lane width: the most Lanes the plan lets run at once.",
+          "measured_from": "The plan's parallelism scalar over its Steps.",
+          "unit": "count",
+          "includes": "The plan's widest level.",
+          "excludes": "What actually ran at once.",
+          "reading": "Higher means more Lanes could build in parallel; null when no plan was built.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "How parallel was the plan?"
+        },
+        "fatal": {
+          "type": "integer",
+          "description": "The number of the plan's fatal findings.",
+          "measured_from": "Counted by mitosis as it ran.",
+          "unit": "count",
+          "includes": "Package manifests that would ship exporting nothing, which fail the run.",
+          "excludes": "Findings that are only reported.",
+          "reading": "0 means none; higher means more.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Did the plan carry a finding that fails the run?"
+        }
+      }
+    },
+    "lane.start": {
+      "description": "Written when this invocation dispatches a Lane's Worker.",
+      "writer": "run.dispatch",
+      "readers": [
+        "owner",
+        "pipeline"
+      ],
+      "questions": [
+        "Which Lanes ran, at which tier and model, and in which session?"
+      ],
+      "fields": {
+        "lane": {
+          "type": "integer",
+          "description": "The Lane's index in the plan.",
+          "measured_from": "The plan's Lane order.",
+          "unit": "id",
+          "includes": "One Lane.",
+          "excludes": "Its Steps and task.",
+          "reading": "Indexes start at 0 and name a Lane within one plan only.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which Lane does this record belong to?"
+        },
+        "msp": {
+          "type": "string",
+          "description": "The MSP's label, as the report and the pull-request title name it.",
+          "measured_from": "The plan's MSP label for the MSP's index.",
+          "unit": "id",
+          "includes": "One MSP.",
+          "excludes": "Its Steps, task and branch.",
+          "reading": "A label names one MSP of one plan; join on plan_id and msp to follow it across invocations.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which MSP does this record belong to?"
+        },
+        "tier": {
+          "type": "enum",
+          "description": "The tier the plan gave the Lane.",
+          "measured_from": "The plan's Lane tier, set by blast radius and complexity.",
+          "unit": "none",
+          "includes": "The tier only.",
+          "excludes": "The model, which is a separate field.",
+          "reading": "top Lanes carry risk markers or complex work; cheap Lanes the rest.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which tier did the Lane run at?",
+          "values": [
+            "top",
+            "cheap"
+          ]
+        },
+        "model": {
+          "type": "string",
+          "description": "The model the tier maps to through --tier-model.",
+          "measured_from": "The --tier-model mapping for the Lane's tier.",
+          "unit": "id",
+          "includes": "The exact model id given.",
+          "excludes": "The model a Worker actually used, which its transcript records.",
+          "reading": "Null when no model is mapped for the tier, so the dispatch command chose its own default.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which model was each Lane dispatched with?"
+        },
+        "session_id": {
+          "type": "string",
+          "description": "The fresh session id mitosis offered the Lane's Worker through {session_id}.",
+          "measured_from": "A UUID version 4 made for the dispatch and kept in the Lane record.",
+          "unit": "id",
+          "includes": "The dispatched Worker's session.",
+          "excludes": "Sessions of structure and brief calls.",
+          "reading": "Null when the dispatch template does not use {session_id}, so the Worker's spend cannot be found.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which transcript holds this Lane's spend?"
+        }
+      }
+    },
+    "lane.end": {
+      "description": "Written once when a Lane this invocation dispatched or landed settles to its final state.",
+      "writer": "run.execute",
+      "readers": [
+        "owner",
+        "pipeline"
+      ],
+      "questions": [
+        "How did each Lane end and how long did it take?"
+      ],
+      "fields": {
+        "lane": {
+          "type": "integer",
+          "description": "The Lane's index in the plan.",
+          "measured_from": "The plan's Lane order.",
+          "unit": "id",
+          "includes": "One Lane.",
+          "excludes": "Its Steps and task.",
+          "reading": "Indexes start at 0 and name a Lane within one plan only.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which Lane does this record belong to?"
+        },
+        "msp": {
+          "type": "string",
+          "description": "The MSP's label, as the report and the pull-request title name it.",
+          "measured_from": "The plan's MSP label for the MSP's index.",
+          "unit": "id",
+          "includes": "One MSP.",
+          "excludes": "Its Steps, task and branch.",
+          "reading": "A label names one MSP of one plan; join on plan_id and msp to follow it across invocations.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which MSP does this record belong to?"
+        },
+        "tier": {
+          "type": "enum",
+          "description": "The tier the plan gave the Lane.",
+          "measured_from": "The plan's Lane tier, set by blast radius and complexity.",
+          "unit": "none",
+          "includes": "The tier only.",
+          "excludes": "The model, which is a separate field.",
+          "reading": "top Lanes carry risk markers or complex work; cheap Lanes the rest.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which tier did the Lane run at?",
+          "values": [
+            "top",
+            "cheap"
+          ]
+        },
+        "model": {
+          "type": "string",
+          "description": "The model the tier maps to through --tier-model.",
+          "measured_from": "The --tier-model mapping for the Lane's tier.",
+          "unit": "id",
+          "includes": "The exact model id given.",
+          "excludes": "The model a Worker actually used, which its transcript records.",
+          "reading": "Null when no model is mapped for the tier, so the dispatch command chose its own default.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which model was each Lane dispatched with?"
+        },
+        "session_id": {
+          "type": "string",
+          "description": "The fresh session id mitosis offered the Lane's Worker through {session_id}.",
+          "measured_from": "A UUID version 4 made for the dispatch and kept in the Lane record.",
+          "unit": "id",
+          "includes": "The dispatched Worker's session.",
+          "excludes": "Sessions of structure and brief calls.",
+          "reading": "Null when the dispatch template does not use {session_id}, so the Worker's spend cannot be found.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which transcript holds this Lane's spend?"
+        },
+        "state": {
+          "type": "enum",
+          "description": "The Lane's final state in this invocation.",
+          "measured_from": "The Lane record mitosis settled.",
+          "unit": "none",
+          "includes": "The state only.",
+          "excludes": "The Lane's reason, Worker notes and output, which the store never holds.",
+          "reading": "ok built and committed; failed exited non-zero or returned failed; blocked by a producer; merge-blocked when a producer branch would not merge; held while committed work waits to land.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "How did each Lane end?",
+          "values": [
+            "ok",
+            "failed",
+            "blocked",
+            "merge-blocked",
+            "held"
+          ]
+        },
+        "exit": {
+          "type": "integer",
+          "description": "The Worker's exit code.",
+          "measured_from": "The Worker process's return code.",
+          "unit": "id",
+          "includes": "The code only.",
+          "excludes": "The Worker's output.",
+          "reading": "0 means the Worker exited cleanly; null when it never exited normally.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Did the Worker exit cleanly?"
+        },
+        "timed_out": {
+          "type": "boolean",
+          "description": "Whether the Worker hit the per-Lane timeout.",
+          "measured_from": "The timeout mitosis enforced.",
+          "unit": "none",
+          "includes": "This Lane's Worker.",
+          "excludes": "Acceptance and pull-request timeouts.",
+          "reading": "true means mitosis stopped the Worker.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Did the Lane run out of time?"
+        },
+        "seconds": {
+          "type": "number",
+          "description": "How long the Lane took.",
+          "measured_from": "The difference between the Lane's start and its finish on mitosis's clock.",
+          "unit": "seconds",
+          "includes": "Wall time of the Lane.",
+          "excludes": "Time spent outside the Lane.",
+          "reading": "Higher means longer; 0 means it took under a second or was reused.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "How long did the Lane take?"
+        }
+      }
+    },
+    "gate": {
+      "description": "Written when an MSP's acceptance gate has run or been reused.",
+      "writer": "run._finish_msp",
+      "readers": [
+        "owner",
+        "pipeline"
+      ],
+      "questions": [
+        "Did every acceptance test fail without the work?"
+      ],
+      "fields": {
+        "msp": {
+          "type": "string",
+          "description": "The MSP's label, as the report and the pull-request title name it.",
+          "measured_from": "The plan's MSP label for the MSP's index.",
+          "unit": "id",
+          "includes": "One MSP.",
+          "excludes": "Its Steps, task and branch.",
+          "reading": "A label names one MSP of one plan; join on plan_id and msp to follow it across invocations.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which MSP does this record belong to?"
+        },
+        "outcome": {
+          "type": "enum",
+          "description": "The MSP's gate outcome.",
+          "measured_from": "The gate's worst property outcome: inert, then inconclusive, then pass.",
+          "unit": "none",
+          "includes": "The outcome only.",
+          "excludes": "Each property's reason, which the store never holds.",
+          "reading": "pass means every acceptance test failed without the work; inert means one passed without it; inconclusive means one could not be judged; not-applicable means none could run; null means the gate could not run.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Were the acceptance tests proven to fail without the work?",
+          "values": [
+            "pass",
+            "inert",
+            "inconclusive",
+            "not-applicable"
+          ]
+        },
+        "reused": {
+          "type": "boolean",
+          "description": "Whether a recorded passing gate was reused instead of re-run.",
+          "measured_from": "A passing gate at the MSP's current head, or a proven head.",
+          "unit": "none",
+          "includes": "This MSP's gate.",
+          "excludes": "Nothing else.",
+          "reading": "true means no acceptance test ran in this invocation for this MSP.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Was the gate re-run or reused?"
+        },
+        "seconds": {
+          "type": "number",
+          "description": "How long the gate took.",
+          "measured_from": "The difference between the gate stage's start and its end on mitosis's clock.",
+          "unit": "seconds",
+          "includes": "Wall time of the gate.",
+          "excludes": "Time spent outside the gate.",
+          "reading": "Higher means longer; 0 means it took under a second or was reused.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "How long did the gate take?"
+        }
+      }
+    },
+    "reconcile": {
+      "description": "Written when an MSP's branch has been compared with its declared files.",
+      "writer": "run._finish_msp",
+      "readers": [
+        "owner",
+        "pipeline"
+      ],
+      "questions": [
+        "Did each MSP write exactly the files it declared?"
+      ],
+      "fields": {
+        "msp": {
+          "type": "string",
+          "description": "The MSP's label, as the report and the pull-request title name it.",
+          "measured_from": "The plan's MSP label for the MSP's index.",
+          "unit": "id",
+          "includes": "One MSP.",
+          "excludes": "Its Steps, task and branch.",
+          "reading": "A label names one MSP of one plan; join on plan_id and msp to follow it across invocations.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which MSP does this record belong to?"
+        },
+        "undeclared": {
+          "type": "integer",
+          "description": "The number of files the branch changed that the MSP did not declare.",
+          "measured_from": "Counted by mitosis as it ran.",
+          "unit": "count",
+          "includes": "This MSP's reconcile findings of that kind.",
+          "excludes": "Other kinds and other MSPs.",
+          "reading": "0 means reconcile found none of these.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Did the split hold?"
+        },
+        "unwritten": {
+          "type": "integer",
+          "description": "The number of declared files the branch never wrote.",
+          "measured_from": "Counted by mitosis as it ran.",
+          "unit": "count",
+          "includes": "This MSP's reconcile findings of that kind.",
+          "excludes": "Other kinds and other MSPs.",
+          "reading": "0 means reconcile found none of these.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Did the split hold?"
+        },
+        "crossing": {
+          "type": "integer",
+          "description": "The number of files the branch changed that another MSP owns.",
+          "measured_from": "Counted by mitosis as it ran.",
+          "unit": "count",
+          "includes": "This MSP's reconcile findings of that kind.",
+          "excludes": "Other kinds and other MSPs.",
+          "reading": "0 means reconcile found none of these.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Did the split hold?"
+        },
+        "fatal": {
+          "type": "integer",
+          "description": "1 when a crossing write makes reconcile fatal, otherwise 0.",
+          "measured_from": "The reconcile findings.",
+          "unit": "count",
+          "includes": "This MSP.",
+          "excludes": "Other MSPs.",
+          "reading": "1 means the split did not hold for this MSP.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Did the split hold?"
+        }
+      }
+    },
+    "msp.end": {
+      "description": "Written when this invocation finishes an MSP.",
+      "writer": "run.execute",
+      "readers": [
+        "owner",
+        "pipeline"
+      ],
+      "questions": [
+        "How many MSPs reached a pull request?"
+      ],
+      "fields": {
+        "msp": {
+          "type": "string",
+          "description": "The MSP's label, as the report and the pull-request title name it.",
+          "measured_from": "The plan's MSP label for the MSP's index.",
+          "unit": "id",
+          "includes": "One MSP.",
+          "excludes": "Its Steps, task and branch.",
+          "reading": "A label names one MSP of one plan; join on plan_id and msp to follow it across invocations.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which MSP does this record belong to?"
+        },
+        "state": {
+          "type": "enum",
+          "description": "The MSP's final state in this invocation.",
+          "measured_from": "The MSP record mitosis finished.",
+          "unit": "none",
+          "includes": "The state only.",
+          "excludes": "The MSP's reason and pull-request text, which the store never holds.",
+          "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "How many MSPs reached a pull request?",
+          "values": [
+            "shipped",
+            "pushed",
+            "unchanged",
+            "committed",
+            "ship-failed",
+            "blocked"
+          ]
+        }
+      }
+    },
+    "run.end": {
+      "description": "Written last, when the invocation ends by any path after its run directory is known.",
+      "writer": "mitosis.run_pipeline",
+      "readers": [
+        "owner",
+        "pipeline"
+      ],
+      "questions": [
+        "How did each invocation end?"
+      ],
+      "fields": {
+        "exit": {
+          "type": "integer",
+          "description": "The exit code mitosis returned.",
+          "measured_from": "The code main returns, a refusal included.",
+          "unit": "id",
+          "includes": "Every invocation that knew its run directory.",
+          "excludes": "Invocations refused before the run directory was known, which write nothing.",
+          "reading": "0 means every MSP reached a delivered state and reconcile found nothing; null means an uncaught exception ended the run or the run had not ended yet.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "How did each run end?"
+        },
+        "meaning": {
+          "type": "string",
+          "description": "The plain meaning mitosis gives its exit code.",
+          "measured_from": "mitosis's exit meaning table.",
+          "unit": "text",
+          "includes": "The meaning of exit.",
+          "excludes": "Any reason specific to the run.",
+          "reading": "Null when exit is null.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "What does each exit code mean?"
+        }
+      }
+    }
+  },
+  "summary": {
+    "description": "One line per invocation, written when dispatch ends and again when the invocation ends, counting only this invocation's work and its own spend.",
+    "fields": {
+      "mode": {
+        "type": "enum",
+        "description": "What kind of invocation this was.",
+        "measured_from": "The flags: --plan-only, --resume and --no-push.",
+        "unit": "none",
+        "includes": "The invocation's mode.",
+        "excludes": "Nothing else.",
+        "reading": "plan-only stops before the build; build is a first build; resume continues a run directory without pushing; ship is a resume allowed to push.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Which invocations planned, built, resumed or shipped?",
+        "values": [
+          "plan-only",
+          "build",
+          "resume",
+          "ship"
+        ]
+      },
+      "input": {
+        "type": "enum",
+        "description": "Which front end the work came through.",
+        "measured_from": "Whether --items or --spec was given.",
+        "unit": "none",
+        "includes": "The input kind.",
+        "excludes": "The input's content.",
+        "reading": "items is a Steps file; spec is a document turned into Steps.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Did the work arrive as Steps or as a document?",
+        "values": [
+          "items",
+          "spec"
+        ]
+      },
+      "exit": {
+        "type": "integer",
+        "description": "The exit code mitosis returned.",
+        "measured_from": "The code main returns, a refusal included.",
+        "unit": "id",
+        "includes": "Every invocation that knew its run directory.",
+        "excludes": "Invocations refused before the run directory was known, which write nothing.",
+        "reading": "0 means every MSP reached a delivered state and reconcile found nothing; null means an uncaught exception ended the run or the run had not ended yet.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "How did each run end?"
+      },
+      "meaning": {
+        "type": "string",
+        "description": "The plain meaning mitosis gives its exit code.",
+        "measured_from": "mitosis's exit meaning table.",
+        "unit": "text",
+        "includes": "The meaning of exit.",
+        "excludes": "Any reason specific to the run.",
+        "reading": "Null when exit is null.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "What does each exit code mean?"
+      },
+      "plan_id": {
+        "type": "string",
+        "description": "The id of the plan this invocation built, shared by every invocation of one run directory.",
+        "measured_from": "The plan_id mitosis computes from the validated Steps and its own version.",
+        "unit": "id",
+        "includes": "The plan built by this invocation.",
+        "excludes": "Nothing else.",
+        "reading": "Null when no plan was built, as in run.start or a plan-only structure stage; two runs with one plan_id are invocations of the same plan.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Which invocations built, resumed and shipped the same plan?"
+      },
+      "run_dir": {
+        "type": "string",
+        "description": "The run directory this invocation used.",
+        "measured_from": "--run-dir, or the default under the runs folder.",
+        "unit": "text",
+        "includes": "The folder's path.",
+        "excludes": "Its content.",
+        "reading": "Invocations with one run_dir and plan_id continue one run.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Which invocations continued the same run directory?"
+      },
+      "steps": {
+        "type": "integer",
+        "description": "The number of Steps the plan or the structure holds.",
+        "measured_from": "Counted by mitosis as it ran.",
+        "unit": "count",
+        "includes": "Every Step, briefed or not.",
+        "excludes": "Steps of earlier plans.",
+        "reading": "With no plan built, the structure's Step count; null when neither exists.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "How much work did the split receive?"
+      },
+      "lanes": {
+        "type": "integer",
+        "description": "The number of Lanes the plan holds.",
+        "measured_from": "Counted by mitosis as it ran.",
+        "unit": "count",
+        "includes": "Every Lane of the plan, built or not.",
+        "excludes": "Lanes of other plans.",
+        "reading": "Null when no plan was built.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "How many Lanes did the split make?"
+      },
+      "msps": {
+        "type": "integer",
+        "description": "The number of MSPs the plan holds.",
+        "measured_from": "Counted by mitosis as it ran.",
+        "unit": "count",
+        "includes": "Every MSP of the plan.",
+        "excludes": "MSPs of other plans.",
+        "reading": "Each MSP is one branch and one pull request; null when no plan was built.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "How many reviewable parts did the split make?"
+      },
+      "clusters": {
+        "type": "integer",
+        "description": "The number of clusters the plan holds.",
+        "measured_from": "Counted by mitosis as it ran.",
+        "unit": "count",
+        "includes": "Every cluster of MSPs one agent walks in order.",
+        "excludes": "Nothing else.",
+        "reading": "Null when no plan was built.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "How was the work grouped?"
+      },
+      "lane_width": {
+        "type": "integer",
+        "description": "The planned Lane width: the most Lanes the plan lets run at once.",
+        "measured_from": "The plan's parallelism scalar over its Steps.",
+        "unit": "count",
+        "includes": "The plan's widest level.",
+        "excludes": "What actually ran at once.",
+        "reading": "Higher means more Lanes could build in parallel; null when no plan was built.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "How parallel was the plan?"
+      },
+      "peak_parallel": {
+        "type": "integer",
+        "description": "The most Lanes running at once in this invocation.",
+        "measured_from": "The overlap of this invocation's Lane start and finish times.",
+        "unit": "count",
+        "includes": "Lanes this invocation dispatched or landed.",
+        "excludes": "Lanes an earlier invocation built.",
+        "reading": "Compare with lane_width and concurrency; 0 means no Lane ran.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Did the Lanes build in parallel?"
+      },
+      "concurrency": {
+        "type": "integer",
+        "description": "The most Workers allowed to run at once.",
+        "measured_from": "The --concurrency flag.",
+        "unit": "count",
+        "includes": "The cap for the brief stage and the build.",
+        "excludes": "How many actually ran at once, which peak_parallel records.",
+        "reading": "A cap, not a measure; compare it with peak_parallel.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "How much parallelism was allowed?"
+      },
+      "lane_states": {
+        "type": "object",
+        "description": "One count per Lane.",
+        "measured_from": "Counted over this invocation's work.",
+        "unit": "count",
+        "includes": "This invocation's work only.",
+        "excludes": "Work an earlier invocation of the same run directory did.",
+        "reading": "Each count is 0 or more; all 0 means nothing of the kind was settled.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "How did this invocation's Lanes end?",
+        "fields": {
+          "ok": {
+            "type": "integer",
+            "description": "The number of Lanes that ended ok.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's Lanes in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How did this invocation's Lanes end?"
+          },
+          "failed": {
+            "type": "integer",
+            "description": "The number of Lanes that ended failed.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's Lanes in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How did this invocation's Lanes end?"
+          },
+          "blocked": {
+            "type": "integer",
+            "description": "The number of Lanes that ended blocked.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's Lanes in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How did this invocation's Lanes end?"
+          },
+          "merge_blocked": {
+            "type": "integer",
+            "description": "The number of Lanes that ended merge-blocked.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's Lanes in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How did this invocation's Lanes end?"
+          },
+          "held": {
+            "type": "integer",
+            "description": "The number of Lanes that ended held.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's Lanes in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How did this invocation's Lanes end?"
+          }
+        }
+      },
+      "timed_out": {
+        "type": "integer",
+        "description": "The number of Lanes that hit the timeout.",
+        "measured_from": "Counted by mitosis as it ran.",
+        "unit": "count",
+        "includes": "This invocation's Lanes.",
+        "excludes": "Earlier invocations' Lanes.",
+        "reading": "0 means none; higher means more.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Did Lanes run out of time?"
+      },
+      "lane_seconds": {
+        "type": "number",
+        "description": "The summed seconds of this invocation's Lanes.",
+        "measured_from": "Each Lane's start to finish.",
+        "unit": "seconds",
+        "includes": "Lanes this invocation dispatched or landed.",
+        "excludes": "Lanes an earlier invocation built.",
+        "reading": "Compare with wall_seconds: Lane seconds above wall seconds mean Lanes overlapped; 0 means no Lane ran.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "How much Worker time did the run spend?"
+      },
+      "wall_seconds": {
+        "type": "number",
+        "description": "How long the invocation took.",
+        "measured_from": "The difference between run.start and the summary write on mitosis's clock.",
+        "unit": "seconds",
+        "includes": "Wall time of the invocation.",
+        "excludes": "Time spent outside the invocation.",
+        "reading": "Higher means longer; 0 means it took under a second or was reused.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "How long did the invocation take?"
+      },
+      "msp_states": {
+        "type": "object",
+        "description": "One count per MSP.",
+        "measured_from": "Counted over this invocation's work.",
+        "unit": "count",
+        "includes": "This invocation's work only.",
+        "excludes": "Work an earlier invocation of the same run directory did.",
+        "reading": "Each count is 0 or more; all 0 means nothing of the kind was settled.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "How many MSPs reached a pull request?",
+        "fields": {
+          "shipped": {
+            "type": "integer",
+            "description": "The number of MSPs that ended shipped.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's MSPs in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How many MSPs reached a pull request?"
+          },
+          "pushed": {
+            "type": "integer",
+            "description": "The number of MSPs that ended pushed.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's MSPs in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How many MSPs reached a pull request?"
+          },
+          "unchanged": {
+            "type": "integer",
+            "description": "The number of MSPs that ended unchanged.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's MSPs in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How many MSPs reached a pull request?"
+          },
+          "committed": {
+            "type": "integer",
+            "description": "The number of MSPs that ended committed.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's MSPs in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How many MSPs reached a pull request?"
+          },
+          "ship_failed": {
+            "type": "integer",
+            "description": "The number of MSPs that ended ship-failed.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's MSPs in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How many MSPs reached a pull request?"
+          },
+          "blocked": {
+            "type": "integer",
+            "description": "The number of MSPs that ended blocked.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's MSPs in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How many MSPs reached a pull request?"
+          }
+        }
+      },
+      "gates": {
+        "type": "object",
+        "description": "One count per gate.",
+        "measured_from": "Counted over this invocation's work.",
+        "unit": "count",
+        "includes": "This invocation's work only.",
+        "excludes": "Work an earlier invocation of the same run directory did.",
+        "reading": "Each count is 0 or more; all 0 means nothing of the kind was settled.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Were the acceptance tests proven to fail without the work?",
+        "fields": {
+          "pass": {
+            "type": "integer",
+            "description": "The number of gates that ended pass.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's gates in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "Were the acceptance tests proven to fail without the work?"
+          },
+          "inert": {
+            "type": "integer",
+            "description": "The number of gates that ended inert.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's gates in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "Were the acceptance tests proven to fail without the work?"
+          },
+          "inconclusive": {
+            "type": "integer",
+            "description": "The number of gates that ended inconclusive.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's gates in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "Were the acceptance tests proven to fail without the work?"
+          },
+          "not_applicable": {
+            "type": "integer",
+            "description": "The number of gates that ended not-applicable.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's gates in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "Were the acceptance tests proven to fail without the work?"
+          }
+        }
+      },
+      "gates_reused": {
+        "type": "integer",
+        "description": "The number of gates reused instead of re-run.",
+        "measured_from": "Counted by mitosis as it ran.",
+        "unit": "count",
+        "includes": "This invocation's MSPs.",
+        "excludes": "Gates that ran.",
+        "reading": "0 means none; higher means more.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "How often was a passing gate reused?"
+      },
+      "reconcile": {
+        "type": "object",
+        "description": "Reconcile findings summed over this invocation's MSPs.",
+        "measured_from": "The reconcile events.",
+        "unit": "count",
+        "includes": "This invocation's MSPs.",
+        "excludes": "Earlier invocations' MSPs.",
+        "reading": "All 0 means every MSP wrote exactly its declared files.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Did the split hold?",
+        "fields": {
+          "undeclared": {
+            "type": "integer",
+            "description": "The number of undeclared writes.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This MSP's reconcile findings of that kind.",
+            "excludes": "Other kinds and other MSPs.",
+            "reading": "0 means reconcile found none of these.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "Did the split hold?"
+          },
+          "unwritten": {
+            "type": "integer",
+            "description": "The number of declared files never written.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This MSP's reconcile findings of that kind.",
+            "excludes": "Other kinds and other MSPs.",
+            "reading": "0 means reconcile found none of these.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "Did the split hold?"
+          },
+          "crossing": {
+            "type": "integer",
+            "description": "The number of writes into another MSP's files.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This MSP's reconcile findings of that kind.",
+            "excludes": "Other kinds and other MSPs.",
+            "reading": "0 means reconcile found none of these.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "Did the split hold?"
+          },
+          "fatal": {
+            "type": "integer",
+            "description": "The number of MSPs whose reconcile was fatal.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This MSP's reconcile findings of that kind.",
+            "excludes": "Other kinds and other MSPs.",
+            "reading": "0 means reconcile found none of these.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "Did the split hold?"
+          }
+        }
+      },
+      "foreign_writes": {
+        "type": "integer",
+        "description": "The number of files a Lane changed that another Lane of its MSP owns and had committed.",
+        "measured_from": "Counted by mitosis as it ran.",
+        "unit": "count",
+        "includes": "This invocation's Lanes.",
+        "excludes": "Earlier invocations' Lanes.",
+        "reading": "0 means none; higher means more.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Did Lanes of one MSP step on each other?"
+      },
+      "stacking_exceptions": {
+        "type": "integer",
+        "description": "The number of MSPs whose pull request could not stack on a single predecessor.",
+        "measured_from": "Counted by mitosis as it ran.",
+        "unit": "count",
+        "includes": "This invocation's MSPs.",
+        "excludes": "Earlier invocations' MSPs.",
+        "reading": "0 means none; higher means more.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Did any pull request fall back to the feature branch?"
+      },
+      "tier_models": {
+        "type": "array",
+        "description": "Every tier mapped to a model with --tier-model.",
+        "measured_from": "The --tier-model flags.",
+        "unit": "none",
+        "includes": "Mapped tiers only.",
+        "excludes": "Tiers left unmapped.",
+        "reading": "An empty list means no tier was mapped.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Which model did each tier use?",
+        "items": {
+          "type": "object",
+          "description": "One tier and its model.",
+          "measured_from": "One --tier-model flag.",
+          "unit": "none",
+          "includes": "The pair.",
+          "excludes": "Nothing else.",
+          "reading": "One record per mapped tier.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which model did this tier use?",
+          "fields": {
+            "tier": {
+              "type": "enum",
+              "description": "The tier the plan gave the Lane.",
+              "measured_from": "The plan's Lane tier, set by blast radius and complexity.",
+              "unit": "none",
+              "includes": "The tier only.",
+              "excludes": "The model, which is a separate field.",
+              "reading": "top Lanes carry risk markers or complex work; cheap Lanes the rest.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "Which tier did the Lane run at?",
+              "values": [
+                "top",
+                "cheap"
+              ]
+            },
+            "model": {
+              "type": "string",
+              "description": "The model id mapped to the tier.",
+              "measured_from": "The --tier-model value.",
+              "unit": "id",
+              "includes": "The id as given.",
+              "excludes": "The model a Worker actually used.",
+              "reading": "An exact model id.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "Which model was mapped?"
+            }
+          }
+        }
+      },
+      "lane_runs": {
+        "type": "array",
+        "description": "One record per Lane this invocation dispatched or landed.",
+        "measured_from": "The Lane records this invocation settled.",
+        "unit": "none",
+        "includes": "Dispatched and landed Lanes.",
+        "excludes": "Lanes never started, and Lanes an earlier invocation built.",
+        "reading": "An empty list means this invocation ran no Lane.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Which Lanes ran and how did each end?",
+        "items": {
+          "type": "object",
+          "description": "One Lane's run.",
+          "measured_from": "Its Lane record.",
+          "unit": "none",
+          "includes": "One Lane.",
+          "excludes": "Its reason, notes and output.",
+          "reading": "One record per Lane.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "How did this Lane run?",
+          "fields": {
+            "lane": {
+              "type": "integer",
+              "description": "The Lane's index in the plan.",
+              "measured_from": "The plan's Lane order.",
+              "unit": "id",
+              "includes": "One Lane.",
+              "excludes": "Its Steps and task.",
+              "reading": "Indexes start at 0 and name a Lane within one plan only.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "Which Lane does this record belong to?"
+            },
+            "msp": {
+              "type": "string",
+              "description": "The MSP's label, as the report and the pull-request title name it.",
+              "measured_from": "The plan's MSP label for the MSP's index.",
+              "unit": "id",
+              "includes": "One MSP.",
+              "excludes": "Its Steps, task and branch.",
+              "reading": "A label names one MSP of one plan; join on plan_id and msp to follow it across invocations.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "Which MSP does this record belong to?"
+            },
+            "tier": {
+              "type": "enum",
+              "description": "The tier the plan gave the Lane.",
+              "measured_from": "The plan's Lane tier, set by blast radius and complexity.",
+              "unit": "none",
+              "includes": "The tier only.",
+              "excludes": "The model, which is a separate field.",
+              "reading": "top Lanes carry risk markers or complex work; cheap Lanes the rest.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "Which tier did the Lane run at?",
+              "values": [
+                "top",
+                "cheap"
+              ]
+            },
+            "model": {
+              "type": "string",
+              "description": "The model the tier maps to through --tier-model.",
+              "measured_from": "The --tier-model mapping for the Lane's tier.",
+              "unit": "id",
+              "includes": "The exact model id given.",
+              "excludes": "The model a Worker actually used, which its transcript records.",
+              "reading": "Null when no model is mapped for the tier, so the dispatch command chose its own default.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "Which model was each Lane dispatched with?"
+            },
+            "session_id": {
+              "type": "string",
+              "description": "The fresh session id mitosis offered the Lane's Worker through {session_id}.",
+              "measured_from": "A UUID version 4 made for the dispatch and kept in the Lane record.",
+              "unit": "id",
+              "includes": "The dispatched Worker's session.",
+              "excludes": "Sessions of structure and brief calls.",
+              "reading": "Null when the dispatch template does not use {session_id}, so the Worker's spend cannot be found.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "Which transcript holds this Lane's spend?"
+            },
+            "state": {
+              "type": "enum",
+              "description": "The Lane's final state in this invocation.",
+              "measured_from": "The Lane record mitosis settled.",
+              "unit": "none",
+              "includes": "The state only.",
+              "excludes": "The Lane's reason, Worker notes and output, which the store never holds.",
+              "reading": "ok built and committed; failed exited non-zero or returned failed; blocked by a producer; merge-blocked when a producer branch would not merge; held while committed work waits to land.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "How did each Lane end?",
+              "values": [
+                "ok",
+                "failed",
+                "blocked",
+                "merge-blocked",
+                "held"
+              ]
+            },
+            "seconds": {
+              "type": "number",
+              "description": "How long the Lane took.",
+              "measured_from": "The difference between the Lane's start and its finish on mitosis's clock.",
+              "unit": "seconds",
+              "includes": "Wall time of the Lane.",
+              "excludes": "Time spent outside the Lane.",
+              "reading": "Higher means longer; 0 means it took under a second or was reused.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "How long did the Lane take?"
+            }
+          }
+        }
+      },
+      "msp_runs": {
+        "type": "array",
+        "description": "One record per MSP this invocation finished.",
+        "measured_from": "The MSP records this invocation finished.",
+        "unit": "none",
+        "includes": "Finished MSPs.",
+        "excludes": "MSPs an earlier invocation finished.",
+        "reading": "An empty list means this invocation finished no MSP.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "How did each MSP end?",
+        "items": {
+          "type": "object",
+          "description": "One MSP's outcome.",
+          "measured_from": "Its MSP record.",
+          "unit": "none",
+          "includes": "One MSP.",
+          "excludes": "Its reason and pull-request text.",
+          "reading": "One record per MSP.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "How did this MSP end?",
+          "fields": {
+            "msp": {
+              "type": "string",
+              "description": "The MSP's label, as the report and the pull-request title name it.",
+              "measured_from": "The plan's MSP label for the MSP's index.",
+              "unit": "id",
+              "includes": "One MSP.",
+              "excludes": "Its Steps, task and branch.",
+              "reading": "A label names one MSP of one plan; join on plan_id and msp to follow it across invocations.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "Which MSP does this record belong to?"
+            },
+            "state": {
+              "type": "enum",
+              "description": "The MSP's final state in this invocation.",
+              "measured_from": "The MSP record mitosis finished.",
+              "unit": "none",
+              "includes": "The state only.",
+              "excludes": "The MSP's reason and pull-request text, which the store never holds.",
+              "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "How many MSPs reached a pull request?",
+              "values": [
+                "shipped",
+                "pushed",
+                "unchanged",
+                "committed",
+                "ship-failed",
+                "blocked"
+              ]
+            },
+            "gate": {
+              "type": "enum",
+              "description": "The MSP's gate outcome.",
+              "measured_from": "The gate's worst property outcome: inert, then inconclusive, then pass.",
+              "unit": "none",
+              "includes": "The outcome only.",
+              "excludes": "Each property's reason, which the store never holds.",
+              "reading": "pass means every acceptance test failed without the work; inert means one passed without it; inconclusive means one could not be judged; not-applicable means none could run; null means the gate could not run.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "Were the acceptance tests proven to fail without the work?",
+              "values": [
+                "pass",
+                "inert",
+                "inconclusive",
+                "not-applicable"
+              ]
+            },
+            "reconcile_clean": {
+              "type": "boolean",
+              "description": "Whether reconcile found nothing for the MSP.",
+              "measured_from": "The MSP's reconcile counts.",
+              "unit": "none",
+              "includes": "This MSP.",
+              "excludes": "Other MSPs.",
+              "reading": "true means no finding; null means the MSP was not reconciled.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "Did this MSP write exactly its declared files?"
+            }
+          }
+        }
+      },
+      "usd": {
+        "type": "number",
+        "description": "The dollars the run's own sessions, priced when the summary was written.",
+        "measured_from": "Tokens times the price table's per-million prices by exact model id.",
+        "unit": "usd",
+        "includes": "Priced models only.",
+        "excludes": "Unpriced models and child runs.",
+        "reading": "0 means nothing priced was found; null means the price is unknown.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "What did the run's own sessions cost?"
+      },
+      "tokens": {
+        "type": "object",
+        "description": "Tokens in the five kinds.",
+        "measured_from": "Assistant message usage in the counted transcripts.",
+        "unit": "tokens",
+        "includes": "Every counted assistant message once by its message id.",
+        "excludes": "Messages of child runs and messages outside the run's span for the caller.",
+        "reading": "Null when spend could not be read.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "How many tokens did the run use?",
+        "fields": {
+          "input": {
+            "type": "integer",
+            "description": "input tokens.",
+            "measured_from": "The message usage field for input.",
+            "unit": "tokens",
+            "includes": "Counted messages.",
+            "excludes": "Other token kinds.",
+            "reading": "0 means none of this kind.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How many input tokens were used?"
+          },
+          "cache_write_5m": {
+            "type": "integer",
+            "description": "cache_write_5m tokens.",
+            "measured_from": "The message usage field for cache_write_5m.",
+            "unit": "tokens",
+            "includes": "Counted messages.",
+            "excludes": "Other token kinds.",
+            "reading": "0 means none of this kind.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How many cache_write_5m tokens were used?"
+          },
+          "cache_write_1h": {
+            "type": "integer",
+            "description": "cache_write_1h tokens.",
+            "measured_from": "The message usage field for cache_write_1h.",
+            "unit": "tokens",
+            "includes": "Counted messages.",
+            "excludes": "Other token kinds.",
+            "reading": "0 means none of this kind.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How many cache_write_1h tokens were used?"
+          },
+          "cache_read": {
+            "type": "integer",
+            "description": "cache_read tokens.",
+            "measured_from": "The message usage field for cache_read.",
+            "unit": "tokens",
+            "includes": "Counted messages.",
+            "excludes": "Other token kinds.",
+            "reading": "0 means none of this kind.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How many cache_read tokens were used?"
+          },
+          "output": {
+            "type": "integer",
+            "description": "output tokens.",
+            "measured_from": "The message usage field for output.",
+            "unit": "tokens",
+            "includes": "Counted messages.",
+            "excludes": "Other token kinds.",
+            "reading": "0 means none of this kind.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How many output tokens were used?"
+          }
+        }
+      },
+      "spend": {
+        "type": "array",
+        "description": "The run's own spend by source and exact model id.",
+        "measured_from": "The transcripts of the sessions this invocation started and the caller's window.",
+        "unit": "none",
+        "includes": "Worker, structure, brief and caller messages.",
+        "excludes": "Child runs, whose spend their own summaries carry.",
+        "reading": "An empty list means no counted message was found.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Where did the run's spend go?",
+        "items": {
+          "type": "object",
+          "description": "One source and model.",
+          "measured_from": "Counted assistant messages.",
+          "unit": "none",
+          "includes": "One source and model.",
+          "excludes": "Others.",
+          "reading": "One record per source and model.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "What did this source spend on this model?",
+          "fields": {
+            "source": {
+              "type": "enum",
+              "description": "Who spent it.",
+              "measured_from": "The kind of call.",
+              "unit": "none",
+              "includes": "One source.",
+              "excludes": "Nothing else.",
+              "reading": "worker is a Lane's Worker; structure and brief are stage Workers; caller is the invoking session inside the run's span.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "Which part of the run spent it?",
+              "values": [
+                "worker",
+                "structure",
+                "brief",
+                "caller"
+              ]
+            },
+            "model": {
+              "type": "string",
+              "description": "The exact model id.",
+              "measured_from": "The transcript's message model.",
+              "unit": "id",
+              "includes": "One model.",
+              "excludes": "Other models.",
+              "reading": "As the transcript names it.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "Which model spent it?"
+            },
+            "tokens": {
+              "type": "object",
+              "description": "Tokens in the five kinds.",
+              "measured_from": "Assistant message usage in the counted transcripts.",
+              "unit": "tokens",
+              "includes": "Every counted assistant message once by its message id.",
+              "excludes": "Messages of child runs and messages outside the run's span for the caller.",
+              "reading": "Null when spend could not be read.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "How many tokens did the run use?",
+              "fields": {
+                "input": {
+                  "type": "integer",
+                  "description": "input tokens.",
+                  "measured_from": "The message usage field for input.",
+                  "unit": "tokens",
+                  "includes": "Counted messages.",
+                  "excludes": "Other token kinds.",
+                  "reading": "0 means none of this kind.",
+                  "readers": [
+                    "owner",
+                    "pipeline"
+                  ],
+                  "question": "How many input tokens were used?"
+                },
+                "cache_write_5m": {
+                  "type": "integer",
+                  "description": "cache_write_5m tokens.",
+                  "measured_from": "The message usage field for cache_write_5m.",
+                  "unit": "tokens",
+                  "includes": "Counted messages.",
+                  "excludes": "Other token kinds.",
+                  "reading": "0 means none of this kind.",
+                  "readers": [
+                    "owner",
+                    "pipeline"
+                  ],
+                  "question": "How many cache_write_5m tokens were used?"
+                },
+                "cache_write_1h": {
+                  "type": "integer",
+                  "description": "cache_write_1h tokens.",
+                  "measured_from": "The message usage field for cache_write_1h.",
+                  "unit": "tokens",
+                  "includes": "Counted messages.",
+                  "excludes": "Other token kinds.",
+                  "reading": "0 means none of this kind.",
+                  "readers": [
+                    "owner",
+                    "pipeline"
+                  ],
+                  "question": "How many cache_write_1h tokens were used?"
+                },
+                "cache_read": {
+                  "type": "integer",
+                  "description": "cache_read tokens.",
+                  "measured_from": "The message usage field for cache_read.",
+                  "unit": "tokens",
+                  "includes": "Counted messages.",
+                  "excludes": "Other token kinds.",
+                  "reading": "0 means none of this kind.",
+                  "readers": [
+                    "owner",
+                    "pipeline"
+                  ],
+                  "question": "How many cache_read tokens were used?"
+                },
+                "output": {
+                  "type": "integer",
+                  "description": "output tokens.",
+                  "measured_from": "The message usage field for output.",
+                  "unit": "tokens",
+                  "includes": "Counted messages.",
+                  "excludes": "Other token kinds.",
+                  "reading": "0 means none of this kind.",
+                  "readers": [
+                    "owner",
+                    "pipeline"
+                  ],
+                  "question": "How many output tokens were used?"
+                }
+              }
+            },
+            "usd": {
+              "type": "number",
+              "description": "The dollars this source and model, priced when the summary was written.",
+              "measured_from": "Tokens times the price table's per-million prices by exact model id.",
+              "unit": "usd",
+              "includes": "Priced models only.",
+              "excludes": "Unpriced models and child runs.",
+              "reading": "0 means nothing priced was found; null means the price is unknown.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "What did this source and model cost?"
+            }
+          }
+        }
+      },
+      "prices_date": {
+        "type": "string",
+        "description": "The date of the price table the spend was priced with.",
+        "measured_from": "prices.json.",
+        "unit": "timestamp",
+        "includes": "The table's date.",
+        "excludes": "Nothing else.",
+        "reading": "Null when spend could not be read.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Which prices does usd use?"
+      },
+      "unpriced_models": {
+        "type": "array",
+        "description": "Models the price table lacks.",
+        "measured_from": "The spend rows priced null.",
+        "unit": "none",
+        "includes": "Every unpriced model.",
+        "excludes": "Priced models.",
+        "reading": "Empty means every counted model was priced.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Is usd missing a model's cost?",
+        "items": {
+          "type": "string",
+          "description": "One unpriced model id.",
+          "measured_from": "A spend row.",
+          "unit": "id",
+          "includes": "One model.",
+          "excludes": "Nothing else.",
+          "reading": "An exact model id.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "Which model is unpriced?"
+        }
+      },
+      "sessions_missing": {
+        "type": "integer",
+        "description": "The number of calls whose transcript was not found.",
+        "measured_from": "Counted by mitosis as it ran.",
+        "unit": "count",
+        "includes": "Calls with no session id and calls whose transcript is gone.",
+        "excludes": "Calls that were found.",
+        "reading": "0 means every expected session was found; null means spend could not be read.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Is usd partial?"
+      },
+      "spend_complete": {
+        "type": "boolean",
+        "description": "Whether every expected session was found and every model priced.",
+        "measured_from": "sessions_missing and unpriced_models.",
+        "unit": "none",
+        "includes": "This run's own spend.",
+        "excludes": "Child runs.",
+        "reading": "false means usd is a partial sum.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Can usd be taken as the whole own spend?"
+      },
+      "children": {
+        "type": "array",
+        "description": "Every run in the store whose parent is this run.",
+        "measured_from": "The store's event and summary lines.",
+        "unit": "none",
+        "includes": "Child runs of any plugin.",
+        "excludes": "Grandchildren, which name their own parent.",
+        "reading": "Children's usd is never added to this run's usd; an empty list means no child run was found.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Which plugin runs did this run start?",
+        "items": {
+          "type": "object",
+          "description": "One child run.",
+          "measured_from": "Its lines in the store.",
+          "unit": "none",
+          "includes": "One child.",
+          "excludes": "Its spend detail.",
+          "reading": "One record per child run.",
+          "readers": [
+            "owner",
+            "pipeline"
+          ],
+          "question": "What did this child cost?",
+          "fields": {
+            "plugin": {
+              "type": "string",
+              "description": "The child's plugin.",
+              "measured_from": "Its folder in the store.",
+              "unit": "id",
+              "includes": "One plugin.",
+              "excludes": "Nothing else.",
+              "reading": "A plugin name.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "Which plugin ran?"
+            },
+            "run": {
+              "type": "string",
+              "description": "The child's run id.",
+              "measured_from": "Its file name in the store.",
+              "unit": "id",
+              "includes": "One run.",
+              "excludes": "Nothing else.",
+              "reading": "A run id.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "Which run was it?"
+            },
+            "usd": {
+              "type": "number",
+              "description": "The child's usd from its own summary.",
+              "measured_from": "The child's summary.",
+              "unit": "usd",
+              "includes": "The child's own spend.",
+              "excludes": "Its children.",
+              "reading": "Null when the child has no summary.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "What did the child cost?"
+            },
+            "missing": {
+              "type": "boolean",
+              "description": "Whether the child has no summary.",
+              "measured_from": "The child's summary file.",
+              "unit": "none",
+              "includes": "This child.",
+              "excludes": "Nothing else.",
+              "reading": "true means the child's usd is unknown.",
+              "readers": [
+                "owner",
+                "pipeline"
+              ],
+              "question": "Is the child's cost known?"
+            }
+          }
+        }
+      },
+      "spend_scope": {
+        "type": "enum",
+        "description": "Whose spend usd covers.",
+        "measured_from": "Fixed by mitosis.",
+        "unit": "none",
+        "includes": "The run's own sessions.",
+        "excludes": "Children.",
+        "reading": "own means children are listed and never summed.",
+        "readers": [
+          "owner",
+          "pipeline"
+        ],
+        "question": "Does usd include child runs?",
+        "values": [
+          "own"
+        ]
+      }
+    }
+  },
+  "queries": [
+    {
+      "name": "recent_runs",
+      "question": "What did the most recent mitosis runs do and cost?",
+      "sql": "SELECT run, mode, exit, steps, msps, wall_seconds, usd FROM summaries WHERE plugin = 'mitosis' ORDER BY ts DESC LIMIT 20"
+    },
+    {
+      "name": "lane_states",
+      "question": "How did the Lanes end across runs?",
+      "sql": "SELECT 'ok' AS state, coalesce(sum(lane_states.ok), 0) AS lanes FROM summaries WHERE plugin = 'mitosis' UNION ALL SELECT 'failed' AS state, coalesce(sum(lane_states.failed), 0) AS lanes FROM summaries WHERE plugin = 'mitosis' UNION ALL SELECT 'blocked' AS state, coalesce(sum(lane_states.blocked), 0) AS lanes FROM summaries WHERE plugin = 'mitosis' UNION ALL SELECT 'merge-blocked' AS state, coalesce(sum(lane_states.merge_blocked), 0) AS lanes FROM summaries WHERE plugin = 'mitosis' UNION ALL SELECT 'held' AS state, coalesce(sum(lane_states.held), 0) AS lanes FROM summaries WHERE plugin = 'mitosis'"
+    },
+    {
+      "name": "gate_outcomes",
+      "question": "How did the acceptance gates come out across runs?",
+      "sql": "SELECT 'pass' AS outcome, coalesce(sum(gates.pass), 0) AS gates FROM summaries WHERE plugin = 'mitosis' UNION ALL SELECT 'inert' AS outcome, coalesce(sum(gates.inert), 0) AS gates FROM summaries WHERE plugin = 'mitosis' UNION ALL SELECT 'inconclusive' AS outcome, coalesce(sum(gates.inconclusive), 0) AS gates FROM summaries WHERE plugin = 'mitosis' UNION ALL SELECT 'not-applicable' AS outcome, coalesce(sum(gates.not_applicable), 0) AS gates FROM summaries WHERE plugin = 'mitosis'"
+    },
+    {
+      "name": "msp_outcomes",
+      "question": "How many MSPs reached each state, a pull request included?",
+      "sql": "SELECT 'shipped' AS state, coalesce(sum(msp_states.shipped), 0) AS msps FROM summaries WHERE plugin = 'mitosis' UNION ALL SELECT 'pushed' AS state, coalesce(sum(msp_states.pushed), 0) AS msps FROM summaries WHERE plugin = 'mitosis' UNION ALL SELECT 'unchanged' AS state, coalesce(sum(msp_states.unchanged), 0) AS msps FROM summaries WHERE plugin = 'mitosis' UNION ALL SELECT 'committed' AS state, coalesce(sum(msp_states.committed), 0) AS msps FROM summaries WHERE plugin = 'mitosis' UNION ALL SELECT 'ship-failed' AS state, coalesce(sum(msp_states.ship_failed), 0) AS msps FROM summaries WHERE plugin = 'mitosis' UNION ALL SELECT 'blocked' AS state, coalesce(sum(msp_states.blocked), 0) AS msps FROM summaries WHERE plugin = 'mitosis'"
+    },
+    {
+      "name": "parallelism",
+      "question": "Did the Lanes of each run build in parallel?",
+      "sql": "SELECT run, lane_width, peak_parallel, concurrency FROM summaries WHERE plugin = 'mitosis' AND lane_width IS NOT NULL ORDER BY ts DESC LIMIT 20"
+    },
+    {
+      "name": "spend_by_model",
+      "question": "Where did mitosis's own spend go, by source and model?",
+      "sql": "SELECT row.source AS source, row.model AS model, round(sum(row.usd), 6) AS usd FROM (SELECT unnest(spend) AS row FROM summaries WHERE plugin = 'mitosis') GROUP BY row.source, row.model ORDER BY usd DESC NULLS LAST"
+    }
+  ]
+}

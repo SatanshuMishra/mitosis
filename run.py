@@ -60,6 +60,7 @@ LANE_RECORD_KEYS = (
     "commit",
     "started",
     "finished",
+    "session_id",
 )
 
 
@@ -121,6 +122,18 @@ def git_ok(args, cwd):
 
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def seconds_between(start, end):
+    try:
+        return (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds()
+    except (TypeError, ValueError):
+        return None
+
+
+def notify(observer, boundary, record):
+    if observer is not None:
+        observer(boundary, record)
 
 
 def branch_exists(repo, branch):
@@ -219,8 +232,9 @@ TEMPLATE_PLACEHOLDERS = {
         "charter",
         "document",
         "run_dir",
+        "session_id",
     ),
-    "decompose": ("prompt", "model", "document"),
+    "decompose": ("prompt", "model", "document", "session_id"),
     "acceptance": ("file", "test", "worktree"),
     "pull-request": ("branch", "base", "title", "body", "worktree", "msp", "remote"),
 }
@@ -336,11 +350,12 @@ def kill_tree(proc):
         proc.kill()
 
 
-def run_command(argv, cwd, timeout, stdout_path, stderr_path):
+def run_command(argv, cwd, timeout, stdout_path, stderr_path, env=None):
     with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
         proc = subprocess.Popen(
             argv,
             cwd=cwd,
+            env=env,
             stdout=out,
             stderr=err,
             stdin=subprocess.DEVNULL,
@@ -428,7 +443,7 @@ def _cross_producers(plan, lane, producers, trees, records):
     return seen
 
 
-def _worker_values(plan, lane, tree, models, run_dir):
+def _worker_values(plan, lane, tree, models, run_dir, session_id):
     brief = plan["briefs"][lane]
     tier = plan["lanes"][lane].get("tier")
     return {
@@ -442,6 +457,7 @@ def _worker_values(plan, lane, tree, models, run_dir):
         "charter": brief.get("charter"),
         "document": brief.get("document"),
         "run_dir": run_dir,
+        "session_id": session_id,
     }
 
 
@@ -485,7 +501,7 @@ def _land(plan, lane, tree):
     return commit, None
 
 
-def _verdict(lane, tree, started, merged, out, err, code, timed_out):
+def _verdict(lane, tree, started, merged, out, err, code, timed_out, session_id):
     returned = last_return(out)
     state, reason = lane_verdict(code, returned, timed_out)
     return lane_record(
@@ -502,6 +518,7 @@ def _verdict(lane, tree, started, merged, out, err, code, timed_out):
         commit=None,
         started=started,
         finished=now(),
+        session_id=session_id,
     )
 
 
@@ -584,6 +601,8 @@ def dispatch(
     models=None,
     prior=None,
     on_lane=None,
+    observer=None,
+    env=None,
 ):
     if timeout is None:
         raise ConfigError("a per-Lane timeout is required; mitosis has no default")
@@ -695,19 +714,30 @@ def dispatch(
                     continue
                 out = os.path.join(lane_dir, "%d.out" % lane)
                 err = os.path.join(lane_dir, "%d.err" % lane)
-                argv = build_argv(command, _worker_values(plan, lane, tree, models, run_dir))
-                future = pool.submit(run_command, argv, tree["path"], timeout, out, err)
-                running = {**running, future: (lane, now(), merged, out, err)}
+                session = core.new_session_id()
+                argv = build_argv(
+                    command, _worker_values(plan, lane, tree, models, run_dir, session)
+                )
+                carried = core.carried_session(argv, session)
+                future = pool.submit(run_command, argv, tree["path"], timeout, out, err, env)
+                running = {**running, future: (lane, now(), merged, out, err, carried)}
+                notify(
+                    observer,
+                    "lane-dispatched",
+                    {"lane": lane, "msp": msp, "tier": lanes[lane].get("tier"), "session_id": carried},
+                )
                 progressed = True
             pending = list(waiting)
             if running:
                 done, _ = wait(list(running), return_when=FIRST_COMPLETED)
                 for future in done:
-                    lane, started, merged, out, err = running[future]
+                    lane, started, merged, out, err, session = running[future]
                     running = {f: v for f, v in running.items() if f is not future}
                     code, timed_out = future.result()
                     tree = tree_of[lanes[lane]["msp"]]
-                    judged = _verdict(lane, tree, started, merged, out, err, code, timed_out)
+                    judged = _verdict(
+                        lane, tree, started, merged, out, err, code, timed_out, session
+                    )
                     if judged["state"] == "ok":
                         held = {**held, lane: judged}
                         if on_lane is not None:
@@ -951,9 +981,9 @@ def revert_implementation(tree, base, paths):
     return list(reverted)
 
 
-def run_acceptance(command, tree, entry, log_path, timeout):
+def run_acceptance(command, tree, entry, log_path, timeout, env=None):
     argv = build_argv(command, {"file": entry["file"], "test": entry["test"], "worktree": tree})
-    return run_command(argv, tree, timeout, log_path, log_path + ".err")
+    return run_command(argv, tree, timeout, log_path, log_path + ".err", env)
 
 
 def probe_outcome(with_work, reverted):
@@ -1013,7 +1043,7 @@ def commit_before_gate(plan, msp, tree):
     return commit_all(tree, "chore(%s): commit the MSP's work before the gate" % _label(plan, msp))
 
 
-def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None):
+def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None, env=None):
     commit = commit_before_gate(plan, msp, tree)
     properties = msp_properties(
         plan, msp, steps_without_implementation_change(plan, msp, tree, base)
@@ -1030,6 +1060,7 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None):
             properties[index],
             os.path.join(log_dir, "%d-with-work.log" % index),
             timeout,
+            env,
         )
         for index in runnable
     }
@@ -1044,6 +1075,7 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None):
                 properties[index],
                 os.path.join(log_dir, "%d-reverted.log" % index),
                 timeout,
+                env,
             )
             for index in runnable
             if with_work[index] == (0, False)
@@ -1687,6 +1719,7 @@ def ship(
     push=True,
     foreign=(),
     proven_head=None,
+    env=None,
 ):
     label = _label(plan, msp)
     head = commit_all(tree, "chore(%s): commit the MSP's work before shipping" % label)
@@ -1725,7 +1758,7 @@ def ship(
             "remote": remote,
         },
     )
-    code, timed_out = run_command(argv, tree, timeout, out, err)
+    code, timed_out = run_command(argv, tree, timeout, out, err, env)
     if timed_out:
         raise ShipError("the pull-request command timed out for %s" % branch)
     if code != 0:
@@ -1795,6 +1828,7 @@ def _gate_stage(plan, msp, tree, settings):
             settings["acceptance_command"],
             os.path.join(settings["run_dir"], "gate", "msp-%d" % msp),
             settings["timeout"],
+            settings.get("env"),
         )
     except (OSError, GitError, subprocess.SubprocessError) as error:
         return {"gate": None, "gate_error": str(error)}
@@ -1860,6 +1894,7 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=()):
             push=settings["push"],
             foreign=foreign,
             proven_head=record.get("proven_head"),
+            env=settings.get("env"),
         )
     except (OSError, GitError, ShipError, subprocess.SubprocessError, ValueError) as error:
         return {"state": "ship-failed", "reason": str(error), "ship": None}
@@ -1904,14 +1939,30 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     head = _committed_head(plan, msp, tree)
     proven_head = _proven_head(prior, head, settings["proven_heads"].get(msp))
     reused = _passing_gate(prior) if proven_head is not None else _reusable_gate(prior, head)
+    gate_started = now()
     gated = (
         {"gate": reused, "gate_error": None}
         if reused is not None
         else _gate_stage(plan, msp, tree, settings)
     )
+    notify(
+        settings.get("observer"),
+        "gated",
+        {
+            "msp": msp,
+            "gate": gated["gate"],
+            "reused": reused is not None,
+            "seconds": seconds_between(gate_started, now()),
+        },
+    )
     proof = {} if proven_head is None else {"proven_head": proven_head}
     state = write_state(run_dir, _msp_record(state, msp, **gated, **proof))
     reconciled = _reconcile_stage(plan, msp, tree, producers, trees, settings)
+    notify(
+        settings.get("observer"),
+        "reconciled",
+        {"msp": msp, "findings": reconciled["reconcile"]},
+    )
     state = write_state(run_dir, _msp_record(state, msp, **reconciled))
     if reconciled.get("state") == MSP_BLOCKED:
         return state
@@ -1964,6 +2015,8 @@ def execute(
     no_push=False,
     header=None,
     proven_heads=None,
+    observer=None,
+    env=None,
 ):
     prior = prior_state(run_dir, plan, resume)
     header = carried_header(header, prior)
@@ -1996,6 +2049,8 @@ def execute(
         "remote": remote,
         "push": not no_push,
         "proven_heads": dict(proven_heads or {}),
+        "observer": observer,
+        "env": env,
     }
     os.makedirs(run_dir, exist_ok=True)
     write_json(os.path.join(run_dir, PLAN_FILE), plan)
@@ -2023,7 +2078,10 @@ def execute(
         nonlocal state
         state = write_state(run_dir, {**state, "lanes": {**state["lanes"], str(lane): record}})
 
-    dispatch(
+    already = {
+        int(index) for index, record in state["lanes"].items() if (record or {}).get("state") == "ok"
+    }
+    records = dispatch(
         plan,
         trees,
         worker_command,
@@ -2034,6 +2092,13 @@ def execute(
         models=models,
         prior=state["lanes"],
         on_lane=on_lane,
+        observer=observer,
+        env=env,
+    )
+    notify(
+        observer,
+        "dispatch-ended",
+        {"lanes": {str(lane): record for lane, record in records.items() if lane not in already}},
     )
     producers = msp_producers(plan)
     finished = core.DELIVERED_STATES if no_push else PUBLISHED_STATES
@@ -2041,4 +2106,5 @@ def execute(
         if _settled(state, msp, producers[msp], finished):
             continue
         state = _finish_msp(plan, msp, trees, producers[msp], state, settings)
+        notify(observer, "msp-finished", {"msp": msp, "record": state["msps"][str(msp)]})
     return state

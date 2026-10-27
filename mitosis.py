@@ -9,6 +9,7 @@ from datetime import datetime
 import briefs
 import core
 import decompose
+import metrics
 import run
 import shape
 
@@ -105,13 +106,16 @@ NO_PLAN = (
     "--resume writes the briefs and builds the plan"
 )
 
-BRIEF_PLACEHOLDERS = ("prompt", "model", "step", "document")
+BRIEF_PLACEHOLDERS = ("prompt", "model", "step", "document", "session_id")
 
 TEMPLATE_PLACEHOLDERS = {"brief": BRIEF_PLACEHOLDERS}
 
 PLACEHOLDER_HELP = {
-    "dispatch": "{task} {model} {tier} {worktree} {branch} {lane} {msp} {charter} {document} {run_dir}",
-    "decompose": "{prompt} {model} {document}",
+    "dispatch": (
+        "{task} {model} {tier} {worktree} {branch} {lane} {msp} {charter} {document} {run_dir} "
+        "{session_id}"
+    ),
+    "decompose": "{prompt} {model} {document} {session_id}",
     "brief": " ".join("{%s}" % key for key in BRIEF_PLACEHOLDERS),
     "acceptance": "{file} {test} {worktree}",
     "pull-request": "{branch} {base} {title} {body} {worktree} {msp} {remote}",
@@ -602,6 +606,10 @@ def chosen_sample(order, pick):
     return order[0] if pick is None else pick - 1
 
 
+def recorder_of(args):
+    return getattr(args, "recorder", metrics.UNRECORDED)
+
+
 def structure_document(args, root, run_dir, models, charter, graph, decisions, prior):
     model = models.get(DECOMPOSE_TIER)
     if "{model}" in args.decompose_command and model is None:
@@ -612,6 +620,8 @@ def structure_document(args, root, run_dir, models, charter, graph, decisions, p
     if args.timeout is None:
         raise Refusal("--timeout is required to run the structure stage; mitosis has no default")
     path = check_document(args, root)
+    recorder = recorder_of(args)
+    began = run.now()
     results = decompose.sample_structures(
         args.structure_samples,
         path,
@@ -624,6 +634,8 @@ def structure_document(args, root, run_dir, models, charter, graph, decisions, p
         log=os.path.join(run_dir, DECOMPOSE_LOG),
         decisions=decisions,
         prior=prior,
+        env=recorder.env,
+        on_sessions=lambda sessions: recorder.stage_ended("structure", began, sessions),
     )
     order = decompose.rank(results)
     chosen = chosen_sample(order, args.pick)
@@ -688,6 +700,8 @@ def brief_structure(args, items, root, run_dir, models, charter, graph, decision
     refuse_unmapped_briefs(args.brief_command, pending, models)
     log_dir = os.path.join(run_dir, BRIEFS_DIR)
     os.makedirs(log_dir, exist_ok=True)
+    recorder = recorder_of(args)
+    began = run.now()
     try:
         written = briefs.write(
             items,
@@ -701,6 +715,8 @@ def brief_structure(args, items, root, run_dir, models, charter, graph, decision
             packs=core.context_packs(items, graph, args.context_hops, args.context_cap),
             charter=charter,
             decisions=decisions,
+            env=recorder.env,
+            on_sessions=lambda sessions: recorder.stage_ended("brief", began, sessions),
         )
     except (ValueError, OSError) as error:
         raise Refusal("the brief stage could not run: %s" % error)
@@ -725,16 +741,17 @@ def staged(items, decomposed, run_dir, decisions, briefed):
     }
 
 
-def resolve_input(args, root, repo, models, charter, graph):
+def input_run_dir(args, root):
+    if args.run_dir:
+        return os.path.abspath(args.run_dir)
+    kind, path = ("items", args.items) if args.items else ("spec", args.spec)
+    return os.path.abspath(default_run_dir(root, kind, file_digest(os.path.abspath(path))))
+
+
+def resolve_input(args, root, repo, models, charter, graph, run_dir):
     if args.items:
-        items_path = os.path.abspath(args.items)
-        run_dir = args.run_dir or default_run_dir(root, "items", file_digest(items_path))
-        run_dir = os.path.abspath(run_dir)
-        items = read_json(items_path, "--items")
+        items = read_json(os.path.abspath(args.items), "--items")
         return staged(items, load_decomposed(run_dir), run_dir, None, True)
-    spec_path = os.path.abspath(args.spec)
-    run_dir = args.run_dir or default_run_dir(root, "spec", file_digest(spec_path))
-    run_dir = os.path.abspath(run_dir)
     document = check_document(args, root)
     decisions = load_decisions(args, root, document)
     if not args.plan_only:
@@ -1639,6 +1656,8 @@ def execute(args, plan, models, run_dir, repo, root):
             no_push=args.no_push,
             header=pull_request_header(args),
             proven_heads=proven_heads(args.proven_head, plan),
+            observer=recorder_of(args).observe,
+            env=recorder_of(args).env,
         ), None
     except (run.ConfigError, run.ResumeError) as error:
         raise Refusal(str(error))
@@ -1671,7 +1690,28 @@ def run_pipeline(args):
     check_pull_request_flags(args)
     charter = check_charter(args.charter)
     graph = load_graph(args.graph, root)
-    resolved = resolve_input(args, root, repo, models, charter, graph)
+    run_dir = input_run_dir(args, root)
+    recorder = metrics.opened(args, repo, cwd, run_dir, models, achieved_parallelism)
+    recorded = argparse.Namespace(**{**vars(args), "recorder": recorder})
+    try:
+        code = run_stages(recorded, repo, root, models, charter, graph, run_dir)
+    except UnknownProvenHead:
+        recorder.ended(EXIT_USAGE, EXIT_MEANING[EXIT_USAGE])
+        raise
+    except Refusal:
+        recorder.ended(EXIT_REFUSED, EXIT_MEANING[EXIT_REFUSED])
+        raise
+    except BaseException:
+        recorder.ended(None, None)
+        raise
+    recorder.ended(code, EXIT_MEANING.get(code))
+    return code
+
+
+def run_stages(args, repo, root, models, charter, graph, run_dir):
+    recorder = recorder_of(args)
+    resolved = resolve_input(args, root, repo, models, charter, graph, run_dir)
+    recorder.structured(resolved["items"])
     items, decomposed, run_dir, decisions = (
         resolved["items"],
         resolved["decomposed"],
@@ -1688,6 +1728,7 @@ def run_pipeline(args):
         )
         return _summarised({"items": items}, None, run_dir, planned_code(items))
     plan = build_plan(args, items, root, charter, graph, run_dir)
+    recorder.planned(plan, lane_width(plan), len(empty_manifests(plan.get("items") or [])))
     proven_heads(args.proven_head, plan)
     refuse_unfit_titles(pull_request_header(args), plan)
     if args.plan_only:
