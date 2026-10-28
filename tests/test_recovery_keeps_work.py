@@ -207,6 +207,31 @@ class RecoveryKeepsWork(unittest.TestCase):
                 self.assertEqual(git_in(tree, "rev-parse", "HEAD"), gated)
                 self.assertNotEqual(git_result(tree, "rev-parse", "--verify", BACKUP).returncode, 0)
 
+    def recovery_refuses_work_git_cannot_back_up(self):
+        tree, gated = self._interrupted("head")
+        nested = os.path.join(tree, "vendor", "lib")
+        os.makedirs(nested)
+        git_in(nested, "init", "-q", "--template=")
+        teeth.put(os.path.join(nested, ".git", "description"), "nested\n")
+        teeth.put(os.path.join(nested, ".git", "info", "exclude"), "\n")
+        teeth.put(os.path.join(nested, "a.txt"), TOKEN)
+        marker = run.gate_marker(tree)
+        with self.assertRaises(run.GateRecoveryError) as refused:
+            self._recovered(tree)
+        self.assertEqual(
+            str(refused.exception),
+            "could not recover the interrupted gate in %s: git cannot store vendor/lib/.git/HEAD, "
+            "vendor/lib/.git/config, vendor/lib/.git/description and 1 more in a backup, so "
+            "recovering the interrupted gate would discard it; move it out of %s and run again; "
+            "%s is kept, so the next run tries the recovery again" % (tree, tree, marker),
+        )
+        self.assertTrue(os.path.isfile(marker), "the gate marker is gone")
+        self.assertEqual(read_text(os.path.join(nested, "a.txt")), TOKEN)
+        self.assertTrue(
+            os.path.isfile(os.path.join(nested, ".git", "HEAD")), "the nested repository is gone"
+        )
+        self.assertEqual(git_in(tree, "rev-parse", "HEAD"), gated)
+
     def a_second_recovery_keeps_the_first_backup(self):
         tree, gated = self._interrupted("head")
         tracked_edit(tree)
@@ -231,6 +256,7 @@ def load_tests(loader, standard, pattern):
             (
                 "recovery_keeps_work_made_after_the_interruption",
                 "recovery_that_replaces_nothing_writes_no_backup",
+                "recovery_refuses_work_git_cannot_back_up",
                 "a_second_recovery_keeps_the_first_backup",
             ),
         ),

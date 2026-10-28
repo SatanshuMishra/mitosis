@@ -7,6 +7,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import unicodedata
@@ -105,6 +106,12 @@ SYMLINK_MODE = "120000"
 
 EXECUTABLE_MODE = "100755"
 
+REGULAR_MODE = "100644"
+
+KEPT_KINDS = ("file", "link")
+
+RECOVERED_REFS = "refs/mitosis/recovered/"
+
 LFS_POINTER = b"version https://git-lfs.github.com/spec/v1\n"
 
 LFS_OID = re.compile(rb"^oid sha256:([0-9a-f]{64})$", re.MULTILINE)
@@ -171,6 +178,14 @@ class GateRecoveryError(GitError):
         )
 
 
+class LaterWorkError(GitError):
+    def __init__(self, cause):
+        self.args_run = ()
+        self.code = None
+        self.stderr = ""
+        RuntimeError.__init__(self, cause)
+
+
 class ConfigError(ValueError):
     pass
 
@@ -211,13 +226,14 @@ def _decoded(data):
     return data.decode("utf-8", "surrogateescape")
 
 
-def _git_once(args, cwd, timeout, raw=False, data=None):
+def _git_once(args, cwd, timeout, raw=False, data=None, env=None):
     index_lock = _index_lock(cwd)
     locked_before = index_lock is not None and os.path.exists(index_lock)
     argv = ["git", *args]
     proc = subprocess.Popen(
         argv,
         cwd=cwd,
+        env=None if env is None else {**os.environ, **env},
         stdin=subprocess.DEVNULL if data is None else subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -245,18 +261,18 @@ def _locked(completed):
     )
 
 
-def git_run(args, cwd, timeout=GIT_TIMEOUT, raw=False, data=None):
-    completed = _git_once(args, cwd, timeout, raw, data)
+def git_run(args, cwd, timeout=GIT_TIMEOUT, raw=False, data=None, env=None):
+    completed = _git_once(args, cwd, timeout, raw, data, env)
     for delay in LOCK_RETRY_DELAYS:
         if not _locked(completed):
             return completed
         time.sleep(delay)
-        completed = _git_once(args, cwd, timeout, raw, data)
+        completed = _git_once(args, cwd, timeout, raw, data, env)
     return completed
 
 
-def git(args, cwd, check=True, timeout=GIT_TIMEOUT):
-    completed = git_run(args, cwd, timeout)
+def git(args, cwd, check=True, timeout=GIT_TIMEOUT, env=None):
+    completed = git_run(args, cwd, timeout, env=env)
     if check and completed.returncode != 0:
         raise GitError(args, completed.returncode, completed.stderr)
     return completed.stdout.strip()
@@ -1242,8 +1258,8 @@ def _held_under(names, path):
     return any(name == path or name.startswith(path + "/") for name in names)
 
 
-def _checked_run(args, tree, data=None):
-    completed = git_run(args, tree, raw=True, data=data)
+def _checked_run(args, tree, data=None, env=None):
+    completed = git_run(args, tree, raw=True, data=data, env=env)
     if completed.returncode != 0:
         raise GitError(args, completed.returncode, completed.stderr)
     return completed.stdout
@@ -1847,10 +1863,17 @@ def _rewrites(tree, entries, kinds):
         and present.get(path) is not None
         and _same_content(present[path], blobs[files[path][1]])
     )
-    for path, (mode, _) in sorted(files.items()):
-        if mode != SYMLINK_MODE and path in present and path not in unequal:
-            _fix_exec_bit(tree, path, mode)
-    return {path: blobs[files[path][1]] for path in unequal if path not in tolerated}
+    exact = tuple(
+        path
+        for path, (mode, _) in sorted(files.items())
+        if mode != SYMLINK_MODE and path in present and path not in unequal
+    )
+    return {path: blobs[files[path][1]] for path in unequal if path not in tolerated}, exact
+
+
+def _fix_exec_bits(tree, entries, exact):
+    for path in exact:
+        _fix_exec_bit(tree, path, entries[path][0])
 
 
 def _place(tree, path, mode, data):
@@ -1936,9 +1959,7 @@ def _still_different(tree, entries, folders, removed, rewrites):
     )
 
 
-def _normalized(tree, commit, base, locked, scratch):
-    git(["read-tree", commit], tree)
-    _clear_all_index_flags(tree)
+def _gate_tree_plan(tree, commit, base, locked, scratch):
     entries = _committed_entries(tree, commit)
     folders = _committed_folders(entries)
     _seed_ignores(tree, base, scratch)
@@ -1953,8 +1974,40 @@ def _normalized(tree, commit, base, locked, scratch):
         ],
     )
     removed, shadowing, emptied = _strays(found, kept, entries, folders, locked)
-    _clear_strays(tree, removed, shadowing, emptied)
-    rewrites = _rewrites(tree, entries, {path: kind for path, kind in found if path not in removed})
+    rewrites, exact = _rewrites(
+        tree, entries, {path: kind for path, kind in found if path not in removed}
+    )
+    return {
+        "entries": entries,
+        "folders": folders,
+        "found": found,
+        "removed": removed,
+        "shadowing": shadowing,
+        "emptied": emptied,
+        "rewrites": rewrites,
+        "exact": exact,
+    }
+
+
+def gate_tree_plan(tree, commit, base, locked=()):
+    scratch = tempfile.mkdtemp(prefix="mitosis-ignore-")
+    try:
+        return _gate_tree_plan(tree, commit, base, tuple(locked), scratch)
+    except OSError as error:
+        raise GateTreeError(tree, commit, error)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _normalized(tree, commit, locked, plan):
+    entries = plan["entries"]
+    folders = plan["folders"]
+    removed = plan["removed"]
+    rewrites = plan["rewrites"]
+    git(["read-tree", commit], tree)
+    _clear_all_index_flags(tree)
+    _clear_strays(tree, removed, plan["shadowing"], plan["emptied"])
+    _fix_exec_bits(tree, entries, plan["exact"])
     _place_commit(tree, entries, rewrites)
     left = _still_different(tree, entries, folders, removed, rewrites)
     if left:
@@ -1977,13 +2030,11 @@ def _normalized(tree, commit, base, locked, scratch):
 
 
 def normalize_gate_tree(tree, commit, base, locked=()):
-    scratch = tempfile.mkdtemp(prefix="mitosis-ignore-")
+    plan = gate_tree_plan(tree, commit, base, locked)
     try:
-        return _normalized(tree, commit, base, tuple(locked), scratch)
+        return _normalized(tree, commit, tuple(locked), plan)
     except OSError as error:
         raise GateTreeError(tree, commit, error)
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def referee_writes(plan, tree, branch, base):
@@ -2038,12 +2089,133 @@ def clear_gate_mark(tree):
         pass
 
 
+def _tip(tree, branch):
+    found = git_run(["rev-parse", "--verify", "--quiet", "refs/heads/%s^{commit}" % branch], tree)
+    return found.stdout.strip() if found.returncode == 0 else None
+
+
+def _moved(name, commit, tip):
+    return LaterWorkError(
+        "%s moved from the gated commit %s to %s after the gate was interrupted, so recovering "
+        "it would discard that work" % (name, commit[:12], tip[:12] if tip else "no commit")
+    )
+
+
+def _head_ref(tree):
+    args = ["symbolic-ref", "-q", "HEAD"]
+    found = git_run(args, tree)
+    if found.returncode not in (0, 1):
+        raise GitError(args, found.returncode, found.stderr)
+    return found.stdout.strip() if found.returncode == 0 else None
+
+
+def _refuse_moved_work(tree, branch, commit):
+    probe = "%s/%s" % (PROBE_PREFIX, branch)
+    tip = _tip(tree, branch)
+    if tip != commit:
+        raise _moved(branch, commit, tip)
+    probe_tip = _tip(tree, probe)
+    if probe_tip not in (None, commit):
+        raise _moved(probe, commit, probe_tip)
+    head = _head_ref(tree)
+    if head in ("refs/heads/" + branch, "refs/heads/" + probe):
+        return
+    if head is None:
+        where = "the detached commit %s" % git(["rev-parse", "HEAD"], tree)[:12]
+    else:
+        where = head[len("refs/heads/"):] if head.startswith("refs/heads/") else head
+    raise LaterWorkError(
+        "HEAD is on %s, not %s or %s, so recovering the interrupted gate would discard the "
+        "work there" % (where, branch, probe)
+    )
+
+
+def _kept_blob(tree, path, kind):
+    if kind == "link":
+        return SYMLINK_MODE, os.fsencode(os.readlink(tree_path(tree, path, last=False)))
+    descriptor = os.open(tree_path(tree, path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as handle:
+        executable = os.fstat(handle.fileno()).st_mode & stat.S_IXUSR
+        return (EXECUTABLE_MODE if executable else REGULAR_MODE), handle.read()
+
+
+def _stored_blob(tree, data):
+    stored = _checked_run(["hash-object", "-w", "--no-filters", "--stdin"], tree, data)
+    return stored.decode("ascii").strip()
+
+
+def _replaced_rows(tree, plan, commit):
+    kinds = dict(plan["found"])
+    rewritten = tuple(sorted(plan["rewrites"]))
+    gone = tuple(path for path in rewritten if kinds.get(path) not in KEPT_KINDS)
+    saved = tuple(
+        (path,) + _kept_blob(tree, path, kinds[path])
+        for path in tuple(plan["removed"]) + rewritten
+        if kinds.get(path) in KEPT_KINDS
+    )
+    absent = ("0" * len(commit)).encode("ascii")
+    rows = b"".join(
+        tuple(b"0 %s\t%s\0" % (absent, os.fsencode(path)) for path in gone)
+        + tuple(
+            b"%s %s\t%s\0"
+            % (mode.encode("ascii"), _stored_blob(tree, data).encode("ascii"), os.fsencode(path))
+            for path, mode, data in saved
+        )
+    )
+    return rows, tuple(path for path, _, _ in saved)
+
+
+def _replaced_tree(tree, commit, rows, paths):
+    folder = tempfile.mkdtemp(prefix="mitosis-recovered-")
+    try:
+        env = {"GIT_INDEX_FILE": os.path.join(folder, "index")}
+        _checked_run(["read-tree", commit], tree, env=env)
+        _checked_run(["update-index", "-z", "--replace", "--index-info"], tree, rows, env)
+        saved = git(["write-tree"], tree, env=env)
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    held = frozenset(git_paths(["ls-tree", "-r", "-z", "--name-only", "--full-tree", saved], tree))
+    refused = tuple(sorted(path for path in paths if path not in held))
+    if refused:
+        named = ", ".join(refused[:3]) + (
+            " and %d more" % (len(refused) - 3) if len(refused) > 3 else ""
+        )
+        raise LaterWorkError(
+            "git cannot store %s in a backup, so recovering the interrupted gate would discard "
+            "it; move it out of %s and run again" % (named, tree)
+        )
+    return saved
+
+
+def _keep_replaced_work(tree, branch, commit, base, locked):
+    rows, paths = _replaced_rows(tree, gate_tree_plan(tree, commit, base, locked), commit)
+    saved = _replaced_tree(tree, commit, rows, paths) if rows else None
+    if saved is None or saved == git(["rev-parse", commit + "^{tree}"], tree):
+        return None
+    ref = RECOVERED_REFS + branch
+    earlier = git_run(["rev-parse", "--verify", "--quiet", ref + "^{commit}"], tree)
+    previous = earlier.stdout.strip() if earlier.returncode == 0 else ""
+    parents = ("-p", commit) + (("-p", previous) if previous else ())
+    message = "mitosis: the work recovering the interrupted gate on %s replaced" % branch
+    backup = git(["commit-tree", saved, *parents, "-m", message], tree)
+    git(["update-ref", ref, backup, previous], tree)
+    sys.stderr.write(
+        "mitosis kept the work recovering the interrupted gate in %s replaced in %s at %s\n"
+        % (tree, ref, backup[:12])
+    )
+    sys.stderr.flush()
+    return backup
+
+
 def _recover_from(tree, recorded):
     branch = recorded["branch"]
+    commit = recorded["commit"]
+    locked = tuple(recorded["locked"])
+    base = recorded.get("base")
+    _refuse_moved_work(tree, branch, commit)
     clear_caches_beside(tree, tuple(recorded["paths"]))
-    restore_gate_commit(
-        tree, branch, recorded["commit"], tuple(recorded["locked"]), recorded.get("base")
-    )
+    _keep_replaced_work(tree, branch, commit, base or commit, locked)
+    restore_gate_commit(tree, branch, commit, locked, base)
     probe = "%s/%s" % (PROBE_PREFIX, branch)
     git_run(["branch", "-D", probe], tree)
     if branch_exists(tree, probe):
