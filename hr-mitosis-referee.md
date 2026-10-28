@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T09:15:14.087Z
+Updated: 2026-10-28T09:16:26.179Z
 Next ids: c7 D1 R3 S1
 
 ## Goal
@@ -18,11 +18,11 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-Interphase Phase 9: spec, record and items written and passing check_spec, check_record --complete and check_items; one MSP, seven ordered Steps, criteria 5.1 to 5.6 are M1 to M6 and 5.7 is docs and version 0.8.0. The spec reviewer is running.
+Interphase Phase 9: spec, record and items written and passing check_spec, check_record --complete and check_items; one MSP, seven ordered Steps, criteria 5.1 to 5.6 are M1 to M6 and 5.7 is docs and version 0.8.0. The spec reviewer is running. Glossary section "Referee and gate" is appended to the checkout's GLOSSARY.md and ADRs 0006 to 0008 are written; the run home holds worker-rules.txt (with O3's line) and dispatch.zsh.
 
 ## Next step
 
-Apply the spec reviewer's fixes, rerender and recheck, then hand off (glossary terms, ADRs 0006 and 0007, tree guard verify, record status handed-off).
+Apply the spec reviewer's fixes (also drop tests/fixtures/g14-cases.json from gate-teeth's files), rerender and recheck, then hand off: tree guard verify, record status handed-off.
 
 ## Decisions in force
 
