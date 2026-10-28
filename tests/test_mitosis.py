@@ -300,6 +300,7 @@ def invoke(root, argv):
         ):
             os.environ.pop("PLUGIN_METRICS_PARENT", None)
             os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+            os.environ.pop("SHIP", None)
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 try:
                     code = mitosis.main(argv)
@@ -314,7 +315,49 @@ SUBJECT = "write pull requests in the house format"
 
 WHY = "Callers need it."
 
-PR_FLAGS = ("--pr-type", "feat", "--pr-scope", "ship", "--pr-subject", SUBJECT, "--pr-why", WHY)
+IMPACT = "Every new body changes shape."
+
+PR_FLAGS = (
+    "--pr-type",
+    "feat",
+    "--pr-scope",
+    "ship",
+    "--pr-subject",
+    SUBJECT,
+    "--pr-why",
+    WHY,
+    "--pr-impact",
+    IMPACT,
+)
+
+ACCEPTING_RENDER = r'''
+import json
+import os
+import shutil
+import sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "calls"), "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(sys.argv) + "\n")
+shutil.copyfile(sys.argv[sys.argv.index("--fields") + 1], os.path.join(here, "fields.copy.json"))
+print(json.dumps({"title": "feat(ship): fake title", "body": "## Problem\nFake body."}, separators=(",", ":")))
+'''
+
+
+def executable(folder, name, script):
+    path = write(folder, name, "#!%s\n%s" % (sys.executable, script))
+    os.chmod(path, 0o755)
+    return path
+
+
+def fake_render(folder):
+    return executable(folder, "pull-request", ACCEPTING_RENDER)
+
+
+def refusing_render(folder, name, line):
+    return executable(
+        folder, name, "import sys\nsys.stderr.write(%r)\nsys.exit(2)\n" % (line + "\n")
+    )
 
 
 def git_repo(root):
@@ -543,6 +586,8 @@ class Staging(unittest.TestCase):
                     "--pr-command",
                     "opener {branch}",
                     *PR_FLAGS,
+                    "--render-command",
+                    fake_render(os.path.join(root, "worker")),
                 )
             finally:
                 mitosis.execute = kept
@@ -939,45 +984,26 @@ class PullRequestFlags(unittest.TestCase):
                         "probe {file} {test}",
                         "--timeout",
                         "30",
+                        "--render-command",
+                        fake_render(elsewhere),
                         *flags,
                     ],
                 )
             return code, err, os.path.exists(os.path.join(elsewhere, "worker", "spawned"))
 
     def a_run_that_may_push_needs_valid_pull_request_flags(self):
-        long_why = "A" + "b" * 495 + "\U0001F680\U0001F680" + "."
-        self.assertEqual(len(long_why), 499)
-        typed = ("--pr-type", "feat", "--pr-subject", SUBJECT)
+        typed = ("--pr-type", "feat", "--pr-subject", SUBJECT, "--pr-impact", IMPACT)
         for flag, flags in (
             ("--pr-type", ("--pr-subject", SUBJECT, "--pr-why", WHY)),
             ("--pr-subject", ("--pr-type", "feat", "--pr-why", WHY)),
             ("--pr-why", typed),
             ("--pr-type", ("--pr-type", "feature", "--pr-subject", SUBJECT, "--pr-why", WHY)),
-            ("--pr-scope", typed + ("--pr-scope", "Ship", "--pr-why", WHY)),
-            ("--pr-subject", ("--pr-type", "feat", "--pr-subject", "Write things.", "--pr-why", WHY)),
-            ("--pr-why", typed + ("--pr-why", "callers need it.")),
-            ("--pr-why", typed + ("--pr-why", long_why)),
             ("--pr-why", typed + ("--pr-why", WHY) * 9),
-            ("--pr-why", typed + ("--pr-why", "Door: two-way.")),
-            ("--pr-why", typed + ("--pr-why", "Blast radius: docs.")),
             ("--pr-door", typed + ("--pr-why", WHY, "--pr-door", "two-way")),
             ("--pr-blast-radius", typed + ("--pr-why", WHY, "--pr-blast-radius", "Docs only.")),
             (
                 "--pr-door",
                 typed + ("--pr-why", WHY, "--pr-door", "sliding", "--pr-blast-radius", "Docs only."),
-            ),
-            (
-                "--pr-blast-radius",
-                typed + ("--pr-why", WHY, "--pr-door", "two-way", "--pr-blast-radius", "docs only"),
-            ),
-            (
-                "--pr-blast-radius",
-                typed + ("--pr-why", WHY, "--pr-door", "one-way", "--pr-blast-radius", "See www.x."),
-            ),
-            (
-                "--pr-blast-radius",
-                typed
-                + ("--pr-why", WHY, "--pr-door", "two-way", "--pr-blast-radius", "Blast radius: docs."),
             ),
         ):
             with self.subTest(flags=flags):
@@ -999,164 +1025,6 @@ class PullRequestFlags(unittest.TestCase):
         )
         bare = mitosis.pull_request_header(parser.parse_args(typed))
         self.assertEqual((bare["door"], bare["blast_radius"]), (None, None))
-
-    def a_title_that_cannot_fit_is_refused_before_any_worker(self):
-        for items, subject, label, rule in (
-            ([briefed("alpha")], "write " + "x" * 66, "alpha", "over the 72-unit cap"),
-            ([briefed("alpha", msp="a<b"), briefed("beta")], SUBJECT, "a<b", "< followed by"),
-        ):
-            with self.subTest(label=label), tempfile.TemporaryDirectory() as root:
-                write(root, "items.json", json.dumps(items))
-                code, _, err = invoke(
-                    root,
-                    [
-                        "--items",
-                        "items.json",
-                        "--plan-only",
-                        "--run-dir",
-                        os.path.join(root, "run"),
-                        "--pr-type",
-                        "feat",
-                        "--pr-scope",
-                        "ship",
-                        "--pr-subject",
-                        subject,
-                        "--pr-why",
-                        WHY,
-                    ],
-                )
-                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
-                self.assertIn("MSP %s would be titled" % label, err)
-                self.assertIn(rule, err)
-                self.assertFalse(os.path.exists(os.path.join(root, "run", run.PLAN_FILE)))
-
-    def why_lines_follow_the_composed_rules(self):
-        typed = ("--pr-type", "feat", "--pr-subject", SUBJECT)
-        for why in (
-            "Callers \u202e need it.",
-            "a<b",
-            "# A heading.",
-            "Verified: x",
-            "Supersedes x",
-            "Callers need it.\u00a0",
-            "@team",
-            "Closes #1.",
-            "See https://example.invalid.",
-            "Callers need it \u2014 now.",
-        ):
-            with self.subTest(why=ascii(why)):
-                fault = mitosis.why_fault(why)
-                self.assertIsNotNone(fault)
-                code, err, spawned = self._attempt(*typed, "--pr-why", why)
-                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
-                self.assertIn("--pr-why number 1 %s" % fault, err.splitlines()[0])
-                self.assertFalse(spawned)
-        linked = "See https://example.invalid."
-        self.assertEqual(mitosis.why_fault(linked), run.composed_fault(linked))
-        parser = mitosis.build_parser()
-        for why in ("Callers need it.", "receipt: tests/test_run.py::x"):
-            with self.subTest(why=why):
-                self.assertIsNone(mitosis.why_fault(why))
-                self.assertIsNone(
-                    mitosis.check_pull_request_flags(parser.parse_args(typed + ("--pr-why", why)))
-                )
-
-    def titles_and_subjects_follow_the_composed_rules(self):
-        for subject in ("add <?x?> parser", "fix &amp; cleanup", "ping @team", "close #12"):
-            with self.subTest(subject=subject):
-                rule = run.composed_fault(subject)
-                self.assertIsNotNone(rule)
-                code, err, spawned = self._attempt(
-                    "--pr-type", "feat", "--pr-subject", subject, "--pr-why", WHY
-                )
-                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
-                first = err.splitlines()[0]
-                self.assertIn("--pr-subject %r" % subject, first)
-                self.assertIn(rule, first)
-                self.assertFalse(spawned)
-        for label, rule in (
-            ("a<b", "holds < followed by !, /, ? or a letter"),
-            ("a&lt;b", "holds a character reference"),
-        ):
-            with self.subTest(label=label):
-                code, err, spawned = self._attempt(
-                    "--pr-type",
-                    "feat",
-                    "--pr-subject",
-                    SUBJECT,
-                    "--pr-why",
-                    WHY,
-                    items=[briefed("alpha", msp=label), briefed("beta")],
-                )
-                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
-                self.assertIn("MSP %s would be titled" % label, err)
-                self.assertIn(rule, err)
-                self.assertFalse(spawned)
-
-    def help_names_the_composed_rules(self):
-        text = mitosis.build_parser().format_help()
-        self.assertIsInstance(text, str)
-        for flag in ("--pr-why", "--pr-subject"):
-            help_text = mitosis.FLAG_SPECS[flag]["help"]
-            for term in ("printable ASCII", "$", "backslash", "GH-", "emoji", "hexadecimal"):
-                with self.subTest(flag=flag, term=term):
-                    self.assertIn(term, help_text)
-            self.assertIn(" ".join(help_text.split()), " ".join(text.split()))
-
-    def why_lines_and_subjects_refuse_math_references_and_emphasis(self):
-        typed = ("--pr-type", "feat", "--pr-subject", SUBJECT)
-        for why, rule in (
-            ("Callers need it $\\phantom{x}$ now.", "holds a backslash"),
-            ("Fixes GH-2 too.", "holds GH- followed by a digit"),
-            ("Callers need pkg/__init__.py now.", "holds _ outside a word"),
-            ("Add :rocket: support.", "holds an emoji shortcode"),
-        ):
-            with self.subTest(why=why):
-                self.assertEqual(mitosis.why_fault(why), rule)
-                code, err, spawned = self._attempt(*typed, "--pr-why", why)
-                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
-                self.assertIn("--pr-why number 1 %s" % rule, err.splitlines()[0])
-                self.assertFalse(spawned)
-        for subject, rule in (
-            ("close GH-1 with the parser", "holds GH- followed by a digit"),
-            ("add the $x$ parser", "holds $"),
-            ("add the a*b parser", "holds *"),
-        ):
-            with self.subTest(subject=subject):
-                self.assertEqual(mitosis.subject_fault(subject), rule)
-                code, err, spawned = self._attempt(
-                    "--pr-type", "feat", "--pr-subject", subject, "--pr-why", WHY
-                )
-                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
-                self.assertIn("--pr-subject %r %s" % (subject, rule), err.splitlines()[0])
-                self.assertFalse(spawned)
-        parser = mitosis.build_parser()
-        self.assertIsNone(
-            mitosis.check_pull_request_flags(
-                parser.parse_args(
-                    ("--pr-type", "feat", "--pr-subject", SUBJECT, "--pr-why", "Callers need it.")
-                )
-            )
-        )
-
-    def a_scope_and_the_help_follow_the_composed_rules(self):
-        code, err, spawned = self._attempt(
-            "--pr-type",
-            "fix",
-            "--pr-scope",
-            "gh-2fa",
-            "--pr-subject",
-            SUBJECT,
-            "--pr-why",
-            "Callers need it.",
-        )
-        self.assertEqual(code, mitosis.EXIT_REFUSED, err)
-        self.assertIn("--pr-scope 'gh-2fa' holds GH- followed by a digit", err.splitlines()[0])
-        self.assertFalse(spawned)
-        for flag in ("--pr-why", "--pr-subject"):
-            help_text = mitosis.FLAG_SPECS[flag]["help"]
-            self.assertIn("github.com/", help_text)
-            self.assertIn("backticks", help_text)
 
 
 class PushOnly(unittest.TestCase):
@@ -1188,6 +1056,8 @@ class PushOnly(unittest.TestCase):
                         "--timeout",
                         "30",
                         *PR_FLAGS,
+                        "--render-command",
+                        fake_render(elsewhere),
                     ],
                 )
             heads = subprocess.run(
@@ -1204,12 +1074,8 @@ class PushOnly(unittest.TestCase):
         self.assertEqual(entry["state"], run.MSP_PUSHED)
         self.assertEqual(entry["branch"], "mitosis/alpha")
         self.assertIsNone(entry["pull_request"])
-        self.assertEqual(entry["title"], "feat(ship): write pull requests in the house format")
-        self.assertEqual(
-            entry["body"],
-            "## What changed\n- Builds the alpha Step.\n\n## Why\nCallers need it.\n\n"
-            "## Verification\nNot verified: the alpha Step has no acceptance test",
-        )
+        self.assertEqual(entry["title"], "feat(ship): fake title")
+        self.assertEqual(entry["body"], "## Problem\nFake body.")
         self.assertEqual(heads, ["refs/heads/mitosis/alpha"])
         self.assertEqual(found["attention"], [])
         held = mitosis._msp_summary(
@@ -1289,6 +1155,8 @@ class ProvenHead(unittest.TestCase):
                     "--timeout",
                     "30",
                     *PR_FLAGS,
+                    "--render-command",
+                    fake_render(self.elsewhere),
                     *extra,
                 ],
             )
@@ -1331,11 +1199,14 @@ class ProvenHead(unittest.TestCase):
         new_head = self._new_commit(tree)
         code, out, err = self._invoke("--resume", "--proven-head", "alpha=" + new_head)
         self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
-        body = json.loads(out.splitlines()[-1])["msps"][0]["body"]
+        testing = read_json(os.path.join(self.run_dir, "ship", "msp-0", "fields.json"))["testing"]
         self.assertEqual(
-            body.splitlines()[-1],
-            "Not verified: mitosis gated commit %s; the caller proved commit %s without a new gate."
-            % (gated[:12], new_head[:12]),
+            testing[-1],
+            {
+                "check": "Proven head",
+                "result": "Not run: the caller proved %s after mitosis gated %s"
+                % (new_head[:12], gated[:12]),
+            },
         )
 
     def test_a_different_head_gates_again(self):
@@ -1383,6 +1254,217 @@ class ProvenHead(unittest.TestCase):
         )
         self._no_build()
         self.assertEqual(self._calls(), 0)
+
+
+class RenderPreflight(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.elsewhere = tempfile.mkdtemp()
+        self.run_dir = os.path.join(self.elsewhere, "run")
+        git_repo(self.root)
+        self.remote = os.path.join(self.elsewhere, "remote.git")
+        subprocess.run(
+            ["git", "init", "-q", "--bare", self.remote],
+            check=True,
+            capture_output=True,
+            env={**os.environ, **ISOLATED_GIT_ENV},
+        )
+        git_out(self.root, "remote", "add", "origin", self.remote)
+        step = briefed(
+            "alpha",
+            files=["alpha.py", "alpha_check.txt"],
+            acceptance=[{"file": "alpha_check.txt", "test": "property"}],
+        )
+        write(self.root, "items.json", json.dumps([step]))
+
+    def tearDown(self):
+        subprocess.run(["rm", "-rf", self.root, self.elsewhere], check=True)
+
+    def _invoke(self, worker, *extra):
+        with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
+            return invoke(
+                self.root,
+                [
+                    "--items",
+                    "items.json",
+                    "--run-dir",
+                    self.run_dir,
+                    "--feature-branch",
+                    "feature",
+                    "--dispatch-command",
+                    command(self.elsewhere, "worker.py", worker, "{task}"),
+                    "--acceptance-command",
+                    command(
+                        self.elsewhere,
+                        "accept.py",
+                        COUNTING_ACCEPTANCE,
+                        shlex.quote(os.path.join(self.elsewhere, "acceptance-calls")),
+                        "{file}",
+                        "{test}",
+                    ),
+                    "--timeout",
+                    "30",
+                    *extra,
+                ],
+            )
+
+    def _calls(self):
+        with open(os.path.join(self.elsewhere, "calls"), encoding="utf-8") as handle:
+            return handle.read().splitlines()
+
+    def refuses_before_any_worker(self):
+        header = (
+            "--pr-type",
+            "feat",
+            "--pr-subject",
+            "hand facts to render",
+            "--pr-why",
+            "Bodies are composed twice.",
+        )
+        impact = ("--pr-impact", "Every new body changes shape.")
+        for flags, expected in (
+            (header, "--pr-impact"),
+            (
+                header
+                + impact
+                + ("--render-command", os.path.join(self.elsewhere, "absent", "pull-request")),
+                "install pull-request 0.3.0 or later",
+            ),
+            (
+                header
+                + impact
+                + (
+                    "--render-command",
+                    refusing_render(
+                        self.elsewhere, "old-render", 'pull-request render: unknown flag "--fields"'
+                    ),
+                ),
+                "older than 0.3.0",
+            ),
+            (
+                header
+                + impact
+                + (
+                    "--render-command",
+                    refusing_render(self.elsewhere, "refusing-render", "--change: a value is empty"),
+                ),
+                "MSP alpha: ",
+            ),
+        ):
+            for mode in (("--plan-only",), ()):
+                with self.subTest(expected=expected, mode=mode):
+                    code, out, err = self._invoke(MARKING_WORKER, *mode, *flags)
+                    self.assertEqual(code, 3, out + err)
+                    self.assertIn(expected, err)
+                    self.assertFalse(
+                        os.path.exists(os.path.join(self.elsewhere, "worker", "spawned"))
+                    )
+                    self.assertFalse(os.path.exists(os.path.join(self.run_dir, "plan.json")))
+
+    def an_accepting_render_lets_the_plan_run(self):
+        code, out, err = self._invoke(
+            MARKING_WORKER,
+            "--plan-only",
+            "--pr-type",
+            "feat",
+            "--pr-subject",
+            "hand facts to render",
+            "--pr-why",
+            "Bodies are composed twice.",
+            "--pr-impact",
+            "Every new body changes shape.",
+            "--render-command",
+            fake_render(self.elsewhere),
+        )
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(len(self._calls()), 1)
+        testing = read_json(os.path.join(self.elsewhere, "fields.copy.json"))["testing"]
+        self.assertEqual(
+            [row["check"] for row in testing[-2:]], ["Acceptance gate", "Proven head"]
+        )
+        self.assertTrue(os.path.isfile(os.path.join(self.run_dir, "probe-0.json")))
+        code, out, err = self._invoke(
+            MARKING_WORKER,
+            "--plan-only",
+            "--pr-why",
+            "Bodies are composed twice.",
+            "--pr-impact",
+            "Every new body changes shape.",
+        )
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(len(self._calls()), 1)
+
+    def pipeline_flags_ship_what_render_printed(self):
+        code, out, err = self._invoke(
+            HOLDING_WORKER,
+            "--pr-type",
+            "feat",
+            "--pr-scope",
+            "ship",
+            "--pr-subject",
+            "hand facts to render",
+            "--pr-why",
+            "Bodies are composed twice.",
+            "--pr-why",
+            "Reviewers skip them.",
+            "--pr-door",
+            "two-way",
+            "--pr-blast-radius",
+            "Ship only.",
+            "--render-command",
+            fake_render(self.elsewhere),
+        )
+        self.assertEqual(code, 0, out + err)
+        entry = json.loads(out.splitlines()[-1])["msps"][0]
+        self.assertEqual(entry["title"], "feat(ship): fake title")
+        self.assertEqual(entry["body"], "## Problem\nFake body.")
+        path = os.path.join(self.run_dir, "ship", "msp-0", "fields.json")
+        fields = read_json(path)
+        self.assertEqual(fields["problem"], ["Bodies are composed twice.", "Reviewers skip them."])
+        self.assertEqual(fields["impact"], ["Ship only."])
+        with open(path, encoding="utf-8") as handle:
+            self.assertNotIn("two-way", handle.read())
+        for name in ("why_fault", "subject_fault", "blast_radius_fault", "refuse_unfit_titles"):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(mitosis, name))
+        for name in (
+            "value_fault",
+            "house_value",
+            "composed_fault",
+            "composed_value",
+            "title_fault",
+            "sentence_shaped",
+            "receipt_token",
+            "pull_request_title",
+            "SCOPE_PATTERN",
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(run, name))
+
+    def six_why_lines_are_accepted(self):
+        whys = tuple(
+            word
+            for why in ("One.", "Two.", "Three.", "Four.", "Five.", "Six.")
+            for word in ("--pr-why", why)
+        )
+        code, out, err = self._invoke(
+            MARKING_WORKER,
+            "--plan-only",
+            "--pr-type",
+            "feat",
+            "--pr-subject",
+            "hand facts to render",
+            *whys,
+            "--pr-impact",
+            "Every new body changes shape.",
+            "--render-command",
+            fake_render(self.elsewhere),
+        )
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(
+            read_json(os.path.join(self.elsewhere, "fields.copy.json"))["problem"],
+            ["One. Two. Three. Four. Five. Six."],
+        )
 
 
 class GateExit(unittest.TestCase):
@@ -1679,9 +1761,8 @@ class SessionReport(unittest.TestCase):
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
         body = section(out, "Split quality")
         self.assertIn(
-            "Lanes 0 to 2 are one Lane of MSP s0 estimated above %d tokens, built as 3 fresh "
-            "Worker sessions in a row on its branch, each continuing from the work committed "
-            "before it" % limit,
+            "Lanes 0 to 2 are the Steps of one Lane of MSP s0, each built in its own Worker "
+            "session in a row on its branch and landing its own commit",
             body,
         )
         lane_lines = [line for line in body if line.startswith("Lane ")]
@@ -1694,14 +1775,35 @@ class SessionReport(unittest.TestCase):
         self.assertEqual(found["attention"], [])
 
     def a_lane_that_fits_reports_one_session_and_no_split(self):
-        code, out, err = self._plan_only(shared_lane_items(3))
+        code, out, err = self._plan_only([briefed("s0"), briefed("s1")])
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
         body = section(out, "Split quality")
-        self.assertIn(
-            "every Lane fits one Worker session of %d estimated tokens" % core.SESSION_TOKENS, body
-        )
+        self.assertIn("every Lane holds one Step and runs as one Worker session", body)
         found = json.loads(out.splitlines()[-1])
-        self.assertEqual([lane["session"] for lane in found["lanes"]], [None])
+        self.assertEqual([lane["session"] for lane in found["lanes"]], [None, None])
+
+    def a_shared_lane_reports_one_session_per_step(self):
+        plan = core.plan(
+            [
+                briefed("s0", files=["shared.py", "f0.py"], msp="m"),
+                briefed("s1", files=["shared.py", "f1.py"], msp="m"),
+                briefed("s2", files=["shared.py", "f2.py"], msp="m"),
+            ]
+        )
+        self.assertEqual(
+            mitosis.session_lines(plan),
+            (
+                "Lanes 0 to 2 are the Steps of one Lane of MSP m, each built in its own Worker "
+                "session in a row on its branch and landing its own commit",
+            ),
+        )
+
+    def lone_steps_report_one_session_each(self):
+        plan = core.plan([briefed("s0"), briefed("s1")])
+        self.assertEqual(
+            mitosis.session_lines(plan),
+            ("every Lane holds one Step and runs as one Worker session",),
+        )
 
     def a_step_alone_above_the_limit_is_named_for_attention(self):
         code, out, err = self._plan_only([briefed("big")], "--session-tokens", "1")
@@ -1805,6 +1907,7 @@ def load_tests(loader, tests, pattern):
         PullRequestFlags,
         PushOnly,
         ProvenHead,
+        RenderPreflight,
         SessionReport,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
