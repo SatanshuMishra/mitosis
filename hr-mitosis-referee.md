@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T16:24:09.668Z
+Updated: 2026-10-28T16:35:10.034Z
 Next ids: c7 D2 R4 S1
 
 ## Goal
@@ -22,7 +22,7 @@ Stage 3 review round 3 at b9e309b (MSP mitosis/hr-mitosis-referee over base 5a94
 
 ## Next step
 
-When the submodule fix agent reports, verify its commits, locked files and clean tree; then one fix agent for normalize discards uncommitted work, then one for advisory C3, then round 4.
+When the normalize discards uncommitted work fix agent reports, verify its commits, locked files and clean tree; then one fix agent for advisory C3, then round 4.
 
 Needs: D1, R1, R2.
 
