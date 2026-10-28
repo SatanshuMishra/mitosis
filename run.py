@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 import core
 import mutants
+import outcomes
 import referee
 import shape
 
@@ -1021,6 +1022,7 @@ def msp_properties(plan, msp, unchanged=frozenset()):
             continue
         outcome, reason = _property_verdict(name, modes, unchanged)
         for entry in acceptance:
+            check = {"check": entry["check"]} if "check" in entry else {}
             found = found + (
                 {
                     "step": name,
@@ -1028,6 +1030,7 @@ def msp_properties(plan, msp, unchanged=frozenset()):
                     "test": entry["test"],
                     "outcome": outcome,
                     "reason": reason,
+                    **check,
                 },
             )
     return found
@@ -1096,7 +1099,7 @@ def gate_state(result):
 
 def _gate_result(properties, implementation, commit, reverted):
     resolved = [
-        {**entry, "outcome": entry["outcome"] or "inconclusive"}
+        {**entry, "outcome": entry["outcome"] or "inconclusive", "seconds": entry.get("seconds", 0)}
         for entry in properties
     ]
     outcome = gate_outcome(resolved)
@@ -1163,29 +1166,44 @@ def _mutant_place(mutant):
     return {"file": mutant["file"], "line": mutant["line"], "op": mutant["op"]}
 
 
+def _timed(call):
+    started = time.monotonic()
+    result = call()
+    return result, time.monotonic() - started
+
+
 def mutant_verdict(plan, msp, tree, base, commit, command, index, entry, log_dir, timeout, env):
     tried = ()
+    seconds = entry.get("seconds", 0)
     for mutant in property_mutants(plan, msp, tree, base, commit, entry):
-        ran = _run_mutant(
-            command,
-            tree,
-            entry,
-            mutant,
-            os.path.join(log_dir, "%d-mutant-%d.log" % (index, len(tried))),
-            timeout,
-            env,
+        ran, spent = _timed(
+            lambda mutant=mutant: _run_mutant(
+                command,
+                tree,
+                entry,
+                mutant,
+                os.path.join(log_dir, "%d-mutant-%d.log" % (index, len(tried))),
+                timeout,
+                env,
+            )
         )
+        seconds = seconds + spent
         if ran is None:
             continue
         tried = tried + (mutant,)
         if ran[1] or ran[0] != 0:
-            return {**entry, "mutants": {"tried": len(tried), "killed": _mutant_place(mutant)}}
+            return {
+                **entry,
+                "mutants": {"tried": len(tried), "killed": _mutant_place(mutant)},
+                "seconds": seconds,
+            }
     record = {"tried": len(tried), "killed": None}
     if not tried:
-        return {**entry, "mutants": record}
+        return {**entry, "mutants": record, "seconds": seconds}
     first = tried[0]
     return {
         **entry,
+        "seconds": seconds,
         "outcome": "weak",
         "reason": "no mutant of the work fails it: it still passes when %s:%d changes by %s"
         % (first["file"], first["line"], first["op"]),
@@ -1203,33 +1221,39 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None, env=None
     if not runnable:
         return _gate_result(properties, implementation, commit, ())
     os.makedirs(log_dir, exist_ok=True)
-    with_work = {
-        index: run_acceptance(
-            command,
-            tree,
-            properties[index],
-            os.path.join(log_dir, "%d-with-work.log" % index),
-            timeout,
-            env,
+    with_work_runs = {
+        index: _timed(
+            lambda index=index: run_acceptance(
+                command,
+                tree,
+                properties[index],
+                os.path.join(log_dir, "%d-with-work.log" % index),
+                timeout,
+                env,
+            )
         )
         for index in runnable
     }
+    with_work = {index: ran for index, (ran, _) in with_work_runs.items()}
     probe = "%s/%s" % (PROBE_PREFIX, branch)
     git(["checkout", "-q", "-B", probe], tree)
     try:
         reverted = revert_implementation(tree, base, implementation)
-        without = {
-            index: run_acceptance(
-                command,
-                tree,
-                properties[index],
-                os.path.join(log_dir, "%d-reverted.log" % index),
-                timeout,
-                env,
+        without_runs = {
+            index: _timed(
+                lambda index=index: run_acceptance(
+                    command,
+                    tree,
+                    properties[index],
+                    os.path.join(log_dir, "%d-reverted.log" % index),
+                    timeout,
+                    env,
+                )
             )
             for index in runnable
             if with_work[index] == (0, False)
         }
+        without = {index: ran for index, (ran, _) in without_runs.items()}
     finally:
         git(["checkout", "-q", "-f", branch], tree)
         git_run(["branch", "-D", probe], tree)
@@ -1246,6 +1270,8 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None, env=None
                 "reason": reason,
                 "with_work": with_work[index][0],
                 "reverted": without[index][0] if index in without else None,
+                "seconds": with_work_runs[index][1]
+                + (without_runs[index][1] if index in without_runs else 0),
             },
         )
     toothed = tuple(
@@ -2136,6 +2162,35 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=()):
     return {"state": "shipped", "reason": None, "ship": shipped}
 
 
+def _gate_outcomes(plan, msp, result, settings):
+    run_name = slug(os.path.basename(os.path.normpath(settings["run_dir"])))
+    msp_name = msp_slugs(plan["msps"])[msp]
+    repo_name = os.path.basename(os.path.normpath(settings["repo"]))
+    return [
+        outcomes.entry(
+            repo_name,
+            run_name,
+            msp_name,
+            result["commit"],
+            prop,
+            (prop.get("seconds") or 0) / 60,
+        )
+        for prop in result.get("properties") or ()
+        if prop.get("file") and prop.get("test")
+    ]
+
+
+def _trajectory_stage(plan, msp, gated, settings):
+    path = settings.get("trajectory")
+    if not path or gated["gate"] is None:
+        return {}
+    try:
+        outcomes.append(path, _gate_outcomes(plan, msp, gated["gate"], settings))
+    except OSError as error:
+        return {"trajectory_error": str(error)}
+    return {}
+
+
 def _held_back(gated, branch):
     if gated["gate_error"] is not None:
         return {
@@ -2201,7 +2256,8 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
         },
     )
     proof = {} if proven_head is None else {"proven_head": proven_head}
-    state = write_state(run_dir, _msp_record(state, msp, **gated, **proof))
+    logged = _trajectory_stage(plan, msp, gated, settings) if judged_now else {}
+    state = write_state(run_dir, _msp_record(state, msp, **gated, **proof, **logged))
     reconciled = _reconcile_stage(plan, msp, tree, producers, trees, settings)
     notify(
         settings.get("observer"),
@@ -2265,6 +2321,7 @@ def execute(
     proven_heads=None,
     observer=None,
     env=None,
+    trajectory=None,
 ):
     prior = prior_state(run_dir, plan, resume)
     header = carried_header(header, prior)
@@ -2299,6 +2356,7 @@ def execute(
         "proven_heads": dict(proven_heads or {}),
         "observer": observer,
         "env": env,
+        "trajectory": trajectory,
     }
     os.makedirs(run_dir, exist_ok=True)
     write_json(os.path.join(run_dir, PLAN_FILE), plan)

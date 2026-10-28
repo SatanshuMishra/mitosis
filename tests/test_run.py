@@ -1255,6 +1255,25 @@ class GateReuse(RepoCase):
             sh(["git", "ls-tree", "--name-only", record["gate"]["commit"]], tree).splitlines(),
         )
 
+    def a_reused_gate_appends_no_outcome_entry(self):
+        self.add_remote()
+        store = os.path.join(self.tmp, "store", "trajectories.jsonl")
+        plan = core.plan([gated_step()])
+        self.execute(plan, no_push=True, trajectory=store)
+        self.assertEqual(len(read(store).splitlines()), 1)
+        self.execute(plan, resume=True, trajectory=store)
+        self.assertEqual(len(read(store).splitlines()), 1)
+
+    def an_unwritable_trajectory_records_its_error_and_carries_on(self):
+        self.add_remote()
+        blocker = os.path.join(self.tmp, "blocker")
+        write(blocker, "a file where a folder should be\n")
+        plan = core.plan([gated_step()])
+        held = self.execute(plan, no_push=True, trajectory=os.path.join(blocker, "store.jsonl"))
+        record = held["msps"]["0"]
+        self.assertEqual(record["state"], run.MSP_COMMITTED)
+        self.assertIn("blocker", record["trajectory_error"])
+
     def test_resume_with_a_submodule_move_git_status_hides_gates_again(self):
         source = os.path.join(self.tmp, "dependency")
         sh(["git", "init", "-q", "-b", "main", source], self.tmp)

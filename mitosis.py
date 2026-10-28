@@ -1559,6 +1559,7 @@ def _msp_summary(plan, state):
                     "fatal": bool(findings.get("fatal")),
                 },
                 "crossing": [entry.get("path") for entry in findings.get("crossing") or ()],
+                "trajectory_error": record.get("trajectory_error"),
             }
         )
     return summaries
@@ -1601,6 +1602,11 @@ def _attention(plan, lanes, msps):
         if msp["crossing"]:
             lines.append(
                 "MSP %s wrote files another MSP owns: %s" % (msp["msp"], ", ".join(msp["crossing"]))
+            )
+        if msp.get("trajectory_error"):
+            lines.append(
+                "MSP %s's outcome entries were not appended to the trajectory: %s"
+                % (msp["msp"], msp["trajectory_error"])
             )
     return lines
 
@@ -1736,6 +1742,7 @@ def execute(args, plan, models, run_dir, repo, root):
             proven_heads=proven_heads(args.proven_head, plan),
             observer=recorder_of(args).observe,
             env=recorder_of(args).env,
+            trajectory=args.trajectory,
         ), None
     except (run.ConfigError, run.ResumeError) as error:
         raise Refusal(str(error))
