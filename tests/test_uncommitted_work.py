@@ -20,6 +20,7 @@ CALC = b"LIMIT = 3\n"
 SPACED = b"NEW = True \n"
 NEW = b"NEW = True\n"
 CONFTEST = b"import os\nos.environ['PLANTED'] = '1'\n"
+CACHE = b"\x61\x0d\x0d\x0a\x00\x00\x00\x00cached"
 PLAN = {
     "msps": [{"files": ["calc.py"], "steps": ["build"], "label": "demo"}],
     "items": [{"name": "build", "files": ["calc.py"], "acceptance": [], "msp": "demo"}],
@@ -89,14 +90,14 @@ class BaseSubmoduleWork(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {**lock_fixtures.GIT_IDENTITY, "HOME": home})
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.tree = self._committed_tree()
-        self.handle = {"path": self.tree, "branch": BRANCH}
+        self.handle = None
 
-    def _committed_tree(self):
+    def _committed_tree(self, dependency_files):
         dependency = os.path.join(self.tmp, "dependency")
         os.makedirs(dependency)
         git_text(["init", "-q", "-b", "main"], dependency)
-        lock_fixtures.put(os.path.join(dependency, "dep.txt"), "1\n")
+        for name, text in sorted(dependency_files.items()):
+            lock_fixtures.put(os.path.join(dependency, name), text)
         git_text(["add", "-A"], dependency)
         git_text(["commit", "-q", "-m", "dependency"], dependency)
         repo = os.path.join(self.tmp, "repo")
@@ -112,12 +113,15 @@ class BaseSubmoduleWork(unittest.TestCase):
         git_text(["submodule", "update", "--init", "-q"], tree)
         write_bytes(os.path.join(tree, "calc.py"), CALC)
         git_text(["commit", "-q", "-am", "work"], tree)
+        self.tree = tree
+        self.handle = {"path": tree, "branch": BRANCH}
         return tree
 
     def _referee_stage(self):
         return run._referee_stage(PLAN, 0, self.handle, (), [self.handle], {"feature_branch": "feature"})
 
     def a_worker_file_in_a_base_submodule_holds_the_msp_back(self):
+        self._committed_tree({"dep.txt": "1\n"})
         planted = os.path.join(self.tree, "dep", "conftest.py")
         write_bytes(planted, CONFTEST)
         held = self._referee_stage()
@@ -126,8 +130,17 @@ class BaseSubmoduleWork(unittest.TestCase):
         self.assertEqual(read_bytes(planted), CONFTEST)
 
     def a_clean_base_submodule_checkout_is_not_held_back(self):
+        self._committed_tree({"dep.txt": "1\n"})
         self.assertIsNone(self._referee_stage())
         self.assertEqual(sorted(os.listdir(os.path.join(self.tree, "dep"))), [".git", "dep.txt"])
+
+    def a_cache_the_submodule_ignores_is_not_held_back(self):
+        tree = self._committed_tree({"dep.txt": "1\n", ".gitignore": "__pycache__/\n"})
+        cache = os.path.join(tree, "dep", "__pycache__", "mod.cpython-39.pyc")
+        os.makedirs(os.path.dirname(cache))
+        write_bytes(cache, CACHE)
+        self.assertIsNone(self._referee_stage())
+        self.assertEqual(read_bytes(cache), CACHE)
 
 
 def load_tests(loader, standard, pattern):
@@ -140,6 +153,7 @@ def load_tests(loader, standard, pattern):
             (
                 "a_worker_file_in_a_base_submodule_holds_the_msp_back",
                 "a_clean_base_submodule_checkout_is_not_held_back",
+                "a_cache_the_submodule_ignores_is_not_held_back",
             ),
         ),
     ):
