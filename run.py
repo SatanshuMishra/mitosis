@@ -1,4 +1,3 @@
-import difflib
 import hashlib
 import json
 import os
@@ -130,6 +129,18 @@ HISTORY_SETTINGS = ("-c", "log.showSignature=false", "-c", "diff.relative=false"
 GATE_FOLDER_PREFIX = "checkout-"
 
 BINARY_PROBE = 8000
+
+LINE_DIFF = (
+    "diff",
+    "--no-index",
+    "-U0",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-color",
+    "--text",
+)
+
+HUNK_HEADER = re.compile(rb"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
 
 
 class GitError(RuntimeError):
@@ -1537,15 +1548,24 @@ def _binary(data):
     return b"\0" in data[:BINARY_PROBE]
 
 
+def _line_file(folder, name, data):
+    with open(os.path.join(folder, name), "wb") as handle:
+        handle.write(data + b"\n")
+
+
 def _added_lines(old, new):
-    matcher = difflib.SequenceMatcher(
-        None, _decoded(old).split("\n"), _decoded(new).split("\n"), autojunk=False
-    )
+    with tempfile.TemporaryDirectory(prefix="mitosis-diff-") as folder:
+        _line_file(folder, "old", old)
+        _line_file(folder, "new", new)
+        args = [*LINE_DIFF, "old", "new"]
+        env = {**PINNED_GIT, "GIT_CEILING_DIRECTORIES": os.path.dirname(folder)}
+        completed = git_run(args, folder, raw=True, env=env)
+    if completed.returncode not in (0, 1):
+        raise GitError(args, completed.returncode, completed.stderr)
     return [
-        number + 1
-        for tag, _, _, start, end in matcher.get_opcodes()
-        if tag in ("replace", "insert")
-        for number in range(start, end)
+        number
+        for start, count in HUNK_HEADER.findall(completed.stdout)
+        for number in range(int(start), int(start) + int(count or b"1"))
     ]
 
 
