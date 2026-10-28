@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T11:51:06.592Z
+Updated: 2026-10-28T11:54:56.051Z
 Next ids: c7 D2 R4 S1
 
 ## Goal
@@ -18,7 +18,7 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-Stage 3 review round 1, verdict `diagnose` (review/round-1/hr-mitosis-referee.verdict.json): blockers S1 unrestored mutant (CRITICAL), S2 write through symlink (CRITICAL), C1 hidden untracked files (HIGH), S4 ungated post-gate write (HIGH), C2 and S5 quoted git path (MEDIUM), C3 binary file read as text (MEDIUM); advisories C5 (README "dropped condition") and C6 (undocumented exit-3 refusals); rejected C4 and S6 (the code follows decision 4), S3 and S7 (repeats), S8 (unreachable). Six Opus diagnosis agents are running, one per kind. The MSP is mitosis/hr-mitosis-referee at c98552d over base 5a94f41; the suite there passes on 3.14 and 3.9 and the locked files are unchanged. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0008, which ship only with the MSP.
+Stage 3 review round 1, verdict `diagnose` (review/round-1/hr-mitosis-referee.verdict.json): blockers S1 unrestored mutant (CRITICAL), S2 write through symlink (CRITICAL), C1 hidden untracked files (HIGH), S4 ungated post-gate write (HIGH), C2 and S5 quoted git path (MEDIUM), C3 binary file read as text (MEDIUM); advisories C5 (README "dropped condition") and C6 (undocumented exit-3 refusals); rejected C4 and S6 (the code follows decision 4), S3 and S7 (repeats), S8 (unreachable). Diagnoses recorded as fixable: write through symlink and quoted git path (each with a .diagnosis.json and a .diagnosis.md of fix notes in review/round-1); four Opus diagnosis agents are still running (binary file read as text, hidden untracked files, ungated post-gate write, unrestored mutant). The MSP is mitosis/hr-mitosis-referee at c98552d over base 5a94f41; the suite there passes on 3.14 and 3.9 and the locked files are unchanged. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0008, which ship only with the MSP.
 
 ## Next step
 
