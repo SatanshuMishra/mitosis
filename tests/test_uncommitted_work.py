@@ -55,7 +55,7 @@ class CommitFailure(unittest.TestCase):
         msp = lock_fixtures.summary_of(done)["msps"][0]
         self.assertEqual(done.returncode, 21, lock_fixtures.tail(done))
         self.assertEqual(msp["state"], "gate-failed")
-        self.assertIn("trailing whitespace", msp["gate_error"])
+        self.assertIn("feature_new.py:1: trailing whitespace.", msp["gate"]["error"])
         kept = os.path.join(self.scratch.run_dir, "trees", "demo", "feature_new.py")
         self.assertEqual(read_bytes(kept), SPACED)
 

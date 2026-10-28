@@ -165,6 +165,21 @@ class GateTreeError(GitError):
         )
 
 
+class UncommittedWorkError(GateTreeError):
+    def __init__(self, tree, commit, paths):
+        self.paths = tuple(paths)
+        named = ", ".join(self.paths[:3]) + (
+            " and %d more" % (len(self.paths) - 3) if len(self.paths) > 3 else ""
+        )
+        GateTreeError.__init__(
+            self,
+            tree,
+            commit,
+            "%s hold work that %s does not carry, so mitosis kept it and changed nothing"
+            % (named, commit[:12]),
+        )
+
+
 class GateRecoveryError(GitError):
     def __init__(self, tree, marker, cause):
         self.args_run = ()
@@ -1278,7 +1293,7 @@ def _stage_from(tree, base, paths):
     return entries
 
 
-def revert_implementation(tree, base, paths):
+def revert_implementation(tree, base, paths, discard=False):
     reverted = tuple(paths)
     _clear_index_flags(tree, reverted)
     entries = _stage_from(tree, base, reverted)
@@ -1288,7 +1303,7 @@ def revert_implementation(tree, base, paths):
     for path in reverted:
         if not _held_under(names, _norm(path)):
             _remove_entry(tree, path)
-    normalize_gate_tree(tree, git(["write-tree"], tree), base)
+    normalize_gate_tree(tree, git(["write-tree"], tree), base, discard=discard, restoring=reverted)
     clear_caches_beside(tree, reverted)
     return list(reverted)
 
@@ -1523,7 +1538,7 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None, env=None
     locked = tuple(plan.get("locked") or ())
 
     def restore():
-        return restore_gate_commit(tree, branch, commit, locked, base)
+        return restore_gate_commit(tree, branch, commit, locked, base, discard=True)
 
     def mark(paths):
         mark_gate(tree, branch, commit, paths, locked, base)
@@ -1574,7 +1589,7 @@ def _gate_runs(
     probe = "%s/%s" % (PROBE_PREFIX, branch)
     git(["checkout", "-q", "-B", probe], tree)
     try:
-        reverted = revert_implementation(tree, base, implementation)
+        reverted = revert_implementation(tree, base, implementation, discard=True)
         without_runs = {
             index: _timed(
                 lambda index=index: run_acceptance(
@@ -1974,7 +1989,8 @@ def _gate_tree_plan(tree, commit, base, locked, scratch):
     entries = _committed_entries(tree, commit)
     folders = _committed_folders(entries)
     _seed_ignores(tree, base, scratch)
-    found = _inventory(tree, folders, entries, _base_submodules(tree, entries, base), scratch)
+    checkouts = _base_submodules(tree, entries, base)
+    found = _inventory(tree, folders, entries, checkouts, scratch)
     kept = _kept(
         tree,
         scratch,
@@ -1992,6 +2008,7 @@ def _gate_tree_plan(tree, commit, base, locked, scratch):
         "entries": entries,
         "folders": folders,
         "found": found,
+        "checkouts": checkouts,
         "removed": removed,
         "shadowing": shadowing,
         "emptied": emptied,
@@ -2040,9 +2057,87 @@ def _normalized(tree, commit, locked, plan):
     return reported
 
 
-def normalize_gate_tree(tree, commit, base, locked=()):
+def _checkout_differs(tree, path, gitlink):
+    full = tree_path(tree, path)
+    if not os.path.lexists(full):
+        return False
+    if not os.path.isdir(full):
+        return True
+    names = os.listdir(full)
+    if not names:
+        return False
+    if ".git" not in names:
+        return True
+    try:
+        head = git_run(["rev-parse", "HEAD"], full)
+        status = git_run(["status", "--porcelain", "-z", "--ignored"], full)
+    except GitError:
+        return True
+    return (
+        head.returncode != 0
+        or head.stdout.strip() != gitlink
+        or status.returncode != 0
+        or bool(status.stdout.strip())
+    )
+
+
+def _carried(tree, entries, kinds, paths):
+    hashable = tuple(
+        path
+        for path in paths
+        if kinds.get(path) == "file" and entries[path][0] != SYMLINK_MODE and "\n" not in path
+    )
+    if not hashable:
+        return frozenset()
+    hashed = git_run(
+        ["hash-object", "--stdin-paths"],
+        tree,
+        raw=True,
+        data=b"".join(os.fsencode(path) + b"\n" for path in hashable),
+    )
+    ids = hashed.stdout.split() if hashed.returncode == 0 else ()
+    if len(ids) != len(hashable):
+        return frozenset()
+    return frozenset(
+        path for path, oid in zip(hashable, ids) if oid.decode("ascii") == entries[path][1]
+    )
+
+
+def _uncommitted_work(tree, plan, locked, restoring):
+    def unjudged(path):
+        return referee.referee_reason(path, locked) is None and not any(
+            _held_under((path,), _norm(restored)) or _held_under((_norm(restored),), path)
+            for restored in restoring
+        )
+
+    entries = plan["entries"]
+    differing = tuple(path for path in sorted(plan["rewrites"]) if unjudged(path))
+    try:
+        carried = _carried(tree, entries, dict(plan["found"]), differing)
+    except GitError:
+        carried = frozenset()
+    rewritten = tuple(path for path in differing if path not in carried)
+    loose = tuple(path for path in plan["removed"] if unjudged(path)) + tuple(
+        path + "/" for path in plan["shadowing"] if unjudged(path)
+    )
+    try:
+        ignored = _ignored(tree, ("check-ignore", "--no-index"), loose)
+    except GitError:
+        ignored = frozenset()
+    checkouts = tuple(
+        path + "/"
+        for path in sorted(plan["checkouts"])
+        if _checkout_differs(tree, path, entries[path][1])
+    )
+    return rewritten + tuple(path for path in loose if path not in ignored) + checkouts
+
+
+def normalize_gate_tree(tree, commit, base, locked=(), discard=False, restoring=()):
     plan = gate_tree_plan(tree, commit, base, locked)
     try:
+        work = () if discard else _uncommitted_work(tree, plan, tuple(locked), tuple(restoring))
+        if work:
+            raise UncommittedWorkError(tree, commit, work)
         return _normalized(tree, commit, tuple(locked), plan)
     except OSError as error:
         raise GateTreeError(tree, commit, error)
@@ -2056,8 +2151,8 @@ def referee_writes(plan, tree, branch, base):
     return sorted(committed | set(normalize_gate_tree(tree, head, base, locked)))
 
 
-def restore_gate_commit(tree, branch, commit, locked, base=None):
-    written = tuple(normalize_gate_tree(tree, commit, base or commit, locked))
+def restore_gate_commit(tree, branch, commit, locked, base=None, discard=False):
+    written = tuple(normalize_gate_tree(tree, commit, base or commit, locked, discard))
     git(["update-ref", "refs/heads/" + branch, commit], tree)
     git(["symbolic-ref", "HEAD", "refs/heads/" + branch], tree)
     left = written_since(tree)
@@ -2226,7 +2321,7 @@ def _recover_from(tree, recorded):
     _refuse_moved_work(tree, branch, commit)
     clear_caches_beside(tree, tuple(recorded["paths"]))
     _keep_replaced_work(tree, branch, commit, base or commit, locked)
-    restore_gate_commit(tree, branch, commit, locked, base)
+    restore_gate_commit(tree, branch, commit, locked, base, discard=True)
     probe = "%s/%s" % (PROBE_PREFIX, branch)
     git_run(["branch", "-D", probe], tree)
     if branch_exists(tree, probe):
@@ -2985,17 +3080,10 @@ def _passing_gate(prior):
 
 def _committed_head(plan, msp, tree):
     try:
-        return commit_before_gate(plan, msp, tree["path"])
-    except (GitTimeout, GateRecoveryError):
+        return commit_before_gate(plan, msp, tree["path"]), None
+    except GateRecoveryError:
         raise
-    except GitError:
-        return None
-
-
-def _gate_head(plan, msp, tree):
-    try:
-        return _committed_head(plan, msp, tree), None
-    except GitTimeout as error:
+    except GitError as error:
         return None, str(error)
 
 
@@ -3189,7 +3277,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     block = _lane_block(plan, msp, state) or _producer_block(plan, msp, state, producers)
     if block is not None:
         return write_state(run_dir, _msp_record(state, msp, **block))
-    head, commit_error = _gate_head(plan, msp, tree)
+    head, commit_error = _committed_head(plan, msp, tree)
     held = (
         None
         if commit_error is not None
@@ -3226,6 +3314,18 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     proof = {} if proven_head is None else {"proven_head": proven_head}
     logged = _trajectory_stage(plan, msp, gated, settings) if judged_now else {}
     state = write_state(run_dir, _msp_record(state, msp, **gated, **proof, **logged))
+    if commit_error is not None:
+        return write_state(
+            run_dir,
+            _msp_record(
+                state,
+                msp,
+                state=MSP_GATE_FAILED,
+                reason="mitosis could not commit the work on %s before the gate, so it kept the "
+                "work uncommitted in the worktree, did not run the gate and held the MSP back: %s"
+                % (tree["branch"], commit_error),
+            ),
+        )
     tampered = _gate_referee_writes(gated) if judged_now else []
     reconciled = _with_gate_referee(
         _reconcile_stage(plan, msp, tree, producers, trees, settings), tampered

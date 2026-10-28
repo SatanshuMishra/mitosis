@@ -143,8 +143,15 @@ class HiddenReferee(unittest.TestCase):
     def an_assume_unchanged_locked_edit_is_reported_and_restored(self):
         self._route("assume-unchanged", via_assume_unchanged, [LOCKED])
 
-    def a_conftest_in_a_nested_repository_is_reported_and_removed(self):
-        self._route("nested", via_nested_repository, ["tests/sub/conftest.py"])
+    def a_conftest_in_a_nested_repository_holds_the_msp_back(self):
+        tree = self._tree("nested")
+        via_nested_repository(tree)
+        run.commit_all(tree, "pre-gate")
+        with self.assertRaises(run.UncommittedWorkError):
+            run.referee_writes(PLAN, tree, "mitosis/demo", "feature")
+        with open(os.path.join(tree, "tests", "sub", "conftest.py"), encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "x = 1\n")
+        self.assertTrue(os.path.isdir(os.path.join(tree, "tests", "sub", ".git")))
 
     def a_bytecode_cache_beside_a_locked_test_is_removed_silently(self):
         self._route("bytecode", via_bytecode_cache, [])
@@ -215,7 +222,7 @@ def load_tests(loader, standard, pattern):
                 "a_conftest_hidden_by_core_excludes_file_is_reported_and_removed",
                 "a_skip_worktree_locked_edit_is_reported_and_restored",
                 "an_assume_unchanged_locked_edit_is_reported_and_restored",
-                "a_conftest_in_a_nested_repository_is_reported_and_removed",
+                "a_conftest_in_a_nested_repository_holds_the_msp_back",
                 "a_bytecode_cache_beside_a_locked_test_is_removed_silently",
                 "a_failed_referee_restore_is_a_named_gate_error",
                 "a_worker_hiding_a_conftest_with_gitignore_is_reverted_and_fatal",

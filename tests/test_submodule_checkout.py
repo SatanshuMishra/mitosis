@@ -77,13 +77,15 @@ class SubmoduleCheckout(unittest.TestCase):
         self.assertEqual(read_bytes(os.path.join(self.dep, "new.txt")), UNTRACKED)
 
     def the_referee_check_keeps_a_base_submodule_checkout(self):
-        self.assertEqual(run.referee_writes(PLAN, self.tree, BRANCH, "feature"), [])
+        with self.assertRaises(run.UncommittedWorkError) as raised:
+            run.referee_writes(PLAN, self.tree, BRANCH, "feature")
+        self.assertEqual(raised.exception.paths, ("dep/",))
         self._assert_checkout_kept()
 
     def a_restore_over_a_dirty_base_submodule_refuses_and_keeps_it(self):
         head = git_text(["rev-parse", BRANCH], self.tree).strip()
         with self.assertRaises(run.RestoreError):
-            run.restore_gate_commit(self.tree, BRANCH, head, [LOCKED], "feature")
+            run.restore_gate_commit(self.tree, BRANCH, head, [LOCKED], "feature", discard=True)
         self._assert_checkout_kept()
 
 
