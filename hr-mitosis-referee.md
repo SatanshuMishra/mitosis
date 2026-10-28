@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T22:06:22.387Z
+Updated: 2026-10-28T22:06:25.962Z
 Next ids: c7 D6 R5 S1
 
 ## Goal
