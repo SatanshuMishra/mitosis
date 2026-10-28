@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T20:52:27.569Z
+Updated: 2026-10-28T20:53:08.702Z
 Next ids: c7 D4 R5 S1
 
 ## Goal
@@ -53,3 +53,4 @@ Needs: D1, D3, R1, R2.
 - receipts 0.9.5 CLI (offline): node ~/.npm/_npx/d44e7b340d275612/node_modules/receipts-cli/bin/receipts.js
 - Automated commit security flags and their judgements (outside-class items for the final report): /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/review/automated-security-notes.md
 - Amendment build: /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/amend-1.zsh with amend-1.items.json beside it
+- Parent's class guidance for S1 (shared git directory routes: refs, packed-refs, refs/replace, info/grafts, config): /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/review/round-5/s1-class-guidance.md
