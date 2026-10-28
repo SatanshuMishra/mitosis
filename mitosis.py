@@ -884,8 +884,17 @@ def pull_request_header(args):
     }
 
 
+def run_header(args, plan, run_dir):
+    try:
+        return run.carried_header(
+            pull_request_header(args), run.prior_state(run_dir, plan, args.resume)
+        )
+    except run.ResumeError as error:
+        raise Refusal(str(error))
+
+
 def refuse_unrenderable(args, plan, run_dir):
-    header = pull_request_header(args)
+    header = run_header(args, plan, run_dir)
     if header is None:
         return
     if not header["impact"] and header["blast_radius"] is None:
@@ -1627,7 +1636,7 @@ def execute(args, plan, models, run_dir, repo, root):
             root=root,
             remote=REMOTE,
             no_push=args.no_push,
-            header=pull_request_header(args),
+            header=run_header(args, plan, run_dir),
             render_command=args.render_command,
             proven_heads=proven_heads(args.proven_head, plan),
             observer=recorder_of(args).observe,
