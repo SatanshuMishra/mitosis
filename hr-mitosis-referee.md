@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T21:07:29.928Z
+Updated: 2026-10-28T21:07:32.027Z
 Next ids: c7 D4 R5 S1
 
 ## Goal
@@ -22,7 +22,7 @@ Stage 3, review round 5 on MSP mitosis/hr-mitosis-referee over base 5a94f41, hea
 
 ## Next step
 
-When the round-5 suite finishes, render and dispatch the round-5 code-reviewer, security-reviewer and conformance-auditor (criteria 5.1 and 5.7) briefs on the fix diff 8015a99..8abacb8, then validate, verdict and fix per O5 and O6, then ship.
+When the round-5 validator returns, save its array as review/round-5/hr-mitosis-referee.verdicts.json, run pipeline record and verdict, diagnose S1 as one class per the parent's guidance, then fix per O5 and O6, then ship.
 
 Needs: D1, D3, R1, R2.
 
