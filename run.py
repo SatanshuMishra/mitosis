@@ -1748,7 +1748,7 @@ def _gate_runs(
     setup_written = (
         ()
         if setup is None
-        else tuple(name for name in kept if referee.referee_reason(name, locked) is not None)
+        else tuple(name for name in kept if referee.top_level_reason(name, locked) is not None)
     )
     if setup_written:
         return _gate_result(properties, implementation, commit, ()), setup_written

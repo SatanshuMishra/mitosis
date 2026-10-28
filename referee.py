@@ -91,6 +91,23 @@ def referee_reason(path, locked):
     return None if marker is None else "matches the referee marker %s" % marker
 
 
+def _folder_markers(markers):
+    return tuple(marker for marker in markers if "/" in marker)
+
+
+def top_level_reason(name, locked):
+    reason = referee_reason(name, locked)
+    if reason is not None:
+        return reason
+    folder = normalised(name)
+    if any(normalised(entry).startswith(folder + "/") for entry in locked):
+        return LOCKED_REASON
+    markers = _folder_markers(ANYWHERE) + (_folder_markers(IN_TESTS) if in_test_location(folder) else ())
+    candidate = folder.lower() + "/"
+    marker = next((marker for marker in markers if fnmatch.fnmatchcase(candidate, marker)), None)
+    return None if marker is None else "matches the referee marker %s" % marker
+
+
 def _collation_key(path):
     return (
         tuple(

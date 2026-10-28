@@ -319,7 +319,7 @@ lacks never reach it and are listed in `ignored`.
 Dependencies are the root's node_modules and venvs, or `--gate-setup`, run
 once per gate with `{worktree}`; its output survives only at top-level names
 the commit lacks, such as the `.git` a git-running test needs. A top-level referee
-file it makes, such as `conftest.py`, is fatal, exit 9. A Git LFS file stays
+file or folder it makes, such as `conftest.py`, is fatal, exit 9. A Git LFS file stays
 pointer text and eol attributes may not apply, whatever `--gate-setup` does;
 a test reading real content ends `inconclusive`. That, a failed gate setup or
 a refused pre-gate commit holds the MSP back `gate-failed`, exit 21. Ship

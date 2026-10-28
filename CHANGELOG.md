@@ -43,6 +43,11 @@ the gate withholds a pull request it cannot certify.
   reaches the gate as pointer text and a committed eol attribute is not
   applied in every run, whatever `--gate-setup` does, so a test that reads
   the real content ends `inconclusive` and holds its MSP back with exit 21.
+- A top-level file or folder `--gate-setup` makes is a referee write, fatal
+  with exit 9, when its name is a referee path such as `conftest.py`, a
+  referee folder such as `__snapshots__` or `.receipts`, or a folder holding
+  a `- Locked:` path; mitosis never walks into a kept folder such as
+  node_modules.
 - Dependency folders come from the repository root's node_modules and
   virtual-environment folders, or from the new `--gate-setup` command, run
   once per gate with `{worktree}`. A failed or timed-out gate setup holds the

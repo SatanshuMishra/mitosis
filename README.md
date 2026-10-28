@@ -187,7 +187,10 @@ survives that reset only at top-level names the commit lacks, such as the
 `.git` folder a setup's `git init` makes or a new top-level build folder. An
 acceptance command or test that runs git needs `--gate-setup`, which can make
 `.git` at the top level. A top-level file the setup makes at a referee path,
-such as `conftest.py`, is a referee write, fatal with exit 9. A Git LFS file
+such as `conftest.py`, and a top-level folder whose name is a referee folder or
+holds a `- Locked:` path, such as `__snapshots__` or `.receipts`, is a referee
+write, fatal with exit 9; mitosis judges that top-level name and never walks
+into a kept folder such as node_modules. A Git LFS file
 arrives as its pointer text, and a committed eol attribute is not applied in
 every run, whatever `--gate-setup` does. An acceptance test that reads the
 real content ends `inconclusive` and holds the MSP back as `gate-failed`, with
