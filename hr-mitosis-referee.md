@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T21:35:34.464Z
+Updated: 2026-10-28T21:35:38.797Z
 Next ids: c7 D6 R5 S1
 
 ## Goal
@@ -22,9 +22,9 @@ Stage 3, round 5 fix pass on MSP mitosis/hr-mitosis-referee over base 5a94f41, h
 
 ## Next step
 
-When the pinned-state fix agent reports, verify its commits, the 14 locked files and both suites; meanwhile run interphase amendment 2 for C3 (spec assumption line 184, with C4 and the --resume help in its docs Step), build it with amend-2.zsh after the fix lands, then fresh fix agents for C2 and C5, then round 6 on the fix diff, then ship.
+When the pinned-state fix agent reports, verify its commits, the 14 locked files and both suites; then a check author writes and locks tests/test_setup_referee_write.py and tests/test_gate_setup_docs.py, then amend-2.zsh --plan-only and its build with --no-push merged into mitosis/hr-mitosis-referee, then fix agents for C2 and C5 (C5 also commits the R4 vendor regression guard), then round 6 on the fix diff, then ship.
 
-Needs: D1, D3, R1, R2.
+Needs: D1, D3, D4, D5, R1, R2, R4.
 
 ## Decisions in force
 
