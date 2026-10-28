@@ -1,7 +1,7 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T21:30:41.662Z
-Next ids: c7 D5 R5 S1
+Updated: 2026-10-28T21:35:34.464Z
+Next ids: c7 D6 R5 S1
 
 ## Goal
 
@@ -32,6 +32,7 @@ Needs: D1, D3, R1, R2.
 
 - D3 Amendment 1 hand-off: build M1 as a clean gate checkout in MSP hr-mitosis-referee-amend-1: Hand off amendment 1. The gate, the mutant runs and every acceptance run execute in a clean checkout of the MSP's committed tree. A committed referee write, found from tree objects with git's settings pinned, is reverted and exits 9. Uncommitted files are listed as ignored and never restored. The amendment is built with amend-1.zsh (--plan-only first, always --no-push) and merged into mitosis/hr-mitosis-referee, then review round 5 judges it.
 - D4 Round 5 revert shape: object-built revert of the MSP branch, worktree sync that never deletes: Third option, sent to the running fix agent as a refinement of item 6 of review/round-5/fix-brief-pinned-state.md; its receipts assert the branch tree equals the pinned base at every referee path.
+- D5 Amendment 2 hand-off: build the gate-setup referee check and the corrected docs in MSP hr-mitosis-referee-amend-2: Hand off amendment 2 now. Items in /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/amend-2.items.json; tests/test_setup_referee_write.py and tests/test_gate_setup_docs.py are written and locked by a check author before amend-2.zsh --plan-only, which waits until the pinned-state fix agent's commits are verified.
 
 ## Open risks
 
