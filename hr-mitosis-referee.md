@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T16:21:56.451Z
+Updated: 2026-10-28T16:24:09.668Z
 Next ids: c7 D2 R4 S1
 
 ## Goal
@@ -18,11 +18,11 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-Stage 3 review round 3 at b9e309b (MSP mitosis/hr-mitosis-referee over base 5a94f41); the locked files are unchanged there (same receipt-lock). Rounds 1 (c98552d) and 2 (b95181f) both ended `loop`; every confirmed blocker and advisory of both is fixed with a receipt, and C4 of round 2 needed no change (restore already batched, 8 or 9 git calls at any size). Rejected and outside-class items for the final report: round 1 C4 and S6 (decision 4), S3 and S7 (repeats), S8 (unreachable); round 2 C2 (vendored phpunit.xml holds the MSP by decision), S1 (repeat), S4 (glob pathspecs in revert_implementation, older than the fix pass). Round 3's suite passes (669 OK on 3.15 and 3.9, review/round-3/hr-mitosis-referee.suite.txt). Round 3 verdict `diagnose` (review/round-3/hr-mitosis-referee.verdict.json): the four round-2 blockers are fixed; new blockers C1 (kind normalize discards uncommitted work: a refused commit lets normalize_gate_tree wipe the Worker's work) and C2 and S1 (kind submodule checkout deleted); advisory C3 (duplicated ref lookup); rejected on the bar of recorded assumptions, for the final report: S2 (an in-tree .venv or .env excluded only by info/exclude or core.excludesFile is deleted with no backup) and S3 (an ignored .pyc can shadow committed code). Diagnosis of normalize discards uncommitted work: fixable, saved and recorded (review/round-3/hr-mitosis-referee.normalize-discards-uncommitted-work.diagnosis.{json,md}); its guard must land with the submodule fix. Running: the submodule checkout deleted diagnosis agent. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0008, which ship only with the MSP.
+Stage 3 review round 3 at b9e309b (MSP mitosis/hr-mitosis-referee over base 5a94f41); the locked files are unchanged there (same receipt-lock). Rounds 1 (c98552d) and 2 (b95181f) both ended `loop`; every confirmed blocker and advisory of both is fixed with a receipt, and C4 of round 2 needed no change (restore already batched, 8 or 9 git calls at any size). Rejected and outside-class items for the final report: round 1 C4 and S6 (decision 4), S3 and S7 (repeats), S8 (unreachable); round 2 C2 (vendored phpunit.xml holds the MSP by decision), S1 (repeat), S4 (glob pathspecs in revert_implementation, older than the fix pass). Round 3's suite passes (669 OK on 3.15 and 3.9, review/round-3/hr-mitosis-referee.suite.txt). Round 3 verdict `loop` (review/round-3/hr-mitosis-referee.verdict.json) after both diagnoses came back fixable (review/round-3/*.diagnosis.{json,md}): blockers C1 (normalize discards uncommitted work) and C2 and S1 (submodule checkout deleted, fix: _survey skips gitlinks the base also holds); advisory C3 (duplicated ref lookup); rejected on the bar of recorded assumptions, for the final report: S2 (a .venv or .env excluded only by info/exclude or core.excludesFile is deleted) and S3 (an ignored .pyc can shadow committed code). Running: the submodule fix agent. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0008, which ship only with the MSP.
 
 ## Next step
 
-When each diagnosis reports, save it as review/round-3/hr-mitosis-referee.<kind slug>.diagnosis.json plus fix notes .md and record it with pipeline diagnosis; rerun pipeline verdict; on loop, one fix agent per kind in turn, then advisory C3, then round 4.
+When the submodule fix agent reports, verify its commits, locked files and clean tree; then one fix agent for normalize discards uncommitted work, then one for advisory C3, then round 4.
 
 Needs: D1, R1, R2.
 
