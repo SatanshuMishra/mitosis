@@ -1,7 +1,7 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T08:54:57.478Z
-Next ids: c7 D1 R1 S1
+Updated: 2026-10-28T08:55:04.606Z
+Next ids: c7 D1 R3 S1
 
 ## Goal
 
@@ -27,6 +27,9 @@ Invoke interphase:feature with the run 2 request carrying I1 to I6, M1 to M6 wit
 ## Decisions in force
 
 ## Open risks
+
+- R1 The paused step-commits-render-fields run (branch mitosis/step-commits-render-fields, round 1 diagnose, feature feat/step-commits-render-fields) changes run.py, mitosis.py and core.py too; this run cuts from main, so whichever merges second resolves the conflicts.
+- R2 The owner's checkout holds an uncommitted GLOSSARY.md edit and untracked docs/adr/0004 and 0005 from step-commits-render-fields; this run builds from committed main and never touches them.
 
 ## Settled, do not reopen
 
