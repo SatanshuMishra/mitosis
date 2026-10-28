@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T09:55:39.938Z
+Updated: 2026-10-28T11:10:13.875Z
 Next ids: c7 D2 R3 S1
 
 ## Goal
@@ -18,11 +18,11 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-Stage 2 build round 0 is running (run.zsh, output in the run home's build.out, build.err and build.exit). feat/hr-mitosis-referee holds the locked checks at 5a94f41 (13 files, 28 acceptance tests all red for absent behaviour, existing suite green on 3.9 and 3.15, no write under the real HOME); the charter lists them on `- Locked:` lines and receipts-lock.txt holds their receipt-lock line. Plan-only passed with one MSP of seven Lanes. The checkout holds this run's uncommitted glossary section "Referee and gate" and ADRs 0006 to 0008, which ship only with the MSP.
+Stage 3 review round 1 is running: code-reviewer, security-reviewer and conformance-auditor on mitosis/hr-mitosis-referee at c98552d over base 5a94f41 (the locked checks), briefs and inputs in review/round-1. The build committed seven Lanes, all ok, gate pass 28 of 28; its exit 6 is only listed-but-unwritten files (the read-only locked tests and tests/test_decompose.py). At c98552d the locked files are unchanged (same receipt-lock line) and the full suite passes on 3.14 and 3.9 (619 tests). The checkout holds this run's uncommitted glossary section "Referee and gate" and ADRs 0006 to 0008, which ship only with the MSP.
 
 ## Next step
 
-When the build exits: read build.out's last line, write each Lane's Assumption notes to review/hr-mitosis-referee.assumptions.txt, run the locked checks at the MSP head (O4), then start review round 1.
+When the three reviewers report: collect their arrays into review/round-1/hr-mitosis-referee.findings.json, write the round record, then run Validate (pipeline candidates, validator, record, verdict).
 
 Needs: D1, R1, R2.
 
