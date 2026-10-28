@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T21:18:35.395Z
+Updated: 2026-10-28T21:19:33.497Z
 Next ids: c7 D4 R5 S1
 
 ## Goal
@@ -55,3 +55,4 @@ Needs: D1, D3, R1, R2.
 - Amendment build: /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/amend-1.zsh with amend-1.items.json beside it
 - Parent's class guidance for S1 (shared git directory routes: refs, packed-refs, refs/replace, info/grafts, config): /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/review/round-5/s1-class-guidance.md
 - Fix agent rules: /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/review/round-1/fix-brief-common.md
+- Parent's pinned-state guidance for S1, P2, P3 and C1 (one class, one fix agent when one implementation covers them; requirement-wrong if the requirement forces reading the Worker's submodule checkout, reported to the parent): /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/review/round-5/pinned-state-guidance.md
