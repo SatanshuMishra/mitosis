@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T09:15:11.859Z
+Updated: 2026-10-28T09:15:14.087Z
 Next ids: c7 D1 R3 S1
 
 ## Goal
@@ -40,3 +40,4 @@ Apply the spec reviewer's fixes, rerender and recheck, then hand off (glossary t
 - Audit: /Users/satanshumishra/.mitosis/harness-redesign/audit/mitosis.md
 - Run home: /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee
 - Run directory: /Users/satanshumishra/.mitosis/runs/mitosis/hr-mitosis-referee
+- Spec, decisions, record and items: /Users/satanshumishra/Documents/DevLabs/mitosis/docs/specs/hr-mitosis-referee.{md,decisions.md,record.json,items.json}
