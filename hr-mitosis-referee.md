@@ -1,7 +1,7 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T19:25:28.347Z
-Next ids: c7 D2 R5 S1
+Updated: 2026-10-28T19:47:44.665Z
+Next ids: c7 D3 R5 S1
 
 ## Goal
 
@@ -9,7 +9,7 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Done when
 
-- [ ] c1 M1 Referee exclusion: the charter's `- Locked:` paths plus referee globs (test configuration, baselines, allowlists, snapshots, skip lists) can never be in a write-set: `--plan-only` refuses an items file whose write-set includes one, and reconcile reports a Worker write to one as fatal and reverts it.
+- [ ] c1 M1 Referee exclusion (reworded by D2): the charter's `- Locked:` paths plus referee globs can never be in a write-set: the gate, the mutant runs and every acceptance run execute in a clean checkout of the MSP's committed tree, with dependency folders from outside the Worker's control; a committed change to a `- Locked:` path or a referee glob, found by comparing tree objects with git's settings pinned, is reported fatal (exit 9) and reverted; uncommitted files in the Worker's worktree never reach the gate and are listed as ignored, never restored; `--plan-only` still refuses an items file whose write-set holds a referee path.
 - [ ] c2 M2 Gate teeth: an acceptance test passes the gate only when it fails without the work and passes with it, and is not skipped: the broken-add fixture (a test that only checks a symbol exists) and a skipped test each fail the gate; an inert test fails the gate and holds the MSP back from shipping.
 - [ ] c3 M3 The JSON result lists every finding of every MSP and the exit code is the most severe: a run with an inconclusive gate in MSP 1 and an undeclared write in MSP 2 reports both.
 - [ ] c4 M4 Every git call and test run has a time limit: an AST test fails on any subprocess call without `timeout`; a hanging pre-commit hook ends with a named error.
@@ -18,17 +18,19 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-Stage 3 review round 4 at 8015a99 (MSP mitosis/hr-mitosis-referee over base 5a94f41); locked files unchanged (same receipt-lock); suite 680 OK on 3.15 and 3.9. Every blocker and advisory of rounds 1 to 3 is fixed with a receipt. Round 4 verdict `loop` after three fixable diagnoses (review/round-4/hr-mitosis-referee.verdict.json, review/round-4/*.diagnosis.{json,md}): blockers C1 (hidden untracked files: submodule-local status.showUntrackedFiles=no hides a referee file; second diagnosis of this kind, round 2 was the first), S1 (submodule referee write unreported: a referee file committed inside a base submodule), S2 (referee stage skipped on commit failure: exit 21 instead of 9); advisories C2 (submodule info/exclude plus Worker pyvenv.cfg trusted), C3 (second tree walker), C4 (exit-21 holds undocumented); S3 rejected as a repeat of C4. Rejected and outside-class items for the final report: round 1 C4, S6 (decision 4), S3, S7 (repeats), S8 (unreachable); round 2 C2 (vendored phpunit.xml holds the MSP), S1 (repeat), S4 (glob pathspecs in revert_implementation); round 3 S2 (.venv or .env excluded only by info/exclude or core.excludesFile is deleted), S3 (ignored .pyc can shadow committed code); automated commit flags in review/automated-security-notes.md. Hidden untracked files (with advisories C2 and C3) is fixed at e10fde7 (submodule_work judges a base submodule from disk against raw gitlink objects; receipt tests/test_submodule_checkout_judged_from_disk.py red at 8015a99, green after; 688 OK on both Pythons; locked files unchanged). Submodule referee write unreported is fixed at 2163c08, with the e10fde7 automated flags (trust from the base gitlink; module-name containment); receipt tests/test_submodule_referee_write.py red before, green after; 697 OK on both Pythons; locked files unchanged. Owner decision: amend M1 rather than run more fix rounds on hidden files. Hidden untracked files is now recorded requirement-wrong for round 4 (ledger line corrected by hand after pipeline diagnosis refused a second record; backup review/round-4/findings.jsonl.before-requirement-wrong); verdict stays loop with that kind on the amendment path. Running: a fresh agent finishing the commit-failure fix the force-quit left uncommitted (receipt 8483108, patch review/round-4/s2-uncommitted-fix.patch). Next: interphase amendment hr-mitosis-referee-amend-1. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0008, which ship only with the MSP.
+Stage 3, round 4 loop at 8015a99 on MSP mitosis/hr-mitosis-referee over base 5a94f41, with the hidden-untracked-files kind on the amendment path (requirement-wrong; ledger line corrected by hand after pipeline diagnosis refused a second record, backup review/round-4/findings.jsonl.before-requirement-wrong). Fixed with receipts on the MSP branch: every round 1 to 3 blocker and advisory, round 4 C1 at e10fde7 and S1 at 2163c08. Running: the agent finishing S2 (referee stage skipped on commit failure; receipts 8483108 and 4270c6f committed, its run.py fix uncommitted while its suites run). The build script amend-1.zsh and amend-1.items.json are in the run home; the logbook server is down, so the amendment boundary is not yet recorded. Amendment 1 (D2) is handed off and reported to the parent session: spec, decisions, record and docs/specs/hr-mitosis-referee.amend-1.items.json, two Steps in MSP hr-mitosis-referee-amend-1, 14 new rows for the check author in tests/test_clean_gate.py, glossary terms Gate folder and Ignored file, ADR 0009 and an amended ADR 0006. Rejected and outside-class items for the final report: round 1 C4, S6, S3, S7, S8; round 2 C2, S1, S4; round 3 S2, S3; round 4 S3; the automated commit flags. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0009, which ship only with the MSP.
 
 ## Next step
 
-After each fix agent, verify its commits, the locked files (zsh array split, with a control) and the clean tree, then dispatch the next: submodule referee write unreported, then referee stage skipped on commit failure, then advisory C4 (document the exit-21 holds) and any of C2 or C3 left; then round 5.
+Verify the S2 finisher's commit, locked files and both suites; then a check-author agent writes and locks tests/test_clean_gate.py on the MSP branch and the charter gains its Locked line and the new receipt-lock; then record the amendment hand-off boundary, run amend-1.zsh with --plan-only and then the build, merge it into the MSP branch, rerun obligations and review round 5.
 
-Needs: D1, R1, R2.
+Needs: D1, D2, R1, R2.
 
 ## Decisions in force
 
 - D1 Interphase hand-off: build the handed-off spec as one MSP of seven Steps: Hand off now: one MSP, seven ordered Steps, criteria 5.1 to 5.6 as M1 to M6 and 5.7 for docs and version 0.8.0, built from feat/hr-mitosis-referee cut from main 1391d39 after the O2 check author locks the acceptance tests.
+
+- D2 Amendment 1 hand-off: amend M1 to a clean gate checkout rather than fix hidden untracked files a third time: owner decision, relies on I1 and I4; the worktree normalization of rounds 1 to 4 is deleted, committed referee writes are found from pinned tree objects, uncommitted files are listed as ignored.
 
 ## Open risks
 
