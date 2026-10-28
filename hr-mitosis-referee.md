@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T09:35:12.570Z
+Updated: 2026-10-28T09:55:39.938Z
 Next ids: c7 D2 R3 S1
 
 ## Goal
@@ -18,11 +18,11 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-Stage 2 setup: the spec is handed off (record status handed-off, all checks pass) and the FEATURE branch feat/hr-mitosis-referee is cut from main 1391d39, which carries the CI fix. The checkout holds this run's uncommitted glossary section "Referee and gate" and ADRs 0006 to 0008, which ship only with the MSP. The run home is complete except the charter's Locked lines and receipts-lock.txt. The O2 check author is running in the worktree check-author under the run directory, writing the seven locked test files plus the contract copies, validator and receipts-generated fixtures.
+Stage 2 build round 0 is running (run.zsh, output in the run home's build.out, build.err and build.exit). feat/hr-mitosis-referee holds the locked checks at 5a94f41 (13 files, 28 acceptance tests all red for absent behaviour, existing suite green on 3.9 and 3.15, no write under the real HOME); the charter lists them on `- Locked:` lines and receipts-lock.txt holds their receipt-lock line. Plan-only passed with one MSP of seven Lanes. The checkout holds this run's uncommitted glossary section "Referee and gate" and ADRs 0006 to 0008, which ship only with the MSP.
 
 ## Next step
 
-When the check author reports: verify its commit on feat/hr-mitosis-referee, run receipts lock over its files into receipts-lock.txt, add the files as `- Locked:` lines in CHARTER.md, then run run.zsh --plan-only.
+When the build exits: read build.out's last line, write each Lane's Assumption notes to review/hr-mitosis-referee.assumptions.txt, run the locked checks at the MSP head (O4), then start review round 1.
 
 Needs: D1, R1, R2.
 
