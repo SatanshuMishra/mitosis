@@ -22,6 +22,8 @@ BRANCH_PREFIX = "mitosis"
 
 PROBE_PREFIX = "probe"
 
+GATE_MARKER = "mitosis-gate.json"
+
 PLAN_FILE = "plan.json"
 
 STATE_FILE = "state.json"
@@ -129,6 +131,19 @@ class RestoreError(GitError):
             self,
             "the gate could not restore %s to the gated commit %s: %s still differ"
             % (branch, commit[:12], ", ".join(self.left)),
+        )
+
+
+class GateRecoveryError(GitError):
+    def __init__(self, tree, marker, cause):
+        self.args_run = ()
+        self.code = None
+        self.stderr = ""
+        self.marker = marker
+        RuntimeError.__init__(
+            self,
+            "could not recover the interrupted gate in %s: %s; %s is kept, so the next run "
+            "tries the recovery again" % (tree, cause, marker),
         )
 
 
@@ -290,6 +305,8 @@ def prepare_worktree(repo, base, branch, path):
     git(["worktree", "prune"], repo)
     registered = registered_worktrees(repo)
     real = os.path.realpath(path)
+    if real in registered and recover_gate(path):
+        registered = registered_worktrees(repo)
     if real in registered:
         if registered[real] != branch:
             raise GitError(
@@ -1217,6 +1234,7 @@ def _gate_result(properties, implementation, commit, reverted):
 
 
 def commit_before_gate(plan, msp, tree):
+    recover_gate(tree)
     return commit_all(tree, "chore(%s): commit the MSP's work before the gate" % _label(plan, msp))
 
 
@@ -1255,11 +1273,12 @@ def property_mutants(plan, msp, tree, base, commit, entry):
     return tuple(mutants.select(found, MUTANT_CAP))
 
 
-def _run_mutant(command, tree, entry, mutant, log_path, timeout, env, restore):
+def _run_mutant(command, tree, entry, mutant, log_path, timeout, env, restore, mark):
     path = mutant["file"]
     mutated = mutants.apply(_read_text(tree, path), mutant)
     if mutated is None:
         return None, ()
+    mark((path,))
     shutil.rmtree(_pycache_of(tree, path), ignore_errors=True)
     try:
         _write_text(tree, path, mutated)
@@ -1280,7 +1299,9 @@ def _timed(call):
     return result, time.monotonic() - started
 
 
-def mutant_verdict(plan, msp, tree, base, commit, command, index, entry, log_dir, timeout, env, restore):
+def mutant_verdict(
+    plan, msp, tree, base, commit, command, index, entry, log_dir, timeout, env, restore, mark
+):
     tried = ()
     written = ()
     seconds = entry.get("seconds", 0)
@@ -1295,6 +1316,7 @@ def mutant_verdict(plan, msp, tree, base, commit, command, index, entry, log_dir
                 timeout,
                 env,
                 restore,
+                mark,
             )
         )
         seconds = seconds + spent
@@ -1335,12 +1357,17 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None, env=None
     def restore():
         return restore_gate_commit(tree, branch, commit, locked)
 
+    def mark(paths):
+        mark_gate(tree, branch, commit, paths, locked)
+
+    mark(implementation_paths(plan, msp))
     try:
         result, written = _gate_runs(
-            plan, msp, tree, branch, base, command, log_dir, timeout, env, commit, restore
+            plan, msp, tree, branch, base, command, log_dir, timeout, env, commit, restore, mark
         )
     finally:
         last = restore()
+        clear_gate_mark(tree)
     referee_written = sorted(set(written) | set(last))
     return {
         **result,
@@ -1349,7 +1376,9 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None, env=None
     }
 
 
-def _gate_runs(plan, msp, tree, branch, base, command, log_dir, timeout, env, commit, restore):
+def _gate_runs(
+    plan, msp, tree, branch, base, command, log_dir, timeout, env, commit, restore, mark
+):
     properties = msp_properties(
         plan, msp, steps_without_implementation_change(plan, msp, tree, base)
     )
@@ -1414,7 +1443,7 @@ def _gate_runs(plan, msp, tree, branch, base, command, log_dir, timeout, env, co
         )
     verdicts = tuple(
         mutant_verdict(
-            plan, msp, tree, base, commit, command, index, entry, log_dir, timeout, env, restore
+            plan, msp, tree, base, commit, command, index, entry, log_dir, timeout, env, restore, mark
         )
         if index in with_work and entry["outcome"] == "pass"
         else (entry, ())
@@ -1545,6 +1574,61 @@ def restore_gate_commit(tree, branch, commit, locked):
     if left:
         raise RestoreError(branch, commit, left)
     return written
+
+
+def gate_marker(tree):
+    return os.path.join(git(["rev-parse", "--absolute-git-dir"], tree), GATE_MARKER)
+
+
+def _marked_paths(marker, commit):
+    if not os.path.isfile(marker):
+        return ()
+    recorded = read_json(marker)
+    if not isinstance(recorded, dict) or recorded.get("commit") != commit:
+        return ()
+    return tuple(recorded.get("paths") or ())
+
+
+def mark_gate(tree, branch, commit, paths, locked):
+    marker = gate_marker(tree)
+    write_json(
+        marker,
+        {
+            "branch": branch,
+            "commit": commit,
+            "paths": sorted(set(_marked_paths(marker, commit)) | set(paths)),
+            "locked": list(locked),
+        },
+    )
+
+
+def clear_gate_mark(tree):
+    try:
+        os.remove(gate_marker(tree))
+    except FileNotFoundError:
+        pass
+
+
+def _recover_from(tree, recorded):
+    branch = recorded["branch"]
+    restore_gate_commit(tree, branch, recorded["commit"], tuple(recorded["locked"]))
+    probe = "%s/%s" % (PROBE_PREFIX, branch)
+    git_run(["branch", "-D", probe], tree)
+    if branch_exists(tree, probe):
+        raise GitError(["branch", "-D", probe], 1, "the probe branch %s is still there" % probe)
+    clear_caches_beside(tree, tuple(recorded["paths"]))
+
+
+def recover_gate(tree):
+    marker = gate_marker(tree)
+    if not os.path.isfile(marker):
+        return False
+    try:
+        _recover_from(tree, read_json(marker))
+    except (GitError, OSError, ValueError, KeyError, TypeError) as error:
+        raise GateRecoveryError(tree, marker, error)
+    os.remove(marker)
+    return True
 
 
 def reconcile(plan, msp, tree, branch, base, producer_branches=()):
@@ -2271,6 +2355,8 @@ def _gate_stage(plan, msp, tree, settings):
             settings["timeout"],
             settings.get("env"),
         )
+    except GateRecoveryError:
+        raise
     except (OSError, GitError, subprocess.SubprocessError) as error:
         return {"gate": None, "gate_error": str(error)}
     return {"gate": result, "gate_error": None}
@@ -2286,7 +2372,7 @@ def _passing_gate(prior):
 def _committed_head(plan, msp, tree):
     try:
         return commit_before_gate(plan, msp, tree["path"])
-    except GitTimeout:
+    except (GitTimeout, GateRecoveryError):
         raise
     except GitError:
         return None
