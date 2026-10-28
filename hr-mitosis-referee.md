@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T16:00:11.329Z
+Updated: 2026-10-28T16:00:13.057Z
 Next ids: c7 D2 R4 S1
 
 ## Goal
@@ -22,7 +22,7 @@ Stage 3 review round 3 at b9e309b (MSP mitosis/hr-mitosis-referee over base 5a94
 
 ## Next step
 
-When the round-3 suite finishes, dispatch code-reviewer and security-reviewer with the rendered round-3 briefs unchanged; then findings, candidates, validator, record and verdict, looping until green or blocked.
+When both round-3 reviewers report, save each last JSON array to review/round-3, then findings, candidates, validator, record and verdict, looping until green or blocked.
 
 Needs: D1, R1, R2.
 
