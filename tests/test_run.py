@@ -1188,6 +1188,44 @@ class Gate(RepoCase):
         self.assertEqual(self.remote_heads(), [])
         self.assertEqual(self.pull_requests(), [])
 
+    def _setup_gate(self, plan, trees, names):
+        script = os.path.join(self.tmp, "setup.py")
+        write(
+            script,
+            "import os, sys\n"
+            "for name in %r:\n"
+            "    path = os.path.join(sys.argv[1], *name.split('/'))\n"
+            "    os.makedirs(os.path.dirname(path), exist_ok=True)\n"
+            "    open(path, 'w').write('setup\\n')\n" % (names,),
+        )
+        return run.gate(
+            plan,
+            0,
+            trees[0]["path"],
+            "main",
+            self.acceptance_command("real"),
+            os.path.join(self.run_dir, "gate"),
+            60,
+            setup="%s %s {worktree}" % (shlex.quote(sys.executable), shlex.quote(script)),
+        )
+
+    def a_top_level_referee_name_gate_setup_makes_blocks_before_any_run(self):
+        plan = core.plan([gated_step()])
+        trees = self.build(plan)
+        result = self._setup_gate(plan, trees, ["pytest.ini", "built.txt"])
+        self.assertEqual(result["referee"], ["pytest.ini"])
+        self.assertTrue(result["blocks"])
+        self.assertEqual(self.gate_runs(), [])
+        self.assertEqual(self.gate_checkouts(), [])
+
+    def a_test_configuration_inside_a_folder_gate_setup_makes_is_not_judged(self):
+        plan = core.plan([gated_step()])
+        trees = self.build(plan)
+        result = self._setup_gate(plan, trees, ["node_modules/pkg/conftest.py", "built.txt"])
+        self.assertEqual(result["referee"], [])
+        self.assertEqual(result["outcome"], "pass")
+        self.assertEqual(len(self.gate_runs()), 3)
+
     def an_unproven_property_is_named_in_the_body_with_its_step(self):
         self.add_remote()
         plan = core.plan([gated_step()])

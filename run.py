@@ -1715,6 +1715,13 @@ def _gate_runs(
         if setup is None
         else _gate_setup(setup, folder, top, log_dir, timeout, env)
     )
+    setup_written = (
+        ()
+        if setup is None
+        else tuple(name for name in kept if referee.referee_reason(name, locked) is not None)
+    )
+    if setup_written:
+        return _gate_result(properties, implementation, commit, ()), setup_written
 
     def reset(target):
         return reset_gate_folder(tree, folder, target, kept, locked)
@@ -3256,7 +3263,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
                 state,
                 msp,
                 state=MSP_REFEREE_REVERTED,
-                reason="an acceptance run wrote %s in the gate's clean checkout, which the referee "
+                reason="a gate run wrote %s in the gate's clean checkout, which the referee "
                 "owns, so mitosis held %s back" % (", ".join(tampered), tree["branch"]),
             ),
         )
