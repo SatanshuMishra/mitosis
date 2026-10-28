@@ -1,7 +1,7 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T19:47:50.504Z
-Next ids: c7 D3 R5 S1
+Updated: 2026-10-28T19:48:52.280Z
+Next ids: c7 D4 R5 S1
 
 ## Goal
 
@@ -30,7 +30,7 @@ Needs: D1, D2, R1, R2.
 
 - D1 Interphase hand-off: build the handed-off spec as one MSP of seven Steps: Hand off now: one MSP, seven ordered Steps, criteria 5.1 to 5.6 as M1 to M6 and 5.7 for docs and version 0.8.0, built from feat/hr-mitosis-referee cut from main 1391d39 after the O2 check author locks the acceptance tests.
 
-- D2 Amendment 1 hand-off: amend M1 to a clean gate checkout rather than fix hidden untracked files a third time: owner decision, relies on I1 and I4; the worktree normalization of rounds 1 to 4 is deleted, committed referee writes are found from pinned tree objects, uncommitted files are listed as ignored.
+- D3 Amendment 1 hand-off: build M1 as a clean gate checkout in MSP hr-mitosis-referee-amend-1: Hand off amendment 1. The gate, the mutant runs and every acceptance run execute in a clean checkout of the MSP's committed tree. A committed referee write, found from tree objects with git's settings pinned, is reverted and exits 9. Uncommitted files are listed as ignored and never restored. The amendment is built with amend-1.zsh (--plan-only first, always --no-push) and merged into mitosis/hr-mitosis-referee, then review round 5 judges it.
 
 ## Open risks
 
