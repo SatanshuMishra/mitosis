@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T14:06:40.488Z
+Updated: 2026-10-28T14:06:42.905Z
 Next ids: c7 D2 R4 S1
 
 ## Goal
@@ -22,7 +22,7 @@ Stage 3 review round 2 at b95181f (MSP mitosis/hr-mitosis-referee over base 5a94
 
 ## Next step
 
-When the validator reports, save its array as review/round-2/hr-mitosis-referee.verdicts.json, then record and verdict; on loop, diagnose each confirmed kind and run one fix agent per kind, then round 3.
+When each diagnosis reports, save its last JSON object as review/round-2/hr-mitosis-referee.<kind slug>.diagnosis.json and record it with pipeline diagnosis; then rerun pipeline verdict, and on loop run one fix agent per kind in turn (both touch run.py), then the advisories, then round 3.
 
 Needs: D1, R1, R2.
 
