@@ -1140,6 +1140,51 @@ def commit_all(tree, message):
     return git(["rev-parse", "HEAD"], tree)
 
 
+class LinkRefusal(OSError):
+    def __init__(self, path, reason):
+        self.path = path
+        super().__init__("mitosis refused to act on %s: %s" % (path, reason))
+
+
+def _parts(path):
+    return tuple(part for part in str(path).replace(os.sep, "/").split("/") if part not in ("", "."))
+
+
+def _prefixes(path):
+    parts = _parts(path)
+    return tuple("/".join(parts[:depth]) for depth in range(1, len(parts) + 1))
+
+
+def tree_path(tree, path, last=True):
+    parts = _parts(path)
+    checked = parts if last else parts[:-1]
+    for depth in range(1, len(checked) + 1):
+        if os.path.islink(os.path.join(tree, *checked[:depth])):
+            raise LinkRefusal(
+                path,
+                "%s is a symbolic link, so the action would reach outside the worktree"
+                % "/".join(checked[:depth]),
+            )
+    full = os.path.join(tree, *parts)
+    root = os.path.realpath(tree)
+    resolved = os.path.realpath(full if last else os.path.dirname(full))
+    if resolved != root and not resolved.startswith(root + os.sep):
+        raise LinkRefusal(path, "it resolves to %s, outside the worktree %s" % (resolved, root))
+    return full
+
+
+def _behind_link(tree, path):
+    try:
+        tree_path(tree, path, last=False)
+    except LinkRefusal:
+        return True
+    return False
+
+
+def _cache_of(path):
+    return "/".join(_parts(os.path.dirname(_norm(path))) + ("__pycache__",))
+
+
 def _remove_cache(folder):
     if os.path.islink(folder):
         os.remove(folder)
@@ -1148,7 +1193,10 @@ def _remove_cache(folder):
 
 
 def clear_caches_beside(tree, paths):
-    for folder in sorted({_pycache_of(tree, path) for path in paths}):
+    folders = tuple(
+        tree_path(tree, cache, last=False) for cache in sorted({_cache_of(path) for path in paths})
+    )
+    for folder in folders:
         _remove_cache(folder)
 
 
@@ -1165,8 +1213,8 @@ def revert_implementation(tree, base, paths):
         if git_ok(["cat-file", "-e", "%s:%s" % (base, path)], tree):
             git(["checkout", "-q", base, "--", path], tree)
         else:
+            full = tree_path(tree, path, last=False)
             git(["rm", "-r", "-q", "--ignore-unmatch", "--", path], tree)
-            full = os.path.join(tree, path)
             if os.path.isdir(full) and not os.path.islink(full):
                 shutil.rmtree(full)
             elif os.path.lexists(full):
@@ -1238,27 +1286,67 @@ def commit_before_gate(plan, msp, tree):
     return commit_all(tree, "chore(%s): commit the MSP's work before the gate" % _label(plan, msp))
 
 
-def _pycache_of(tree, path):
-    return os.path.join(tree, os.path.dirname(path), "__pycache__")
+def _open_regular(tree, path, flags):
+    descriptor = os.open(tree_path(tree, path), flags | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        regular = stat.S_ISREG(os.fstat(descriptor).st_mode)
+    except OSError:
+        os.close(descriptor)
+        raise
+    if not regular:
+        os.close(descriptor)
+        raise LinkRefusal(path, "it is not a regular file, so the gate cannot mutate it")
+    return descriptor
 
 
 def _read_text(tree, path):
-    with open(os.path.join(tree, path), encoding="utf-8", errors="surrogateescape", newline="") as handle:
+    descriptor = _open_regular(tree, path, os.O_RDONLY)
+    with os.fdopen(descriptor, encoding="utf-8", errors="surrogateescape", newline="") as handle:
         return handle.read()
 
 
 def _write_text(tree, path, text):
-    with open(os.path.join(tree, path), "w", encoding="utf-8", errors="surrogateescape", newline="") as handle:
+    descriptor = _open_regular(tree, path, os.O_WRONLY)
+    with os.fdopen(descriptor, "w", encoding="utf-8", errors="surrogateescape", newline="") as handle:
+        os.ftruncate(descriptor, 0)
         handle.write(text)
 
 
-def property_mutants(plan, msp, tree, base, commit, entry):
-    paths = step_implementation_paths(plan, msp, entry["step"])
-    if not paths:
+LINK_REASON = "the Step changed %s, a symbolic link the gate cannot mutate without writing through it"
+
+
+def linked_paths(tree, commit, paths):
+    wanted = sorted({prefix for path in paths for prefix in _prefixes(path)})
+    if not wanted:
         return ()
+    entries = git_paths(
+        ["ls-tree", "-z", "--full-tree", commit, "--", *(":(literal)" + path for path in wanted)],
+        tree,
+    )
+    return tuple(
+        sorted(entry.split("\t", 1)[1] for entry in entries if entry.startswith("120000 "))
+    )
+
+
+def _step_changes(plan, msp, tree, base, commit, entry):
+    paths = tuple(step_implementation_paths(plan, msp, entry["step"]))
+    if not paths:
+        return (), ()
     names = git_paths(
         ["diff", "-z", "--name-only", "--no-renames", base, commit, "--", *paths], tree
     )
+    return paths, tuple(names)
+
+
+def step_links(plan, msp, tree, base, commit, entry):
+    paths, names = _step_changes(plan, msp, tree, base, commit, entry)
+    return linked_paths(tree, commit, paths + names)
+
+
+def property_mutants(plan, msp, tree, base, commit, entry):
+    paths, names = _step_changes(plan, msp, tree, base, commit, entry)
+    if not paths:
+        return ()
     added = mutants.added_lines(
         {
             name: git(["diff", "-U0", "--no-color", base, commit, "--", ":(literal)" + name], tree)
@@ -1279,13 +1367,13 @@ def _run_mutant(command, tree, entry, mutant, log_path, timeout, env, restore, m
     if mutated is None:
         return None, ()
     mark((path,))
-    shutil.rmtree(_pycache_of(tree, path), ignore_errors=True)
+    clear_caches_beside(tree, (path,))
     try:
         _write_text(tree, path, mutated)
         ran = run_acceptance(command, tree, entry, log_path, timeout, env)
     finally:
         written = restore()
-        shutil.rmtree(_pycache_of(tree, path), ignore_errors=True)
+        clear_caches_beside(tree, (path,))
     return ran, written
 
 
@@ -1305,6 +1393,17 @@ def mutant_verdict(
     tried = ()
     written = ()
     seconds = entry.get("seconds", 0)
+    linked = step_links(plan, msp, tree, base, commit, entry)
+    if linked:
+        return (
+            {
+                **entry,
+                "outcome": "inconclusive",
+                "reason": LINK_REASON % linked[0],
+                "mutants": {"tried": 0, "killed": None},
+            },
+            written,
+        )
     for mutant in property_mutants(plan, msp, tree, base, commit, entry):
         (ran, left), spent = _timed(
             lambda mutant=mutant: _run_mutant(
@@ -1547,13 +1646,20 @@ def referee_disk_writes(tree, base, locked):
         for path in git_paths(["ls-tree", "-r", "-z", "--full-tree", "--name-only", base], tree)
         if referee.referee_reason(path, locked) is not None
     )
-    clear_caches_beside(tree, present + held + locked)
+    linked = frozenset(path for path in present + held + locked if _behind_link(tree, path))
+    clear_caches_beside(tree, tuple(path for path in present + held + locked if path not in linked))
     changed = {
         path
         for path in present
-        if os.path.lexists(os.path.join(tree, path)) and _differs_from(tree, base, path)
+        if path not in linked
+        and os.path.lexists(os.path.join(tree, path))
+        and _differs_from(tree, base, path)
     }
-    missing = {path for path in held if not os.path.lexists(os.path.join(tree, path))}
+    missing = {
+        path
+        for path in held
+        if path in linked or not os.path.lexists(os.path.join(tree, path))
+    }
     return sorted(changed | missing)
 
 
@@ -2421,7 +2527,7 @@ def _referee_stage(plan, msp, tree, producers, trees, settings):
             tree["path"],
             "revert(%s): restore the referee paths a Worker wrote" % _label(plan, msp),
         )
-    except GitError as error:
+    except (GitError, OSError) as error:
         return {
             **reconciled,
             "state": MSP_GATE_FAILED,

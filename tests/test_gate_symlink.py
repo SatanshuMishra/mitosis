@@ -144,6 +144,11 @@ class GateSymlink(unittest.TestCase):
             acceptance=False,
         )
         self.assertEqual(read_bytes(placed["outside/__pycache__/keep.pyc"]), KEEP)
+        self.assertEqual(completed.returncode, 9, "mitosis exit code" + teeth.tail(completed))
+        msp = teeth.summary_of(completed)["msps"][0]
+        self.assertEqual(msp["state"], "referee-reverted")
+        self.assertEqual(msp["reconcile"]["referee"], [LOCKED])
+        self.assertEqual(self.scratch.checked("show", "mitosis/demo:" + LOCKED), LOCKED_TEXT)
         self.assertEqual(self.scratch.checked("ls-remote", "origin", "mitosis/demo"), "")
 
     def _outside_cache(self):
