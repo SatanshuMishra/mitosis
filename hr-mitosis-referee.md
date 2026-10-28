@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T11:11:36.356Z
+Updated: 2026-10-28T11:20:35.381Z
 Next ids: c7 D2 R4 S1
 
 ## Goal
@@ -18,7 +18,7 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-Stage 3 review round 1: conformance-auditor judged 5.1 to 5.7 all MET with no finding (review/round-1/conformance-auditor.json); code-reviewer and security-reviewer are still running on mitosis/hr-mitosis-referee at c98552d over base 5a94f41 (the locked checks), briefs and inputs in review/round-1. The build committed seven Lanes, all ok, gate pass 28 of 28; its exit 6 is only listed-but-unwritten files (the read-only locked tests and tests/test_decompose.py). At c98552d the locked files are unchanged (same receipt-lock line) and the full suite passes on 3.14 and 3.9 (619 tests). The checkout holds this run's uncommitted glossary section "Referee and gate" and ADRs 0006 to 0008, which ship only with the MSP.
+Stage 3 review round 1: conformance-auditor judged 5.1 to 5.7 all MET with no finding (review/round-1/conformance-auditor.json); security-reviewer reported S1 to S8, two CRITICAL (mutants written in the MSP tree survive a kill and ship; mutants written through a symlink), two HIGH (git-ignored referee files; writes during the gate shipped unchecked), two MEDIUM, two LOW (review/round-1/security-reviewer.json, repro scripts in the session scratchpad's repro folder); code-reviewer is still running on mitosis/hr-mitosis-referee at c98552d over base 5a94f41 (the locked checks), briefs and inputs in review/round-1. The build committed seven Lanes, all ok, gate pass 28 of 28; its exit 6 is only listed-but-unwritten files (the read-only locked tests and tests/test_decompose.py). At c98552d the locked files are unchanged (same receipt-lock line) and the full suite passes on 3.14 and 3.9 (619 tests). The checkout holds this run's uncommitted glossary section "Referee and gate" and ADRs 0006 to 0008, which ship only with the MSP.
 
 ## Next step
 
