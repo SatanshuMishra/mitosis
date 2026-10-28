@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T12:00:33.362Z
+Updated: 2026-10-28T12:00:35.872Z
 Next ids: c7 D2 R4 S1
 
 ## Goal
@@ -22,7 +22,7 @@ Stage 3 review round 1, verdict `loop` (review/round-1/hr-mitosis-referee.verdic
 
 ## Next step
 
-As each diagnosis reports: save its object as review/round-1/hr-mitosis-referee.<kind slug>.diagnosis.json and record it with pipeline diagnosis; once all six are recorded, rerun pipeline verdict, then send each fixable kind, with advisories C5 and C6, to one fresh fix agent with receipt discipline.
+As each fix agent reports, check its receipt and fix commits, then dispatch the next kind in this order: quoted git path, hidden untracked files, ungated post-gate write, unrestored mutant, write through symlink, then advisories C5 and C6; after the last, start review round 2 at the new head.
 
 Needs: D1, R1, R2.
 
