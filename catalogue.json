@@ -570,7 +570,7 @@
           "unit": "none",
           "includes": "The state only.",
           "excludes": "The Lane's reason, Worker notes and output, which the store never holds.",
-          "reading": "ok built and committed; failed exited non-zero or returned failed; blocked by a producer; merge-blocked when a producer branch would not merge; held while committed work waits to land.",
+          "reading": "ok built and committed; failed exited non-zero or returned failed; blocked by a producer; merge-blocked when a producer branch would not merge; held while committed work waits to land; parked-limit when its Worker stopped at a usage limit, or it was not dispatched after another Lane did, so --resume runs it again after the limit resets.",
           "readers": [
             "owner",
             "pipeline"
@@ -581,7 +581,8 @@
             "failed",
             "blocked",
             "merge-blocked",
-            "held"
+            "held",
+            "parked-limit"
           ]
         },
         "exit": {
@@ -819,7 +820,7 @@
           "unit": "none",
           "includes": "The state only.",
           "excludes": "The MSP's reason and pull-request text, which the store never holds.",
-          "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP; referee-reverted when a Worker wrote a referee path, which mitosis restored before holding the MSP back ungated and unpushed; gate-failed when its gate judged weak, inert or inconclusive or could not run, so mitosis committed the branch and held it back unpushed.",
+          "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP; referee-reverted when a Worker wrote a referee path, which mitosis restored before holding the MSP back ungated and unpushed; gate-failed when its gate judged weak, inert or inconclusive or could not run, so mitosis committed the branch and held it back unpushed; parked when one of its Lanes, or a producer MSP, is parked at a usage limit, so --resume picks it up after the limit resets.",
           "readers": [
             "owner",
             "pipeline"
@@ -833,7 +834,8 @@
             "ship-failed",
             "blocked",
             "referee-reverted",
-            "gate-failed"
+            "gate-failed",
+            "parked"
           ]
         }
       }
@@ -1158,6 +1160,20 @@
               "pipeline"
             ],
             "question": "How did this invocation's Lanes end?"
+          },
+          "parked_limit": {
+            "type": "integer",
+            "description": "The number of Lanes that ended parked-limit.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's Lanes in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How did this invocation's Lanes end?"
           }
         }
       },
@@ -1318,6 +1334,20 @@
           "gate_failed": {
             "type": "integer",
             "description": "The number of MSPs that ended gate-failed.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's MSPs in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How many MSPs reached a pull request?"
+          },
+          "parked": {
+            "type": "integer",
+            "description": "The number of MSPs that ended parked.",
             "measured_from": "Counted by mitosis as it ran.",
             "unit": "count",
             "includes": "This invocation's MSPs in that state.",
@@ -1701,7 +1731,7 @@
               "unit": "none",
               "includes": "The state only.",
               "excludes": "The Lane's reason, Worker notes and output, which the store never holds.",
-              "reading": "ok built and committed; failed exited non-zero or returned failed; blocked by a producer; merge-blocked when a producer branch would not merge; held while committed work waits to land.",
+              "reading": "ok built and committed; failed exited non-zero or returned failed; blocked by a producer; merge-blocked when a producer branch would not merge; held while committed work waits to land; parked-limit when its Worker stopped at a usage limit, or it was not dispatched after another Lane did, so --resume runs it again after the limit resets.",
               "readers": [
                 "owner",
                 "pipeline"
@@ -1712,7 +1742,8 @@
                 "failed",
                 "blocked",
                 "merge-blocked",
-                "held"
+                "held",
+                "parked-limit"
               ]
             },
             "seconds": {
@@ -1780,7 +1811,7 @@
               "unit": "none",
               "includes": "The state only.",
               "excludes": "The MSP's reason and pull-request text, which the store never holds.",
-              "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP; referee-reverted when a Worker wrote a referee path, which mitosis restored before holding the MSP back ungated and unpushed; gate-failed when its gate judged weak, inert or inconclusive or could not run, so mitosis committed the branch and held it back unpushed.",
+              "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP; referee-reverted when a Worker wrote a referee path, which mitosis restored before holding the MSP back ungated and unpushed; gate-failed when its gate judged weak, inert or inconclusive or could not run, so mitosis committed the branch and held it back unpushed; parked when one of its Lanes, or a producer MSP, is parked at a usage limit, so --resume picks it up after the limit resets.",
               "readers": [
                 "owner",
                 "pipeline"
@@ -1794,7 +1825,8 @@
                 "ship-failed",
                 "blocked",
                 "referee-reverted",
-                "gate-failed"
+                "gate-failed",
+                "parked"
               ]
             },
             "gate": {

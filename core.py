@@ -64,7 +64,7 @@ ACCEPTANCE_KEYS = ("file", "test")
 
 SOURCE_KEYS = ("path", "sha256")
 
-LANE_STATES = ("ok", "failed", "blocked", "merge-blocked", "held")
+LANE_STATES = ("ok", "failed", "blocked", "merge-blocked", "held", "parked-limit")
 
 MSP_STATES = (
     "shipped",
@@ -75,6 +75,7 @@ MSP_STATES = (
     "blocked",
     "referee-reverted",
     "gate-failed",
+    "parked",
 )
 
 DELIVERED_STATES = ("shipped", "pushed", "unchanged", "committed")

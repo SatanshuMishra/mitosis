@@ -33,6 +33,7 @@ LANE_EXIT = {
     "failed": 10,
     "blocked": 11,
     "merge-blocked": 12,
+    run.LANE_PARKED: 13,
 }
 
 MSP_EXIT = {
@@ -43,6 +44,7 @@ MSP_EXIT = {
     run.MSP_BLOCKED: 11,
     "ship-failed": 22,
     run.MSP_REFEREE_REVERTED: EXIT_REFEREE,
+    run.MSP_PARKED: 13,
 }
 
 GATE_EXIT = {"gate-inert": 20, "gate-inconclusive": 21, "gate-weak": 24}
@@ -65,6 +67,8 @@ EXIT_MEANING = {
     LANE_EXIT["blocked"]: "a Lane or MSP was blocked, by a predecessor or by a write across an "
     "MSP boundary",
     LANE_EXIT["merge-blocked"]: "a producer branch would not merge",
+    LANE_EXIT[run.LANE_PARKED]: "a Worker stopped at a usage limit; the run is parked: pass "
+    "--resume after the limit resets",
     GATE_EXIT["gate-inert"]: "an MSP was held back instead of pushed: an acceptance property "
     "proves nothing, because it passes with the implementation reverted",
     GATE_EXIT["gate-inconclusive"]: "an MSP was held back instead of pushed: the gate could not "

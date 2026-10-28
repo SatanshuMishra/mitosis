@@ -31,6 +31,18 @@ LANE_COMMIT_FAILED = "the Lane's commit failed"
 
 LANE_HELD = "held"
 
+LANE_PARKED = "parked-limit"
+
+MSP_PARKED = "parked"
+
+USAGE_LIMIT = re.compile(
+    r"you've hit your.*limit|usage limit reached|you've reached your.*limit"
+    r"|out of usage credits|limit will reset",
+    re.IGNORECASE,
+)
+
+USAGE_LIMIT_TAIL = 20
+
 LOCK_MARKERS = (".lock': File exists", "Another git process seems to be running")
 
 LOCK_PATH = re.compile(r"[\\/]\.git[\\/][^\s'\"]*\.lock\b")
@@ -352,14 +364,26 @@ def lane_edges(plan):
     }
 
 
-def last_line(path):
+def nonempty_lines(path):
     try:
         with open(path, "rb") as handle:
             data = handle.read()
     except OSError:
-        return None
-    lines = [line for line in data.decode("utf-8", "replace").splitlines() if line.strip()]
+        return []
+    return [line for line in data.decode("utf-8", "replace").splitlines() if line.strip()]
+
+
+def last_line(path):
+    lines = nonempty_lines(path)
     return lines[-1] if lines else None
+
+
+def usage_limit_line(stdout_path, stderr_path):
+    for path in (stdout_path, stderr_path):
+        for line in nonempty_lines(path)[-USAGE_LIMIT_TAIL:]:
+            if USAGE_LIMIT.search(line):
+                return line.strip()
+    return None
 
 
 def last_return(path):
@@ -577,7 +601,9 @@ def _land(plan, lane, tree):
 
 def _verdict(lane, tree, started, merged, out, err, code, timed_out, session_id):
     returned = last_return(out)
-    state, reason = lane_verdict(code, returned, timed_out)
+    judged, why = lane_verdict(code, returned, timed_out)
+    limit = None if timed_out or judged != "failed" else usage_limit_line(out, err)
+    state, reason = (judged, why) if limit is None else (LANE_PARKED, "usage limit: %s" % limit)
     return lane_record(
         lane,
         tree["msp"],
@@ -704,6 +730,7 @@ def dispatch(
     every = ordered + [i for i in range(len(lanes)) if i not in ordered]
     pending = [i for i in every if i not in records and i not in held]
     running = {}
+    parked_by = None
     cap = max(1, int(concurrency))
 
     def settle(known, lane, record):
@@ -735,6 +762,19 @@ def dispatch(
                     )
                 held = {key: value for key, value in held.items() if key not in batch}
                 progressed = True
+            if parked_by is not None:
+                for lane in pending:
+                    records = settle(
+                        records,
+                        lane,
+                        lane_record(
+                            lane,
+                            lanes[lane]["msp"],
+                            LANE_PARKED,
+                            reason="not dispatched: Lane %d stopped at a usage limit" % parked_by,
+                        ),
+                    )
+                pending = []
             waiting = ()
             holding = {lanes[lane]["msp"] for lane in held}
             for lane in pending:
@@ -820,6 +860,8 @@ def dispatch(
                             on_lane(lane, {**judged, "state": LANE_HELD})
                     else:
                         records = settle(records, lane, judged)
+                        if judged["state"] == LANE_PARKED and parked_by is None:
+                            parked_by = lane
             elif pending and not progressed and not held:
                 for lane in pending:
                     records = settle(
@@ -2013,6 +2055,12 @@ def _msp_record(run_state, msp, **fields):
 def _lane_block(plan, msp, state):
     for index in _lane_indexes(plan, msp):
         lane_state = (state["lanes"].get(str(index)) or {}).get("state")
+        if lane_state == LANE_PARKED:
+            return {
+                "state": MSP_PARKED,
+                "reason": "Lane %d is %s; pass --resume after the usage limit resets"
+                % (index, LANE_PARKED),
+            }
         if lane_state != "ok":
             return {"state": MSP_BLOCKED, "reason": "Lane %d is %s" % (index, lane_state)}
     return None
@@ -2021,6 +2069,12 @@ def _lane_block(plan, msp, state):
 def _producer_block(plan, msp, state, producers):
     for producer in producers:
         producer_state = (state["msps"].get(str(producer)) or {}).get("state")
+        if producer_state == MSP_PARKED:
+            return {
+                "state": MSP_PARKED,
+                "reason": "MSP %s is %s; pass --resume after the usage limit resets"
+                % (_label(plan, producer), MSP_PARKED),
+            }
         if producer_state not in core.DELIVERED_STATES:
             return {
                 "state": MSP_BLOCKED,
