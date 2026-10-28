@@ -204,6 +204,13 @@ def git(args, cwd, check=True, timeout=GIT_TIMEOUT):
     return completed.stdout.strip()
 
 
+def git_paths(args, cwd, timeout=GIT_TIMEOUT):
+    completed = git_run(args, cwd, timeout, raw=True)
+    if completed.returncode != 0:
+        raise GitError(args, completed.returncode, completed.stderr)
+    return [os.fsdecode(name) for name in completed.stdout.split(b"\0") if name]
+
+
 def git_ok(args, cwd, timeout=GIT_TIMEOUT):
     return git_run(args, cwd, timeout).returncode == 0
 
@@ -507,7 +514,7 @@ def merge_producers(tree, consumer_branch, producers, base):
 
 def commit_paths(tree, paths, message):
     present = [p for p in paths if os.path.lexists(os.path.join(tree, p))]
-    tracked = git(["ls-files", "--", *paths], tree).splitlines() if paths else []
+    tracked = git_paths(["ls-files", "-z", "--", *paths], tree) if paths else []
     targets = sorted(set(present) | set(tracked))
     if targets:
         git(["add", "-A", "--", *targets], tree)
@@ -1185,8 +1192,15 @@ def property_mutants(plan, msp, tree, base, commit, entry):
     paths = step_implementation_paths(plan, msp, entry["step"])
     if not paths:
         return ()
-    diff = git(["diff", "-U0", "--no-color", base, commit, "--", *paths], tree)
-    added = mutants.added_lines(diff)
+    names = git_paths(
+        ["diff", "-z", "--name-only", "--no-renames", base, commit, "--", *paths], tree
+    )
+    added = mutants.added_lines(
+        {
+            name: git(["diff", "-U0", "--no-color", base, commit, "--", ":(literal)" + name], tree)
+            for name in names
+        }
+    )
 
     def read(path):
         return _read_text(tree, path)
@@ -1332,11 +1346,10 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None, env=None
 
 def changed_files(tree, branch, base, exclude=()):
     excluded = ["^" + ref for ref in exclude if branch_exists(tree, ref)]
-    out = git(
-        ["log", "--format=", "--name-only", "--no-renames", branch, "^" + base, *excluded], tree
+    names = git_paths(
+        ["log", "-z", "--format=", "--name-only", "--no-renames", branch, "^" + base, *excluded], tree
     )
-    stripped = (line.strip() for line in out.splitlines())
-    return sorted(dict.fromkeys(path for path in stripped if path))
+    return sorted(dict.fromkeys(names))
 
 
 def msp_owner_of(plan, path):
@@ -1376,14 +1389,8 @@ def locked_record(repo, branch, locked):
 
 def referee_writes(plan, tree, branch, base):
     locked = tuple(plan.get("locked") or ())
-    changed = git(["diff", "--name-only", "--no-renames", base, branch], tree).splitlines()
-    return sorted(
-        {
-            path.strip()
-            for path in changed
-            if path.strip() and referee.referee_reason(path.strip(), locked) is not None
-        }
-    )
+    changed = git_paths(["diff", "-z", "--name-only", "--no-renames", base, branch], tree)
+    return sorted({path for path in changed if referee.referee_reason(path, locked) is not None})
 
 
 def reconcile(plan, msp, tree, branch, base, producer_branches=()):

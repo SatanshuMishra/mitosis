@@ -78,8 +78,6 @@ CODE_EXTS = frozenset(
     )
 )
 
-FILE_HEADER = re.compile(r"^\+\+\+ (?:b/)?(.*)$")
-
 HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 DROP_ADDED = "drop added lines"
@@ -119,22 +117,20 @@ def is_mutable(path):
     return _extension(path) in CODE_EXTS
 
 
-def added_lines(diff_text):
-    added = {}
-    current = None
-    previous = ""
+def _hunk_lines(diff_text):
+    found = ()
     for line in diff_text.split("\n"):
-        header = FILE_HEADER.match(line) if previous.startswith("--- ") else None
-        previous = line
-        if header is not None:
-            current = None if header.group(1) == "/dev/null" else header.group(1)
-            continue
         hunk = HUNK_HEADER.match(line)
-        if hunk is None or current is None:
+        if hunk is None:
             continue
         start = int(hunk.group(1))
         count = 1 if hunk.group(2) is None else int(hunk.group(2))
-        added = {**added, current: added.get(current, ()) + tuple(range(start, start + count))}
+        found = found + tuple(range(start, start + count))
+    return found
+
+
+def added_lines(diffs):
+    added = {path: _hunk_lines(diff_text) for path, diff_text in diffs.items()}
     return {path: list(lines) for path, lines in added.items() if lines}
 
 
