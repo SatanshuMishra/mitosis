@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T09:16:29.991Z
+Updated: 2026-10-28T09:16:52.674Z
 Next ids: c7 D1 R3 S1
 
 ## Goal
@@ -18,7 +18,7 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-Interphase Phase 9: spec, record and items written and passing check_spec, check_record --complete and check_items; one MSP, seven ordered Steps, criteria 5.1 to 5.6 are M1 to M6 and 5.7 is docs and version 0.8.0. The spec reviewer is running. Glossary section "Referee and gate" is appended to the checkout's GLOSSARY.md and ADRs 0006 to 0008 are written; the run home holds worker-rules.txt (with O3's line) and dispatch.zsh.
+Interphase Phase 9: spec, record and items written and passing check_spec, check_record --complete and check_items; one MSP, seven ordered Steps, criteria 5.1 to 5.6 are M1 to M6 and 5.7 is docs and version 0.8.0. The spec reviewer is running. Glossary section "Referee and gate" is appended to the checkout's GLOSSARY.md and ADRs 0006 to 0008 are written; the run home holds worker-rules.txt (with O3's line) and dispatch.zsh. The checkout's main is fast-forwarded to 1391d39, which carries the CI fix (test job on ubuntu-24.04 for Python 3.9), so the FEATURE branch cut from it inherits the fix.
 
 ## Next step
 
