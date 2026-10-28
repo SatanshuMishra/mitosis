@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T20:03:19.579Z
+Updated: 2026-10-28T20:37:19.362Z
 Next ids: c7 D4 R5 S1
 
 ## Goal
@@ -18,7 +18,7 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-Stage 3, round 4 loop at 8015a99 on MSP mitosis/hr-mitosis-referee over base 5a94f41, with the hidden-untracked-files kind on the amendment path (requirement-wrong; ledger line corrected by hand after pipeline diagnosis refused a second record, backup review/round-4/findings.jsonl.before-requirement-wrong). Fixed with receipts on the MSP branch, head 50fd80c: every round 1 to 3 blocker and advisory, and round 4 C1, S1 and S2; 702 OK on 3.15 and 3.9, the 13 original locked files unchanged. The check author's tests/test_clean_gate.py is committed at d32c436 (11 red at 50fd80c for their rows' reasons, 3 regression guards green) and locked in CHARTER.md; receipt-lock of all fourteen: 99abc6c2e36a46f71468f1a7930e5a9a48be44e2d74ef44fada3e18d7377bbe1. The amendment plan-only passed (one MSP, two Lanes). Running: the amendment build, amend-1.zsh, output in amend-1.build.{out,err,exit} in the run home. Amendment 1 is handed off and reported to the parent session: spec, decisions, record and docs/specs/hr-mitosis-referee.amend-1.items.json, two Steps in MSP hr-mitosis-referee-amend-1, 14 new rows for the check author in tests/test_clean_gate.py, glossary terms Gate folder and Ignored file, ADR 0009 and an amended ADR 0006. Rejected and outside-class items for the final report: round 1 C4, S6, S3, S7, S8; round 2 C2, S1, S4; round 3 S2, S3; round 4 S3; the automated commit flags. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0009, which ship only with the MSP.
+Stage 3, review round 5 setup on MSP mitosis/hr-mitosis-referee over base 5a94f41, head 8abacb8: the round 1 to 4 fixes (round 4 C1, S1 and S2 last, at 50fd80c), the check author's locked tests/test_clean_gate.py at d32c436, and amendment 1 (D3) built by amend-1.zsh and fast-forwarded in (Lanes clean-gate-checkout and clean-gate-docs ok; gate 11 pass, 3 inert regression guards; 14 locked files unchanged; receipt-lock 99abc6c2e36a46f71468f1a7930e5a9a48be44e2d74ef44fada3e18d7377bbe1). The hidden-untracked-files kind is requirement-wrong by the owner's decision (ledger line set by hand after pipeline diagnosis refused a second record; backup review/round-4/findings.jsonl.before-requirement-wrong). Obligations rerun with 5.1 to 5.7 (60 obligations). Running: the full suite on both Pythons at 8abacb8 into review/round-5/hr-mitosis-referee.suite.txt. Open from the docs Lane: mitosis.py's --resume help still says "no uncommitted change"; advisory C4 of round 4 is addressed by the docs Step and is for round 5 to judge. Rejected and outside-class items for the final report: round 1 C4, S6, S3, S7, S8; round 2 C2, S1, S4; round 3 S2, S3; round 4 S3; the automated commit flags. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0009, which ship only with the MSP.
 
 ## Next step
 
