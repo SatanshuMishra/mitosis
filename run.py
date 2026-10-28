@@ -34,6 +34,10 @@ LOCK_PATH = re.compile(r"[\\/]\.git[\\/][^\s'\"]*\.lock\b")
 
 LOCK_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.6, 3.2)
 
+GIT_TIMEOUT = 600
+
+KILL_GRACE = 30
+
 MSP_UNCHANGED = "unchanged"
 
 MSP_COMMITTED = "committed"
@@ -74,6 +78,18 @@ class GitError(RuntimeError):
         )
 
 
+class GitTimeout(GitError):
+    def __init__(self, args, timeout):
+        self.args_run = tuple(args)
+        self.code = None
+        self.stderr = ""
+        RuntimeError.__init__(
+            self,
+            "git %s timed out after %s seconds; a git hook or a lock may be hanging"
+            % (" ".join(args), timeout),
+        )
+
+
 class ConfigError(ValueError):
     pass
 
@@ -86,10 +102,54 @@ class ShipError(RuntimeError):
     pass
 
 
-def _git_once(args, cwd):
-    return subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL
+def _index_lock(cwd):
+    dot_git = os.path.join(cwd or os.curdir, ".git")
+    if not os.path.isfile(dot_git):
+        return os.path.join(dot_git, "index.lock")
+    try:
+        with open(dot_git, encoding="utf-8") as handle:
+            pointer = handle.read().strip()
+    except OSError:
+        return None
+    if not pointer.startswith("gitdir:"):
+        return None
+    gitdir = os.path.join(cwd or os.curdir, pointer[len("gitdir:"):].strip())
+    return os.path.join(gitdir, "index.lock")
+
+
+def _left_lock(index_lock, locked_before):
+    if index_lock is None or locked_before or not os.path.exists(index_lock):
+        return
+    try:
+        os.remove(index_lock)
+    except FileNotFoundError:
+        pass
+
+
+def _git_once(args, cwd, timeout):
+    index_lock = _index_lock(cwd)
+    locked_before = index_lock is not None and os.path.exists(index_lock)
+    argv = ["git", *args]
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
     )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        kill_tree(proc)
+        try:
+            proc.communicate(timeout=KILL_GRACE)
+        except subprocess.TimeoutExpired:
+            pass
+        _left_lock(index_lock, locked_before)
+        raise GitTimeout(args, timeout)
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
 
 def _locked(completed):
@@ -99,25 +159,25 @@ def _locked(completed):
     )
 
 
-def git_run(args, cwd):
-    completed = _git_once(args, cwd)
+def git_run(args, cwd, timeout=GIT_TIMEOUT):
+    completed = _git_once(args, cwd, timeout)
     for delay in LOCK_RETRY_DELAYS:
         if not _locked(completed):
             return completed
         time.sleep(delay)
-        completed = _git_once(args, cwd)
+        completed = _git_once(args, cwd, timeout)
     return completed
 
 
-def git(args, cwd, check=True):
-    completed = git_run(args, cwd)
+def git(args, cwd, check=True, timeout=GIT_TIMEOUT):
+    completed = git_run(args, cwd, timeout)
     if check and completed.returncode != 0:
         raise GitError(args, completed.returncode, completed.stderr)
     return completed.stdout.strip()
 
 
-def git_ok(args, cwd):
-    return git_run(args, cwd).returncode == 0
+def git_ok(args, cwd, timeout=GIT_TIMEOUT):
+    return git_run(args, cwd, timeout).returncode == 0
 
 
 def now():
@@ -365,7 +425,10 @@ def run_command(argv, cwd, timeout, stdout_path, stderr_path, env=None):
             return proc.wait(timeout=timeout), False
         except subprocess.TimeoutExpired:
             kill_tree(proc)
-            return proc.wait(), True
+            try:
+                return proc.wait(timeout=KILL_GRACE), True
+            except subprocess.TimeoutExpired:
+                return -signal.SIGKILL, True
 
 
 def merge_target(tree, producer, base):
@@ -569,6 +632,8 @@ def _foreign_writes(plan, msp, tree, batch, records):
                 "chore(%s): keep changes to files other Lanes own (%s)"
                 % (tree.get("label") or tree["msp"], ", ".join(touched)),
             )
+        except GitTimeout:
+            raise
         except GitError:
             pass
     return [{"path": path, "owner": owners[_norm(path)]} for path in touched]
@@ -1845,8 +1910,17 @@ def _passing_gate(prior):
 def _committed_head(plan, msp, tree):
     try:
         return commit_before_gate(plan, msp, tree["path"])
+    except GitTimeout:
+        raise
     except GitError:
         return None
+
+
+def _gate_head(plan, msp, tree):
+    try:
+        return _committed_head(plan, msp, tree), None
+    except GitTimeout as error:
+        return None, str(error)
 
 
 def _reusable_gate(prior, head):
@@ -1936,12 +2010,14 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     block = _lane_block(plan, msp, state) or _producer_block(plan, msp, state, producers)
     if block is not None:
         return write_state(run_dir, _msp_record(state, msp, **block))
-    head = _committed_head(plan, msp, tree)
+    head, commit_error = _gate_head(plan, msp, tree)
     proven_head = _proven_head(prior, head, settings["proven_heads"].get(msp))
     reused = _passing_gate(prior) if proven_head is not None else _reusable_gate(prior, head)
     gate_started = now()
     gated = (
-        {"gate": reused, "gate_error": None}
+        {"gate": None, "gate_error": commit_error}
+        if commit_error is not None
+        else {"gate": reused, "gate_error": None}
         if reused is not None
         else _gate_stage(plan, msp, tree, settings)
     )
