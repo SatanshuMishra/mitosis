@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T20:37:19.362Z
+Updated: 2026-10-28T20:37:22.596Z
 Next ids: c7 D4 R5 S1
 
 ## Goal
@@ -22,7 +22,7 @@ Stage 3, review round 5 setup on MSP mitosis/hr-mitosis-referee over base 5a94f4
 
 ## Next step
 
-1. Verify the S2 finisher's commit, the locked files (zsh array split, with a control) and both test suites. 2. A fresh check-author agent writes tests/test_clean_gate.py from the 14 amendment rows on mitosis/hr-mitosis-referee, confirms each fails at the current head, commits it, and adds `- Locked: tests/test_clean_gate.py` and the new receipt-lock to CHARTER.md. 3. Run ~/.mitosis/mitosis/hr-mitosis-referee/amend-1.zsh with --plan-only, then the build, then merge the amendment branch into mitosis/hr-mitosis-referee. 4. Rerun pipeline obligations with the amendment criteria, then review round 5.
+When the round-5 suite finishes, render and dispatch the round-5 code-reviewer, security-reviewer and conformance-auditor (criteria 5.1 and 5.7) briefs on the fix diff 8015a99..8abacb8, then validate, verdict and fix per O5 and O6, then ship.
 
 Needs: D1, D3, R1, R2.
 
