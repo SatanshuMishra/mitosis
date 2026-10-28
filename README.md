@@ -42,9 +42,10 @@ claude plugin marketplace add SatanshuMishra/mitosis
 claude plugin install mitosis@mitosis
 ```
 
-The plugin carries the skill and the nine modules it runs — `core.py`,
+The plugin carries the skill and the twelve modules it runs — `core.py`,
 `shape.py`, `decompose.py`, `briefs.py`, `run.py`, `mitosis.py`, `metrics.py`,
-`spend.py`, `metrics_writer.py` — and the two data files they read,
+`spend.py`, `metrics_writer.py`, `referee.py`, `mutants.py`, `outcomes.py` —
+and the two data files they read,
 `prices.json` and `catalogue.json`, which need Python 3.9 or later and nothing
 else.
 
@@ -60,7 +61,7 @@ release changes it; `CHANGELOG.md` lists them. The version is part of each
 plan's id, so finish a run before updating: it cannot be resumed on another
 release.
 
-Without Claude Code, copy the six modules into one directory and invoke
+Without Claude Code, copy the twelve modules into one directory and invoke
 `mitosis.py` by path. They import one another, so they must stay side by
 side.
 
@@ -130,6 +131,44 @@ Verification section names both commits on a Not verified: line. A head that
 differs, or an MSP with no recorded gate result, is gated as before; a
 malformed value or a label the plan does not hold exits 2 before anything is
 built.
+
+## The referee and the gate
+
+The referee is the set of files that decide whether the work is done, and no
+Worker may write it. A charter names its locked checks one per line, as
+`- Locked: tests/test_search.py`, and mitosis adds built-in referee markers
+for test configuration such as `conftest.py` or `pytest.ini`, snapshots,
+baselines, allowlists and skip lists. Planning refuses a Step whose files
+hold a referee path, with exit 3, before anything is built. A Worker that
+writes one anyway has the file restored from the feature branch, and its MSP
+is held back as `referee-reverted` and never pushed, with exit 9. The JSON
+result's `referee` object names the locked paths, their receipt lock and the
+commit they were read at.
+
+The gate runs each acceptance property with the work present and with the
+implementation reverted, then runs each passing property against up to 12
+mutants of its Step's added lines, each one small change such as a flipped
+comparison or a dropped condition. A property no mutant fails is judged
+`weak`, with exit 24: it passes whether or not the work is right. An MSP
+whose gate is `weak`, `inert` or `inconclusive` ends `gate-failed`: its work
+is committed on its branch and never pushed, so no pull request opens on an
+unproven property.
+
+`--trajectory PATH` reads prior outcomes to raise a surface's tier, and after
+every gate also receives one outcome entry per acceptance test, appended to
+that file.
+
+Every git call times out after 600 seconds and fails with an error naming the
+command and that a hook or a lock may be hanging, so a stuck git never stalls
+a run.
+
+A Worker that stops at a usage limit leaves its Lane `parked-limit`; Lanes
+not yet dispatched park with it, and their MSPs end `parked`, with exit 13.
+After the limit resets, `--resume` runs every Lane that is not `ok`.
+
+The JSON result's `findings` list carries one entry per problem the run
+found, each naming its MSP, its Lane, its kind, its exit code and a detail,
+and the exit code is the most severe finding's.
 
 ## Metrics
 

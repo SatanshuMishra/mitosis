@@ -3,6 +3,32 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.8.0 - 2026-10-28
+
+The files that judge the work are a locked referee no Worker may write, and
+the gate withholds a pull request it cannot certify.
+
+- A charter names its locked checks one per line as `- Locked: <path>`, and
+  built-in referee markers cover test configuration, snapshots, baselines,
+  allowlists and skip lists. Planning refuses a Step whose files hold a
+  referee path, with exit 3. A Worker's write to one is restored in its own
+  commit and its MSP is held back as `referee-reverted` and never pushed, with
+  exit 9. The JSON result's `referee` object names the locked paths, their
+  receipt lock and the commit they were read at.
+- The gate runs each passing property against up to 12 mutants of its Step's
+  added lines and judges it `weak` when no mutant fails it, with exit 24. An
+  MSP whose gate is `weak`, `inert` or `inconclusive` ends `gate-failed`,
+  committed and never pushed, so the gate now withholds the pull request.
+- The JSON result carries a `findings` list, one entry per problem with its
+  MSP, Lane, kind, exit code and detail, and the exit code is the most severe
+  finding's.
+- Every git call times out after 600 seconds with an error naming the
+  command.
+- A Worker that stops at a usage limit leaves its Lane `parked-limit` and its
+  MSP `parked`, with exit 13, and `--resume` runs every Lane that is not `ok`.
+- `--trajectory` also receives one outcome entry per acceptance test after
+  every gate.
+
 ## 0.7.0 - 2026-10-27
 
 mitosis records metrics about its own runs, and a new metrics skill answers

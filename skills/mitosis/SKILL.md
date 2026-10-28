@@ -93,9 +93,8 @@ because it was reverted means the behaviour does not exist: exit 1. Any other
 load error stays inconclusive. Catch the whole import family, since importing
 a name out of a surviving package raises the general error.
 
-Exclude whatever else writes into a worktree: editor state, build caches and
-hooks firing on a Worker are staged by the pre-gate commit and arrive as
-undeclared writes against every MSP.
+Exclude whatever else writes into a worktree, such as editor state and build
+caches, or it arrives as undeclared writes against every MSP.
 
 Three more things every run needs: `--feature-branch`, which must exist and is
 what every MSP branches from; `--timeout` in seconds on a monotonic clock,
@@ -191,8 +190,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --items plan.json \
   --timeout 1800 --concurrency 4
 ```
 
-The pull-request template's last stdout line, here the URL, is recorded as
-the pull request. Drop `--pr-command` to push only.
+The pull-request template's last stdout line is recorded as the pull request.
 
 ### Spec: a document
 
@@ -228,9 +226,7 @@ empty while every test still passes. Give that file to a Step with an `after`
 edge reaching every Step whose modules it exports.
 
 `lane-cycle` means Lanes that waited on each other, so one Worker builds them
-all in one sitting. mitosis never refuses a knot: MSPs that wait on each other
-become one MSP, and Lanes that wait on each other one Lane. The work still
-ships, in sequence instead of in parallel, and
+in one sitting; mitosis fuses such MSPs and Lanes rather than refuse, and
 `lane_cycles` and `fused_without_overlap` count what that cost.
 
 An assumption you would have decided differently does not go back into the
@@ -240,11 +236,9 @@ when that file exists); the report's Decisions section counts its settled
 questions. That file binds every later structure dispatch and brief for this
 document; mitosis never rewords an entry or re-asks a question answered once.
 
-One dispatch will not show where a document is soft. `--structure-
-samples N` runs N structure dispatches at once, scores each with the same
-scalars, and prints them ranked with where they disagree: a file split
-differently, or another MSP count or parallelism. The best is persisted, or
-the Kth with `--pick K`. A file in dispute is one the document never assigned.
+`--structure-samples N` runs N structure dispatches at once, ranks them by
+the same scalars and shows where they disagree; the best is persisted, or the
+Kth with `--pick K`. A file in dispute is one the document never assigned.
 
 Revise the structure once the decisions file has grown, without paying to
 rebuild every Step:
@@ -292,20 +286,18 @@ alone. A finished Lane is `held` until no Worker is running in its worktree,
 then committed, so a commit hook that stashes unstaged files never touches a
 sibling's work; no new Lane starts in that MSP meanwhile, and a resume lands a
 `held` Lane without paying for it again. Merges of a producer's branch run no
-hooks, and a git command meeting another process's lock is retried. When a worktree goes quiet, a change to a file whose Lane had already
+hooks, and a git command meeting another process's lock is retried. A later change to a file whose Lane had already
 committed is kept in its own commit and named in the pull request, in
-`attention` and in the exit code, against the Lane that made it, or against
-every Lane that finished alongside it when git cannot tell which.
+`attention` and in the exit code.
 
-Steps with no file in common can still depend on each other. A pair is ordered
-when both touch one risk marker, a recorded regression links them, or both add
-a numbered migration to one folder; the Coupling section lists every order
-added. A pair joined only by an import runs in parallel and is named there and
-in `attention` before anything is built: add an `after` edge where one needs
-the other's output.
+Steps with no file in common are ordered when both touch one risk marker, a
+recorded regression links them, or both add a numbered migration to one
+folder. A pair joined only by an import runs in parallel and is named in the
+Coupling section and `attention`: add an `after` edge where one needs the
+other's output.
 
-Before anything is written, mitosis checks that git has a commit identity and
-refuses with exit 3 if not. A refused Lane commit fails that Lane alone. Hooks
+mitosis refuses with exit 3 when git has no commit identity. A refused Lane
+commit fails that Lane alone. Hooks
 see each Lane's message, `chore(<MSP>): land Lane <n> (<Steps>)`, so a
 hook that refuses that form fails every Lane after its Worker has run.
 
@@ -318,9 +310,20 @@ silence is never mistaken for coverage. Which files count as
 implementation is derived: the MSP's write-set minus the files its acceptance
 properties name.
 
-The gate never withholds a pull request. Every verdict becomes a Verified or
-Not verified line of the body, and an `inert` or `inconclusive` verdict sets
-the exit code, so the reviewer decides what an unproven property is worth.
+Each passing property then runs against up to 12 mutants of its Step's added
+lines, small changes such as a flipped comparison. `weak` means no mutant
+failed it, exit 24. An MSP whose gate is `weak`, `inert` or `inconclusive`
+ends `gate-failed`: committed, never pushed, no pull request. `--trajectory`
+also gets one outcome entry per acceptance test after every gate.
+
+The referee is what judges the work, and no Worker writes it: the charter's
+`- Locked:` lines, plus built-in markers for test configuration, snapshots,
+baselines, allowlists and skip lists. Planning refuses a Step whose files hold
+a referee path, exit 3. A Worker's write to one is restored and its MSP held
+back as `referee-reverted`, exit 9. The JSON result's `referee` object names
+the locked paths, their receipt lock and commit.
+
+Every git call times out after 600 seconds with a named error.
 
 Reconcile compares what the git log says changed against what the Steps
 declared. A write outside the declaration, or a declared path never written,
@@ -332,10 +335,11 @@ names it, and it sets the exit code.
 
 The exit code is zero only when every MSP reached `shipped`, `pushed`,
 `unchanged` or `committed`, every gate verdict was `pass` or `not-applicable`,
-and reconcile found nothing. Every other outcome is a distinct non-zero code,
-printed with its meaning on the report's last line. Each Lane ends `ok`,
-`failed`, `blocked` or `merge-blocked`; each MSP ends `shipped`, `pushed`,
-`unchanged`, `committed`, `ship-failed` or `blocked`.
+and reconcile found nothing. Otherwise it is the most severe entry of the
+JSON result's `findings` list, printed with its meaning on the report's last
+line. Each Lane ends `ok`, `failed`, `blocked`, `merge-blocked` or
+`parked-limit`; each MSP ends `shipped`, `pushed`, `unchanged`, `committed`,
+`ship-failed`, `blocked`, `referee-reverted`, `gate-failed` or `parked`.
 An MSP is `unchanged` when its branch adds nothing to its pull request's base,
 so nothing is pushed or opened, and a dependant's pull request stacks on that
 base instead. The two Lane
@@ -351,13 +355,14 @@ at. An agent that dispatched mitosis reads that line, not the report.
 
 The run directory, printed in the report, holds the plan, the state, the
 persisted Steps, every Worker's full stdout and stderr, and the worktrees.
-Read a Lane's log there, not the Worker's account; its return is a claim, and
-the git log is the record.
+Read a Lane's log there; its return is a claim, and the git log is the record.
 
-After a failure only the gate's probe branch is removed; worktrees and
-branches survive for inspection.
+After a failure worktrees and branches survive for inspection.
 
 ## Resuming
+
+A Worker stopped at a usage limit parks its Lane `parked-limit` and its MSP
+`parked`, exit 13; `--resume` after the reset runs every Lane not `ok`.
 
 Pass `--resume` with the same input and run directory. Lanes already `ok`
 and MSPs already `shipped` or `pushed` are skipped, as is an MSP `unchanged`
@@ -380,20 +385,16 @@ project's own checks against those branches, then `--resume` without
 
 `--proven-head <MSP label>=<commit>`, repeatable, ships a later head the
 caller proved without re-gating, when it is the clean HEAD and a passing gate
-is recorded; the Verification section names both commits on a Not verified:
-line. Another head or no recorded gate gates as before; a malformed value or
+is recorded; a Not verified: line names both commits. A malformed value or
 unknown label exits 2.
 
 ## Metrics
 
 Each invocation is one run in the metrics store, `~/.plugin-metrics` or
-`PLUGIN_METRICS_DIR`: events at its boundaries and one summary of the split,
-parallelism, gates, MSP states and own spend. Each Worker, structure and brief
-call gets a fresh `{session_id}` placeholder on the dispatch, decompose and
-brief templates; given to claude -p --session-id as above, it names the
-transcript the call is priced from. Every command mitosis starts gets
-`PLUGIN_METRICS_PARENT` naming the run. The metrics skill reads these records
-to answer how mitosis performs.
+`PLUGIN_METRICS_DIR`, with one summary of split, gates, MSP states and spend.
+Each model call gets a fresh `{session_id}` placeholder; given to claude -p
+--session-id as above, it names the transcript the call is priced from. Every
+command mitosis starts gets `PLUGIN_METRICS_PARENT` naming the run.
 
 ## Checking an installed copy
 
