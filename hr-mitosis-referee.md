@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T13:44:15.057Z
+Updated: 2026-10-28T13:50:18.346Z
 Next ids: c7 D2 R4 S1
 
 ## Goal
@@ -18,7 +18,7 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-Stage 3 review round 2 at b95181f (MSP mitosis/hr-mitosis-referee over base 5a94f41). Round 1 (at c98552d, verdict loop) had blockers S1, S2, C1, S4, C2/S5 and C3 and advisories C5 and C6, all fixed with receipts; rejected C4, S6, S3, S7 and S8 go to the final report. The locked files are unchanged at b95181f (same receipt-lock). Round 2's suite passes (650 OK on 3.15 and 3.9, review/round-2/hr-mitosis-referee.suite.txt). Running: code-reviewer and security-reviewer on the round-2 briefs. The advisory fix trimmed SKILL.md under its 20480-byte size test and left the newer named errors (RestoreError, GateRecoveryError, ShipError, the gate marker) undocumented. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0008, which ship only with the MSP.
+Stage 3 review round 2 at b95181f (MSP mitosis/hr-mitosis-referee over base 5a94f41). Round 1 (at c98552d, verdict loop) had blockers S1, S2, C1, S4, C2/S5 and C3 and advisories C5 and C6, all fixed with receipts; rejected C4, S6, S3, S7 and S8 go to the final report. The locked files are unchanged at b95181f (same receipt-lock). Round 2's suite passes (650 OK on 3.15 and 3.9, review/round-2/hr-mitosis-referee.suite.txt). The security reviewer reported S1 to S5 (review/round-2/security-reviewer.json): three HIGH referee-scan escapes (a Worker-written pyvenv.cfg skips a folder, an unreadable folder reads as empty, a Worker-set git filter hides a tampered file), glob pathspecs in revert_implementation (LOW) and undocumented new refusals (LOW). Running: code-reviewer. The advisory fix trimmed SKILL.md under its 20480-byte size test and left the newer named errors (RestoreError, GateRecoveryError, ShipError, the gate marker) undocumented. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0008, which ship only with the MSP.
 
 ## Next step
 
