@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T21:36:08.716Z
+Updated: 2026-10-28T21:36:10.922Z
 Next ids: c7 D6 R5 S1
 
 ## Goal
@@ -54,7 +54,8 @@ Needs: D1, D3, D4, D5, R1, R2, R4.
 - Record generator: /private/tmp/claude-501/-Users-satanshumishra-Documents-DevLabs-mitosis/6f256c0e-eb96-4236-a7f2-dfa8b481c5eb/scratchpad/make_record.py
 - receipts 0.9.5 CLI (offline): node ~/.npm/_npx/d44e7b340d275612/node_modules/receipts-cli/bin/receipts.js
 - Automated commit security flags and their judgements (outside-class items for the final report): /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/review/automated-security-notes.md
-- Amendment build: /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/amend-1.zsh with amend-1.items.json beside it
+- Amendment builds: /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/amend-1.zsh and amend-2.zsh, each with its amend-<n>.items.json beside it
+- Check author brief model: /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/review/check-author-amend-1.md
 - Parent's class guidance for S1 (shared git directory routes: refs, packed-refs, refs/replace, info/grafts, config): /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/review/round-5/s1-class-guidance.md
 - Fix agent rules: /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/review/round-1/fix-brief-common.md
 - Parent's pinned-state guidance for S1, P2, P3 and C1 (one class, one fix agent when one implementation covers them; requirement-wrong if the requirement forces reading the Worker's submodule checkout, reported to the parent): /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/review/round-5/pinned-state-guidance.md
