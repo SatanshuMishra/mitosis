@@ -101,7 +101,8 @@ what reconcile, stacking or the build found. `--pr-door` is still accepted
 and no longer reaches the body.
 
 Every run that names `--pr-type` and `--pr-subject`, `--plan-only` and
-`--no-push` included, needs `--pr-impact` or `--pr-blast-radius`, and runs
+`--no-push` included, needs `--pr-impact` or `--pr-blast-radius` and
+`--timeout`, which bounds the render probe, and runs
 render on each MSP's facts before any Worker is dispatched, so a missing
 pull-request command, one older than 0.3.0 or a refusal stops the run before
 a build is paid for.

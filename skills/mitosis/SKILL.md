@@ -113,9 +113,9 @@ when several. Body: Problem, the `--pr-why` lines; Change, one entry
 per Step; Impact, the `--pr-impact` lines, else the `--pr-blast-radius`
 sentence; Testing, one row per acceptance test, unproven ones Not run with a
 reason; Trade-offs and open problems, what reconcile, stacking or the build
-found. `--pr-door` is accepted but no longer reaches the body. Naming
+found. `--pr-door` no longer reaches the body. Naming
 `--pr-type` and `--pr-subject`, even with `--plan-only` or `--no-push`, needs
-`--pr-impact` or `--pr-blast-radius` and probes render with every MSP's facts
+`--pr-impact` or `--pr-blast-radius` and `--timeout`, and probes render with every MSP's facts
 before any Worker spawns. Pushing also needs `--pr-why`; without
 `--pr-command` each MSP branch is pushed and ends `pushed`, its title and body
 kept for the caller.

@@ -18,7 +18,8 @@ own commit.
   as its reason and is never retried with altered facts.
 - A run needs pull-request 0.3.0 or later on PATH, or named with the new
   `--render-command`. Every run that names `--pr-type` and `--pr-subject`,
-  `--plan-only` and `--no-push` included, runs render on each MSP's facts
+  `--plan-only` and `--no-push` included, needs `--timeout` to bound the probe
+  and runs render on each MSP's facts
   before any Worker is dispatched, and refuses the run when the command is
   missing, older than 0.3.0 or refuses the facts.
 - The new repeatable `--pr-impact` gives the Impact lines; without it the

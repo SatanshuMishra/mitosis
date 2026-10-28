@@ -311,7 +311,8 @@ FLAG_SPECS = {
     "--timeout": {
         "metavar": "SECONDS",
         "type": float,
-        "help": "per Worker, per acceptance run and per pull-request command; required for a run",
+        "help": "per Worker, per acceptance run, per render probe and per pull-request command; "
+        "required for a run, and for a --plan-only run that names --pr-type and --pr-subject",
     },
     "--concurrency": {
         "metavar": "N",
