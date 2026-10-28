@@ -1,7 +1,7 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T21:28:22.639Z
-Next ids: c7 D4 R5 S1
+Updated: 2026-10-28T21:29:09.429Z
+Next ids: c7 D5 R5 S1
 
 ## Goal
 
@@ -31,6 +31,7 @@ Needs: D1, D3, R1, R2.
 - D1 Interphase hand-off: build the handed-off spec as one MSP of seven Steps: Hand off now: one MSP, seven ordered Steps, criteria 5.1 to 5.6 as M1 to M6 and 5.7 for docs and version 0.8.0, built from feat/hr-mitosis-referee cut from main 1391d39 after the O2 check author locks the acceptance tests.
 
 - D3 Amendment 1 hand-off: build M1 as a clean gate checkout in MSP hr-mitosis-referee-amend-1: Hand off amendment 1. The gate, the mutant runs and every acceptance run execute in a clean checkout of the MSP's committed tree. A committed referee write, found from tree objects with git's settings pinned, is reverted and exits 9. Uncommitted files are listed as ignored and never restored. The amendment is built with amend-1.zsh (--plan-only first, always --no-push) and merged into mitosis/hr-mitosis-referee, then review round 5 judges it.
+- D4 Round 5 revert shape: object-built revert of the MSP branch, worktree sync that never deletes: Third option, sent to the running fix agent as a refinement of item 6 of review/round-5/fix-brief-pinned-state.md; its receipts assert the branch tree equals the pinned base at every referee path.
 
 ## Open risks
 
