@@ -15,6 +15,9 @@ the gate withholds a pull request it cannot certify.
   commit and its MSP is held back as `referee-reverted` and never pushed, with
   exit 9. The JSON result's `referee` object names the locked paths, their
   receipt lock and the commit they were read at.
+- A `- Locked:` path the feature branch does not hold, in a real run, and a
+  `- Locked:` line that is empty, absolute or contains `..` are refused with
+  exit 3.
 - The gate runs each passing property against up to 12 mutants of its Step's
   added lines and judges it `weak` when no mutant fails it, with exit 24. An
   MSP whose gate is `weak`, `inert` or `inconclusive` ends `gate-failed`,

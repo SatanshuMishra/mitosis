@@ -143,13 +143,20 @@ hold a referee path, with exit 3, before anything is built. A Worker that
 writes one anyway has the file restored from the feature branch, and its MSP
 is held back as `referee-reverted` and never pushed, with exit 9. The JSON
 result's `referee` object names the locked paths, their receipt lock and the
-commit they were read at.
+commit they were read at. A real run refuses, with exit 3, a charter whose
+`- Locked:` path the feature branch does not hold, and a `- Locked:` line that
+is empty, absolute or contains `..`.
 
 The gate runs each acceptance property with the work present and with the
 implementation reverted, then runs each passing property against up to 12
-mutants of its Step's added lines, each one small change such as a flipped
-comparison or a dropped condition. A property no mutant fails is judged
-`weak`, with exit 24: it passes whether or not the work is right. An MSP
+mutants of its Step's added lines, each one a small change to an added line,
+such as a flipped comparison, a swapped operator, a flipped true or false, a
+number shifted by one or a replaced return value. Strings and comments are
+left alone, and when no operator applies to any added line the gate drops the
+added lines of each file instead. A Step that changed a symbolic link is
+judged `inconclusive`, because the gate never writes through a link. A
+property no mutant fails is judged `weak`, with exit 24: it passes whether or
+not the work is right. An MSP
 whose gate is `weak`, `inert` or `inconclusive` ends `gate-failed`: its work
 is committed on its branch and never pushed, so no pull request opens on an
 unproven property.

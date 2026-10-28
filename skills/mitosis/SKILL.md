@@ -24,7 +24,7 @@ Reach for mitosis when all three hold:
    test is still built, but the run proves nothing about it and says so.
 3. A human will review each part as its own pull request. mitosis opens
    pull requests, or pushes the branches for the caller to open, and
-   stops. Merging is the human's judgment.
+   stops.
 
 Do not reach for it when:
 
@@ -172,7 +172,7 @@ the run directory and prints the plan-stage report; it spawns nothing:
 python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --items plan.json --plan-only
 ```
 
-Read the report. An `after` naming a Step that does not exist is fatal and is
+An `after` naming a Step that does not exist is fatal and is
 named; a write-set path that does not exist yet, an empty `acceptance` list
 and a non-empty `assumptions` list are each counted, not fatal. When the
 Lane count and the tiers look right, run:
@@ -210,7 +210,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --spec docs/specs/search.md --plan-on
   --timeout 900
 ```
 
-Decompose uses the top mapping. This run spawns one model process, persists
+This run spawns one model process, persists
 its Steps and prints a report. Read four things: the Split shape findings,
 worst first; the scalars below them, which score the split before any brief
 exists; the coverage map of sections no Step claimed; and the assumptions,
@@ -311,7 +311,8 @@ implementation is derived: the MSP's write-set minus the files its acceptance
 properties name.
 
 Each passing property then runs against up to 12 mutants of its Step's added
-lines, small changes such as a flipped comparison. `weak` means no mutant
+lines, small changes such as a flipped comparison or a replaced return value,
+or dropped added lines when no operator fits. `weak` means no mutant
 failed it, exit 24. An MSP whose gate is `weak`, `inert` or `inconclusive`
 ends `gate-failed`: committed, never pushed, no pull request. `--trajectory`
 also gets one outcome entry per acceptance test after every gate.
@@ -321,7 +322,9 @@ The referee is what judges the work, and no Worker writes it: the charter's
 baselines, allowlists and skip lists. Planning refuses a Step whose files hold
 a referee path, exit 3. A Worker's write to one is restored and its MSP held
 back as `referee-reverted`, exit 9. The JSON result's `referee` object names
-the locked paths, their receipt lock and commit.
+the locked paths, their receipt lock and commit. A real run exits 3 on a
+`- Locked:` path the feature branch lacks, or a `- Locked:` line that is empty,
+absolute or contains `..`.
 
 Every git call times out after 600 seconds with a named error.
 
@@ -347,13 +350,13 @@ states that block dependents differ by the human action they need:
 `merge-blocked` wants a conflict resolved, `blocked` wants a predecessor
 fixed.
 
-The last line of mitosis's own output is one JSON object: the exit code and
+The last line of mitosis's output is one JSON object: the exit code and
 its meaning, every Lane with its state, reason, notes and log paths, every MSP
 with its branch, base, pull request, title, body, gate verdict and reconcile
 findings, and an `attention` list of what a human or the caller should look
 at. An agent that dispatched mitosis reads that line, not the report.
 
-The run directory, printed in the report, holds the plan, the state, the
+The run directory holds the plan, the state, the
 persisted Steps, every Worker's full stdout and stderr, and the worktrees.
 Read a Lane's log there; its return is a claim, and the git log is the record.
 
