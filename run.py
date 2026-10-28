@@ -720,11 +720,16 @@ def _status_paths(entries):
             yield entry[3:]
 
 
-def _dirty_paths(tree):
-    entries = git_run(
-        ["status", "--porcelain", "-z", "--untracked-files=all"], tree["path"]
-    ).stdout.split("\0")
+def _written_paths(path, *options):
+    entries = git_paths(["status", "--porcelain", "-z", "--untracked-files=all", *options], path)
     return tuple(dict.fromkeys(_status_paths(entries)))
+
+
+def _dirty_paths(tree):
+    try:
+        return _written_paths(tree["path"])
+    except GitError:
+        return ()
 
 
 def _foreign_writes(plan, msp, tree, batch, records):
@@ -1167,10 +1172,7 @@ def msp_properties(plan, msp, unchanged=frozenset()):
 
 
 def written_since(tree):
-    entries = git_paths(
-        ["status", "--porcelain", "-z", "--untracked-files=all", "--no-renames"], tree
-    )
-    return tuple(dict.fromkeys(entry[3:] for entry in entries if len(entry) > 3))
+    return _written_paths(tree, "--no-renames")
 
 
 def commit_all(tree, message):
