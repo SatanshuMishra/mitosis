@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T19:54:12.287Z
+Updated: 2026-10-28T20:03:14.173Z
 Next ids: c7 D4 R5 S1
 
 ## Goal
@@ -18,7 +18,7 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-Stage 3, round 4 loop at 8015a99 on MSP mitosis/hr-mitosis-referee over base 5a94f41, with the hidden-untracked-files kind on the amendment path (requirement-wrong; ledger line corrected by hand after pipeline diagnosis refused a second record, backup review/round-4/findings.jsonl.before-requirement-wrong). Fixed with receipts on the MSP branch, head 50fd80c: every round 1 to 3 blocker and advisory, and round 4 C1, S1 and S2; 702 OK on 3.15 and 3.9, the 13 locked files unchanged (receipt-lock f9bd663c...). Running: the check-author agent writing tests/test_clean_gate.py on the MSP branch from review/check-author-amend-1.md. The build script amend-1.zsh and amend-1.items.json are in the run home, and the amendment boundary is recorded (D3). Amendment 1 is handed off and reported to the parent session: spec, decisions, record and docs/specs/hr-mitosis-referee.amend-1.items.json, two Steps in MSP hr-mitosis-referee-amend-1, 14 new rows for the check author in tests/test_clean_gate.py, glossary terms Gate folder and Ignored file, ADR 0009 and an amended ADR 0006. Rejected and outside-class items for the final report: round 1 C4, S6, S3, S7, S8; round 2 C2, S1, S4; round 3 S2, S3; round 4 S3; the automated commit flags. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0009, which ship only with the MSP.
+Stage 3, round 4 loop at 8015a99 on MSP mitosis/hr-mitosis-referee over base 5a94f41, with the hidden-untracked-files kind on the amendment path (requirement-wrong; ledger line corrected by hand after pipeline diagnosis refused a second record, backup review/round-4/findings.jsonl.before-requirement-wrong). Fixed with receipts on the MSP branch, head 50fd80c: every round 1 to 3 blocker and advisory, and round 4 C1, S1 and S2; 702 OK on 3.15 and 3.9, the 13 original locked files unchanged. The check author's tests/test_clean_gate.py is committed at d32c436 (11 red at 50fd80c for their rows' reasons, 3 regression guards green) and locked in CHARTER.md; receipt-lock of all fourteen: 99abc6c2e36a46f71468f1a7930e5a9a48be44e2d74ef44fada3e18d7377bbe1. The amendment plan-only passed (one MSP, two Lanes). Running: the amendment build, amend-1.zsh, output in amend-1.build.{out,err,exit} in the run home. Amendment 1 is handed off and reported to the parent session: spec, decisions, record and docs/specs/hr-mitosis-referee.amend-1.items.json, two Steps in MSP hr-mitosis-referee-amend-1, 14 new rows for the check author in tests/test_clean_gate.py, glossary terms Gate folder and Ignored file, ADR 0009 and an amended ADR 0006. Rejected and outside-class items for the final report: round 1 C4, S6, S3, S7, S8; round 2 C2, S1, S4; round 3 S2, S3; round 4 S3; the automated commit flags. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0009, which ship only with the MSP.
 
 ## Next step
 
