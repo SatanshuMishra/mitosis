@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "harness-redesign/k6-outcome.schema.json",
+  "title": "K6 outcome entry",
+  "description": "The arguments of one receipts append_trajectory call after every gate and verdict. receipts 0.9.5 stores only its own fields, so the run's fields travel as tags (O10).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "repo",
+    "surface",
+    "surface_key",
+    "outcome",
+    "tags"
+  ],
+  "properties": {
+    "repo": {
+      "type": "string",
+      "minLength": 1
+    },
+    "surface": {
+      "type": "string",
+      "minLength": 1
+    },
+    "surface_key": {
+      "type": "string",
+      "pattern": "^[^/]+/[^/]+$"
+    },
+    "outcome": {
+      "enum": [
+        "fixed",
+        "unverified-reasoned",
+        "speculative",
+        "reverted"
+      ]
+    },
+    "symptom": {
+      "type": "string"
+    },
+    "root_cause": {
+      "type": "string"
+    },
+    "what_worked": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "what_failed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tier": {
+      "enum": [
+        "top",
+        "cheap",
+        "mixed"
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^(kind:(gate|verdict)|run:[a-z0-9-]+|msp:[a-z0-9-]+|commit:[0-9a-f]{40}|check:C[0-9]+\\.[0-9]+=(pass|fail|could-not-run)|usd:[0-9]+(\\.[0-9]+)?|minutes:[0-9]+(\\.[0-9]+)?)$"
+      },
+      "allOf": [
+        {
+          "contains": {
+            "pattern": "^kind:",
+            "type": "string"
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "pattern": "^run:",
+            "type": "string"
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "pattern": "^msp:",
+            "type": "string"
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "pattern": "^commit:",
+            "type": "string"
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "pattern": "^usd:",
+            "type": "string"
+          },
+          "minContains": 1,
+          "maxContains": 1
+        },
+        {
+          "contains": {
+            "pattern": "^minutes:",
+            "type": "string"
+          },
+          "minContains": 1,
+          "maxContains": 1
+        }
+      ]
+    }
+  }
+}

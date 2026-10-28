@@ -1,0 +1,584 @@
+[
+  {
+    "line": "if (a === b) {",
+    "ext": "js",
+    "mutants": [
+      {
+        "op": "=== -> !==",
+        "after": "if (a !== b) {"
+      }
+    ]
+  },
+  {
+    "line": "if (a !== b) {",
+    "ext": "ts",
+    "mutants": [
+      {
+        "op": "!== -> ===",
+        "after": "if (a === b) {"
+      }
+    ]
+  },
+  {
+    "line": "if a == b:",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "== -> !=",
+        "after": "if a != b:"
+      }
+    ]
+  },
+  {
+    "line": "if a != b:",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "!= -> ==",
+        "after": "if a == b:"
+      }
+    ]
+  },
+  {
+    "line": "while i <= n:",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "<= -> <",
+        "after": "while i < n:"
+      }
+    ]
+  },
+  {
+    "line": "while i < n:",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "< -> <=",
+        "after": "while i <= n:"
+      }
+    ]
+  },
+  {
+    "line": "if x >= 10:",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": ">= -> >",
+        "after": "if x > 10:"
+      },
+      {
+        "op": "number +1",
+        "after": "if x >= 11:"
+      },
+      {
+        "op": "number -1",
+        "after": "if x >= 9:"
+      }
+    ]
+  },
+  {
+    "line": "if x > y:",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "> -> >=",
+        "after": "if x >= y:"
+      }
+    ]
+  },
+  {
+    "line": "ok = a && b;",
+    "ext": "js",
+    "mutants": [
+      {
+        "op": "&& -> ||",
+        "after": "ok = a || b;"
+      }
+    ]
+  },
+  {
+    "line": "ok = a || b;",
+    "ext": "js",
+    "mutants": [
+      {
+        "op": "|| -> &&",
+        "after": "ok = a && b;"
+      }
+    ]
+  },
+  {
+    "line": "if a and b:",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "and -> or",
+        "after": "if a or b:"
+      }
+    ]
+  },
+  {
+    "line": "if a or b:",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "or -> and",
+        "after": "if a and b:"
+      }
+    ]
+  },
+  {
+    "line": "total = f(x) + g(y)",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "+ -> -",
+        "after": "total = f(x) - g(y)"
+      }
+    ]
+  },
+  {
+    "line": "delta = f(x) - g(y)",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "- -> +",
+        "after": "delta = f(x) + g(y)"
+      }
+    ]
+  },
+  {
+    "line": "ratio = (a) / b",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "/ -> *",
+        "after": "ratio = (a) * b"
+      }
+    ]
+  },
+  {
+    "line": "area = (w) * h",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "* -> /",
+        "after": "area = (w) / h"
+      }
+    ]
+  },
+  {
+    "line": "let done = true;",
+    "ext": "js",
+    "mutants": [
+      {
+        "op": "true -> false",
+        "after": "let done = false;"
+      }
+    ]
+  },
+  {
+    "line": "let done = false;",
+    "ext": "js",
+    "mutants": [
+      {
+        "op": "false -> true",
+        "after": "let done = true;"
+      }
+    ]
+  },
+  {
+    "line": "done = True",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "True -> False",
+        "after": "done = False"
+      }
+    ]
+  },
+  {
+    "line": "done = False",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "False -> True",
+        "after": "done = True"
+      }
+    ]
+  },
+  {
+    "line": "limit = 41",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "number +1",
+        "after": "limit = 42"
+      },
+      {
+        "op": "number -1",
+        "after": "limit = 40"
+      }
+    ]
+  },
+  {
+    "line": "y = -1",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "number +1",
+        "after": "y = -2"
+      },
+      {
+        "op": "number -1",
+        "after": "y = -0"
+      }
+    ]
+  },
+  {
+    "line": "x = 007",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "number +1",
+        "after": "x = 8"
+      },
+      {
+        "op": "number -1",
+        "after": "x = 6"
+      }
+    ]
+  },
+  {
+    "line": "arr[i] = arr[i-1] - 1",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "- -> +",
+        "after": "arr[i] = arr[i-1] + 1"
+      },
+      {
+        "op": "number +1",
+        "after": "arr[i] = arr[i-2] - 1"
+      },
+      {
+        "op": "number -1",
+        "after": "arr[i] = arr[i-0] - 1"
+      }
+    ]
+  },
+  {
+    "line": "if (a<b && c>d)",
+    "ext": "c",
+    "mutants": [
+      {
+        "op": "< -> <=",
+        "after": "if (a<=b && c>d)"
+      },
+      {
+        "op": "> -> >=",
+        "after": "if (a<b && c>=d)"
+      },
+      {
+        "op": "&& -> ||",
+        "after": "if (a<b || c>d)"
+      }
+    ]
+  },
+  {
+    "line": "x = y if a>=b else z",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": ">= -> >",
+        "after": "x = y if a>b else z"
+      }
+    ]
+  },
+  {
+    "line": "a == b == c",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "== -> !=",
+        "after": "a != b == c"
+      }
+    ]
+  },
+  {
+    "line": "    return a + b",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "return -> None",
+        "after": "    return None"
+      }
+    ]
+  },
+  {
+    "line": "    return a + b",
+    "ext": "PY",
+    "mutants": [
+      {
+        "op": "return -> None",
+        "after": "    return None"
+      }
+    ]
+  },
+  {
+    "line": "    return a + b",
+    "ext": "rb",
+    "mutants": []
+  },
+  {
+    "line": "    return None",
+    "ext": "py",
+    "mutants": []
+  },
+  {
+    "line": "    return total  # the sum",
+    "ext": "py",
+    "mutants": []
+  },
+  {
+    "line": "  return x * 2;",
+    "ext": "js",
+    "mutants": [
+      {
+        "op": "* -> /",
+        "after": "  return x / 2;"
+      },
+      {
+        "op": "number +1",
+        "after": "  return x * 3;"
+      },
+      {
+        "op": "number -1",
+        "after": "  return x * 1;"
+      },
+      {
+        "op": "return -> undefined",
+        "after": "  return undefined;"
+      }
+    ]
+  },
+  {
+    "line": "  return x * 2;",
+    "ext": "JS",
+    "mutants": [
+      {
+        "op": "* -> /",
+        "after": "  return x / 2;"
+      },
+      {
+        "op": "number +1",
+        "after": "  return x * 3;"
+      },
+      {
+        "op": "number -1",
+        "after": "  return x * 1;"
+      },
+      {
+        "op": "return -> undefined",
+        "after": "  return undefined;"
+      }
+    ]
+  },
+  {
+    "line": "  return x * 2;",
+    "ext": "tsx",
+    "mutants": [
+      {
+        "op": "* -> /",
+        "after": "  return x / 2;"
+      },
+      {
+        "op": "number +1",
+        "after": "  return x * 3;"
+      },
+      {
+        "op": "number -1",
+        "after": "  return x * 1;"
+      },
+      {
+        "op": "return -> undefined",
+        "after": "  return undefined;"
+      }
+    ]
+  },
+  {
+    "line": "  return x * 2;",
+    "ext": "go",
+    "mutants": [
+      {
+        "op": "* -> /",
+        "after": "  return x / 2;"
+      },
+      {
+        "op": "number +1",
+        "after": "  return x * 3;"
+      },
+      {
+        "op": "number -1",
+        "after": "  return x * 1;"
+      }
+    ]
+  },
+  {
+    "line": "  return undefined;",
+    "ext": "js",
+    "mutants": []
+  },
+  {
+    "line": "echo $((count))",
+    "ext": "sh",
+    "mutants": [
+      {
+        "op": "$((x)) -> $((x+1))",
+        "after": "echo $((count+1))"
+      },
+      {
+        "op": "$((x)) -> $((x-1))",
+        "after": "echo $((count-1))"
+      }
+    ]
+  },
+  {
+    "line": "echo $((count))",
+    "ext": "bash",
+    "mutants": [
+      {
+        "op": "$((x)) -> $((x+1))",
+        "after": "echo $((count+1))"
+      },
+      {
+        "op": "$((x)) -> $((x-1))",
+        "after": "echo $((count-1))"
+      }
+    ]
+  },
+  {
+    "line": "echo $((count))",
+    "ext": "zsh",
+    "mutants": []
+  },
+  {
+    "line": "const s = 'a == b' + x;",
+    "ext": "js",
+    "mutants": []
+  },
+  {
+    "line": "print(\"x > 1 and y < 2\")",
+    "ext": "py",
+    "mutants": []
+  },
+  {
+    "line": "msg = f\"{a} + {b}\" + tail",
+    "ext": "py",
+    "mutants": []
+  },
+  {
+    "line": "label = `${n} items` || none",
+    "ext": "ts",
+    "mutants": [
+      {
+        "op": "|| -> &&",
+        "after": "label = `${n} items` && none"
+      }
+    ]
+  },
+  {
+    "line": "x = \"esc \\\" quote\" == y",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "== -> !=",
+        "after": "x = \"esc \\\" quote\" != y"
+      }
+    ]
+  },
+  {
+    "line": "x = \"日本\" == y",
+    "ext": "py",
+    "mutants": [
+      {
+        "op": "== -> !=",
+        "after": "x = \"日本\" != y"
+      }
+    ]
+  },
+  {
+    "line": "name = \"héllo\" + suffix",
+    "ext": "py",
+    "mutants": []
+  },
+  {
+    "line": "# a == b",
+    "ext": "py",
+    "mutants": []
+  },
+  {
+    "line": "// a === b",
+    "ext": "js",
+    "mutants": []
+  },
+  {
+    "line": " * a < b",
+    "ext": "js",
+    "mutants": []
+  },
+  {
+    "line": "/* x > y */",
+    "ext": "c",
+    "mutants": []
+  },
+  {
+    "line": "   # return 5",
+    "ext": "py",
+    "mutants": []
+  },
+  {
+    "line": "pass",
+    "ext": "py",
+    "mutants": []
+  },
+  {
+    "line": "",
+    "ext": "py",
+    "mutants": []
+  },
+  {
+    "line": "x = 1.5",
+    "ext": "py",
+    "mutants": []
+  },
+  {
+    "line": "foo_1 = bar_2",
+    "ext": "py",
+    "mutants": []
+  },
+  {
+    "line": "x = a ** b",
+    "ext": "py",
+    "mutants": []
+  },
+  {
+    "line": "fn f() -> u32 {",
+    "ext": "rs",
+    "mutants": []
+  },
+  {
+    "line": "{\"cap\": 3}",
+    "ext": "json",
+    "mutants": [
+      {
+        "op": "number +1",
+        "after": "{\"cap\": 4}"
+      },
+      {
+        "op": "number -1",
+        "after": "{\"cap\": 2}"
+      }
+    ]
+  }
+]
