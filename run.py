@@ -12,7 +12,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
 import core
-import shape
+import pr_facts
 
 BRANCH_PREFIX = "mitosis"
 
@@ -461,11 +461,18 @@ def _worker_values(plan, lane, tree, models, run_dir, session_id):
     }
 
 
-def _landing_message(plan, lane, tree):
-    return "chore(%s): land Lane %d (%s)" % (
-        tree.get("label") or tree["msp"],
-        lane,
-        ", ".join(plan["lanes"][lane]["steps"]),
+def _landing_message(plan, lane, header):
+    steps = plan["lanes"][lane]["steps"]
+    tasks = {item.get("name"): item.get("task") for item in plan.get("items") or []}
+    scope = (header or {}).get("scope")
+    subject = "%s%s: %s" % (
+        (header or {}).get("type") or "chore",
+        "(%s)" % scope if scope else "",
+        ", ".join(steps),
+    )
+    return "%s\n\n%s" % (
+        subject,
+        "\n".join(pr_facts.first_sentence(tasks.get(name)) for name in steps),
     )
 
 
@@ -486,12 +493,12 @@ def _still_written(plan, lane, tree):
     )
 
 
-def _land(plan, lane, tree):
+def _land(plan, lane, tree, header):
     try:
         commit = commit_paths(
             tree["path"],
             plan["briefs"][lane]["write_set"],
-            _landing_message(plan, lane, tree),
+            _landing_message(plan, lane, header),
         )
     except GitError as error:
         write_set = plan["briefs"][lane]["write_set"]
@@ -583,8 +590,8 @@ def _suspects(batch, held, path):
     return claimants or list(batch)
 
 
-def _landed(plan, lane, tree, record):
-    commit, reason = _land(plan, lane, tree)
+def _landed(plan, lane, tree, record, header):
+    commit, reason = _land(plan, lane, tree, header)
     if reason is not None:
         return {**record, "state": "failed", "reason": reason}
     return {**record, "commit": commit}
@@ -603,6 +610,7 @@ def dispatch(
     on_lane=None,
     observer=None,
     env=None,
+    header=None,
 ):
     if timeout is None:
         raise ConfigError("a per-Lane timeout is required; mitosis has no default")
@@ -641,7 +649,10 @@ def dispatch(
             busy = {lanes[entry[0]]["msp"] for entry in running.values()}
             for msp in sorted({lanes[lane]["msp"] for lane in held} - busy):
                 batch = [lane for lane in held if lanes[lane]["msp"] == msp]
-                landed = {lane: _landed(plan, lane, tree_of[msp], held[lane]) for lane in batch}
+                landed = {
+                    lane: _landed(plan, lane, tree_of[msp], held[lane], header)
+                    for lane in batch
+                }
                 foreign = _foreign_writes(plan, msp, tree_of[msp], batch, records)
                 for lane in batch:
                     records = settle(
@@ -1192,27 +1203,6 @@ def pr_base(plan, msp, feature_branch, trees, repo, settled=None):
     return feature_branch, None
 
 
-def _judged(gate_result):
-    return {
-        (entry.get("step"), entry.get("file"), entry.get("test")): entry
-        for entry in (gate_result or {}).get("properties") or []
-    }
-
-
-def _name_of(plan, index):
-    items = plan.get("items") or []
-    return items[index].get("name") if 0 <= index < len(items) else "a Step"
-
-
-def manifest_gaps(plan, msp):
-    owned = set(plan["msps"][msp]["steps"])
-    return [
-        gap
-        for gap in shape.manifest_gaps(plan.get("items") or [])
-        if gap["reached"] == 0 and _name_of(plan, gap["owner"]) in owned
-    ]
-
-
 PR_TYPES = ("feat", "fix", "refactor", "docs", "test", "chore", "perf", "ci")
 
 PR_DOORS = ("one-way", "two-way")
@@ -1284,8 +1274,6 @@ COMPOSED_RULES = (
     (re.compile(r"[0-9A-Fa-f]{40}"), "holds a run of 40 hexadecimal digits"),
 )
 
-NAMEABLE_CAP = 100
-
 BLOCK_OPENERS = ("`", "~", "#", ">", "|")
 
 SETEXT_UNDERLINE = re.compile(r"[=-]+")
@@ -1297,30 +1285,6 @@ RESERVED_FIELD = re.compile(
 RESERVED_STRUCTURE = "Supersedes "
 
 SENTENCE_ENDS = ".?!"
-
-SENTENCE_END = re.compile(r"[.?!](?= |$)")
-
-WHAT_HEADING = "## What changed"
-
-WHY_HEADING = "## Why"
-
-RISK_HEADING = "## Risk"
-
-DOOR_PREFIX = "Door: "
-
-BLAST_RADIUS_PREFIX = "Blast radius: "
-
-VERIFICATION_HEADING = "## Verification"
-
-BULLET = "- "
-
-VERIFIED_PREFIX = "Verified: "
-
-NOT_VERIFIED_PREFIX = "Not verified: "
-
-PROVEN = "fails with the work reverted and passes with it"
-
-WHAT_FALLBACK = "Builds one Step of this change."
 
 
 def code_units(value):
@@ -1426,215 +1390,6 @@ def pull_request_title(header, plan, msp):
     return "%s%s: %s" % (header["type"], "(%s)" % scope if scope else "", labelled)
 
 
-def first_sentence(task):
-    text = " ".join(str(task or "").split())
-    end = SENTENCE_END.search(text)
-    return text[: end.end()] if end else text
-
-
-def _stated(named, anonymous):
-    return named if composed_value(named) else anonymous
-
-
-def _and_list(names):
-    if len(names) < 2:
-        return "".join(names)
-    return "%s and %s" % (", ".join(names[:-1]), names[-1])
-
-
-def _what_entry(name, task):
-    sentence = first_sentence(task)
-    if (
-        composed_value(sentence)
-        and "A" <= sentence[0] <= "Z"
-        and sentence[-1] in SENTENCE_ENDS
-        and not receipt_token(sentence)
-    ):
-        return sentence
-    return _stated("Builds the %s Step." % name, WHAT_FALLBACK)
-
-
-def _what_changed(plan, msp):
-    steps = _steps_by_name(plan)
-    names = tuple(str(name) for name in plan["msps"][msp]["steps"])
-    entries = tuple(_what_entry(name, steps[name].get("task")) for name in names)
-    if len(entries) <= SECTION_LIMIT:
-        return entries
-    rest = names[SECTION_LIMIT - 1 :]
-    return entries[: SECTION_LIMIT - 1] + (
-        _stated(
-            "Builds %d more Steps: %s." % (len(rest), _and_list(rest)),
-            "Builds %d more Steps." % len(rest),
-        ),
-    )
-
-
-def _capped(values, overflow, closing=()):
-    room = SECTION_LIMIT - len(closing)
-    if len(values) <= room:
-        return values + closing
-    return values[: room - 1] + (overflow % (len(values) - room + 1),) + closing
-
-
-def _unproven(outcome):
-    return "is %s" % outcome if outcome in core.GATE_OUTCOMES else "was not judged"
-
-
-def _proof(gate_result, proven_head):
-    gated = (gate_result or {}).get("commit") or ""
-    if proven_head is None or proven_head == gated:
-        return ()
-    return (
-        "mitosis gated commit %s; the caller proved commit %s without a new gate."
-        % (gated[:12], proven_head[:12]),
-    )
-
-
-def _verification(plan, msp, gate_result, gate_error, proven_head=None):
-    steps = _steps_by_name(plan)
-    judged = _judged(gate_result)
-    names = plan["msps"][msp]["steps"]
-    properties = tuple(
-        (
-            "%s::%s (%s)" % (entry.get("file"), entry.get("test"), name),
-            (judged.get((name, entry.get("file"), entry.get("test"))) or {}).get("outcome"),
-        )
-        for name in names
-        for entry in steps[name].get("acceptance") or []
-    )
-    verified = tuple(
-        _stated("%s %s" % (where, PROVEN), "an acceptance test %s" % PROVEN)
-        for where, outcome in properties
-        if outcome == "pass"
-    )
-    unproven = (
-        tuple(
-            _stated("%s %s" % (where, _unproven(outcome)), "an acceptance test %s" % _unproven(outcome))
-            for where, outcome in properties
-            if outcome != "pass"
-        )
-        + tuple(
-            _stated("the %s Step has no acceptance test" % name, "a Step has no acceptance test")
-            for name in names
-            if not steps[name].get("acceptance")
-        )
-    )
-    closing = (("the gate could not run",) if gate_error else ()) + _proof(gate_result, proven_head)
-    return tuple(
-        VERIFIED_PREFIX + value
-        for value in _capped(
-            verified, "%d more acceptance tests fail with the work reverted and pass with it"
-        )
-    ) + tuple(
-        NOT_VERIFIED_PREFIX + value
-        for value in _capped(unproven, "%d more acceptance checks were not proven", closing)
-    )
-
-
-def _plural(count, singular, plural):
-    return "%d %s" % (count, singular if count == 1 else plural)
-
-
-def _risk_kinds(plan, msp, findings, exception, foreign, gate_error):
-    found = findings or {}
-    undeclared = tuple(dict.fromkeys(found.get("undeclared") or ()))
-    unwritten = tuple(dict.fromkeys(found.get("unwritten") or ()))
-    crossing = tuple(dict.fromkeys(entry.get("path") for entry in found.get("crossing") or ()))
-    foreign_paths = tuple(dict.fromkeys(entry.get("path") for entry in unique_foreign(foreign)))
-    gaps = tuple(dict.fromkeys(gap["manifest"] for gap in manifest_gaps(plan, msp)))
-    producers = len((exception or {}).get("producers") or ())
-    kinds = (
-        (
-            bool(undeclared),
-            "reconcile found %s" % _plural(len(undeclared), "undeclared write", "undeclared writes"),
-            undeclared,
-        ),
-        (
-            bool(unwritten),
-            "reconcile found %s never written"
-            % _plural(len(unwritten), "declared path", "declared paths"),
-            unwritten,
-        ),
-        (
-            bool(crossing),
-            "another MSP also changes %s this branch writes" % _plural(len(crossing), "file", "files"),
-            crossing,
-        ),
-        (
-            bool(foreign_paths),
-            "a Lane changed %s another Lane of this MSP owned and had already committed"
-            % _plural(len(foreign_paths), "file", "files"),
-            foreign_paths,
-        ),
-        (
-            bool(gaps),
-            "the build leaves %s exporting nothing"
-            % _plural(len(gaps), "package manifest", "package manifests"),
-            gaps,
-        ),
-        (
-            exception is not None,
-            "this MSP has %s, so its base is the feature branch"
-            % _plural(producers, "producer", "producers"),
-            (),
-        ),
-        (bool(gate_error), "the gate could not run", ()),
-    )
-    return tuple(
-        (text, tuple(path for path in paths if composed_value(path, NAMEABLE_CAP)), len(paths))
-        for present, text, paths in kinds
-        if present
-    )
-
-
-def _risk_clause(text, nameable, total, limit):
-    named = nameable[:limit]
-    hidden = total - len(named)
-    if not named:
-        return text
-    return "%s (%s)" % (text, _and_list(named + (("%d more" % hidden,) if hidden else ())))
-
-
-def _risk_line(kinds, limit):
-    sentence = "; ".join(
-        _risk_clause(text, nameable, total, limit) for text, nameable, total in kinds
-    )
-    return sentence[0].upper() + sentence[1:] + "."
-
-
-def _risk_fits(kinds, limit):
-    return composed_value(_risk_line(kinds, limit))
-
-
-def _largest_fitting(kinds, low, high):
-    if low >= high:
-        return low
-    middle = (low + high + 1) // 2
-    if _risk_fits(kinds, middle):
-        return _largest_fitting(kinds, middle, high)
-    return _largest_fitting(kinds, low, middle - 1)
-
-
-def _risk_limit(kinds):
-    edges = sorted({0} | {len(nameable) for _, nameable, _ in kinds})
-    spans = tuple(zip(edges, tuple(edge - 1 for edge in edges[1:]) + (edges[-1],)))
-    low, high = next(
-        ((low, high) for low, high in reversed(spans) if _risk_fits(kinds, low)), (0, 0)
-    )
-    return _largest_fitting(kinds, low, high)
-
-
-def _risk(plan, msp, findings, exception, foreign, gate_error):
-    kinds = _risk_kinds(plan, msp, findings, exception, foreign, gate_error)
-    if not kinds:
-        return None
-    return _risk_line(kinds, _risk_limit(kinds))
-
-
-def _block(heading, lines):
-    return "\n".join((heading,) + tuple(lines)) if lines else ""
-
-
 def lane_name(plan, lane):
     return "Lane %d (%s)" % (lane, ", ".join((plan.get("lanes") or [])[lane]["steps"]))
 
@@ -1670,37 +1425,6 @@ def msp_foreign_writes(plan, msp, lane_records):
     ]
 
 
-def merge_danger(header):
-    door = header.get("door")
-    blast_radius = header.get("blast_radius")
-    if door is None or blast_radius is None:
-        return ()
-    return (DOOR_PREFIX + door, BLAST_RADIUS_PREFIX + blast_radius)
-
-
-def pull_request_body(
-    header,
-    plan,
-    msp,
-    gate_result=None,
-    gate_error=None,
-    findings=None,
-    exception=None,
-    foreign=(),
-    proven_head=None,
-):
-    risk = _risk(plan, msp, findings, exception, foreign, gate_error)
-    blocks = (
-        _block(WHAT_HEADING, tuple(BULLET + entry for entry in _what_changed(plan, msp))),
-        _block(WHY_HEADING, tuple(header.get("why") or ())),
-        _block(RISK_HEADING, merge_danger(header) + ((risk,) if risk else ())),
-        _block(
-            VERIFICATION_HEADING, _verification(plan, msp, gate_result, gate_error, proven_head)
-        ),
-    )
-    return "\n\n".join(block for block in blocks if block)
-
-
 def ship(
     plan,
     msp,
@@ -1720,6 +1444,7 @@ def ship(
     foreign=(),
     proven_head=None,
     env=None,
+    render_command="pull-request",
 ):
     label = _label(plan, msp)
     head = commit_all(tree, "chore(%s): commit the MSP's work before shipping" % label)
@@ -1735,15 +1460,20 @@ def ship(
         return {**held, "unchanged": True}
     if not push:
         return {**held, "unchanged": False}
-    title = pull_request_title(header, plan, msp)
-    body = pull_request_body(
+    os.makedirs(log_dir, exist_ok=True)
+    facts = pr_facts.facts(
         header, plan, msp, gate_result, gate_error, findings, exception, foreign, proven_head
     )
+    try:
+        title, body = pr_facts.render(
+            render_command, facts, os.path.join(log_dir, "fields.json"), timeout, env
+        )
+    except pr_facts.RenderError as error:
+        raise ShipError(str(error))
     git(["push", "-q", "-u", remote, branch], tree)
     pushed = {**held, "pushed": head, "title": title, "body": body, "unchanged": False}
     if pr_command is None:
         return pushed
-    os.makedirs(log_dir, exist_ok=True)
     out = os.path.join(log_dir, "pull-request.out")
     err = os.path.join(log_dir, "pull-request.err")
     argv = build_argv(
@@ -1895,6 +1625,7 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=()):
             foreign=foreign,
             proven_head=record.get("proven_head"),
             env=settings.get("env"),
+            render_command=settings["render_command"],
         )
     except (OSError, GitError, ShipError, subprocess.SubprocessError, ValueError) as error:
         return {"state": "ship-failed", "reason": str(error), "ship": None}
@@ -2017,6 +1748,7 @@ def execute(
     proven_heads=None,
     observer=None,
     env=None,
+    render_command="pull-request",
 ):
     prior = prior_state(run_dir, plan, resume)
     header = carried_header(header, prior)
@@ -2044,6 +1776,7 @@ def execute(
         "run_dir": run_dir,
         "acceptance_command": acceptance_command,
         "pr_command": pr_command,
+        "render_command": render_command,
         "header": header,
         "timeout": timeout,
         "remote": remote,
@@ -2094,6 +1827,7 @@ def execute(
         on_lane=on_lane,
         observer=observer,
         env=env,
+        header=header,
     )
     notify(
         observer,
