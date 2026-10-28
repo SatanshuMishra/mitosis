@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T09:32:53.439Z
+Updated: 2026-10-28T09:33:07.198Z
 Next ids: c7 D2 R3 S1
 
 ## Goal
@@ -18,11 +18,11 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-Interphase Phase 9: spec, record and items written and passing check_spec, check_record --complete and check_items; one MSP, seven ordered Steps, criteria 5.1 to 5.6 are M1 to M6 and 5.7 is docs and version 0.8.0. The spec reviewer is running. Glossary section "Referee and gate" is appended to the checkout's GLOSSARY.md and ADRs 0006 to 0008 are written; the run home holds worker-rules.txt (with O3's line) and dispatch.zsh. The checkout's main is fast-forwarded to 1391d39, which carries the CI fix (test job on ubuntu-24.04 for Python 3.9), so the FEATURE branch cut from it inherits the fix.
+Stage 2 setup: the spec is handed off (record status handed-off, all checks pass) and the FEATURE branch feat/hr-mitosis-referee is cut from main 1391d39, which carries the CI fix. The checkout holds this run's uncommitted glossary section "Referee and gate" and ADRs 0006 to 0008, which ship only with the MSP. The run home holds worker-rules.txt (with O3's line) and dispatch.zsh.
 
 ## Next step
 
-Run pipeline feature-branch --repo /Users/satanshumishra/Documents/DevLabs/mitosis --slug hr-mitosis-referee --type feat, copy the items and graph into the run home, write CHARTER.md, run.zsh and rounds.md, then dispatch the O2 check author on the FEATURE branch.
+Copy the items and graph into the run home, write CHARTER.md, run.zsh and rounds.md, then dispatch the O2 check author on feat/hr-mitosis-referee.
 
 Needs: D1, R1, R2.
 
