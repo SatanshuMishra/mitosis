@@ -34,6 +34,21 @@ def bounded(args, cwd, check=True, timeout=run.GIT_TIMEOUT, env=None):
 run.git = bounded
 runpy.run_path(os.path.join(ROOT, "mitosis.py"), run_name="__main__")
 """
+UNREADABLE_LAUNCHER = """import os, runpy, sys
+ROOT = %r
+sys.path.insert(0, ROOT)
+sys.argv = [os.path.join(ROOT, "mitosis.py")] + sys.argv[1:]
+import run
+original = run.commit_before_gate
+def unreadable(plan, msp, tree):
+    path = os.path.join(tree, "unreadable.bin")
+    with open(path, "wb") as handle:
+        handle.write(b"x")
+    os.chmod(path, 0)
+    return original(plan, msp, tree)
+run.commit_before_gate = unreadable
+runpy.run_path(os.path.join(ROOT, "mitosis.py"), run_name="__main__")
+"""
 
 
 class PreGateCommitFailure(unittest.TestCase):
@@ -45,6 +60,9 @@ class PreGateCommitFailure(unittest.TestCase):
         hook = os.path.join(self.scratch.repo, ".git", "hooks", "pre-commit")
         lock_fixtures.put(hook, hook_text)
         os.chmod(hook, 0o755)
+        return self._build()
+
+    def _build(self):
         items = self.scratch.items([lock_fixtures.step("build", ["calc.py"], "demo")])
         self.scratch.jobs(
             {
@@ -76,6 +94,20 @@ class PreGateCommitFailure(unittest.TestCase):
         with mock.patch.object(lock_fixtures, "MITOSIS", launcher):
             done = self._build_with_hook(HANGING_HOOK)
         self._assert_referee_reverted(done)
+
+    def a_failed_add_before_the_gate_still_restores_the_referee_write(self):
+        launcher = self.scratch.file("launcher.py", UNREADABLE_LAUNCHER % ROOT)
+        with mock.patch.object(lock_fixtures, "MITOSIS", launcher):
+            done = self._build()
+        msp = lock_fixtures.summary_of(done)["msps"][0]
+        tree = os.path.join(self.scratch.run_dir, "trees", "demo")
+        self.assertEqual(done.returncode, 9, lock_fixtures.tail(done))
+        self.assertEqual(msp["state"], "gate-failed")
+        self.assertEqual(msp["reconcile"]["referee"], ["tests/conftest.py"])
+        self.assertIs(msp["reconcile"]["fatal"], True)
+        self.assertFalse(os.path.lexists(os.path.join(tree, "tests", "conftest.py")))
+        self.assertEqual(read_bytes(os.path.join(tree, "calc.py")), CALC)
+        self.assertEqual(self.scratch.git("cat-file", "-e", "mitosis/demo:tests/conftest.py").returncode, 128)
 
 
 class UnjudgedSubmoduleWork(SubmoduleRefereeWrite):
@@ -122,6 +154,7 @@ def load_tests(loader, standard, pattern):
             (
                 "a_refused_pre_gate_commit_still_restores_the_referee_write",
                 "a_timed_out_pre_gate_commit_still_restores_the_referee_write",
+                "a_failed_add_before_the_gate_still_restores_the_referee_write",
             ),
         ),
         (
