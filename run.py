@@ -182,6 +182,12 @@ class UncommittedWorkError(GateTreeError):
         )
 
 
+class UnjudgedRefereeError(UncommittedWorkError):
+    def __init__(self, tree, commit, paths, written):
+        self.written = tuple(written)
+        UncommittedWorkError.__init__(self, tree, commit, paths)
+
+
 class GateRecoveryError(GitError):
     def __init__(self, tree, marker, cause):
         self.args_run = ()
@@ -2159,11 +2165,7 @@ def _normalized(tree, commit, locked, plan):
     left = _still_different(tree, entries, folders, removed, rewrites)
     if left:
         raise GateTreeError(tree, commit, "%s still differ" % ", ".join(left))
-    reported = sorted(
-        path
-        for path in set(removed) | set(rewrites)
-        if referee.referee_reason(path, locked) is not None
-    )
+    reported = sorted(_referee_marked(set(removed) | set(rewrites), locked))
     judged = tuple(path for path in entries if referee.referee_reason(path, locked) is not None)
     clear_caches_beside(
         tree,
@@ -2376,7 +2378,18 @@ def _tip_gitlink(tree, tip, name, git_dir):
     return header[2].decode("ascii") if linked else None
 
 
+def _never_initialized(tree, path, base_oid, tips, git_dir):
+    full = os.path.join(tree, *_parts(path))
+    empty = not os.path.lexists(full) or (
+        not os.path.islink(full) and os.path.isdir(full) and not os.listdir(full)
+    )
+    unmoved = all(not tip or tip == base_oid for tip in tips)
+    return empty and unmoved and not os.path.lexists(git_dir)
+
+
 def _committed_referee(tree, path, base_oid, tips, git_dir, locked):
+    if _never_initialized(tree, path, base_oid, tips, git_dir):
+        return frozenset()
     options, env = _object_reader(git_dir)
     moved = tuple(
         dict.fromkeys(
@@ -2422,8 +2435,12 @@ def _base_checkout_referee(tree, path, base_oid, tip, base, locked):
         committed = _committed_referee(
             tree, path, base_oid, (tip,), _module_dir(tree, base, path), locked
         )
-    except (OSError, GitError, ValueError):
-        committed = frozenset()
+    except (OSError, GitError, ValueError) as error:
+        raise GateTreeError(
+            tree,
+            base_oid,
+            "%s/ cannot be judged, because its commits cannot be read: %s" % (path, error),
+        )
     return on_disk | committed
 
 
@@ -2439,23 +2456,50 @@ def base_submodule_referee_writes(tree, commit, base, locked=()):
     )
 
 
+def _referee_marked(paths, locked):
+    return frozenset(path for path in paths if referee.referee_reason(path, locked) is not None)
+
+
+def _referee_diff(tree, base, commit, locked):
+    changed = git_paths(["diff", "-z", "--name-only", "--no-renames", base, commit], tree)
+    return _referee_marked(changed, locked)
+
+
+def _referee_strays(tree, commit, base, locked):
+    found = gate_tree_plan(tree, commit, base, locked)
+    return _referee_marked(set(found["removed"]) | set(found["rewrites"]), locked)
+
+
 def referee_writes(plan, tree, branch, base):
     locked = tuple(plan.get("locked") or ())
-    changed = git_paths(["diff", "-z", "--name-only", "--no-renames", base, branch], tree)
-    committed = {path for path in changed if referee.referee_reason(path, locked) is not None}
+    committed = _referee_diff(tree, base, branch, locked)
     head = commit_at(branch, tree, required=True)
-    inside = tuple(base_submodule_referee_writes(tree, head, base, locked))
+    inside = frozenset(base_submodule_referee_writes(tree, head, base, locked))
     try:
-        _restore_base_submodules(tree, base, inside, False)
+        _restore_base_submodules(tree, base, tuple(sorted(inside)), False)
     except (OSError, GitError) as error:
         raise GateTreeError(tree, head, error)
     try:
-        normalized = tuple(normalize_gate_tree(tree, head, base, locked, restoring=inside))
-    except UncommittedWorkError:
-        if not inside:
+        normalized = frozenset(
+            normalize_gate_tree(tree, head, base, locked, restoring=tuple(sorted(inside)))
+        )
+    except UncommittedWorkError as error:
+        listed = committed | inside | _referee_strays(tree, head, base, locked)
+        if not listed:
             raise
-        normalized = ()
-    return sorted(committed | set(inside) | set(normalized))
+        raise UnjudgedRefereeError(tree, head, error.paths, sorted(listed))
+    return sorted(committed | inside | normalized)
+
+
+def staged_referee_writes(plan, tree, base):
+    locked = tuple(plan.get("locked") or ())
+    staged = git(["write-tree"], tree)
+    inside = frozenset(base_submodule_referee_writes(tree, staged, base, locked))
+    return sorted(
+        _referee_diff(tree, base, staged, locked)
+        | _referee_strays(tree, staged, base, locked)
+        | inside
+    )
 
 
 def restore_gate_commit(tree, branch, commit, locked, base=None, discard=False):
@@ -3411,6 +3455,15 @@ def _reconcile_stage(plan, msp, tree, producers, trees, settings):
             settings["feature_branch"],
             tuple(trees[p]["branch"] for p in producers),
         )
+    except UnjudgedRefereeError as error:
+        return {
+            "reconcile": {"referee": list(error.written), "fatal": True},
+            "state": MSP_GATE_FAILED,
+            "reason": "a Worker wrote %s, which the referee owns, beside uncommitted work on %s "
+            "that no gate judged, so mitosis kept that work, restored nothing on the branch, did "
+            "not run the gate and held the MSP back: %s"
+            % (", ".join(error.written), tree["branch"], error),
+        }
     except GateTreeError as error:
         return {
             "reconcile": None,
@@ -3421,19 +3474,44 @@ def _reconcile_stage(plan, msp, tree, producers, trees, settings):
     return {"reconcile": findings}
 
 
-def _referee_stage(plan, msp, tree, producers, trees, settings):
-    reconciled = _reconcile_stage(plan, msp, tree, producers, trees, settings)
-    if reconciled["reconcile"] is None:
+def _staged_reconcile(plan, tree, settings, commit_error):
+    try:
+        written = staged_referee_writes(plan, tree["path"], settings["feature_branch"])
+    except GitError as error:
+        return {
+            "reconcile": None,
+            "state": MSP_GATE_FAILED,
+            "reason": "mitosis could not commit the work on %s before the gate (%s) and could not "
+            "list the referee paths in the work it staged, so the gate did not run and the MSP is "
+            "held back: %s" % (tree["branch"], commit_error, error),
+        }
+    return {"reconcile": {"referee": written, "fatal": bool(written)}}
+
+
+def _referee_stage(plan, msp, tree, producers, trees, settings, commit_error=None):
+    reconciled = (
+        _reconcile_stage(plan, msp, tree, producers, trees, settings)
+        if commit_error is None
+        else _staged_reconcile(plan, tree, settings, commit_error)
+    )
+    if reconciled.get("state") == MSP_GATE_FAILED:
         return {**reconciled, "gate": None, "gate_error": reconciled["reason"]}
     written = reconciled["reconcile"]["referee"]
     if not written:
         return None
+    kept = (
+        ""
+        if commit_error is None
+        else "; the commit before the gate failed, so the rest of the work stays uncommitted: %s"
+        % commit_error
+    )
     try:
         revert_implementation(tree["path"], settings["feature_branch"], written)
-        commit_all(
-            tree["path"],
-            "revert(%s): restore the referee paths a Worker wrote" % _label(plan, msp),
-        )
+        if commit_error is None:
+            commit_all(
+                tree["path"],
+                "revert(%s): restore the referee paths a Worker wrote" % _label(plan, msp),
+            )
     except (GitError, OSError) as error:
         return {
             **reconciled,
@@ -3442,14 +3520,14 @@ def _referee_stage(plan, msp, tree, producers, trees, settings):
             "gate_error": "the referee restore on %s failed, so the gate did not run: %s"
             % (tree["branch"], error),
             "reason": "a Worker wrote %s, which the referee owns; mitosis could not restore them "
-            "on %s, so the gate did not run and the MSP is held back"
-            % (", ".join(written), tree["branch"]),
+            "on %s, so the gate did not run and the MSP is held back%s"
+            % (", ".join(written), tree["branch"], kept),
         }
     return {
         **reconciled,
         "state": MSP_REFEREE_REVERTED,
         "reason": "a Worker wrote %s, which the referee owns; mitosis restored them on %s and "
-        "held the MSP back" % (", ".join(written), tree["branch"]),
+        "held the MSP back%s" % (", ".join(written), tree["branch"], kept),
     }
 
 
@@ -3579,11 +3657,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     if block is not None:
         return write_state(run_dir, _msp_record(state, msp, **block))
     head, commit_error = _committed_head(plan, msp, tree)
-    held = (
-        None
-        if commit_error is not None
-        else _referee_stage(plan, msp, tree, producers, trees, settings)
-    )
+    held = _referee_stage(plan, msp, tree, producers, trees, settings, commit_error)
     if held is not None:
         notify(
             settings.get("observer"),
