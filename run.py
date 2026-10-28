@@ -119,6 +119,19 @@ class GitTimeout(GitError):
         )
 
 
+class RestoreError(GitError):
+    def __init__(self, branch, commit, left):
+        self.args_run = ("reset", "--hard", commit)
+        self.code = None
+        self.stderr = ""
+        self.left = tuple(left)
+        RuntimeError.__init__(
+            self,
+            "the gate could not restore %s to the gated commit %s: %s still differ"
+            % (branch, commit[:12], ", ".join(self.left)),
+        )
+
+
 class ConfigError(ValueError):
     pass
 
@@ -1096,6 +1109,13 @@ def msp_properties(plan, msp, unchanged=frozenset()):
     return found
 
 
+def written_since(tree):
+    entries = git_paths(
+        ["status", "--porcelain", "-z", "--untracked-files=all", "--no-renames"], tree
+    )
+    return tuple(dict.fromkeys(entry[3:] for entry in entries if len(entry) > 3))
+
+
 def commit_all(tree, message):
     git(["add", "-A"], tree)
     if not git_ok(["diff", "--cached", "--quiet", "--ignore-submodules=none"], tree):
@@ -1235,18 +1255,19 @@ def property_mutants(plan, msp, tree, base, commit, entry):
     return tuple(mutants.select(found, MUTANT_CAP))
 
 
-def _run_mutant(command, tree, entry, mutant, log_path, timeout, env):
+def _run_mutant(command, tree, entry, mutant, log_path, timeout, env, restore):
     path = mutant["file"]
     mutated = mutants.apply(_read_text(tree, path), mutant)
     if mutated is None:
-        return None
+        return None, ()
     shutil.rmtree(_pycache_of(tree, path), ignore_errors=True)
     try:
         _write_text(tree, path, mutated)
-        return run_acceptance(command, tree, entry, log_path, timeout, env)
+        ran = run_acceptance(command, tree, entry, log_path, timeout, env)
     finally:
-        git(["checkout", "-q", "--", path], tree)
+        written = restore()
         shutil.rmtree(_pycache_of(tree, path), ignore_errors=True)
+    return ran, written
 
 
 def _mutant_place(mutant):
@@ -1259,11 +1280,12 @@ def _timed(call):
     return result, time.monotonic() - started
 
 
-def mutant_verdict(plan, msp, tree, base, commit, command, index, entry, log_dir, timeout, env):
+def mutant_verdict(plan, msp, tree, base, commit, command, index, entry, log_dir, timeout, env, restore):
     tried = ()
+    written = ()
     seconds = entry.get("seconds", 0)
     for mutant in property_mutants(plan, msp, tree, base, commit, entry):
-        ran, spent = _timed(
+        (ran, left), spent = _timed(
             lambda mutant=mutant: _run_mutant(
                 command,
                 tree,
@@ -1272,41 +1294,69 @@ def mutant_verdict(plan, msp, tree, base, commit, command, index, entry, log_dir
                 os.path.join(log_dir, "%d-mutant-%d.log" % (index, len(tried))),
                 timeout,
                 env,
+                restore,
             )
         )
         seconds = seconds + spent
+        written = written + left
         if ran is None:
             continue
         tried = tried + (mutant,)
         if ran[1] or ran[0] != 0:
-            return {
-                **entry,
-                "mutants": {"tried": len(tried), "killed": _mutant_place(mutant)},
-                "seconds": seconds,
-            }
+            return (
+                {
+                    **entry,
+                    "mutants": {"tried": len(tried), "killed": _mutant_place(mutant)},
+                    "seconds": seconds,
+                },
+                written,
+            )
     record = {"tried": len(tried), "killed": None}
     if not tried:
-        return {**entry, "mutants": record, "seconds": seconds}
+        return {**entry, "mutants": record, "seconds": seconds}, written
     first = tried[0]
-    return {
-        **entry,
-        "seconds": seconds,
-        "outcome": "weak",
-        "reason": "no mutant of the work fails it: it still passes when %s:%d changes by %s"
-        % (first["file"], first["line"], first["op"]),
-        "mutants": record,
-    }
+    return (
+        {
+            **entry,
+            "seconds": seconds,
+            "outcome": "weak",
+            "reason": "no mutant of the work fails it: it still passes when %s:%d changes by %s"
+            % (first["file"], first["line"], first["op"]),
+            "mutants": record,
+        },
+        written,
+    )
 
 
 def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None, env=None):
     commit = commit_before_gate(plan, msp, tree)
+    locked = tuple(plan.get("locked") or ())
+
+    def restore():
+        return restore_gate_commit(tree, branch, commit, locked)
+
+    try:
+        result, written = _gate_runs(
+            plan, msp, tree, branch, base, command, log_dir, timeout, env, commit, restore
+        )
+    finally:
+        last = restore()
+    referee_written = sorted(set(written) | set(last))
+    return {
+        **result,
+        "referee": referee_written,
+        "blocks": result["blocks"] or bool(referee_written),
+    }
+
+
+def _gate_runs(plan, msp, tree, branch, base, command, log_dir, timeout, env, commit, restore):
     properties = msp_properties(
         plan, msp, steps_without_implementation_change(plan, msp, tree, base)
     )
     implementation = implementation_paths(plan, msp)
     runnable = [index for index, entry in enumerate(properties) if entry["outcome"] is None]
     if not runnable:
-        return _gate_result(properties, implementation, commit, ())
+        return _gate_result(properties, implementation, commit, ()), ()
     os.makedirs(log_dir, exist_ok=True)
     with_work_runs = {
         index: _timed(
@@ -1322,6 +1372,7 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None, env=None
         for index in runnable
     }
     with_work = {index: ran for index, (ran, _) in with_work_runs.items()}
+    after_work = restore()
     probe = "%s/%s" % (PROBE_PREFIX, branch)
     git(["checkout", "-q", "-B", probe], tree)
     try:
@@ -1342,7 +1393,7 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None, env=None
         }
         without = {index: ran for index, (ran, _) in without_runs.items()}
     finally:
-        git(["checkout", "-q", "-f", branch], tree)
+        after_probe = restore()
         git_run(["branch", "-D", probe], tree)
     judged = ()
     for index, entry in enumerate(properties):
@@ -1361,13 +1412,17 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None, env=None
                 + (without_runs[index][1] if index in without_runs else 0),
             },
         )
-    toothed = tuple(
-        mutant_verdict(plan, msp, tree, base, commit, command, index, entry, log_dir, timeout, env)
+    verdicts = tuple(
+        mutant_verdict(
+            plan, msp, tree, base, commit, command, index, entry, log_dir, timeout, env, restore
+        )
         if index in with_work and entry["outcome"] == "pass"
-        else entry
+        else (entry, ())
         for index, entry in enumerate(judged)
     )
-    return _gate_result(toothed, implementation, commit, reverted)
+    toothed = tuple(entry for entry, _ in verdicts)
+    written = after_work + after_probe + tuple(path for _, left in verdicts for path in left)
+    return _gate_result(toothed, implementation, commit, reverted), written
 
 
 def changed_files(tree, branch, base, exclude=()):
@@ -1478,6 +1533,18 @@ def referee_writes(plan, tree, branch, base):
     changed = git_paths(["diff", "-z", "--name-only", "--no-renames", base, branch], tree)
     committed = {path for path in changed if referee.referee_reason(path, locked) is not None}
     return sorted(committed | set(referee_disk_writes(tree, base, locked)))
+
+
+def restore_gate_commit(tree, branch, commit, locked):
+    written = tuple(referee_disk_writes(tree, commit, locked))
+    git(["checkout", "-q", "-f", branch], tree)
+    git(["reset", "-q", "--hard", commit], tree)
+    git(["clean", "-ffdq"], tree)
+    revert_implementation(tree, commit, written)
+    left = written_since(tree) + tuple(referee_disk_writes(tree, commit, locked))
+    if left:
+        raise RestoreError(branch, commit, left)
+    return written
 
 
 def reconcile(plan, msp, tree, branch, base, producer_branches=()):
@@ -2076,7 +2143,15 @@ def ship(
     env=None,
 ):
     label = _label(plan, msp)
-    head = commit_all(tree, "chore(%s): commit the MSP's work before shipping" % label)
+    head = git(["rev-parse", "--verify", branch + "^{commit}"], tree)
+    dirty = written_since(tree)
+    if dirty:
+        raise ShipError("%s holds writes no gate judged: %s" % (branch, ", ".join(dirty)))
+    gated = (gate_result or {}).get("commit")
+    if proven_head is None and gated is not None and head != gated:
+        raise ShipError(
+            "%s is at %s, not the gated commit %s" % (branch, head[:12], gated[:12])
+        )
     held = {
         "branch": branch,
         "base": base,
@@ -2356,6 +2431,24 @@ def _trajectory_stage(plan, msp, gated, settings):
     return {}
 
 
+def _gate_referee_writes(gated):
+    return list((gated["gate"] or {}).get("referee") or [])
+
+
+def _with_gate_referee(reconciled, tampered):
+    if not tampered:
+        return reconciled
+    found = reconciled["reconcile"]
+    return {
+        **reconciled,
+        "reconcile": {
+            **found,
+            "referee": sorted(set(found["referee"]) | set(tampered)),
+            "fatal": True,
+        },
+    }
+
+
 def _held_back(gated, branch):
     if gated["gate_error"] is not None:
         return {
@@ -2423,7 +2516,10 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     proof = {} if proven_head is None else {"proven_head": proven_head}
     logged = _trajectory_stage(plan, msp, gated, settings) if judged_now else {}
     state = write_state(run_dir, _msp_record(state, msp, **gated, **proof, **logged))
-    reconciled = _reconcile_stage(plan, msp, tree, producers, trees, settings)
+    tampered = _gate_referee_writes(gated) if judged_now else []
+    reconciled = _with_gate_referee(
+        _reconcile_stage(plan, msp, tree, producers, trees, settings), tampered
+    )
     notify(
         settings.get("observer"),
         "reconciled",
@@ -2432,6 +2528,17 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     state = write_state(run_dir, _msp_record(state, msp, **reconciled))
     if reconciled.get("state") == MSP_BLOCKED:
         return state
+    if tampered:
+        return write_state(
+            run_dir,
+            _msp_record(
+                state,
+                msp,
+                state=MSP_REFEREE_REVERTED,
+                reason="an acceptance run wrote %s, which the referee owns; mitosis restored %s "
+                "to the gated commit and held the MSP back" % (", ".join(tampered), tree["branch"]),
+            ),
+        )
     held_back = _held_back(gated, tree["branch"]) if judged_now else None
     if held_back is not None:
         return write_state(run_dir, _msp_record(state, msp, **held_back))
