@@ -1394,6 +1394,38 @@ class RenderPreflight(unittest.TestCase):
         self.assertEqual(code, 0, out + err)
         self.assertEqual(len(self._calls()), 1)
 
+    def a_resume_carries_the_recorded_blast_radius(self):
+        render = fake_render(self.elsewhere)
+        header = (
+            "--pr-type",
+            "feat",
+            "--pr-scope",
+            "ship",
+            "--pr-subject",
+            "hand facts to render",
+            "--pr-why",
+            "Bodies are composed twice.",
+            "--render-command",
+            render,
+        )
+        code, out, err = self._invoke(
+            HOLDING_WORKER,
+            *header,
+            "--pr-door",
+            "two-way",
+            "--pr-blast-radius",
+            "Ship only.",
+            "--no-push",
+        )
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        code, out, err = self._invoke(HOLDING_WORKER, *header, "--resume")
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        self.assertEqual(json.loads(out.splitlines()[-1])["msps"][0]["state"], run.MSP_PUSHED)
+        shipped = read_json(os.path.join(self.run_dir, "ship", "msp-0", "fields.json"))
+        self.assertEqual(shipped["impact"], ["Ship only."])
+        probed = read_json(os.path.join(self.run_dir, "probe-0.json"))
+        self.assertEqual(probed["impact"], ["Ship only."])
+
     def pipeline_flags_ship_what_render_printed(self):
         code, out, err = self._invoke(
             HOLDING_WORKER,
