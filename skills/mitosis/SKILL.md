@@ -263,17 +263,14 @@ one Worker per Lane with producers merged in first, then per MSP: commit,
 gate, reconcile, push, open a pull request stacked on its single
 predecessor when `--pr-command` is given, report.
 
-A Worker session should stay small: mitosis estimates each Lane's tokens from
-its Steps, tasks, write-set, read-set, charter and document, and splits one
-above `--session-tokens` (default 150000), in Step order, into consecutive
+mitosis estimates each Lane's tokens and splits one above `--session-tokens` (default 150000), in Step order, into consecutive
 Lanes. Each runs as a fresh session once the one before lands, may edit what
 earlier ones wrote and is told which Steps they built; a resume starts at the
 first not `ok`. The split quality section names each split and any Step too
 large alone.
 
 The Lanes of one MSP share its worktree; `--concurrency` Workers, four by
-default, run at once. Each brief tells its Worker others write in the same
-tree, so it changes only its write-set and leaves the index and history alone.
+default, run at once, each told to change only its write-set.
 A finished Lane is `held` until no Worker runs in its worktree, then
 committed, so a hook that stashes unstaged files never touches a sibling's
 work; no new Lane starts in that MSP meanwhile, and a resume lands a `held`
@@ -295,40 +292,42 @@ see each Lane's message, `chore(<MSP>): land Lane <n> (<Steps>)`, so a
 hook that refuses that form fails every Lane after its Worker has run.
 
 The gate runs each acceptance property twice, with the work present and with
-the implementation reverted. `pass` means the property
-failed without the work, so it is load-bearing. `inert` means it passed
-without the work, so it proves nothing. `inconclusive` means reverting broke
-the build. `not-applicable` means the Step declared no property, counted so
-silence is never mistaken for coverage. Implementation is derived: the MSP's
+the implementation reverted. `pass`: it failed without the work.
+`inert`: it passed without it, proving nothing. `inconclusive`: reverting
+broke the build. `not-applicable`: the Step declared none. Implementation is derived: the MSP's
 write-set minus the files its acceptance properties name.
 
 Each passing property then runs against up to 12 mutants of its Step's added
-lines, small changes such as a flipped comparison or a replaced return value,
-or dropped added lines when no operator fits. `weak` means no mutant
-failed it, exit 24. An MSP whose gate is `weak`, `inert` or `inconclusive`
+lines, such as a flipped comparison, or dropped added lines when no operator
+fits. `weak` means no mutant failed it, exit 24. An MSP whose gate is `weak`, `inert` or `inconclusive`
 ends `gate-failed`: committed, never pushed, no pull request. `--trajectory`
 also gets one outcome entry per acceptance test after every gate.
 
 The referee is what judges the work, and no Worker writes it: the charter's
 `- Locked:` lines, plus built-in markers for test configuration, snapshots,
 baselines, allowlists and skip lists. Planning refuses a Step whose files hold
-a referee path, exit 3. A committed write to one, read from tree objects
-with Worker settings kept out, is reverted; it, or an acceptance run's write,
-holds the MSP back `referee-reverted`, exit 9. The JSON
+a referee path, exit 3. A committed write to one is reverted; it, or an
+acceptance run's write, holds the MSP back `referee-reverted`, exit 9. The JSON
 result's `referee` object names the locked paths, their receipt lock and
 commit. A real run exits 3 on a `- Locked:` path the feature branch lacks, or
 a `- Locked:` line that is empty, absolute or contains `..`.
 
-Every gate, mutant and acceptance run uses a clean checkout of the MSP's
-commit, outside the Worker's worktree and not a git repository. Files the
-commit lacks never reach it and are listed in the MSP's `ignored` list, never
-restored.
+Every gate, mutant and acceptance run uses a clean checkout of the commit,
+not a git repository, reset to raw blobs before each run; files the commit
+lacks never reach it and are listed in `ignored`.
 
 Dependencies are the root's node_modules and venvs, or `--gate-setup`, run
-once per gate with `{worktree}`; it prepares what a git-running test reads. A
-failed or timed-out gate setup, or a refused pre-gate commit, holds the MSP
-back `gate-failed`, exit 21. Ship refuses a head other than the gated commit,
-`ship-failed`, exit 22.
+once per gate with `{worktree}`; its output survives only at top-level names
+the commit lacks, such as the `.git` a git-running test needs. A top-level referee
+file it makes, such as `conftest.py`, is fatal, exit 9. A Git LFS file stays
+pointer text and eol attributes may not apply, whatever `--gate-setup` does;
+a test reading real content ends `inconclusive`. That, a failed gate setup or
+a refused pre-gate commit holds the MSP back `gate-failed`, exit 21. Ship
+refuses any head but the gated one, `ship-failed`, exit 22.
+
+An unreadable base submodule whose gitlink the branch changed cannot be
+judged, exit 21; a committed referee write inside one is reverted by
+resetting its gitlink to the base's, exit 9.
 
 Reconcile compares what the git log says changed against what the Steps
 declared. A write outside the declaration, or a declared path never written,

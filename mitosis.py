@@ -194,8 +194,9 @@ FLAG_SPECS = {
         "action": "store_true",
         "help": "continue the run in --run-dir: with --spec, load the persisted structure and "
         "brief every Step still unbriefed before planning; Lanes already ok are skipped, "
-        "a gate that blocked is re-run, and a passing gate recorded at the MSP's current HEAD "
-        "with no uncommitted change is reused; the plan id must match",
+        "a gate that blocked is re-run, and a passing gate is reused when it was recorded at "
+        "the commit mitosis gates now, HEAD after its pre-gate commit of the worktree, so a "
+        "leftover edit that commit takes forces a new gate; the plan id must match",
     },
     "--proven-head": {
         "metavar": "LABEL=COMMIT",
@@ -258,7 +259,8 @@ FLAG_SPECS = {
         "metavar": "TEMPLATE",
         "help": "prepares the gate's clean checkout once per gate before any acceptance run, "
         "with the run's --timeout; placeholders %s; when given, the gate links no dependency "
-        "folder from the repository root; a non-zero exit or a timeout holds the MSP back "
+        "folder from the repository root; only what it writes at new top-level names survives "
+        "each run's reset; a non-zero exit or a timeout holds the MSP back "
         "gate-failed" % PLACEHOLDER_HELP["gate-setup"],
     },
     "--pr-command": {

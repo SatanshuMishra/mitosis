@@ -34,10 +34,15 @@ the gate withholds a pull request it cannot certify.
   every gate.
 - The gate, every mutant run and every acceptance run execute in a clean
   checkout of the MSP's committed tree, a folder outside the Worker's
-  worktree reset before every run. It is not a git repository, so an
-  acceptance command that runs git needs `--gate-setup` to prepare what it
-  reads. Files the commit does not carry never reach the gate and are listed
-  in each MSP's `ignored` list, never restored.
+  worktree reset to the commit's raw blobs before every run. It is
+  not a git repository. Files the commit does not carry never reach the gate
+  and are listed in each MSP's `ignored` list, never restored.
+- `--gate-setup` runs once per gate, so what it writes survives each run's
+  reset only at top-level names the commit lacks, such as the `.git` folder
+  an acceptance command that runs git needs it to make. A Git LFS file
+  reaches the gate as pointer text and a committed eol attribute is not
+  applied in every run, whatever `--gate-setup` does, so a test that reads
+  the real content ends `inconclusive` and holds its MSP back with exit 21.
 - Dependency folders come from the repository root's node_modules and
   virtual-environment folders, or from the new `--gate-setup` command, run
   once per gate with `{worktree}`. A failed or timed-out gate setup holds the

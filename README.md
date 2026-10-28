@@ -174,11 +174,22 @@ The gate, every mutant run and every acceptance run execute in a clean
 checkout of the MSP's committed tree, a folder outside the Worker's worktree
 written from git's tree objects and passed as `{worktree}`. The folder is
 reset to its target tree before every run and removed after the gate. It is
-not a git repository and holds the commit's raw blob bytes, so an acceptance
-command or test that runs git, a Git LFS file and a committed eol attribute
-each need `--gate-setup` to prepare what they read. Files the commit does not
-carry never reach the gate: each MSP's `ignored` list in the JSON result names
-them, and mitosis never restores, removes or judges them.
+not a git repository and holds the commit's raw blob bytes. Files the commit
+does not carry never reach the gate: each MSP's `ignored` list in the JSON
+result names them, and mitosis never restores, removes or judges them.
+
+The folder is reset to the commit's raw blob bytes before every acceptance
+and mutant run, while `--gate-setup` runs once per gate, so what setup writes
+survives that reset only at top-level names the commit lacks, such as the
+`.git` folder a setup's `git init` makes or a new top-level build folder. An
+acceptance command or test that runs git needs `--gate-setup`, which can make
+`.git` at the top level. A top-level file the setup makes at a referee path,
+such as `conftest.py`, is a referee write, fatal with exit 9. A Git LFS file
+arrives as its pointer text, and a committed eol attribute is not applied in
+every run, whatever `--gate-setup` does. An acceptance test that reads the
+real content ends `inconclusive` and holds the MSP back as `gate-failed`, with
+exit 21. The gate cannot tell pointer text from real content, so a property
+that holds on pointer text is judged on pointer text.
 
 Dependency folders come from outside the Worker's control. Without
 `--gate-setup`, the gate links in each node_modules folder and each
@@ -196,6 +207,12 @@ An acceptance run that leaves a referee path in the clean checkout differing
 from the commit is caught the same way as a committed write: the gate lists
 it under its `referee` list, and the MSP is held back as `referee-reverted`
 and never pushed, with exit 9.
+
+A base submodule whose gitlink the branch changed and whose commits cannot be
+read holds the MSP back as `gate-failed`, with exit 21, and a gate error
+saying the submodule cannot be judged. A committed referee write inside a base
+submodule is reverted by resetting the submodule's gitlink to the base's, and
+holds the MSP back as `referee-reverted`, with exit 9.
 
 Ship refuses an MSP whose branch head is not the gated commit unless
 `--proven-head` names that head; the refusal ends the MSP `ship-failed`, with
