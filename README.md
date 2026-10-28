@@ -132,6 +132,16 @@ differs, or an MSP with no recorded gate result, is gated as before; a
 malformed value or a label the plan does not hold exits 2 before anything is
 built.
 
+A gate that is interrupted leaves a marker in the worktree's git directory,
+and the next run restores that worktree to the gated commit before it commits
+or judges anything. The work that restore replaces is first backed up as a
+commit on `refs/mitosis/recovered/<branch>`, whose parents are the gated
+commit and any earlier backup. Recovery refuses with exit 5, keeps the marker
+and stops the run when the branch or its probe branch has moved off the gated
+commit, when HEAD is on neither, when git cannot store a path in the backup,
+or when the restore fails; the error names the cause, and the next run tries
+the recovery again.
+
 ## The referee and the gate
 
 The referee is the set of files that decide whether the work is done, and no
@@ -160,6 +170,19 @@ not the work is right. An MSP
 whose gate is `weak`, `inert` or `inconclusive` ends `gate-failed`: its work
 is committed on its branch and never pushed, so no pull request opens on an
 unproven property.
+
+An acceptance run that writes a referee path during the gate is caught the
+same way: the gate restores the path, and the MSP is held back as
+`referee-reverted` and never pushed, with exit 9.
+
+Before every judgement the gate makes the worktree equal to the gated commit.
+Only an untracked path that the feature branch's committed `.gitignore` files
+ignore may stay, and never a referee path. A folder the gate cannot list holds
+the MSP back as `gate-failed`, with exit 21, and no verdict is recorded.
+
+Ship refuses an MSP whose worktree holds writes no gate judged, and one whose
+head is not the gated commit unless `--proven-head` names that head; either
+refusal ends the MSP `ship-failed`, with exit 22, and nothing is pushed.
 
 `--trajectory PATH` reads prior outcomes to raise a surface's tier, and after
 every gate also receives one outcome entry per acceptance test, appended to

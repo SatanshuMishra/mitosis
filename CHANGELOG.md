@@ -31,6 +31,19 @@ the gate withholds a pull request it cannot certify.
   MSP `parked`, with exit 13, and `--resume` runs every Lane that is not `ok`.
 - `--trajectory` also receives one outcome entry per acceptance test after
   every gate.
+- An acceptance run's write to a referee path during the gate is restored and
+  holds its MSP back as `referee-reverted`, with exit 9.
+- Before every judgement the gate makes the worktree equal to the gated
+  commit. Only paths the feature branch's committed `.gitignore` files ignore
+  may stay, never a referee path, and a folder the gate cannot list holds the
+  MSP back as `gate-failed`, with exit 21.
+- Ship refuses a worktree holding writes no gate judged, and a head that is
+  not the gated commit, as `ship-failed`, with exit 22.
+- An interrupted gate is restored to its gated commit on the next run, and the
+  work it replaces is backed up under `refs/mitosis/recovered/<branch>`.
+  Recovery refuses with exit 5 and keeps its marker when the branch, the probe
+  branch or HEAD has moved, when a path cannot be backed up, or when the
+  restore fails.
 
 ## 0.7.0 - 2026-10-27
 
