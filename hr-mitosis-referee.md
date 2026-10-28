@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T09:16:26.179Z
+Updated: 2026-10-28T09:16:29.991Z
 Next ids: c7 D1 R3 S1
 
 ## Goal
@@ -41,3 +41,5 @@ Apply the spec reviewer's fixes (also drop tests/fixtures/g14-cases.json from ga
 - Run home: /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee
 - Run directory: /Users/satanshumishra/.mitosis/runs/mitosis/hr-mitosis-referee
 - Spec, decisions, record and items: /Users/satanshumishra/Documents/DevLabs/mitosis/docs/specs/hr-mitosis-referee.{md,decisions.md,record.json,items.json}
+- Record generator: /private/tmp/claude-501/-Users-satanshumishra-Documents-DevLabs-mitosis/6f256c0e-eb96-4236-a7f2-dfa8b481c5eb/scratchpad/make_record.py
+- receipts 0.9.5 CLI (offline): node ~/.npm/_npx/d44e7b340d275612/node_modules/receipts-cli/bin/receipts.js
