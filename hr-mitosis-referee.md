@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T09:32:50.983Z
+Updated: 2026-10-28T09:32:53.439Z
 Next ids: c7 D2 R3 S1
 
 ## Goal
@@ -22,7 +22,9 @@ Interphase Phase 9: spec, record and items written and passing check_spec, check
 
 ## Next step
 
-Apply the spec reviewer's fixes (also drop tests/fixtures/g14-cases.json from gate-teeth's files), rerender and recheck, then hand off: tree guard verify, record status handed-off.
+Run pipeline feature-branch --repo /Users/satanshumishra/Documents/DevLabs/mitosis --slug hr-mitosis-referee --type feat, copy the items and graph into the run home, write CHARTER.md, run.zsh and rounds.md, then dispatch the O2 check author on the FEATURE branch.
+
+Needs: D1, R1, R2.
 
 ## Decisions in force
 
