@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T22:49:30.388Z
+Updated: 2026-10-28T22:55:54.506Z
 Next ids: c7 D6 R5 S1
 
 ## Goal
@@ -22,9 +22,9 @@ Stage 3, round 5 fix pass on MSP mitosis/hr-mitosis-referee over base 5a94f41, h
 
 ## Next step
 
-When the pinned-state fix agent reports, verify its commits, the 14 locked files and both suites; then a check author writes and locks tests/test_setup_referee_write.py and tests/test_gate_setup_docs.py, then amend-2.zsh --plan-only and its build with --no-push merged into mitosis/hr-mitosis-referee, then fix agents for C2 and C5 (C5 also commits the R4 vendor regression guard), then round 6 on the fix diff, then ship.
+Run round 6's code-reviewer and security-reviewer on the briefs in /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/review/round-6/, then collect findings, pipeline candidates, the validator, record and verdict; then fix or diagnose until green or blocked; then ship.
 
-Needs: D1, D3, D4, D5, R1, R2, R4.
+Needs: D1, D3, D4, D5, R1.
 
 ## Decisions in force
 
@@ -39,7 +39,6 @@ Needs: D1, D3, D4, D5, R1, R2, R4.
 - R1 The paused step-commits-render-fields run (branch mitosis/step-commits-render-fields, round 1 diagnose, feature feat/step-commits-render-fields) changes run.py, mitosis.py and core.py too; this run cuts from main, so whichever merges second resolves the conflicts.
 - R2 The owner's checkout holds an uncommitted GLOSSARY.md edit and untracked docs/adr/0004 and 0005 from step-commits-render-fields; this run builds from committed main and never touches them.
 - R3 The installed mitosis 0.7.0 composes its own pull-request title and body, while the owner's hook accepts only what `pull-request render` prints; at ship, a refused title or body is taken from `pull-request render`, never edited by hand.
-- R4 A referee-named file inside an installed dependency tree other than node_modules or a pyvenv.cfg folder holds the MSP referee-reverted (exit 9); every recent Laravel app's vendor/laravel/prompts/phpunit.xml does this, so a Laravel Worker that runs composer install is held back. Held by decision since round 2; a top risk for the final report.
 
 ## Settled, do not reopen
 
