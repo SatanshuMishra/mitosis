@@ -304,6 +304,16 @@ def git_ok(args, cwd, timeout=GIT_TIMEOUT):
     return git_run(args, cwd, timeout).returncode == 0
 
 
+def commit_at(ref, cwd, required=False):
+    args = ["rev-parse", "--verify", *(() if required else ("--quiet",)), ref + "^{commit}"]
+    found = git_run(args, cwd)
+    if found.returncode == 0:
+        return found.stdout.strip()
+    if required:
+        raise GitError(args, found.returncode, found.stderr)
+    return None
+
+
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -1677,7 +1687,7 @@ def locked_record(repo, branch, locked):
     return {
         "locked": list(locked),
         "receipt_lock": referee.receipt_lock(files),
-        "commit": git(["rev-parse", "--verify", branch + "^{commit}"], repo),
+        "commit": commit_at(branch, repo, required=True),
     }
 
 
@@ -2170,7 +2180,7 @@ def referee_writes(plan, tree, branch, base):
     locked = tuple(plan.get("locked") or ())
     changed = git_paths(["diff", "-z", "--name-only", "--no-renames", base, branch], tree)
     committed = {path for path in changed if referee.referee_reason(path, locked) is not None}
-    head = git(["rev-parse", "--verify", branch + "^{commit}"], tree)
+    head = commit_at(branch, tree, required=True)
     return sorted(committed | set(normalize_gate_tree(tree, head, base, locked)))
 
 
@@ -2218,11 +2228,6 @@ def clear_gate_mark(tree):
         pass
 
 
-def _tip(tree, branch):
-    found = git_run(["rev-parse", "--verify", "--quiet", "refs/heads/%s^{commit}" % branch], tree)
-    return found.stdout.strip() if found.returncode == 0 else None
-
-
 def _moved(name, commit, tip):
     return LaterWorkError(
         "%s moved from the gated commit %s to %s after the gate was interrupted, so recovering "
@@ -2240,10 +2245,10 @@ def _head_ref(tree):
 
 def _refuse_moved_work(tree, branch, commit):
     probe = "%s/%s" % (PROBE_PREFIX, branch)
-    tip = _tip(tree, branch)
+    tip = commit_at("refs/heads/" + branch, tree)
     if tip != commit:
         raise _moved(branch, commit, tip)
-    probe_tip = _tip(tree, probe)
+    probe_tip = commit_at("refs/heads/" + probe, tree)
     if probe_tip not in (None, commit):
         raise _moved(probe, commit, probe_tip)
     head = _head_ref(tree)
@@ -2322,12 +2327,11 @@ def _keep_replaced_work(tree, branch, commit, base, locked):
     if saved is None or saved == git(["rev-parse", commit + "^{tree}"], tree):
         return None
     ref = RECOVERED_REFS + branch
-    earlier = git_run(["rev-parse", "--verify", "--quiet", ref + "^{commit}"], tree)
-    previous = earlier.stdout.strip() if earlier.returncode == 0 else ""
+    previous = commit_at(ref, tree)
     parents = ("-p", commit) + (("-p", previous) if previous else ())
     message = "mitosis: the work recovering the interrupted gate on %s replaced" % branch
     backup = git(["commit-tree", saved, *parents, "-m", message], tree)
-    git(["update-ref", ref, backup, previous], tree)
+    git(["update-ref", ref, backup, previous or ""], tree)
     sys.stderr.write(
         "mitosis kept the work recovering the interrupted gate in %s replaced in %s at %s\n"
         % (tree, ref, backup[:12])
@@ -2959,7 +2963,7 @@ def ship(
     env=None,
 ):
     label = _label(plan, msp)
-    head = git(["rev-parse", "--verify", branch + "^{commit}"], tree)
+    head = commit_at(branch, tree, required=True)
     dirty = written_since(tree)
     if dirty:
         raise ShipError("%s holds writes no gate judged: %s" % (branch, ", ".join(dirty)))
