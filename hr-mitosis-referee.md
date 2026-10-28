@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T15:50:50.325Z
+Updated: 2026-10-28T16:00:11.329Z
 Next ids: c7 D2 R4 S1
 
 ## Goal
@@ -18,7 +18,7 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-Stage 3 review round 3 at b9e309b (MSP mitosis/hr-mitosis-referee over base 5a94f41); the locked files are unchanged there (same receipt-lock). Rounds 1 (c98552d) and 2 (b95181f) both ended `loop`; every confirmed blocker and advisory of both is fixed with a receipt, and C4 of round 2 needed no change (restore already batched, 8 or 9 git calls at any size). Rejected and outside-class items for the final report: round 1 C4 and S6 (decision 4), S3 and S7 (repeats), S8 (unreachable); round 2 C2 (vendored phpunit.xml holds the MSP by decision), S1 (repeat), S4 (glob pathspecs in revert_implementation, older than the fix pass). Round 3's diff and both reviewer briefs are written in review/round-3; the suite runs on 3.15 and 3.9 into review/round-3/hr-mitosis-referee.suite.txt. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0008, which ship only with the MSP.
+Stage 3 review round 3 at b9e309b (MSP mitosis/hr-mitosis-referee over base 5a94f41); the locked files are unchanged there (same receipt-lock). Rounds 1 (c98552d) and 2 (b95181f) both ended `loop`; every confirmed blocker and advisory of both is fixed with a receipt, and C4 of round 2 needed no change (restore already batched, 8 or 9 git calls at any size). Rejected and outside-class items for the final report: round 1 C4 and S6 (decision 4), S3 and S7 (repeats), S8 (unreachable); round 2 C2 (vendored phpunit.xml holds the MSP by decision), S1 (repeat), S4 (glob pathspecs in revert_implementation, older than the fix pass). Round 3's suite passes (669 OK on 3.15 and 3.9, review/round-3/hr-mitosis-referee.suite.txt). Running: code-reviewer and security-reviewer on the round-3 briefs. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0008, which ship only with the MSP.
 
 ## Next step
 
