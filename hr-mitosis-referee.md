@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T14:10:46.672Z
+Updated: 2026-10-28T14:17:30.541Z
 Next ids: c7 D2 R4 S1
 
 ## Goal
@@ -18,7 +18,7 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-Stage 3 review round 2 at b95181f (MSP mitosis/hr-mitosis-referee over base 5a94f41). Round 1 (at c98552d, verdict loop) had blockers S1, S2, C1, S4, C2/S5 and C3 and advisories C5 and C6, all fixed with receipts; rejected C4, S6, S3, S7 and S8 go to the final report. The locked files are unchanged at b95181f (same receipt-lock). Round 2's suite passes (650 OK on 3.15 and 3.9, review/round-2/hr-mitosis-referee.suite.txt). Round 2 verdict `diagnose` (review/round-2/hr-mitosis-referee.verdict.json): all seven round-1 blockers fixed; new blockers C1, S2 and S3 (kind hidden untracked files: a Worker-written pyvenv.cfg, an unreadable folder and a Worker-set git filter each hide a referee file) and C3 (kind recovery discards later work); advisories C4 (per-path cat-file cost), C5 (duplicated status parsing), C6 and S5 (undocumented refusals); rejected C2 (decision makes referee filenames count anywhere, so a vendored phpunit.xml holds the MSP), S1 (repeat of C1) and S4 (glob pathspecs, present before the fix pass). Recovery discards later work is diagnosed fixable and recorded (guard on branch and HEAD, then a backup ref under refs/mitosis/recovered before restoring). Running: the hidden-untracked-files diagnosis. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0008, which ship only with the MSP.
+Stage 3 review round 2 at b95181f (MSP mitosis/hr-mitosis-referee over base 5a94f41). Round 1 (at c98552d, verdict loop) had blockers S1, S2, C1, S4, C2/S5 and C3 and advisories C5 and C6, all fixed with receipts; rejected C4, S6, S3, S7 and S8 go to the final report. The locked files are unchanged at b95181f (same receipt-lock). Round 2's suite passes (650 OK on 3.15 and 3.9, review/round-2/hr-mitosis-referee.suite.txt). Round 2 verdict `loop` (review/round-2/hr-mitosis-referee.verdict.json): all seven round-1 blockers fixed; new blockers C1, S2 and S3 (kind hidden untracked files: a Worker-written pyvenv.cfg, an unreadable folder and a Worker-set git filter each hide a referee file) and C3 (kind recovery discards later work); advisories C4 (per-path cat-file cost), C5 (duplicated status parsing), C6 and S5 (undocumented refusals); rejected C2 (decision makes referee filenames count anywhere, so a vendored phpunit.xml holds the MSP), S1 (repeat of C1) and S4 (glob pathspecs, present before the fix pass). Recovery discards later work is diagnosed fixable and recorded (guard on branch and HEAD, then a backup ref under refs/mitosis/recovered before restoring). Running: the hidden-untracked-files diagnosis. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0008, which ship only with the MSP.
 
 ## Next step
 
