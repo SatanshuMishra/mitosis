@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T11:37:53.161Z
+Updated: 2026-10-28T11:51:04.176Z
 Next ids: c7 D2 R4 S1
 
 ## Goal
@@ -18,7 +18,7 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-Stage 3 review round 1, Validate: the validator is judging 14 candidates (review/round-1/hr-mitosis-referee.candidates.md) collected in review/round-1/hr-mitosis-referee.findings.json from the conformance-auditor (5.1 to 5.7 all MET, no finding), the security-reviewer (S1 to S8: two CRITICAL on mutants written in the MSP tree, surviving a kill and written through symlinks; two HIGH on git-ignored referee files and writes during the gate shipped unchecked; two MEDIUM; two LOW) and the code-reviewer (C1 to C6: one HIGH, the same git-ignored referee gap; three MEDIUM on diff header paths, locked files read as text, and test modules matched as allowlists; two LOW docs). The MSP is mitosis/hr-mitosis-referee at c98552d over base 5a94f41; the suite there passes on 3.14 and 3.9 and the locked files are unchanged. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0008, which ship only with the MSP.
+Stage 3 review round 1, verdict `diagnose` (review/round-1/hr-mitosis-referee.verdict.json): blockers S1 unrestored mutant (CRITICAL), S2 write through symlink (CRITICAL), C1 hidden untracked files (HIGH), S4 ungated post-gate write (HIGH), C2 and S5 quoted git path (MEDIUM), C3 binary file read as text (MEDIUM); advisories C5 (README "dropped condition") and C6 (undocumented exit-3 refusals); rejected C4 and S6 (the code follows decision 4), S3 and S7 (repeats), S8 (unreachable). Six Opus diagnosis agents are running, one per kind. The MSP is mitosis/hr-mitosis-referee at c98552d over base 5a94f41; the suite there passes on 3.14 and 3.9 and the locked files are unchanged. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0008, which ship only with the MSP.
 
 ## Next step
 
