@@ -1638,7 +1638,7 @@ def execute(args, plan, models, run_dir, repo, root):
             root=root,
             remote=REMOTE,
             no_push=args.no_push,
-            header=run_header(args, plan, run_dir),
+            header=pull_request_header(args),
             render_command=args.render_command,
             landing={"type": args.pr_type, "scope": args.pr_scope},
             proven_heads=proven_heads(args.proven_head, plan),
