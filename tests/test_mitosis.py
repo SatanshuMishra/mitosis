@@ -720,6 +720,19 @@ class ReconcileReporting(unittest.TestCase):
         self.assertIn("1 finding from the git log", lines[0])
         self.assertTrue(mitosis.reconcile_dirty(found))
 
+    def a_referee_write_is_listed_and_carried_in_the_summary(self):
+        found = {"undeclared": ["tests/conftest.py"], "unwritten": [], "untouched": [],
+                 "crossing": [], "referee": ["tests/conftest.py"], "fatal": True}
+        state = {"msps": {"0": {"state": "referee-reverted", "reconcile": found}}}
+        lines = mitosis.reconcile_lines(self.PLAN, state)
+        self.assertIn("  referee: tests/conftest.py", lines)
+        summarised = mitosis._msp_summary(self.PLAN, state)[0]["reconcile"]
+        self.assertEqual(
+            summarised,
+            {"undeclared": ["tests/conftest.py"], "unwritten": [], "untouched": [],
+             "referee": ["tests/conftest.py"], "fatal": True},
+        )
+
 
 class ItemsEntryPointRefusals(unittest.TestCase):
     CYCLIC = [
@@ -904,6 +917,30 @@ class HeldRun(unittest.TestCase):
         code, out, err = self._run("--no-push")
         self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
         self.assertIn("MSP alpha: committed", out)
+
+    def a_run_whose_charter_locks_a_file_the_branch_lacks_is_refused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            charter = write(folder, "charter.md", "- Locked: tests/test_locked.py\n")
+            code, out, err = self._run("--no-push", "--charter", charter)
+        self.assertEqual(code, mitosis.EXIT_REFUSED, out + err)
+        self.assertIn(
+            "--charter locks tests/test_locked.py, which feature does not hold; commit the "
+            "locked checks on it before the build",
+            err,
+        )
+
+    def a_plan_only_run_reports_an_unsealable_lock_as_attention(self):
+        with tempfile.TemporaryDirectory() as folder:
+            charter = write(folder, "charter.md", "- Locked: tests/test_locked.py\n")
+            code, out, err = self._run("--plan-only", "--charter", charter)
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        found = json.loads(out.splitlines()[-1])
+        self.assertIsNone(found["referee"])
+        self.assertIn(
+            "--charter locks tests/test_locked.py, which feature does not hold; commit the "
+            "locked checks on it before the build",
+            found["attention"],
+        )
 
     def a_held_run_with_a_pull_request_command_is_refused(self):
         code, _, err = self._run("--no-push", "--pr-command", "opener {branch}")
@@ -1433,6 +1470,16 @@ class GateExit(unittest.TestCase):
         }
         self.assertEqual(mitosis.exit_code(state, self.PLAN), mitosis.EXIT_FOREIGN)
         self.assertIn("another Lane", mitosis.EXIT_MEANING[mitosis.EXIT_FOREIGN])
+
+    def a_referee_reverted_msp_exits_nine(self):
+        referee = {"undeclared": [], "unwritten": [], "crossing": [],
+                   "referee": ["tests/conftest.py"], "fatal": True}
+        state = self._state(state="referee-reverted", reconcile=referee)
+        self.assertEqual(mitosis.exit_code(state, self.PLAN), 9)
+        self.assertEqual(
+            mitosis.EXIT_MEANING[9],
+            "a Worker wrote a referee path; mitosis restored it and held its MSP back",
+        )
 
     def a_shipped_msp_whose_gate_passed_exits_zero(self):
         state = self._state(gate={"outcome": "pass", "counts": {}, "blocks": False})

@@ -24,6 +24,8 @@ EXIT_CROSSING = 7
 
 EXIT_FOREIGN = 8
 
+EXIT_REFEREE = 9
+
 EXIT_MANIFEST = 23
 
 LANE_EXIT = {
@@ -40,6 +42,7 @@ MSP_EXIT = {
     run.MSP_COMMITTED: EXIT_SHIPPED,
     run.MSP_BLOCKED: 11,
     "ship-failed": 22,
+    run.MSP_REFEREE_REVERTED: EXIT_REFEREE,
 }
 
 GATE_EXIT = {"gate-failed": 20, "gate-inconclusive": 21}
@@ -55,6 +58,7 @@ EXIT_MEANING = {
     EXIT_CROSSING: "an MSP branch, pushed or with its pull request open, writes files another MSP "
     "owns and also changes",
     EXIT_FOREIGN: "a Lane changed a file another Lane of its MSP owns and had already committed",
+    EXIT_REFEREE: "a Worker wrote a referee path; mitosis restored it and held its MSP back",
     EXIT_MANIFEST: "a branch is pushed or a pull request open with a package manifest that "
     "exports nothing",
     LANE_EXIT["failed"]: "a Lane failed",
@@ -1287,6 +1291,7 @@ def reconcile_lines(plan, state):
         unwritten = found.get("unwritten") or []
         untouched = found.get("untouched") or []
         crossing = found.get("crossing") or []
+        written = found.get("referee") or []
         findings = findings + len(undeclared) + len(unwritten)
         lines = lines + (
             "MSP %s: %d undeclared, %d unwritten, %d crossing an MSP boundary,"
@@ -1306,6 +1311,7 @@ def reconcile_lines(plan, state):
             "  crossing: %s belongs to MSP %s" % (entry.get("path"), entry.get("label"))
             for entry in crossing
         )
+        lines = lines + tuple("  referee: " + path for path in written)
     return ("%s from the git log" % _n(findings, "finding"),) + lines
 
 
@@ -1514,8 +1520,11 @@ def _msp_summary(plan, state):
                     ],
                 },
                 "reconcile": {
-                    key: list(findings.get(key) or ())
-                    for key in ("undeclared", "unwritten", "untouched")
+                    **{
+                        key: list(findings.get(key) or ())
+                        for key in ("undeclared", "unwritten", "untouched", "referee")
+                    },
+                    "fatal": bool(findings.get("fatal")),
                 },
                 "crossing": [entry.get("path") for entry in findings.get("crossing") or ()],
             }
@@ -1590,7 +1599,7 @@ def _coupling_attention(coupling):
     ]
 
 
-def summary(plan, state, run_dir, code):
+def summary(plan, state, run_dir, code, referee=None, troubles=()):
     lanes = _lane_summary(plan or {}, state)
     msps = _msp_summary(plan or {}, state)
     coupling = _coupling_summary(plan or {})
@@ -1603,16 +1612,47 @@ def summary(plan, state, run_dir, code):
         "lanes": lanes,
         "msps": msps,
         "coupling": coupling,
+        "referee": referee,
         "attention": _attention(plan or {}, lanes, msps)
+        + list(troubles)
         + list(oversized_lines(plan or {}))
         + list(manifest_lines((plan or {}).get("items") or []))
         + _coupling_attention(coupling),
     }
 
 
-def _summarised(plan, state, run_dir, code):
-    _print((json.dumps(summary(plan, state, run_dir, code), separators=(",", ":")),))
+def _summarised(plan, state, run_dir, code, referee=None, troubles=()):
+    _print(
+        (
+            json.dumps(
+                summary(plan, state, run_dir, code, referee, troubles), separators=(",", ":")
+            ),
+        )
+    )
     return code
+
+
+def referee_record(args, plan, repo):
+    locked = plan.get("locked") or ()
+    if not locked or not args.feature_branch or repo is None:
+        return None
+    if not run.branch_exists(repo, args.feature_branch):
+        return None
+    return run.locked_record(repo, args.feature_branch, locked)
+
+
+def planned_referee(args, plan, repo):
+    try:
+        return referee_record(args, plan, repo), ()
+    except (run.ConfigError, run.GitError) as error:
+        return None, (str(error),)
+
+
+def locked_referee(args, plan, repo):
+    try:
+        return referee_record(args, plan, repo)
+    except (run.ConfigError, run.GitError) as error:
+        raise Refusal(str(error))
 
 
 def report(plan, state, decomposed, root, run_dir, code, from_items, decisions=None, items=None):
@@ -1737,8 +1777,10 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
         _print(
             report(plan, None, decomposed, root, run_dir, planned_code(items), from_items, decisions)
         )
-        return _summarised(plan, None, run_dir, planned_code(items))
+        locked, troubles = planned_referee(args, plan, repo)
+        return _summarised(plan, None, run_dir, planned_code(items), locked, troubles)
     refuse_run(args, plan, models, run_dir, repo)
+    locked = locked_referee(args, plan, repo)
     run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
     if plan.get("msps"):
         state, failure = execute(args, plan, models, run_dir, repo, root)
@@ -1751,7 +1793,7 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     _print(report(plan, state, decomposed, root, run_dir, code, from_items, decisions))
     if failure is not None:
         _print(("the run stopped: %s" % failure,), sys.stderr)
-    return _summarised(plan, state, run_dir, code)
+    return _summarised(plan, state, run_dir, code, locked)
 
 
 def main(argv=None):

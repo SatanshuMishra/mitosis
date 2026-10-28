@@ -12,6 +12,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
 import core
+import referee
 import shape
 
 BRANCH_PREFIX = "mitosis"
@@ -43,6 +44,8 @@ MSP_UNCHANGED = "unchanged"
 MSP_COMMITTED = "committed"
 
 MSP_PUSHED = "pushed"
+
+MSP_REFEREE_REVERTED = "referee-reverted"
 
 PUBLISHED_STATES = ("shipped", MSP_PUSHED, MSP_UNCHANGED)
 
@@ -1193,6 +1196,35 @@ def _unproven_paths(plan, msp):
     }
 
 
+def locked_record(repo, branch, locked):
+    files = ()
+    for path in locked:
+        shown = git_run(["show", "%s:%s" % (branch, path)], repo)
+        if shown.returncode != 0:
+            raise ConfigError(
+                "--charter locks %s, which %s does not hold; commit the locked checks on it "
+                "before the build" % (path, branch)
+            )
+        files = files + ((path, shown.stdout),)
+    return {
+        "locked": list(locked),
+        "receipt_lock": referee.receipt_lock(files),
+        "commit": git(["rev-parse", "--verify", branch + "^{commit}"], repo),
+    }
+
+
+def referee_writes(plan, tree, branch, base):
+    locked = tuple(plan.get("locked") or ())
+    changed = git(["diff", "--name-only", "--no-renames", base, branch], tree).splitlines()
+    return sorted(
+        {
+            path.strip()
+            for path in changed
+            if path.strip() and referee.referee_reason(path.strip(), locked) is not None
+        }
+    )
+
+
 def reconcile(plan, msp, tree, branch, base, producer_branches=()):
     changed = changed_files(tree, branch, base, producer_branches)
     declared = sorted({_norm(f) for f in plan["msps"][msp].get("files") or ()})
@@ -1210,6 +1242,7 @@ def reconcile(plan, msp, tree, branch, base, producer_branches=()):
         owner = msp_owner_of(plan, path)
         if owner is not None and owner != msp:
             crossing = crossing + ({"path": path, "msp": owner, "label": _label(plan, owner)},)
+    written = referee_writes(plan, tree, branch, base)
     return {
         "changed": changed,
         "declared": declared,
@@ -1217,7 +1250,8 @@ def reconcile(plan, msp, tree, branch, base, producer_branches=()):
         "unwritten": unwritten,
         "untouched": untouched,
         "crossing": list(crossing),
-        "fatal": bool(crossing),
+        "referee": written,
+        "fatal": bool(crossing or written),
     }
 
 
@@ -1948,6 +1982,24 @@ def _reconcile_stage(plan, msp, tree, producers, trees, settings):
     return {"reconcile": findings}
 
 
+def _referee_stage(plan, msp, tree, producers, trees, settings):
+    reconciled = _reconcile_stage(plan, msp, tree, producers, trees, settings)
+    written = reconciled["reconcile"]["referee"]
+    if not written:
+        return None
+    revert_implementation(tree["path"], settings["feature_branch"], written)
+    commit_all(
+        tree["path"],
+        "revert(%s): restore the referee paths a Worker wrote" % _label(plan, msp),
+    )
+    return {
+        **reconciled,
+        "state": MSP_REFEREE_REVERTED,
+        "reason": "a Worker wrote %s, which the referee owns; mitosis restored them on %s and "
+        "held the MSP back" % (", ".join(written), tree["branch"]),
+    }
+
+
 def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=()):
     try:
         shipped = ship(
@@ -2011,6 +2063,18 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     if block is not None:
         return write_state(run_dir, _msp_record(state, msp, **block))
     head, commit_error = _gate_head(plan, msp, tree)
+    held = (
+        None
+        if commit_error is not None
+        else _referee_stage(plan, msp, tree, producers, trees, settings)
+    )
+    if held is not None:
+        notify(
+            settings.get("observer"),
+            "reconciled",
+            {"msp": msp, "findings": held["reconcile"]},
+        )
+        return write_state(run_dir, _msp_record(state, msp, **held))
     proven_head = _proven_head(prior, head, settings["proven_heads"].get(msp))
     reused = _passing_gate(prior) if proven_head is not None else _reusable_gate(prior, head)
     gate_started = now()

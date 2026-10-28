@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -102,6 +103,10 @@ if mode in ("foreign-" + lane, "sneak-" + lane):
 if mode == "undeclared":
     with open("stray.txt", "w") as handle:
         handle.write("undeclared\n")
+if mode == "referee":
+    os.makedirs("tests", exist_ok=True)
+    with open(os.path.join("tests", "conftest.py"), "w") as handle:
+        handle.write("collect_ignore = ['test_a.py']\n")
 if mode == "cross":
     with open("b.txt", "a") as handle:
         handle.write("written across an MSP boundary by lane %s\n" % lane)
@@ -1346,6 +1351,73 @@ class Reconcile(RepoCase):
         self.assertEqual(findings["undeclared"], [])
         self.assertEqual(findings["crossing"], [])
         self.assertFalse(findings["fatal"])
+
+    def referee_writes_come_from_the_net_difference(self):
+        self.seed_existing("tests/test_locked.py", "import unittest\n")
+        plan = {**core.plan([step("a", ["a.txt"])]), "locked": ["tests/test_locked.py"]}
+        trees = self.build(plan)
+        tree, branch = trees[0]["path"], trees[0]["branch"]
+        self.commit_file(tree, "tests/test_locked.py", "raise SystemExit(0)\n")
+        self.commit_file(tree, "tests/conftest.py", "collect_ignore = []\n")
+        findings = run.reconcile(plan, 0, tree, branch, "main")
+        self.assertEqual(findings["referee"], ["tests/conftest.py", "tests/test_locked.py"])
+        self.assertTrue(findings["fatal"])
+        self.assertEqual(findings["crossing"], [])
+        run.revert_implementation(tree, "main", findings["referee"])
+        run.commit_all(tree, "restore")
+        restored = run.reconcile(plan, 0, tree, branch, "main")
+        self.assertEqual(restored["referee"], [])
+        self.assertFalse(restored["fatal"])
+        self.assertIn("tests/conftest.py", restored["changed"])
+
+    def locked_record_seals_the_exact_bytes_at_the_branch(self):
+        self.seed_existing("tests/test_locked.py", "import unittest\n")
+        record = run.locked_record(self.repo, "main", ["tests/test_locked.py"])
+        self.assertEqual(
+            record,
+            {
+                "locked": ["tests/test_locked.py"],
+                "receipt_lock": hashlib.sha256(
+                    b"file:tests/test_locked.py\nimport unittest\n\n"
+                ).hexdigest(),
+                "commit": sh(["git", "rev-parse", "main"], self.repo),
+            },
+        )
+        with self.assertRaises(run.ConfigError) as caught:
+            run.locked_record(self.repo, "main", ["tests/test_locked.py", "tests/missing.py"])
+        self.assertEqual(
+            str(caught.exception),
+            "--charter locks tests/missing.py, which main does not hold; commit the locked checks "
+            "on it before the build",
+        )
+
+    def a_referee_write_is_restored_held_back_and_resumed_to_the_gate(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        state = self.execute(plan, mode="referee", no_push=True)
+        record = state["msps"]["0"]
+        self.assertEqual(record["state"], "referee-reverted")
+        self.assertEqual(record["reconcile"]["referee"], ["tests/conftest.py"])
+        self.assertTrue(record["reconcile"]["fatal"])
+        self.assertEqual(
+            record["reason"],
+            "a Worker wrote tests/conftest.py, which the referee owns; mitosis restored them on "
+            "mitosis/a and held the MSP back",
+        )
+        self.assertNotIn("gate", record)
+        self.assertEqual(self.gate_runs(), [])
+        branch = state["worktrees"][0]["branch"]
+        self.assertFalse(
+            run.git_ok(["cat-file", "-e", "%s:tests/conftest.py" % branch], self.repo)
+        )
+        self.assertEqual(
+            sh(["git", "log", "-1", "--format=%s", branch], self.repo),
+            "revert(a): restore the referee paths a Worker wrote",
+        )
+        resumed = self.execute(plan, mode="referee", no_push=True, resume=True)
+        again = resumed["msps"]["0"]
+        self.assertEqual(again["state"], run.MSP_COMMITTED)
+        self.assertEqual(again["reconcile"]["referee"], [])
+        self.assertFalse(again["reconcile"]["fatal"])
 
 
 class Ship(RepoCase):

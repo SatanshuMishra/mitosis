@@ -818,7 +818,7 @@
           "unit": "none",
           "includes": "The state only.",
           "excludes": "The MSP's reason and pull-request text, which the store never holds.",
-          "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP.",
+          "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP; referee-reverted when a Worker wrote a referee path, which mitosis restored before holding the MSP back ungated and unpushed.",
           "readers": [
             "owner",
             "pipeline"
@@ -830,7 +830,8 @@
             "unchanged",
             "committed",
             "ship-failed",
-            "blocked"
+            "blocked",
+            "referee-reverted"
           ]
         }
       }
@@ -1297,6 +1298,20 @@
               "pipeline"
             ],
             "question": "How many MSPs reached a pull request?"
+          },
+          "referee_reverted": {
+            "type": "integer",
+            "description": "The number of MSPs that ended referee-reverted.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's MSPs in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How many MSPs reached a pull request?"
           }
         }
       },
@@ -1735,7 +1750,7 @@
               "unit": "none",
               "includes": "The state only.",
               "excludes": "The MSP's reason and pull-request text, which the store never holds.",
-              "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP.",
+              "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP; referee-reverted when a Worker wrote a referee path, which mitosis restored before holding the MSP back ungated and unpushed.",
               "readers": [
                 "owner",
                 "pipeline"
@@ -1747,7 +1762,8 @@
                 "unchanged",
                 "committed",
                 "ship-failed",
-                "blocked"
+                "blocked",
+                "referee-reverted"
               ]
             },
             "gate": {
