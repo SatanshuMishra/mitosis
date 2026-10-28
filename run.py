@@ -63,6 +63,8 @@ MSP_PUSHED = "pushed"
 
 MSP_REFEREE_REVERTED = "referee-reverted"
 
+NO_REFEREE_WRITE = {"referee": [], "fatal": False}
+
 PUBLISHED_STATES = ("shipped", MSP_PUSHED, MSP_UNCHANGED)
 
 ACCEPTANCE_FAILURE_EXIT = 1
@@ -105,7 +107,7 @@ EXECUTABLE_MODE = "100755"
 
 REGULAR_MODE = "100644"
 
-RAW_OBJECTS = {"GIT_NO_REPLACE_OBJECTS": "1"}
+RAW_OBJECTS = {"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull}
 
 PINNED_GIT = {
     **RAW_OBJECTS,
@@ -122,6 +124,8 @@ STATUS_SETTINGS = (
     "-c",
     "core.untrackedCache=false",
 )
+
+HISTORY_SETTINGS = ("-c", "log.showSignature=false", "-c", "diff.relative=false")
 
 GATE_FOLDER_PREFIX = "checkout-"
 
@@ -256,8 +260,8 @@ def git_paths(args, cwd, timeout=GIT_TIMEOUT, env=None):
     return [os.fsdecode(name) for name in completed.stdout.split(b"\0") if name]
 
 
-def git_ok(args, cwd, timeout=GIT_TIMEOUT):
-    return git_run(args, cwd, timeout).returncode == 0
+def git_ok(args, cwd, timeout=GIT_TIMEOUT, env=None):
+    return git_run(args, cwd, timeout, env=env).returncode == 0
 
 
 def commit_at(ref, cwd, required=False, git_dir=None):
@@ -290,6 +294,15 @@ def notify(observer, boundary, record):
 
 def branch_exists(repo, branch):
     return git_ok(["rev-parse", "--verify", "--quiet", "refs/heads/" + branch], repo)
+
+
+def branch_commit(repo, branch, required=False):
+    return commit_at("refs/heads/" + branch, repo, required=required)
+
+
+def pinned_base(repo, feature_branch, prior):
+    recorded = (prior or {}).get("base_commit")
+    return recorded if recorded else branch_commit(repo, feature_branch, required=True)
 
 
 def slug(label):
@@ -1306,6 +1319,50 @@ def _reset_submodule_heads(tree, base, held, targets):
             )
 
 
+def _entry_kind(tree, path):
+    if _behind_link(tree, path):
+        return "linked"
+    try:
+        return _kind(os.lstat(os.path.join(tree, *_parts(path))).st_mode)
+    except FileNotFoundError:
+        return None
+
+
+def _open_parents(tree, path):
+    for prefix in _prefixes(path)[:-1]:
+        kind = _entry_kind(tree, prefix)
+        if kind is None:
+            os.mkdir(os.path.join(tree, *_parts(prefix)))
+        elif kind != "dir":
+            return False
+    return True
+
+
+def _write_entry(tree, path, mode, data):
+    kind = _entry_kind(tree, path)
+    if kind not in (None, "file", "link") or not _open_parents(tree, path):
+        return False
+    full = tree_path(tree, path, last=False)
+    if kind is not None:
+        os.remove(full)
+    if mode == SYMLINK_MODE:
+        os.symlink(os.fsdecode(data), full)
+        return True
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    descriptor = os.open(full, flags, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        os.fchmod(handle.fileno(), 0o755 if mode == EXECUTABLE_MODE else 0o644)
+        handle.write(data)
+    return True
+
+
+def _drop_entry(tree, path):
+    if _entry_kind(tree, path) not in ("file", "link"):
+        return False
+    os.remove(tree_path(tree, path, last=False))
+    return True
+
+
 def _sync_worktree(tree, commit, base, paths):
     restored = _expanded(tree, commit, base)
     wanted = {
@@ -1314,33 +1371,37 @@ def _sync_worktree(tree, commit, base, paths):
         if path in restored and restored[path][0] != GITLINK_MODE
     }
     blobs = _store_blobs(tree, wanted)
+    placed = ()
     for path in paths:
         if path in wanted:
             mode, oid, store = wanted[path]
-            _place(tree, path, mode, blobs[(store, oid)])
-        elif not _behind_link(tree, path):
-            _remove_entry(tree, path)
+            synced = _write_entry(tree, path, mode, blobs[(store, oid)])
+        else:
+            synced = path not in restored and _drop_entry(tree, path)
+        placed = placed + ((path,) if synced else ())
+    return placed
 
 
-def revert_implementation(tree, base, paths, message=RESTORE_MESSAGE):
+def revert_implementation(tree, branch, head, base, paths, message=RESTORE_MESSAGE):
     written = tuple(sorted({_norm(path) for path in paths}))
-    head = commit_at("HEAD", tree, required=True)
+    ref = "refs/heads/" + branch
+    moved_from = branch_commit(tree, branch, required=True)
     held = _committed_entries(tree, base)
     current = _committed_entries(tree, head)
     targets = _restored_targets(written, held)
     rows = _restore_rows(current, held, targets)
     restored = _restored_tree(tree, head, rows)
     commit = git(["commit-tree", restored, "-p", head, "-m", message], tree, env=RAW_OBJECTS)
-    git(["update-ref", "-m", message, "HEAD", commit, head], tree, env=RAW_OBJECTS)
+    git(["update-ref", "-m", message, ref, commit, moved_from], tree, env=RAW_OBJECTS)
     _checked_run(["update-index", "-z", "--replace", "--index-info"], tree, rows, PINNED_GIT)
     _reset_submodule_heads(tree, base, held, targets)
-    _sync_worktree(tree, commit, base, written)
-    clear_caches_beside(tree, tuple(path for path in written if not _behind_link(tree, path)))
-    after = _committed_entries(tree, commit_at("HEAD", tree, required=True))
+    placed = _sync_worktree(tree, commit, base, written)
+    clear_caches_beside(tree, placed)
+    after = _committed_entries(tree, branch_commit(tree, branch, required=True))
     left = tuple(target for target in targets if _within(after, target) != _within(held, target))
     if left:
         raise GitError(
-            ["update-ref", "HEAD", commit],
+            ["update-ref", ref, commit],
             1,
             "the referee restore left %s different from %s" % (", ".join(left), base),
         )
@@ -1612,8 +1673,10 @@ def _remove_gate_folders(log_dir):
         shutil.rmtree(path, ignore_errors=True)
 
 
-def gate(plan, msp, tree, base, command, log_dir, timeout=None, env=None, repo=None, setup=None):
-    commit = commit_before_gate(plan, msp, tree)
+def gate(
+    plan, msp, tree, base, command, log_dir, timeout=None, env=None, repo=None, setup=None, head=None
+):
+    commit = commit_before_gate(plan, msp, tree) if head is None else head
     properties = msp_properties(
         plan, msp, steps_without_implementation_change(plan, msp, tree, base, commit)
     )
@@ -1724,10 +1787,23 @@ def _gate_runs(
     return _gate_result(toothed, implementation, commit, implementation), written
 
 
-def changed_files(tree, branch, base, exclude=()):
-    excluded = ["^" + ref for ref in exclude if branch_exists(tree, ref)]
+def changed_files(tree, head, base, exclude=()):
+    excluded = ["^" + commit for commit in exclude]
     names = git_paths(
-        ["log", "-z", "--format=", "--name-only", "--no-renames", branch, "^" + base, *excluded], tree
+        [
+            *HISTORY_SETTINGS,
+            "log",
+            "-z",
+            "--format=",
+            "--name-only",
+            "--no-renames",
+            "--ignore-submodules=none",
+            head,
+            "^" + base,
+            *excluded,
+        ],
+        tree,
+        env=PINNED_GIT,
     )
     return sorted(dict.fromkeys(names))
 
@@ -1750,10 +1826,12 @@ def _unproven_paths(plan, msp):
     }
 
 
-def locked_record(repo, branch, locked):
+def locked_record(repo, branch, commit, locked):
     files = ()
     for path in locked:
-        shown = git_run(["show", "%s:%s" % (branch, path)], repo, raw=True)
+        shown = git_run(
+            ["cat-file", "blob", "%s:%s" % (commit, path)], repo, raw=True, env=PINNED_GIT
+        )
         if shown.returncode != 0:
             raise ConfigError(
                 "--charter locks %s, which %s does not hold; commit the locked checks on it "
@@ -1763,7 +1841,7 @@ def locked_record(repo, branch, locked):
     return {
         "locked": list(locked),
         "receipt_lock": referee.receipt_lock(files),
-        "commit": commit_at(branch, repo, required=True),
+        "commit": commit,
     }
 
 
@@ -1870,7 +1948,9 @@ def _safe_module_name(name):
 
 
 def _git_path(tree, options, name):
-    found = os.fsdecode(_checked_run([*options, "rev-parse", "--git-path", name], tree).strip())
+    found = os.fsdecode(
+        _checked_run([*options, "rev-parse", "--git-path", name], tree, env=PINNED_GIT).strip()
+    )
     return found if os.path.isabs(found) else os.path.join(tree, found)
 
 
@@ -2077,7 +2157,12 @@ def ignored_paths(tree):
 
 
 def _referee_marked(paths, locked):
-    return frozenset(path for path in paths if referee.referee_reason(path, locked) is not None)
+    return frozenset(
+        path
+        for path in paths
+        if referee.referee_reason(path, locked) is not None
+        or any(_held_under((path,), _norm(entry)) for entry in locked)
+    )
 
 
 def _submodule_changes(tree, holder, path, old, new, git_dir, prefix):
@@ -2107,15 +2192,13 @@ def _tree_changes(tree, old, new, git_dir=None, prefix=""):
     return tuple(prefix + path for path in changed) + inside
 
 
-def referee_writes(plan, tree, branch, base):
+def referee_writes(plan, tree, head, base):
     locked = tuple(plan.get("locked") or ())
-    head = commit_at(branch, tree, required=True)
-    held = commit_at(base, tree, required=True)
-    return sorted(_referee_marked(_tree_changes(tree, held, head), locked))
+    return sorted(_referee_marked(_tree_changes(tree, base, head), locked))
 
 
-def reconcile(plan, msp, tree, branch, base, producer_branches=()):
-    changed = changed_files(tree, branch, base, producer_branches)
+def reconcile(plan, msp, tree, head, base, producer_heads=()):
+    changed = changed_files(tree, head, base, producer_heads)
     declared = sorted({_norm(f) for f in plan["msps"][msp].get("files") or ()})
     undeclared = [path for path in changed if _norm(path) not in declared]
     missing = [path for path in declared if path not in {_norm(c) for c in changed}]
@@ -2123,7 +2206,8 @@ def reconcile(plan, msp, tree, branch, base, producer_branches=()):
     untouched = [
         path
         for path in missing
-        if path in unproven and git_ok(["cat-file", "-e", "%s:%s" % (base, path)], tree)
+        if path in unproven
+        and git_ok(["cat-file", "-e", "%s:%s" % (base, path)], tree, env=PINNED_GIT)
     ]
     unwritten = [path for path in missing if path not in untouched]
     crossing = ()
@@ -2131,7 +2215,7 @@ def reconcile(plan, msp, tree, branch, base, producer_branches=()):
         owner = msp_owner_of(plan, path)
         if owner is not None and owner != msp:
             crossing = crossing + ({"path": path, "msp": owner, "label": _label(plan, owner)},)
-    written = referee_writes(plan, tree, branch, base)
+    written = referee_writes(plan, tree, head, base)
     return {
         "changed": changed,
         "declared": declared,
@@ -2822,19 +2906,20 @@ def _producer_block(plan, msp, state, producers):
     return None
 
 
-def _gate_stage(plan, msp, tree, settings):
+def _gate_stage(plan, msp, tree, settings, head):
     try:
         result = gate(
             plan,
             msp,
             tree["path"],
-            settings["feature_branch"],
+            settings["base_commit"],
             settings["acceptance_command"],
             os.path.join(settings["run_dir"], "gate", "msp-%d" % msp),
             settings["timeout"],
             settings.get("env"),
             settings.get("repo"),
             settings.get("gate_setup"),
+            head,
         )
     except (OSError, GitError, GateSetupError, subprocess.SubprocessError) as error:
         return {"gate": None, "gate_error": str(error)}
@@ -2868,15 +2953,24 @@ def _proven_head(prior, head, proven):
     return head if head.startswith(proven) else None
 
 
-def _reconcile_stage(plan, msp, tree, producers, trees, settings):
+def _judged_head(tree, head):
+    return head if head is not None else commit_at("HEAD", tree["path"], required=True)
+
+
+def _producer_heads(tree, producers, trees):
+    found = tuple(branch_commit(tree["path"], trees[p]["branch"]) for p in producers)
+    return tuple(commit for commit in found if commit is not None)
+
+
+def _reconcile_stage(plan, msp, tree, producers, trees, settings, head=None):
     try:
         findings = reconcile(
             plan,
             msp,
             tree["path"],
-            tree["branch"],
-            settings["feature_branch"],
-            tuple(trees[p]["branch"] for p in producers),
+            _judged_head(tree, head),
+            settings["base_commit"],
+            _producer_heads(tree, producers, trees),
         )
     except GitError as error:
         return {
@@ -2888,25 +2982,27 @@ def _reconcile_stage(plan, msp, tree, producers, trees, settings):
     return {"reconcile": findings}
 
 
-def _committed_reconcile(plan, tree, settings, commit_error):
+def _committed_reconcile(plan, tree, settings, uncommitted, head=None):
     try:
-        written = referee_writes(plan, tree["path"], tree["branch"], settings["feature_branch"])
+        written = referee_writes(
+            plan, tree["path"], _judged_head(tree, head), settings["base_commit"]
+        )
     except GitError as error:
         return {
             "reconcile": None,
             "state": MSP_GATE_FAILED,
-            "reason": "mitosis could not commit the work on %s before the gate (%s) and could not "
-            "judge the referee paths its commits hold, so the gate did not run and the MSP is "
-            "held back: %s" % (tree["branch"], commit_error, error),
+            "reason": "mitosis judged only the commits on %s, because %s, and could not judge the "
+            "referee paths they hold, so the gate did not run and the MSP is held back: %s"
+            % (tree["branch"], uncommitted, error),
         }
     return {"reconcile": {"referee": written, "fatal": bool(written)}}
 
 
-def _referee_stage(plan, msp, tree, producers, trees, settings, commit_error=None):
+def _referee_stage(plan, msp, tree, producers, trees, settings, uncommitted=None, head=None):
     reconciled = (
-        _reconcile_stage(plan, msp, tree, producers, trees, settings)
-        if commit_error is None
-        else _committed_reconcile(plan, tree, settings, commit_error)
+        _reconcile_stage(plan, msp, tree, producers, trees, settings, head)
+        if uncommitted is None
+        else _committed_reconcile(plan, tree, settings, uncommitted, head)
     )
     if reconciled.get("state") == MSP_GATE_FAILED:
         return {**reconciled, "gate": None, "gate_error": reconciled["reason"]}
@@ -2915,14 +3011,15 @@ def _referee_stage(plan, msp, tree, producers, trees, settings, commit_error=Non
         return None
     kept = (
         ""
-        if commit_error is None
-        else "; the commit before the gate failed, so the rest of the work stays uncommitted: %s"
-        % commit_error
+        if uncommitted is None
+        else "; the rest of the work stays uncommitted, because %s" % uncommitted
     )
     try:
         revert_implementation(
             tree["path"],
-            settings["feature_branch"],
+            tree["branch"],
+            _judged_head(tree, head),
+            settings["base_commit"],
             written,
             "revert(%s): restore the referee paths a Worker wrote" % _label(plan, msp),
         )
@@ -3056,6 +3153,26 @@ def _held_back(gated, branch):
     }
 
 
+def _uncommitted_reason(block, commit_error):
+    if block is not None:
+        return "mitosis made no commit before the gate: %s" % block["reason"]
+    if commit_error is not None:
+        return "the commit before the gate failed: %s" % commit_error
+    return None
+
+
+def _blocked_record(block, held):
+    if held is None:
+        return {**block, "reconcile": NO_REFEREE_WRITE}
+    if held.get("state") == MSP_REFEREE_REVERTED:
+        return held
+    return {
+        **block,
+        "reconcile": held.get("reconcile"),
+        "reason": "%s; %s" % (block["reason"], held["reason"]),
+    }
+
+
 def _finish_msp(plan, msp, trees, producers, state, settings):
     run_dir = settings["run_dir"]
     tree = trees[msp]
@@ -3068,17 +3185,20 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
         ],
     }
     block = _lane_block(plan, msp, state) or _producer_block(plan, msp, state, producers)
-    if block is not None:
-        return write_state(run_dir, _msp_record(state, msp, **block))
-    head, commit_error = _committed_head(plan, msp, tree)
-    state = write_state(run_dir, _msp_record(state, msp, ignored=ignored_paths(tree["path"])))
-    held = _referee_stage(plan, msp, tree, producers, trees, settings, commit_error)
+    head, commit_error = (None, None) if block is not None else _committed_head(plan, msp, tree)
+    if block is None:
+        state = write_state(run_dir, _msp_record(state, msp, ignored=ignored_paths(tree["path"])))
+    uncommitted = _uncommitted_reason(block, commit_error)
+    held = _referee_stage(plan, msp, tree, producers, trees, settings, uncommitted, head)
     if held is not None:
         notify(
             settings.get("observer"),
             "reconciled",
             {"msp": msp, "findings": held["reconcile"]},
         )
+    if block is not None:
+        return write_state(run_dir, _msp_record(state, msp, **_blocked_record(block, held)))
+    if held is not None:
         return write_state(run_dir, _msp_record(state, msp, **held))
     proven_head = _proven_head(prior, head, settings["proven_heads"].get(msp))
     reused = prior.get("gate") if proven_head is not None else _reusable_gate(prior, head)
@@ -3087,7 +3207,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     gated = (
         {"gate": None, "gate_error": commit_error}
         if commit_error is not None
-        else _gate_stage(plan, msp, tree, settings)
+        else _gate_stage(plan, msp, tree, settings, head)
         if judged_now
         else {"gate": reused, "gate_error": None}
     )
@@ -3110,6 +3230,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
             _msp_record(
                 state,
                 msp,
+                reconcile=NO_REFEREE_WRITE,
                 state=MSP_GATE_FAILED,
                 reason="mitosis could not commit the work on %s before the gate, so it kept the "
                 "work uncommitted in the worktree, did not run the gate and held the MSP back: %s"
@@ -3118,7 +3239,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
         )
     tampered = _gate_referee_writes(gated) if judged_now else []
     reconciled = _with_gate_referee(
-        _reconcile_stage(plan, msp, tree, producers, trees, settings), tampered
+        _reconcile_stage(plan, msp, tree, producers, trees, settings, head), tampered
     )
     notify(
         settings.get("observer"),
@@ -3195,6 +3316,7 @@ def execute(
     env=None,
     trajectory=None,
     gate_setup=None,
+    base_commit=None,
 ):
     prior = prior_state(run_dir, plan, resume)
     header = carried_header(header, prior)
@@ -3218,9 +3340,11 @@ def execute(
         for index in range(len(plan.get("lanes") or []))
     ):
         check_identity(repo)
+    base = base_commit or pinned_base(repo, feature_branch, prior)
     settings = {
         "repo": repo,
         "feature_branch": feature_branch,
+        "base_commit": base,
         "run_dir": run_dir,
         "acceptance_command": acceptance_command,
         "pr_command": pr_command,
@@ -3242,6 +3366,7 @@ def execute(
             "version": core.__version__,
             "plan_id": plan.get("plan_id"),
             "feature_branch": feature_branch,
+            "base_commit": base,
             "started": now(),
             "drift": document_drift(plan, root or repo),
             "worktrees": [],
@@ -3252,7 +3377,7 @@ def execute(
         },
     )
     trees = prepare_worktrees(
-        plan["msps"], feature_branch, trees_root or os.path.join(run_dir, "trees"), repo, prefix
+        plan["msps"], base, trees_root or os.path.join(run_dir, "trees"), repo, prefix
     )
     state = write_state(run_dir, {**state, "worktrees": trees})
 
@@ -3270,7 +3395,7 @@ def execute(
         timeout,
         concurrency,
         run_dir,
-        feature_branch,
+        base,
         models=models,
         prior=state["lanes"],
         on_lane=on_lane,

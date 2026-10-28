@@ -524,7 +524,7 @@ class Staging(unittest.TestCase):
             write(root, "run/structure.json", json.dumps([briefed("alpha"), bare("beta")]))
             seen = None
 
-            def fake_execute(args, plan, models, run_dir, repo, root_dir):
+            def fake_execute(args, plan, models, run_dir, repo, root_dir, base=None):
                 nonlocal seen
                 seen = plan
                 return {}, None

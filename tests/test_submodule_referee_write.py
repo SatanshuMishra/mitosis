@@ -79,7 +79,8 @@ class SubmoduleRefereeWrite(unittest.TestCase):
         self.handle = None
 
     def _referee_stage(self):
-        return run._referee_stage(PLAN, 0, self.handle, (), [self.handle], {"feature_branch": "feature"})
+        settings = {"feature_branch": "feature", "base_commit": run.branch_commit(self.tree, "feature")}
+        return run._referee_stage(PLAN, 0, self.handle, (), [self.handle], settings)
 
     def _tree(self, nested=False):
         dependency = committed_repository(

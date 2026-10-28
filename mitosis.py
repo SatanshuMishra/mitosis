@@ -1611,6 +1611,12 @@ def _lane_summary(plan, state):
     ]
 
 
+def _referee_verdict(findings):
+    if not isinstance(findings, dict):
+        return {"referee": None, "fatal": None}
+    return {"referee": list(findings.get("referee") or ()), "fatal": bool(findings.get("fatal"))}
+
+
 def _msp_summary(plan, state):
     records = (state or {}).get("msps") or {}
     summaries = []
@@ -1650,9 +1656,9 @@ def _msp_summary(plan, state):
                 "reconcile": {
                     **{
                         key: list(findings.get(key) or ())
-                        for key in ("undeclared", "unwritten", "untouched", "referee")
+                        for key in ("undeclared", "unwritten", "untouched")
                     },
-                    "fatal": bool(findings.get("fatal")),
+                    **_referee_verdict(record.get("reconcile")),
                 },
                 "crossing": [entry.get("path") for entry in findings.get("crossing") or ()],
                 "ignored": list(record.get("ignored") or ()),
@@ -1774,25 +1780,36 @@ def _summarised(plan, state, run_dir, code, referee=None, troubles=()):
     return code
 
 
-def referee_record(args, plan, repo):
+def referee_record(args, plan, repo, base):
     locked = plan.get("locked") or ()
-    if not locked or not args.feature_branch or repo is None:
+    if not locked or base is None:
         return None
-    if not run.branch_exists(repo, args.feature_branch):
-        return None
-    return run.locked_record(repo, args.feature_branch, locked)
+    return run.locked_record(repo, args.feature_branch, base, locked)
 
 
 def planned_referee(args, plan, repo):
     try:
-        return referee_record(args, plan, repo), ()
+        base = (
+            run.branch_commit(repo, args.feature_branch)
+            if args.feature_branch and repo is not None
+            else None
+        )
+        return referee_record(args, plan, repo, base), ()
     except (run.ConfigError, run.GitError) as error:
         return None, (str(error),)
 
 
-def locked_referee(args, plan, repo):
+def pinned_base(args, plan, run_dir, repo):
     try:
-        return referee_record(args, plan, repo)
+        prior = run.prior_state(run_dir, plan, args.resume)
+        return run.pinned_base(repo, args.feature_branch, prior)
+    except (run.ResumeError, run.GitError) as error:
+        raise Refusal(str(error))
+
+
+def locked_referee(args, plan, repo, base):
+    try:
+        return referee_record(args, plan, repo, base)
     except (run.ConfigError, run.GitError) as error:
         raise Refusal(str(error))
 
@@ -1819,7 +1836,7 @@ def report(plan, state, decomposed, root, run_dir, code, from_items, decisions=N
     return lines
 
 
-def execute(args, plan, models, run_dir, repo, root):
+def execute(args, plan, models, run_dir, repo, root, base=None):
     try:
         return run.execute(
             plan,
@@ -1842,6 +1859,7 @@ def execute(args, plan, models, run_dir, repo, root):
             env=recorder_of(args).env,
             trajectory=args.trajectory,
             gate_setup=args.gate_setup,
+            base_commit=base,
         ), None
     except (run.ConfigError, run.ResumeError) as error:
         raise Refusal(str(error))
@@ -1924,10 +1942,11 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
         locked, troubles = planned_referee(args, plan, repo)
         return _summarised(plan, None, run_dir, planned_code(items), locked, troubles)
     refuse_run(args, plan, models, run_dir, repo)
-    locked = locked_referee(args, plan, repo)
+    base = pinned_base(args, plan, run_dir, repo)
+    locked = locked_referee(args, plan, repo, base)
     run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
     if plan.get("msps"):
-        state, failure = execute(args, plan, models, run_dir, repo, root)
+        state, failure = execute(args, plan, models, run_dir, repo, root, base)
     else:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
         state, failure = {}, None

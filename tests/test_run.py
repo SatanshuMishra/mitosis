@@ -1411,7 +1411,8 @@ class Reconcile(RepoCase):
         self.assertEqual(findings["referee"], ["tests/conftest.py", "tests/test_locked.py"])
         self.assertTrue(findings["fatal"])
         self.assertEqual(findings["crossing"], [])
-        run.revert_implementation(tree, "main", findings["referee"])
+        head = run.branch_commit(tree, branch)
+        run.revert_implementation(tree, branch, head, "main", findings["referee"])
         run.commit_all(tree, "restore")
         restored = run.reconcile(plan, 0, tree, branch, "main")
         self.assertEqual(restored["referee"], [])
@@ -1420,7 +1421,8 @@ class Reconcile(RepoCase):
 
     def locked_record_seals_the_exact_bytes_at_the_branch(self):
         self.seed_existing("tests/test_locked.py", "import unittest\n")
-        record = run.locked_record(self.repo, "main", ["tests/test_locked.py"])
+        main = run.branch_commit(self.repo, "main")
+        record = run.locked_record(self.repo, "main", main, ["tests/test_locked.py"])
         self.assertEqual(
             record,
             {
@@ -1432,7 +1434,7 @@ class Reconcile(RepoCase):
             },
         )
         with self.assertRaises(run.ConfigError) as caught:
-            run.locked_record(self.repo, "main", ["tests/test_locked.py", "tests/missing.py"])
+            run.locked_record(self.repo, "main", main, ["tests/test_locked.py", "tests/missing.py"])
         self.assertEqual(
             str(caught.exception),
             "--charter locks tests/missing.py, which main does not hold; commit the locked checks "
