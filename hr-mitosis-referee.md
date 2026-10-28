@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T08:55:04.606Z
+Updated: 2026-10-28T09:15:11.859Z
 Next ids: c7 D1 R3 S1
 
 ## Goal
@@ -18,11 +18,11 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-Not started.
+Interphase Phase 9: spec, record and items written and passing check_spec, check_record --complete and check_items; one MSP, seven ordered Steps, criteria 5.1 to 5.6 are M1 to M6 and 5.7 is docs and version 0.8.0. The spec reviewer is running.
 
 ## Next step
 
-Invoke interphase:feature with the run 2 request carrying I1 to I6, M1 to M6 with acceptance lines, the K1 K2 K3 K6 schema paths and the O10 line, ending Work autonomously.
+Apply the spec reviewer's fixes, rerender and recheck, then hand off (glossary terms, ADRs 0006 and 0007, tree guard verify, record status handed-off).
 
 ## Decisions in force
 
