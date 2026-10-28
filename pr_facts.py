@@ -64,6 +64,10 @@ def msp_manifest_gaps(plan, msp):
     )
 
 
+def conventional_prefix(kind, scope):
+    return "%s%s" % (kind, "(%s)" % scope if scope else "")
+
+
 def _title(header, plan, msp):
     scope = header.get("scope")
     subject = header["subject"]
@@ -72,7 +76,7 @@ def _title(header, plan, msp):
         if len(plan.get("msps") or []) > 1
         else subject
     )
-    return "%s%s: %s" % (header["type"], "(%s)" % scope if scope else "", labelled)
+    return "%s: %s" % (conventional_prefix(header["type"], scope), labelled)
 
 
 def _problem(header):
@@ -92,17 +96,18 @@ def _folded(passed, total):
             if total == 1
             else "%d acceptance tests pass with the work and fail without it" % total
         )
+    return _partly_folded(passed, total)
+
+
+def _partly_folded(passed, total):
     return (
         "%d of %d acceptance tests pass with the work and fail without it; the rest are not proven"
         % (passed, total)
     )
 
 
-def _probe_folded(passed, total):
-    return (
-        "%d of %d acceptance tests pass with the work and fail without it; the rest are not proven"
-        % (total, total)
-    )
+def _probe_folded(_, total):
+    return _partly_folded(total, total)
 
 
 def _testing(plan, msp, outcome_of, fold, closing):

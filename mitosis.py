@@ -1638,6 +1638,7 @@ def execute(args, plan, models, run_dir, repo, root):
             no_push=args.no_push,
             header=run_header(args, plan, run_dir),
             render_command=args.render_command,
+            landing={"type": args.pr_type, "scope": args.pr_scope},
             proven_heads=proven_heads(args.proven_head, plan),
             observer=recorder_of(args).observe,
             env=recorder_of(args).env,

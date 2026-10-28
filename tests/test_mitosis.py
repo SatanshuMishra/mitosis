@@ -1426,6 +1426,14 @@ class RenderPreflight(unittest.TestCase):
         probed = read_json(os.path.join(self.run_dir, "probe-0.json"))
         self.assertEqual(probed["impact"], ["Ship only."])
 
+    def a_typed_run_without_a_subject_lands_typed_commits(self):
+        code, out, err = self._invoke(
+            HOLDING_WORKER, "--pr-type", "feat", "--pr-scope", "ship", "--no-push"
+        )
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        branch = read_json(os.path.join(self.run_dir, run.STATE_FILE))["worktrees"][0]["branch"]
+        self.assertEqual(git_out(self.root, "log", "-1", "--format=%s", branch).strip(), "feat(ship): alpha")
+
     def pipeline_flags_ship_what_render_printed(self):
         code, out, err = self._invoke(
             HOLDING_WORKER,

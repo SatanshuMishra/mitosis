@@ -463,10 +463,10 @@ def _worker_values(plan, lane, tree, models, run_dir, session_id):
 def _landing_message(plan, lane, header):
     steps = plan["lanes"][lane]["steps"]
     tasks = {item.get("name"): item.get("task") for item in plan.get("items") or []}
-    scope = (header or {}).get("scope")
-    subject = "%s%s: %s" % (
-        (header or {}).get("type") or "chore",
-        "(%s)" % scope if scope else "",
+    subject = "%s: %s" % (
+        pr_facts.conventional_prefix(
+            (header or {}).get("type") or "chore", (header or {}).get("scope")
+        ),
         ", ".join(steps),
     )
     return "%s\n\n%s" % (
@@ -1568,6 +1568,7 @@ def execute(
     observer=None,
     env=None,
     render_command="pull-request",
+    landing=None,
 ):
     prior = prior_state(run_dir, plan, resume)
     header = carried_header(header, prior)
@@ -1646,7 +1647,7 @@ def execute(
         on_lane=on_lane,
         observer=observer,
         env=env,
-        header=header,
+        header=landing or header,
     )
     notify(
         observer,
