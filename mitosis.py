@@ -902,6 +902,8 @@ def refuse_unrenderable(args, plan, run_dir):
             "a run that opens pull requests needs --pr-impact, what callers or users notice, "
             "or --pr-blast-radius for render's impact"
         )
+    if args.timeout is None:
+        raise Refusal("the render probe needs --timeout; mitosis has no default")
     for index in range(len(plan.get("msps") or [])):
         try:
             pr_facts.render(

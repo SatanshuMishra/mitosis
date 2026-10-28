@@ -1426,6 +1426,29 @@ class RenderPreflight(unittest.TestCase):
         probed = read_json(os.path.join(self.run_dir, "probe-0.json"))
         self.assertEqual(probed["impact"], ["Ship only."])
 
+    def the_probe_needs_a_timeout(self):
+        args = mitosis.build_parser().parse_args(
+            [
+                "--items",
+                "items.json",
+                "--plan-only",
+                "--pr-type",
+                "feat",
+                "--pr-subject",
+                "hand facts to render",
+                "--pr-why",
+                "Bodies are composed twice.",
+                "--pr-impact",
+                "Every new body changes shape.",
+                "--render-command",
+                fake_render(self.elsewhere),
+            ]
+        )
+        with self.assertRaises(mitosis.Refusal) as caught:
+            mitosis.refuse_unrenderable(args, core.plan([briefed("alpha")]), self.run_dir)
+        self.assertIn("--timeout", str(caught.exception))
+        self.assertFalse(os.path.exists(os.path.join(self.elsewhere, "calls")))
+
     def a_typed_run_without_a_subject_lands_typed_commits(self):
         code, out, err = self._invoke(
             HOLDING_WORKER, "--pr-type", "feat", "--pr-scope", "ship", "--no-push"
