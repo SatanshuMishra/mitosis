@@ -295,7 +295,7 @@ see each Lane's message, `chore(<MSP>): land Lane <n> (<Steps>)`, so a
 hook that refuses that form fails every Lane after its Worker has run.
 
 The gate runs each acceptance property twice, with the work present and with
-the implementation reverted on a probe branch. `pass` means the property
+the implementation reverted. `pass` means the property
 failed without the work, so it is load-bearing. `inert` means it passed
 without the work, so it proves nothing. `inconclusive` means reverting broke
 the build. `not-applicable` means the Step declared no property, counted so
@@ -312,17 +312,23 @@ also gets one outcome entry per acceptance test after every gate.
 The referee is what judges the work, and no Worker writes it: the charter's
 `- Locked:` lines, plus built-in markers for test configuration, snapshots,
 baselines, allowlists and skip lists. Planning refuses a Step whose files hold
-a referee path, exit 3. A Worker's or acceptance run's write to one is
-restored and its MSP held back as `referee-reverted`, exit 9. The JSON
+a referee path, exit 3. A committed write to one, read from tree objects
+with Worker settings kept out, is reverted; it, or an acceptance run's write,
+holds the MSP back `referee-reverted`, exit 9. The JSON
 result's `referee` object names the locked paths, their receipt lock and
 commit. A real run exits 3 on a `- Locked:` path the feature branch lacks, or
 a `- Locked:` line that is empty, absolute or contains `..`.
 
-The gate tree is made equal to the gated commit before every judgement; only
-paths the feature branch's committed `.gitignore` ignores may stay. A folder
-it cannot list holds the MSP back as `gate-failed`, exit 21. Ship refuses
-unjudged writes, or a head other than the gated commit, as `ship-failed`,
-exit 22.
+Every gate, mutant and acceptance run uses a clean checkout of the MSP's
+commit, outside the Worker's worktree and not a git repository. Files the
+commit lacks never reach it and are listed in the MSP's `ignored` list, never
+restored.
+
+Dependencies are the root's node_modules and venvs, or `--gate-setup`, run
+once per gate with `{worktree}`; it prepares what a git-running test reads. A
+failed or timed-out gate setup, or a refused pre-gate commit, holds the MSP
+back `gate-failed`, exit 21. Ship refuses a head other than the gated commit,
+`ship-failed`, exit 22.
 
 Reconcile compares what the git log says changed against what the Steps
 declared. A write outside the declaration, or a declared path never written,
@@ -360,18 +366,12 @@ claim, and the git log is the record.
 A Worker stopped at a usage limit parks its Lane `parked-limit` and its MSP
 `parked`, exit 13; `--resume` after the reset runs every Lane not `ok`.
 
-The next run restores an interrupted gate, backing up what it replaces under
-`refs/mitosis/recovered/<branch>`. It exits 5, keeping its marker, if the
-branch, probe branch or HEAD moved, a path cannot be backed up, or the restore
-fails.
-
 Pass `--resume` with the same input and run directory. Lanes already `ok` and
 MSPs already `shipped` or `pushed` are skipped, as is an MSP `unchanged` whose
 producers all finished. An MSP that did not ship is gated again, without
-rebuilding its Lanes, unless its recorded gate passed at its current HEAD with
-no uncommitted change. A producer whose branch was deleted after its pull
-request merged is found through its recorded commit on the feature branch. If
-the Steps changed, the plan id differs and mitosis refuses to resume.
+rebuilding its Lanes, unless its recorded gate passed at its current HEAD. A
+producer whose branch was deleted after its pull request merged is found
+through its recorded commit on the feature branch. If the Steps changed, the plan id differs and mitosis refuses to resume.
 
 ## Holding the work locally
 
@@ -382,10 +382,9 @@ refused. Run the project's own checks on those branches; `--resume` without
 `--no-push` ships what was held, and with it leaves a `committed` MSP where it
 is.
 
-`--proven-head <MSP label>=<commit>`, repeatable, ships a later head the
-caller proved without re-gating, when it is the clean HEAD and a passing gate
-is recorded; a Not verified: line names both commits. A malformed value or
-unknown label exits 2.
+`--proven-head <MSP label>=<commit>`, repeatable, ships a caller-proved HEAD
+ungated when a passing gate is recorded; a Not verified: line names both
+commits. A malformed value or label exits 2.
 
 ## Metrics
 

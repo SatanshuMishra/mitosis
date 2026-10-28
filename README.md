@@ -120,27 +120,21 @@ not the full surface.
 `--no-push` builds, gates and reconciles every MSP and publishes nothing;
 `--resume` with the same input and run directory continues a run, and
 without `--no-push` ships what was held. A resume reuses an MSP's recorded
-gate result when it passed, the MSP's HEAD is the commit the gate ran at and
-its worktree holds no uncommitted change; otherwise the MSP is gated again.
+gate result when it passed and the MSP's HEAD is the commit the gate ran at;
+otherwise the MSP is gated again. Files the worktree holds outside that commit
+play no part, since the gate never reads them.
 
 A caller that proved a later head itself names it with
 `--proven-head <MSP label>=<commit>`, once per MSP. mitosis ships that head
-without gating again when the MSP's HEAD equals the commit, its worktree is
-clean and a passing gate result is recorded, and the pull request's
+without gating again when the MSP's HEAD equals the commit and a passing
+gate result is recorded, and the pull request's
 Verification section names both commits on a Not verified: line. A head that
 differs, or an MSP with no recorded gate result, is gated as before; a
 malformed value or a label the plan does not hold exits 2 before anything is
 built.
 
-A gate that is interrupted leaves a marker in the worktree's git directory,
-and the next run restores that worktree to the gated commit before it commits
-or judges anything. The work that restore replaces is first backed up as a
-commit on `refs/mitosis/recovered/<branch>`, whose parents are the gated
-commit and any earlier backup. Recovery refuses with exit 5, keeps the marker
-and stops the run when the branch or its probe branch has moved off the gated
-commit, when HEAD is on neither, when git cannot store a path in the backup,
-or when the restore fails; the error names the cause, and the next run tries
-the recovery again.
+A gate that is interrupted leaves the Worker's worktree as it was, because
+the gate never runs there; the next gate removes the gate folder left behind.
 
 ## The referee and the gate
 
@@ -151,7 +145,12 @@ for test configuration such as `conftest.py` or `pytest.ini`, snapshots,
 baselines, allowlists and skip lists. Planning refuses a Step whose files
 hold a referee path, with exit 3, before anything is built. A Worker that
 writes one anyway has the file restored from the feature branch, and its MSP
-is held back as `referee-reverted` and never pushed, with exit 9. The JSON
+is held back as `referee-reverted` and never pushed, with exit 9. mitosis
+finds such a write after the MSP's pre-gate commit, and also when that commit
+fails, by comparing the feature branch's tree with the branch head's tree
+through git's tree objects, with replace objects, system and global config,
+attributes and filters kept out, so no Worker-written setting shapes what it
+reads. The revert is a commit before the gate. The JSON
 result's `referee` object names the locked paths, their receipt lock and the
 commit they were read at. A real run refuses, with exit 3, a charter whose
 `- Locked:` path the feature branch does not hold, and a `- Locked:` line that
@@ -171,18 +170,36 @@ whose gate is `weak`, `inert` or `inconclusive` ends `gate-failed`: its work
 is committed on its branch and never pushed, so no pull request opens on an
 unproven property.
 
-An acceptance run that writes a referee path during the gate is caught the
-same way: the gate restores the path, and the MSP is held back as
-`referee-reverted` and never pushed, with exit 9.
+The gate, every mutant run and every acceptance run execute in a clean
+checkout of the MSP's committed tree, a folder outside the Worker's worktree
+written from git's tree objects and passed as `{worktree}`. The folder is
+reset to its target tree before every run and removed after the gate. It is
+not a git repository and holds the commit's raw blob bytes, so an acceptance
+command or test that runs git, a Git LFS file and a committed eol attribute
+each need `--gate-setup` to prepare what they read. Files the commit does not
+carry never reach the gate: each MSP's `ignored` list in the JSON result names
+them, and mitosis never restores, removes or judges them.
 
-Before every judgement the gate makes the worktree equal to the gated commit.
-Only an untracked path that the feature branch's committed `.gitignore` files
-ignore may stay, and never a referee path. A folder the gate cannot list holds
-the MSP back as `gate-failed`, with exit 21, and no verdict is recorded.
+Dependency folders come from outside the Worker's control. Without
+`--gate-setup`, the gate links in each node_modules folder and each
+virtual-environment folder, one holding `pyvenv.cfg`, that the repository
+root holds and the commit lacks. With `--gate-setup`, the gate links nothing
+and runs that command once per gate in the clean checkout, with `{worktree}`
+naming it and the run's `--timeout`; a project whose root folders point back
+into the root checkout, such as an editable install, uses it. A gate setup
+that exits non-zero or times out runs no acceptance test and holds the MSP
+back as `gate-failed`, with exit 21, and a gate error naming the gate setup.
+A pre-gate commit that git refuses holds the MSP back the same way, with
+exit 21, its work left uncommitted in the worktree and no gate run.
 
-Ship refuses an MSP whose worktree holds writes no gate judged, and one whose
-head is not the gated commit unless `--proven-head` names that head; either
-refusal ends the MSP `ship-failed`, with exit 22, and nothing is pushed.
+An acceptance run that leaves a referee path in the clean checkout differing
+from the commit is caught the same way as a committed write: the gate lists
+it under its `referee` list, and the MSP is held back as `referee-reverted`
+and never pushed, with exit 9.
+
+Ship refuses an MSP whose branch head is not the gated commit unless
+`--proven-head` names that head; the refusal ends the MSP `ship-failed`, with
+exit 22, and nothing is pushed.
 
 `--trajectory PATH` reads prior outcomes to raise a surface's tier, and after
 every gate also receives one outcome entry per acceptance test, appended to

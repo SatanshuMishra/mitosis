@@ -11,10 +11,11 @@ the gate withholds a pull request it cannot certify.
 - A charter names its locked checks one per line as `- Locked: <path>`, and
   built-in referee markers cover test configuration, snapshots, baselines,
   allowlists and skip lists. Planning refuses a Step whose files hold a
-  referee path, with exit 3. A Worker's write to one is restored in its own
-  commit and its MSP is held back as `referee-reverted` and never pushed, with
-  exit 9. The JSON result's `referee` object names the locked paths, their
-  receipt lock and the commit they were read at.
+  referee path, with exit 3. A Worker's committed write to one, found from
+  git's tree objects with Worker-written settings kept out, is reverted in
+  its own commit, and its MSP is held back as `referee-reverted` and never
+  pushed, with exit 9. The JSON result's `referee` object names the locked
+  paths, their receipt lock and the commit they were read at.
 - A `- Locked:` path the feature branch does not hold, in a real run, and a
   `- Locked:` line that is empty, absolute or contains `..` are refused with
   exit 3.
@@ -31,19 +32,24 @@ the gate withholds a pull request it cannot certify.
   MSP `parked`, with exit 13, and `--resume` runs every Lane that is not `ok`.
 - `--trajectory` also receives one outcome entry per acceptance test after
   every gate.
-- An acceptance run's write to a referee path during the gate is restored and
-  holds its MSP back as `referee-reverted`, with exit 9.
-- Before every judgement the gate makes the worktree equal to the gated
-  commit. Only paths the feature branch's committed `.gitignore` files ignore
-  may stay, never a referee path, and a folder the gate cannot list holds the
-  MSP back as `gate-failed`, with exit 21.
-- Ship refuses a worktree holding writes no gate judged, and a head that is
-  not the gated commit, as `ship-failed`, with exit 22.
-- An interrupted gate is restored to its gated commit on the next run, and the
-  work it replaces is backed up under `refs/mitosis/recovered/<branch>`.
-  Recovery refuses with exit 5 and keeps its marker when the branch, the probe
-  branch or HEAD has moved, when a path cannot be backed up, or when the
-  restore fails.
+- The gate, every mutant run and every acceptance run execute in a clean
+  checkout of the MSP's committed tree, a folder outside the Worker's
+  worktree reset before every run. It is not a git repository, so an
+  acceptance command that runs git needs `--gate-setup` to prepare what it
+  reads. Files the commit does not carry never reach the gate and are listed
+  in each MSP's `ignored` list, never restored.
+- Dependency folders come from the repository root's node_modules and
+  virtual-environment folders, or from the new `--gate-setup` command, run
+  once per gate with `{worktree}`. A failed or timed-out gate setup holds the
+  MSP back as `gate-failed`, with exit 21, and so does a refused pre-gate
+  commit.
+- An acceptance run that leaves a referee path in the clean checkout
+  differing from the commit holds its MSP back as `referee-reverted`, with
+  exit 9.
+- Ship refuses a head that is not the gated commit, as `ship-failed`, with
+  exit 22.
+- A resume's gate reuse and `--proven-head` depend only on the branch head's
+  commit, never on files the worktree holds outside it.
 
 ## 0.7.0 - 2026-10-27
 
@@ -91,7 +97,8 @@ or proven.
   always retried. Only the same run directory's state is read.
 - `--proven-head <MSP label>=<commit>`, repeatable, lets a caller that proved
   a later head ship it without gating again, when the MSP's HEAD equals that
-  commit, its worktree is clean and a gate result that passed is recorded.
+  commit, its worktree holds no uncommitted change and a gate result that
+  passed is recorded.
   The pull request's Verification section then ends with a Not verified:
   line naming the commit the gate ran at and the commit the caller proved. A
   head that differs, or an MSP with no recorded gate result, is gated as
