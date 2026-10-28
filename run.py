@@ -149,7 +149,11 @@ def _left_lock(index_lock, locked_before):
         pass
 
 
-def _git_once(args, cwd, timeout):
+def _decoded(data):
+    return data.decode("utf-8", "surrogateescape")
+
+
+def _git_once(args, cwd, timeout, raw=False):
     index_lock = _index_lock(cwd)
     locked_before = index_lock is not None and os.path.exists(index_lock)
     argv = ["git", *args]
@@ -159,7 +163,6 @@ def _git_once(args, cwd, timeout):
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
         start_new_session=True,
     )
     try:
@@ -172,7 +175,9 @@ def _git_once(args, cwd, timeout):
             pass
         _left_lock(index_lock, locked_before)
         raise GitTimeout(args, timeout)
-    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
+    return subprocess.CompletedProcess(
+        argv, proc.returncode, stdout if raw else _decoded(stdout), _decoded(stderr)
+    )
 
 
 def _locked(completed):
@@ -182,13 +187,13 @@ def _locked(completed):
     )
 
 
-def git_run(args, cwd, timeout=GIT_TIMEOUT):
-    completed = _git_once(args, cwd, timeout)
+def git_run(args, cwd, timeout=GIT_TIMEOUT, raw=False):
+    completed = _git_once(args, cwd, timeout, raw)
     for delay in LOCK_RETRY_DELAYS:
         if not _locked(completed):
             return completed
         time.sleep(delay)
-        completed = _git_once(args, cwd, timeout)
+        completed = _git_once(args, cwd, timeout, raw)
     return completed
 
 
@@ -1355,7 +1360,7 @@ def _unproven_paths(plan, msp):
 def locked_record(repo, branch, locked):
     files = ()
     for path in locked:
-        shown = git_run(["show", "%s:%s" % (branch, path)], repo)
+        shown = git_run(["show", "%s:%s" % (branch, path)], repo, raw=True)
         if shown.returncode != 0:
             raise ConfigError(
                 "--charter locks %s, which %s does not hold; commit the locked checks on it "

@@ -84,6 +84,8 @@ HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 DROP_ADDED = "drop added lines"
 
+LINE_WITH_END = re.compile(r"[^\n]*\n|[^\n]+$")
+
 
 def mask_strings(line):
     return QUOTED.sub(
@@ -121,7 +123,7 @@ def added_lines(diff_text):
     added = {}
     current = None
     previous = ""
-    for line in diff_text.splitlines():
+    for line in diff_text.split("\n"):
         header = FILE_HEADER.match(line) if previous.startswith("--- ") else None
         previous = line
         if header is not None:
@@ -196,7 +198,7 @@ def fallback(added, read):
             continue
         dropped = set(numbers)
         kept = [
-            line for index, line in enumerate(read(path).splitlines(True), 1) if index not in dropped
+            line for index, line in enumerate(LINE_WITH_END.findall(read(path)), 1) if index not in dropped
         ]
         found = found + (
             {"file": path, "line": numbers[0], "op": DROP_ADDED, "text": "".join(kept)},
