@@ -1,3 +1,4 @@
+import difflib
 import hashlib
 import json
 import os
@@ -21,10 +22,6 @@ import referee
 import shape
 
 BRANCH_PREFIX = "mitosis"
-
-PROBE_PREFIX = "probe"
-
-GATE_MARKER = "mitosis-gate.json"
 
 PLAN_FILE = "plan.json"
 
@@ -108,17 +105,27 @@ EXECUTABLE_MODE = "100755"
 
 REGULAR_MODE = "100644"
 
-KEPT_KINDS = ("file", "link")
-
-RECOVERED_REFS = "refs/mitosis/recovered/"
-
-LFS_POINTER = b"version https://git-lfs.github.com/spec/v1\n"
-
-LFS_OID = re.compile(rb"^oid sha256:([0-9a-f]{64})$", re.MULTILINE)
-
-BASE_IGNORE_OPTIONS = ("-c", "core.excludesFile=", "check-ignore", "--no-index")
-
 RAW_OBJECTS = {"GIT_NO_REPLACE_OBJECTS": "1"}
+
+PINNED_GIT = {
+    **RAW_OBJECTS,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_ATTR_NOSYSTEM": "1",
+}
+
+STATUS_SETTINGS = (
+    "-c",
+    "status.showUntrackedFiles=all",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.untrackedCache=false",
+)
+
+GATE_FOLDER_PREFIX = "checkout-"
+
+BINARY_PROBE = 8000
 
 
 class GitError(RuntimeError):
@@ -143,70 +150,8 @@ class GitTimeout(GitError):
         )
 
 
-class RestoreError(GitError):
-    def __init__(self, branch, commit, left):
-        self.args_run = ("reset", "--hard", commit)
-        self.code = None
-        self.stderr = ""
-        self.left = tuple(left)
-        RuntimeError.__init__(
-            self,
-            "the gate could not restore %s to the gated commit %s: %s still differ"
-            % (branch, commit[:12], ", ".join(self.left)),
-        )
-
-
-class GateTreeError(GitError):
-    def __init__(self, tree, commit, cause):
-        self.args_run = ()
-        self.code = None
-        self.stderr = ""
-        self.cause = cause
-        RuntimeError.__init__(
-            self, "the gate could not make %s equal to %s: %s" % (tree, commit[:12], cause)
-        )
-
-
-class UncommittedWorkError(GateTreeError):
-    def __init__(self, tree, commit, paths):
-        self.paths = tuple(paths)
-        named = ", ".join(self.paths[:3]) + (
-            " and %d more" % (len(self.paths) - 3) if len(self.paths) > 3 else ""
-        )
-        GateTreeError.__init__(
-            self,
-            tree,
-            commit,
-            "%s hold work that %s does not carry, so mitosis kept it and changed nothing"
-            % (named, commit[:12]),
-        )
-
-
-class UnjudgedRefereeError(UncommittedWorkError):
-    def __init__(self, tree, commit, paths, written):
-        self.written = tuple(written)
-        UncommittedWorkError.__init__(self, tree, commit, paths)
-
-
-class GateRecoveryError(GitError):
-    def __init__(self, tree, marker, cause):
-        self.args_run = ()
-        self.code = None
-        self.stderr = ""
-        self.marker = marker
-        RuntimeError.__init__(
-            self,
-            "could not recover the interrupted gate in %s: %s; %s is kept, so the next run "
-            "tries the recovery again" % (tree, cause, marker),
-        )
-
-
-class LaterWorkError(GitError):
-    def __init__(self, cause):
-        self.args_run = ()
-        self.code = None
-        self.stderr = ""
-        RuntimeError.__init__(self, cause)
+class GateSetupError(RuntimeError):
+    pass
 
 
 class ConfigError(ValueError):
@@ -304,8 +249,8 @@ def git(args, cwd, check=True, timeout=GIT_TIMEOUT, env=None):
     return completed.stdout.strip()
 
 
-def git_paths(args, cwd, timeout=GIT_TIMEOUT):
-    completed = git_run(args, cwd, timeout, raw=True)
+def git_paths(args, cwd, timeout=GIT_TIMEOUT, env=None):
+    completed = git_run(args, cwd, timeout, raw=True, env=env)
     if completed.returncode != 0:
         raise GitError(args, completed.returncode, completed.stderr)
     return [os.fsdecode(name) for name in completed.stdout.split(b"\0") if name]
@@ -383,8 +328,6 @@ def prepare_worktree(repo, base, branch, path):
     git(["worktree", "prune"], repo)
     registered = registered_worktrees(repo)
     real = os.path.realpath(path)
-    if real in registered and recover_gate(path):
-        registered = registered_worktrees(repo)
     if real in registered:
         if registered[real] != branch:
             raise GitError(
@@ -445,6 +388,7 @@ TEMPLATE_PLACEHOLDERS = {
     ),
     "decompose": ("prompt", "model", "document", "session_id"),
     "acceptance": ("file", "test", "worktree"),
+    "gate-setup": ("worktree",),
     "pull-request": ("branch", "base", "title", "body", "worktree", "msp", "remote"),
 }
 
@@ -1154,11 +1098,12 @@ def step_implementation_paths(plan, msp, name):
     ]
 
 
-def steps_without_implementation_change(plan, msp, tree, base):
+def steps_without_implementation_change(plan, msp, tree, base, commit):
+    changed = _changed_paths(_committed_entries(tree, base), _committed_entries(tree, commit))
     unchanged = ()
     for name in plan["msps"][msp]["steps"]:
         paths = step_implementation_paths(plan, msp, name)
-        if paths and not git(["diff", "--name-only", base, "--", *paths], tree):
+        if paths and not any(_under(path, paths) for path in changed):
             unchanged = unchanged + (name,)
     return frozenset(unchanged)
 
@@ -1280,12 +1225,6 @@ def clear_caches_beside(tree, paths):
         _remove_cache(folder)
 
 
-def _clear_index_flags(tree, paths):
-    tracked = git_paths(["ls-files", "-z", "--", *paths], tree) if paths else []
-    for flag in ("--no-skip-worktree", "--no-assume-unchanged") if tracked else ():
-        git(["update-index", flag, "--", *tracked], tree)
-
-
 def _remove_entry(tree, path):
     full = tree_path(tree, path, last=False)
     if os.path.isdir(full) and not os.path.islink(full):
@@ -1298,6 +1237,10 @@ def _held_under(names, path):
     return any(name == path or name.startswith(path + "/") for name in names)
 
 
+def _under(path, paths):
+    return any(_held_under((path,), _norm(named)) for named in paths)
+
+
 def _checked_run(args, tree, data=None, env=None):
     completed = git_run(args, tree, raw=True, data=data, env=env)
     if completed.returncode != 0:
@@ -1305,114 +1248,103 @@ def _checked_run(args, tree, data=None, env=None):
     return completed.stdout
 
 
-def _stage_from(tree, base, paths):
-    literal = tuple(":(literal)" + path for path in paths)
-    if not literal:
-        return b""
-    git(["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", *literal], tree)
-    entries = _checked_run(["ls-tree", "-r", "-z", "--full-tree", base, "--", *literal], tree)
-    if entries:
-        _checked_run(["update-index", "-z", "--replace", "--index-info"], tree, entries)
-    return entries
+RESTORE_MESSAGE = "revert: restore the referee paths a Worker wrote"
 
 
-def _reset_checkout(tree, path, base_oid, git_dir):
-    _checked_run(
-        [
-            "--git-dir=" + git_dir,
-            "--work-tree=" + tree_path(tree, path),
-            "-c",
-            "core.fsmonitor=false",
-            "reset",
-            "-q",
-            "--no-recurse-submodules",
-            base_oid,
-        ],
-        tree,
-        env=RAW_OBJECTS,
+def _restored_targets(paths, held):
+    links = tuple(path for path, (mode, _) in held.items() if mode == GITLINK_MODE)
+    return tuple(
+        sorted({next((link for link in links if _held_under((path,), link)), path) for path in paths})
     )
 
 
-def _clear_checkout_flags(tree, path, git_dir, tracked):
-    for flag in ("--no-skip-worktree", "--no-assume-unchanged") if tracked else ():
-        _checked_run(
-            [
-                "--git-dir=" + git_dir,
-                "--work-tree=" + tree_path(tree, path),
-                "update-index",
-                flag,
-                "--",
-                *tracked,
-            ],
-            tree,
-        )
+def _within(entries, target):
+    return {path: entry for path, entry in entries.items() if _held_under((path,), target)}
 
 
-def _restore_checkout(tree, path, base_oid, git_dir, inner, reset):
-    held = _committed_entries(tree, base_oid, git_dir)
-    nested = tuple(sorted(name for name, (mode, _) in held.items() if mode == GITLINK_MODE))
-    for name in nested:
-        below = tuple(entry[len(name) + 1 :] for entry in inner if entry.startswith(name + "/"))
-        if below:
-            _restore_checkout(
+def _restore_rows(current, held, targets):
+    dropped = b"".join(
+        b"0 %s\t%s\0" % (b"0" * len(oid), os.fsencode(path))
+        for path, (_, oid) in sorted(current.items())
+        if _under(path, targets)
+    )
+    return dropped + b"".join(
+        b"%s %s\t%s\0" % (mode.encode("ascii"), oid.encode("ascii"), os.fsencode(path))
+        for path, (mode, oid) in sorted(held.items())
+        if _under(path, targets)
+    )
+
+
+def _restored_tree(tree, head, rows):
+    folder = tempfile.mkdtemp(prefix="mitosis-restore-")
+    try:
+        env = {**PINNED_GIT, "GIT_INDEX_FILE": os.path.join(folder, "index")}
+        _checked_run(["read-tree", head], tree, env=env)
+        _checked_run(["update-index", "-z", "--replace", "--index-info"], tree, rows, env)
+        return _decoded(_checked_run(["write-tree"], tree, env=env)).strip()
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def _reset_submodule_heads(tree, base, held, targets):
+    for path in targets:
+        oid = _gitlink(held, path)
+        store = _module_store(tree, base, path, None) if oid else None
+        if store is not None and os.path.isdir(store):
+            _checked_run(
+                [
+                    "--git-dir=" + store,
+                    "-c",
+                    "core.hooksPath=" + os.devnull,
+                    "update-ref",
+                    "--no-deref",
+                    "HEAD",
+                    oid,
+                ],
                 tree,
-                path + "/" + name,
-                held[name][1],
-                _module_dir(tree, base_oid, name, git_dir),
-                below,
-                reset,
+                env=RAW_OBJECTS,
             )
-    own = tuple(entry for entry in inner if not any(_held_under((entry,), name) for name in nested))
-    blobs = _blobs(tree, [held[entry][1] for entry in own if entry in held], git_dir)
-    for entry in own:
-        if entry not in held:
-            _remove_entry(tree, path + "/" + entry)
-        elif held[entry][0] != GITLINK_MODE:
-            _place(tree, path + "/" + entry, held[entry][0], blobs[held[entry][1]])
-    if reset:
-        _reset_checkout(tree, path, base_oid, git_dir)
-        _clear_checkout_flags(
-            tree,
-            path,
-            git_dir,
-            tuple(entry for entry in own if entry in held and held[entry][0] != GITLINK_MODE),
-        )
 
 
-def _restore_base_submodules(tree, base, paths, reset):
-    held = _committed_entries(tree, base)
-    checkouts = tuple(sorted(path for path, (mode, _) in held.items() if mode == GITLINK_MODE))
-    inside = tuple(
-        (
-            checkout,
-            tuple(path[len(checkout) + 1 :] for path in paths if path.startswith(checkout + "/")),
-        )
-        for checkout in checkouts
-    )
-    for checkout, below in inside:
-        if below:
-            _restore_checkout(
-                tree, checkout, held[checkout][1], _module_dir(tree, base, checkout), below, reset
-            )
-    return tuple(checkout for checkout, below in inside if below)
-
-
-def revert_implementation(tree, base, paths, discard=False):
-    restored = _restore_base_submodules(tree, base, tuple(_norm(path) for path in paths), True)
-    reverted = tuple(
-        path for path in paths if not any(_held_under((_norm(path),), s) for s in restored)
-    ) + restored
-    _clear_index_flags(tree, reverted)
-    entries = _stage_from(tree, base, reverted)
-    names = tuple(
-        os.fsdecode(entry.split(b"\t", 1)[1]) for entry in entries.split(b"\0") if b"\t" in entry
-    )
-    for path in reverted:
-        if not _held_under(names, _norm(path)):
+def _sync_worktree(tree, commit, base, paths):
+    restored = _expanded(tree, commit, base)
+    wanted = {
+        path: restored[path]
+        for path in paths
+        if path in restored and restored[path][0] != GITLINK_MODE
+    }
+    blobs = _store_blobs(tree, wanted)
+    for path in paths:
+        if path in wanted:
+            mode, oid, store = wanted[path]
+            _place(tree, path, mode, blobs[(store, oid)])
+        elif not _behind_link(tree, path):
             _remove_entry(tree, path)
-    normalize_gate_tree(tree, git(["write-tree"], tree), base, discard=discard, restoring=reverted)
-    clear_caches_beside(tree, tuple(paths))
-    return list(reverted)
+
+
+def revert_implementation(tree, base, paths, message=RESTORE_MESSAGE):
+    written = tuple(sorted({_norm(path) for path in paths}))
+    head = commit_at("HEAD", tree, required=True)
+    held = _committed_entries(tree, base)
+    current = _committed_entries(tree, head)
+    targets = _restored_targets(written, held)
+    rows = _restore_rows(current, held, targets)
+    restored = _restored_tree(tree, head, rows)
+    commit = git(["commit-tree", restored, "-p", head, "-m", message], tree, env=RAW_OBJECTS)
+    git(["update-ref", "-m", message, "HEAD", commit, head], tree, env=RAW_OBJECTS)
+    _checked_run(["update-index", "-z", "--replace", "--index-info"], tree, rows, PINNED_GIT)
+    _reset_submodule_heads(tree, base, held, targets)
+    _sync_worktree(tree, commit, base, written)
+    clear_caches_beside(tree, tuple(path for path in written if not _behind_link(tree, path)))
+    after = _committed_entries(tree, commit_at("HEAD", tree, required=True))
+    left = tuple(target for target in targets if _within(after, target) != _within(held, target))
+    if left:
+        raise GitError(
+            ["update-ref", "HEAD", commit],
+            1,
+            "the referee restore left %s different from %s" % (", ".join(left), base),
+        )
+    return list(targets)
 
 
 def run_acceptance(command, tree, entry, log_path, timeout, env=None):
@@ -1473,7 +1405,6 @@ def _gate_result(properties, implementation, commit, reverted):
 
 
 def commit_before_gate(plan, msp, tree):
-    recover_gate(tree)
     return commit_all(tree, "chore(%s): commit the MSP's work before the gate" % _label(plan, msp))
 
 
@@ -1513,59 +1444,90 @@ def linked_paths(tree, commit, paths):
     entries = git_paths(
         ["ls-tree", "-z", "--full-tree", commit, "--", *(":(literal)" + path for path in wanted)],
         tree,
+        env=PINNED_GIT,
     )
     return tuple(
         sorted(entry.split("\t", 1)[1] for entry in entries if entry.startswith("120000 "))
     )
 
 
+def _changed_paths(before, after):
+    return tuple(
+        sorted(path for path in set(before) | set(after) if before.get(path) != after.get(path))
+    )
+
+
 def _step_changes(plan, msp, tree, base, commit, entry):
     paths = tuple(step_implementation_paths(plan, msp, entry["step"]))
     if not paths:
-        return (), ()
-    names = git_paths(
-        ["diff", "-z", "--name-only", "--no-renames", base, commit, "--", *paths], tree
-    )
-    return paths, tuple(names)
+        return (), (), {}, {}
+    before = _committed_entries(tree, base)
+    after = _committed_entries(tree, commit)
+    names = tuple(path for path in _changed_paths(before, after) if _under(path, paths))
+    return paths, names, before, after
 
 
 def step_links(plan, msp, tree, base, commit, entry):
-    paths, names = _step_changes(plan, msp, tree, base, commit, entry)
+    paths, names, _, _ = _step_changes(plan, msp, tree, base, commit, entry)
     return linked_paths(tree, commit, paths + names)
 
 
+def _binary(data):
+    return b"\0" in data[:BINARY_PROBE]
+
+
+def _added_lines(old, new):
+    matcher = difflib.SequenceMatcher(
+        None, _decoded(old).split("\n"), _decoded(new).split("\n"), autojunk=False
+    )
+    return [
+        number + 1
+        for tag, _, _, start, end in matcher.get_opcodes()
+        if tag in ("replace", "insert")
+        for number in range(start, end)
+    ]
+
+
+def _text_blobs(tree, entries, names):
+    regular = {
+        name: entries[name][1]
+        for name in names
+        if entries.get(name, ("",))[0] in (REGULAR_MODE, EXECUTABLE_MODE)
+    }
+    blobs = _blobs(tree, regular.values())
+    return {name: blobs[oid] for name, oid in regular.items()}
+
+
 def property_mutants(plan, msp, tree, base, commit, entry):
-    paths, names = _step_changes(plan, msp, tree, base, commit, entry)
+    paths, names, before, after = _step_changes(plan, msp, tree, base, commit, entry)
     if not paths:
         return ()
-    added = mutants.added_lines(
-        {
-            name: git(["diff", "-U0", "--no-color", base, commit, "--", ":(literal)" + name], tree)
-            for name in names
-        }
-    )
+    old = _text_blobs(tree, before, names)
+    new = _text_blobs(tree, after, names)
+    added = {
+        name: lines
+        for name in sorted(new)
+        if not _binary(new[name]) and not _binary(old.get(name, b""))
+        for lines in (_added_lines(old.get(name, b""), new[name]),)
+        if lines
+    }
 
     def read(path):
-        return _read_text(tree, path)
+        return _decoded(new[path])
 
     found = mutants.compute(added, read) or mutants.fallback(added, read)
     return tuple(mutants.select(found, MUTANT_CAP))
 
 
-def _run_mutant(command, tree, entry, mutant, log_path, timeout, env, restore, mark):
+def _run_mutant(command, folder, entry, mutant, log_path, timeout, env, reset):
+    written = reset()
     path = mutant["file"]
-    mutated = mutants.apply(_read_text(tree, path), mutant)
+    mutated = mutants.apply(_read_text(folder, path), mutant)
     if mutated is None:
-        return None, ()
-    mark((path,))
-    clear_caches_beside(tree, (path,))
-    try:
-        _write_text(tree, path, mutated)
-        ran = run_acceptance(command, tree, entry, log_path, timeout, env)
-    finally:
-        written = restore()
-        clear_caches_beside(tree, (path,))
-    return ran, written
+        return None, written
+    clear_caches_beside(folder, (path,))
+    _write_text(folder, path, mutated)
+    return run_acceptance(command, folder, entry, log_path, timeout, env), written
 
 
 def _mutant_place(mutant):
@@ -1579,7 +1541,7 @@ def _timed(call):
 
 
 def mutant_verdict(
-    plan, msp, tree, base, commit, command, index, entry, log_dir, timeout, env, restore, mark
+    plan, msp, tree, base, commit, command, index, entry, log_dir, timeout, env, folder, reset
 ):
     tried = ()
     written = ()
@@ -1599,14 +1561,13 @@ def mutant_verdict(
         (ran, left), spent = _timed(
             lambda mutant=mutant: _run_mutant(
                 command,
-                tree,
+                folder,
                 entry,
                 mutant,
                 os.path.join(log_dir, "%d-mutant-%d.log" % (index, len(tried))),
                 timeout,
                 env,
-                restore,
-                mark,
+                reset,
             )
         )
         seconds = seconds + spent
@@ -1640,26 +1601,35 @@ def mutant_verdict(
     )
 
 
-def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None, env=None):
+def _remove_gate_folders(log_dir):
+    with os.scandir(log_dir) as listing:
+        left = sorted(
+            entry.path
+            for entry in listing
+            if entry.name.startswith(GATE_FOLDER_PREFIX) and entry.is_dir(follow_symlinks=False)
+        )
+    for path in left:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def gate(plan, msp, tree, base, command, log_dir, timeout=None, env=None, repo=None, setup=None):
     commit = commit_before_gate(plan, msp, tree)
-    locked = tuple(plan.get("locked") or ())
-
-    def restore():
-        return restore_gate_commit(tree, branch, commit, locked, base, discard=True)
-
-    def mark(paths):
-        mark_gate(tree, branch, commit, paths, locked, base)
-
-    first = restore()
-    mark(implementation_paths(plan, msp))
+    properties = msp_properties(
+        plan, msp, steps_without_implementation_change(plan, msp, tree, base, commit)
+    )
+    implementation = implementation_paths(plan, msp)
+    if not any(entry["outcome"] is None for entry in properties):
+        return {**_gate_result(properties, implementation, commit, ()), "referee": []}
+    os.makedirs(log_dir, exist_ok=True)
+    _remove_gate_folders(log_dir)
+    folder = tempfile.mkdtemp(prefix=GATE_FOLDER_PREFIX, dir=log_dir)
     try:
         result, written = _gate_runs(
-            plan, msp, tree, branch, base, command, log_dir, timeout, env, commit, restore, mark
+            plan, msp, tree, base, command, log_dir, timeout, env, commit, properties, folder, repo, setup
         )
     finally:
-        last = restore()
-        clear_gate_mark(tree)
-    referee_written = sorted(set(first) | set(written) | set(last))
+        shutil.rmtree(folder, ignore_errors=True)
+    referee_written = sorted(set(written))
     return {
         **result,
         "referee": referee_written,
@@ -1668,53 +1638,45 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None, env=None
 
 
 def _gate_runs(
-    plan, msp, tree, branch, base, command, log_dir, timeout, env, commit, restore, mark
+    plan, msp, tree, base, command, log_dir, timeout, env, commit, properties, folder, repo, setup
 ):
-    properties = msp_properties(
-        plan, msp, steps_without_implementation_change(plan, msp, tree, base)
-    )
+    locked = tuple(plan.get("locked") or ())
     implementation = implementation_paths(plan, msp)
     runnable = [index for index, entry in enumerate(properties) if entry["outcome"] is None]
-    if not runnable:
-        return _gate_result(properties, implementation, commit, ()), ()
-    os.makedirs(log_dir, exist_ok=True)
-    with_work_runs = {
-        index: _timed(
-            lambda index=index: run_acceptance(
+    with_work_tree = _expanded(tree, commit, base)
+    without_work_tree = _without_work(with_work_tree, _expanded(tree, base, base), implementation)
+    reset_gate_folder(tree, folder, with_work_tree, (), locked)
+    top = frozenset(_parts(path)[0] for path in with_work_tree)
+    kept = (
+        _link_dependencies(repo, folder, top)
+        if setup is None
+        else _gate_setup(setup, folder, top, log_dir, timeout, env)
+    )
+
+    def reset(target):
+        return reset_gate_folder(tree, folder, target, kept, locked)
+
+    def accepted(index, target, name):
+        written = reset(target)
+        return written, _timed(
+            lambda: run_acceptance(
                 command,
-                tree,
+                folder,
                 properties[index],
-                os.path.join(log_dir, "%d-with-work.log" % index),
+                os.path.join(log_dir, "%d-%s.log" % (index, name)),
                 timeout,
                 env,
             )
         )
+
+    with_work_runs = {index: accepted(index, with_work_tree, "with-work") for index in runnable}
+    with_work = {index: ran for index, (_, (ran, _)) in with_work_runs.items()}
+    without_runs = {
+        index: accepted(index, without_work_tree, "reverted")
         for index in runnable
+        if with_work[index] == (0, False)
     }
-    with_work = {index: ran for index, (ran, _) in with_work_runs.items()}
-    after_work = restore()
-    probe = "%s/%s" % (PROBE_PREFIX, branch)
-    git(["checkout", "-q", "-B", probe], tree)
-    try:
-        reverted = revert_implementation(tree, base, implementation, discard=True)
-        without_runs = {
-            index: _timed(
-                lambda index=index: run_acceptance(
-                    command,
-                    tree,
-                    properties[index],
-                    os.path.join(log_dir, "%d-reverted.log" % index),
-                    timeout,
-                    env,
-                )
-            )
-            for index in runnable
-            if with_work[index] == (0, False)
-        }
-        without = {index: ran for index, (ran, _) in without_runs.items()}
-    finally:
-        after_probe = restore()
-        git_run(["branch", "-D", probe], tree)
+    without = {index: ran for index, (_, (ran, _)) in without_runs.items()}
     judged = ()
     for index, entry in enumerate(properties):
         if index not in with_work:
@@ -1728,21 +1690,38 @@ def _gate_runs(
                 "reason": reason,
                 "with_work": with_work[index][0],
                 "reverted": without[index][0] if index in without else None,
-                "seconds": with_work_runs[index][1]
-                + (without_runs[index][1] if index in without_runs else 0),
+                "seconds": with_work_runs[index][1][1]
+                + (without_runs[index][1][1] if index in without_runs else 0),
             },
         )
     verdicts = tuple(
         mutant_verdict(
-            plan, msp, tree, base, commit, command, index, entry, log_dir, timeout, env, restore, mark
+            plan,
+            msp,
+            tree,
+            base,
+            commit,
+            command,
+            index,
+            entry,
+            log_dir,
+            timeout,
+            env,
+            folder,
+            lambda: reset(with_work_tree),
         )
         if index in with_work and entry["outcome"] == "pass"
         else (entry, ())
         for index, entry in enumerate(judged)
     )
     toothed = tuple(entry for entry, _ in verdicts)
-    written = after_work + after_probe + tuple(path for _, left in verdicts for path in left)
-    return _gate_result(toothed, implementation, commit, reverted), written
+    written = (
+        tuple(path for left, _ in with_work_runs.values() for path in left)
+        + tuple(path for left, _ in without_runs.values() for path in left)
+        + tuple(path for _, left in verdicts for path in left)
+        + reset(with_work_tree)
+    )
+    return _gate_result(toothed, implementation, commit, implementation), written
 
 
 def changed_files(tree, branch, base, exclude=()):
@@ -1796,9 +1775,7 @@ def _object_id(data, oid):
 
 
 def _object_reader(git_dir):
-    if git_dir is None:
-        return (), None
-    return ("--git-dir=" + git_dir,), RAW_OBJECTS
+    return (() if git_dir is None else ("--git-dir=" + git_dir,)), PINNED_GIT
 
 
 def _committed_entries(tree, commit, git_dir=None):
@@ -1806,21 +1783,6 @@ def _committed_entries(tree, commit, git_dir=None):
     output = _checked_run([*options, "ls-tree", "-r", "-z", "--full-tree", commit], tree, env=env)
     rows = tuple(os.fsdecode(entry).split("\t", 1) for entry in output.split(b"\0") if entry)
     return {path: tuple(header.split(" ")[0::2]) for header, path in rows}
-
-
-def _base_submodules(tree, entries, base):
-    held = _committed_entries(tree, base)
-    return frozenset(
-        path
-        for path, (mode, _) in entries.items()
-        if mode == GITLINK_MODE and held.get(path, ("",))[0] == GITLINK_MODE
-    )
-
-
-def _committed_folders(entries):
-    return frozenset(prefix for path in entries for prefix in _prefixes(path)[:-1]) | frozenset(
-        path for path, (mode, _) in entries.items() if mode == GITLINK_MODE
-    )
 
 
 def _batch_records(output):
@@ -1847,48 +1809,15 @@ def _blobs(tree, oids, git_dir=None):
     return dict(_batch_records(output))
 
 
-def _clear_all_index_flags(tree):
-    entries = git_paths(["ls-files", "-v", "-z"], tree)
-    hidden = tuple(entry[2:] for entry in entries if entry[:1] in ("S", "s"))
-    assumed = tuple(entry[2:] for entry in entries if entry[:1].islower())
-    for flag, paths in (("--no-skip-worktree", hidden), ("--no-assume-unchanged", assumed)):
-        if paths:
-            git(["update-index", flag, "--", *paths], tree)
-
-
-def _seed_ignores(tree, base, scratch, git_dir=None):
-    git(["init", "-q", "--template="], scratch)
-    committed = _committed_entries(tree, base, git_dir) if base else {}
-    ignores = {
-        path: oid
-        for path, (mode, oid) in committed.items()
-        if _parts(path)[-1] == ".gitignore" and mode not in (SYMLINK_MODE, GITLINK_MODE)
+def _store_blobs(tree, entries):
+    stores = sorted({store for _, _, store in entries.values()}, key=lambda store: store or "")
+    return {
+        (store, oid): data
+        for store in stores
+        for oid, data in _blobs(
+            tree, [oid for _, oid, held in entries.values() if held == store], store
+        ).items()
     }
-    blobs = _blobs(tree, ignores.values(), git_dir)
-    for path, oid in sorted(ignores.items()):
-        target = os.path.join(scratch, *_parts(path))
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        with open(target, "wb") as handle:
-            handle.write(blobs[oid])
-
-
-def _ignored(cwd, options, queries):
-    if not queries:
-        return frozenset()
-    completed = git_run(
-        [*options, "-z", "--stdin"],
-        cwd,
-        raw=True,
-        data=b"".join(os.fsencode(query) + b"\0" for query in queries),
-    )
-    if completed.returncode not in (0, 1):
-        raise GitError(list(options), completed.returncode, completed.stderr)
-    return frozenset(os.fsdecode(name) for name in completed.stdout.split(b"\0") if name)
-
-
-def _kept(tree, scratch, queries):
-    trusted = _ignored(scratch, BASE_IGNORE_OPTIONS, queries)
-    return _ignored(tree, ("check-ignore", "--no-index"), sorted(trusted))
 
 
 def _kind(mode):
@@ -1897,56 +1826,6 @@ def _kind(mode):
     if stat.S_ISDIR(mode):
         return "dir"
     return "file" if stat.S_ISREG(mode) else "other"
-
-
-def _listing(tree, folder):
-    full = tree_path(tree, folder) if folder else tree
-    mode = stat.S_IMODE(os.lstat(full).st_mode)
-    if mode & stat.S_IRWXU != stat.S_IRWXU:
-        os.chmod(full, mode | stat.S_IRWXU)
-    with os.scandir(full) as listing:
-        names = sorted(entry.name for entry in listing)
-    return tuple((name, _kind(os.lstat(os.path.join(full, name)).st_mode)) for name in names)
-
-
-def _dependency_folder(tree, path):
-    if _parts(path)[-1] in INSTALLED_FOLDERS:
-        return True
-    try:
-        return stat.S_ISREG(os.lstat(os.path.join(tree_path(tree, path), VENV_MARKER)).st_mode)
-    except OSError:
-        return False
-
-
-def _survey(tree, folders, entries, checkouts, starts):
-    found = []
-    candidates = []
-    pending = list(starts)
-    while pending:
-        folder = pending.pop()
-        for name, kind in _listing(tree, folder):
-            if not folder and name == ".git":
-                continue
-            path = folder + "/" + name if folder else name
-            untracked = path not in folders and path not in entries
-            if kind == "dir" and untracked and _dependency_folder(tree, path):
-                candidates.append(path)
-                continue
-            found.append((path, kind))
-            if kind == "dir" and path not in checkouts:
-                pending.append(path)
-    return tuple(found), tuple(candidates)
-
-
-def _inventory(tree, folders, entries, checkouts, trusted):
-    found = ()
-    starts = ("",)
-    while starts:
-        listed, candidates = _survey(tree, folders, entries, checkouts, starts)
-        installed = trusted([path + "/" for path in candidates])
-        starts = tuple(path for path in candidates if path + "/" not in installed)
-        found = found + listed + tuple((path, "dir") for path in starts)
-    return found
 
 
 def _read_bytes(tree, path):
@@ -1958,224 +1837,31 @@ def _read_bytes(tree, path):
         return handle.read()
 
 
-def _on_disk(tree, path, mode):
-    if mode == SYMLINK_MODE:
-        full = tree_path(tree, path, last=False)
-        return os.fsencode(os.readlink(full)) if os.path.islink(full) else None
-    return _read_bytes(tree, path)
-
-
-def _same_content(disk, blob):
-    if disk.replace(b"\r\n", b"\n") == blob.replace(b"\r\n", b"\n"):
-        return True
-    pointed = LFS_OID.search(blob) if blob.startswith(LFS_POINTER) else None
-    return pointed is not None and hashlib.sha256(disk).hexdigest() == pointed.group(1).decode()
-
-
 def _expected_kind(mode):
     return "link" if mode == SYMLINK_MODE else "file"
 
 
-def _wrong_exec_bit(tree, path, mode):
-    return bool(os.lstat(tree_path(tree, path)).st_mode & stat.S_IXUSR) != (
-        mode == EXECUTABLE_MODE
-    )
-
-
-def _fix_exec_bit(tree, path, mode):
-    if _wrong_exec_bit(tree, path, mode):
-        full = tree_path(tree, path)
-        current = stat.S_IMODE(os.lstat(full).st_mode)
-        os.chmod(full, current | 0o111 if mode == EXECUTABLE_MODE else current & ~0o111)
-
-
-def _rewrites(tree, entries, kinds, read_blobs):
-    files = {path: entry for path, entry in entries.items() if entry[0] != GITLINK_MODE}
-    present = {
-        path: _on_disk(tree, path, mode)
-        for path, (mode, _) in files.items()
-        if kinds.get(path) == _expected_kind(mode)
-    }
-    unequal = tuple(
-        path
-        for path, (mode, oid) in sorted(files.items())
-        if present.get(path) is None or _object_id(present[path], oid) != oid
-    )
-    blobs = read_blobs([files[path][1] for path in unequal])
-    tolerated = frozenset(
-        path
-        for path in unequal
-        if files[path][0] != SYMLINK_MODE
-        and present.get(path) is not None
-        and _same_content(present[path], blobs[files[path][1]])
-    )
-    exact = tuple(
-        path
-        for path, (mode, _) in sorted(files.items())
-        if mode != SYMLINK_MODE and path in present and path not in unequal
-    )
-    return {path: blobs[files[path][1]] for path in unequal if path not in tolerated}, exact
-
-
-def _fix_exec_bits(tree, entries, exact):
-    for path in exact:
-        _fix_exec_bit(tree, path, entries[path][0])
+def _make_parents(tree, path):
+    for prefix in _prefixes(path)[:-1]:
+        full = os.path.join(tree, *_parts(prefix))
+        if os.path.islink(full) or (os.path.lexists(full) and not os.path.isdir(full)):
+            os.remove(full)
+        if not os.path.lexists(full):
+            os.mkdir(full)
 
 
 def _place(tree, path, mode, data):
-    for prefix in _prefixes(path)[:-1]:
-        folder = tree_path(tree, prefix)
-        if not os.path.isdir(folder):
-            if os.path.lexists(folder):
-                os.remove(folder)
-            os.mkdir(folder)
+    _make_parents(tree, path)
     _remove_entry(tree, path)
     full = tree_path(tree, path, last=False)
     if mode == SYMLINK_MODE:
         os.symlink(os.fsdecode(data), full)
         return
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-    descriptor = os.open(full, flags, 0o755 if mode == EXECUTABLE_MODE else 0o644)
+    descriptor = os.open(full, flags, 0o600)
     with os.fdopen(descriptor, "wb") as handle:
+        os.fchmod(handle.fileno(), 0o755 if mode == EXECUTABLE_MODE else 0o644)
         handle.write(data)
-
-
-def _depth_first(paths):
-    return sorted(paths, key=lambda path: (-len(_parts(path)), path))
-
-
-def _strays(found, kept, entries, folders, locked, prefix=""):
-    files = frozenset(path for path, (mode, _) in entries.items() if mode != GITLINK_MODE)
-    untracked = tuple(
-        (path, kind) for path, kind in found if path not in entries and path not in folders
-    )
-    buried = frozenset(
-        path for path, _ in untracked if any(prefix in files for prefix in _prefixes(path)[:-1])
-    )
-    loose = tuple(
-        path
-        for path, kind in untracked
-        if kind != "dir"
-        and (
-            path in buried
-            or path not in kept
-            or referee.referee_reason(prefix + path, locked) is not None
-        )
-    )
-    misplaced = tuple(path for path, kind in found if kind != "dir" and path in folders)
-    shadowing = tuple(path for path, kind in found if kind == "dir" and path in files)
-    emptied = tuple(
-        path
-        for path, kind in untracked
-        if kind == "dir" and path + "/" not in kept and path not in buried
-    )
-    return loose + misplaced, shadowing, emptied
-
-
-def _clear_strays(tree, removed, shadowing, emptied):
-    for path in _depth_first(removed) + _depth_first(shadowing):
-        _remove_entry(tree, path)
-    for path in _depth_first(emptied):
-        full = tree_path(tree, path)
-        if os.path.isdir(full) and not os.listdir(full):
-            os.rmdir(full)
-
-
-def _place_commit(tree, entries, rewrites):
-    for path in sorted(rewrites):
-        _place(tree, path, entries[path][0], rewrites[path])
-    for path in sorted(path for path, (mode, _) in entries.items() if mode == GITLINK_MODE):
-        full = tree_path(tree, path)
-        if not os.path.isdir(full):
-            _remove_entry(tree, path)
-            os.makedirs(full)
-
-
-def _still_different(tree, entries, folders, removed, rewrites):
-    def remains(path):
-        full = os.path.join(tree, path)
-        return os.path.lexists(full) and not (
-            path in folders and _kind(os.lstat(full).st_mode) == "dir"
-        )
-
-    return tuple(path for path in removed if remains(path)) + tuple(
-        path
-        for path in sorted(rewrites)
-        if _on_disk(tree, path, entries[path][0]) != rewrites[path]
-    )
-
-
-def _gate_tree_plan(tree, commit, base, locked, scratch):
-    entries = _committed_entries(tree, commit)
-    folders = _committed_folders(entries)
-    _seed_ignores(tree, base, scratch)
-    checkouts = _base_submodules(tree, entries, base)
-    found = _inventory(
-        tree, folders, entries, checkouts, lambda queries: _kept(tree, scratch, queries)
-    )
-    kept = _kept(
-        tree,
-        scratch,
-        [
-            path + "/" if kind == "dir" else path
-            for path, kind in found
-            if path not in entries and path not in folders
-        ],
-    )
-    removed, shadowing, emptied = _strays(found, kept, entries, folders, locked)
-    rewrites, exact = _rewrites(
-        tree,
-        entries,
-        {path: kind for path, kind in found if path not in removed},
-        lambda oids: _blobs(tree, oids),
-    )
-    return {
-        "entries": entries,
-        "folders": folders,
-        "found": found,
-        "checkouts": checkouts,
-        "removed": removed,
-        "shadowing": shadowing,
-        "emptied": emptied,
-        "rewrites": rewrites,
-        "exact": exact,
-    }
-
-
-def gate_tree_plan(tree, commit, base, locked=()):
-    scratch = tempfile.mkdtemp(prefix="mitosis-ignore-")
-    try:
-        return _gate_tree_plan(tree, commit, base, tuple(locked), scratch)
-    except OSError as error:
-        raise GateTreeError(tree, commit, error)
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
-
-
-def _normalized(tree, commit, locked, plan):
-    entries = plan["entries"]
-    folders = plan["folders"]
-    removed = plan["removed"]
-    rewrites = plan["rewrites"]
-    git(["read-tree", commit], tree)
-    _clear_all_index_flags(tree)
-    _clear_strays(tree, removed, plan["shadowing"], plan["emptied"])
-    _fix_exec_bits(tree, entries, plan["exact"])
-    _place_commit(tree, entries, rewrites)
-    left = _still_different(tree, entries, folders, removed, rewrites)
-    if left:
-        raise GateTreeError(tree, commit, "%s still differ" % ", ".join(left))
-    reported = sorted(_referee_marked(set(removed) | set(rewrites), locked))
-    judged = tuple(path for path in entries if referee.referee_reason(path, locked) is not None)
-    clear_caches_beside(
-        tree,
-        tuple(
-            path
-            for path in dict.fromkeys(judged + tuple(locked) + tuple(reported) + tuple(rewrites))
-            if not _behind_link(tree, path)
-        ),
-    )
-    return reported
 
 
 def _safe_module_name(name):
@@ -2210,479 +1896,222 @@ def _module_dir(tree, holder, path, git_dir=None):
     return found
 
 
+def _module_store(tree, holder, path, git_dir):
+    try:
+        return _module_dir(tree, holder, path, git_dir)
+    except (GitError, OSError, ValueError):
+        return None
+
+
 def _gitlink(entries, path):
     entry = entries.get(path)
     return entry[1] if entry is not None and entry[0] == GITLINK_MODE else None
 
 
-def _checkout_work(tree, path, commit, git_dir, locked, trust):
-    checkout = tree_path(tree, path)
+def _held_entries(tree, holder, git_dir):
+    try:
+        return _committed_entries(tree, holder, git_dir)
+    except GitError:
+        return {}
+
+
+def _submodule_files(tree, path, oid, holder, held, git_dir):
+    base_link = _gitlink(held, path)
+    store = _module_store(tree, holder, path, git_dir) if base_link else None
+    if store is None or not os.path.isdir(store):
+        return {}
+    try:
+        return _expanded(tree, oid, base_link, store)
+    except GitError:
+        return {}
+
+
+def _expanded(tree, commit, holder, git_dir=None):
     entries = _committed_entries(tree, commit, git_dir)
-    trusted_entries = _committed_entries(tree, trust, git_dir) if trust else {}
-    folders = _committed_folders(entries)
-    nested = frozenset(name for name, (mode, _) in entries.items() if mode == GITLINK_MODE)
-    scratch = tempfile.mkdtemp(prefix="mitosis-ignore-")
-    try:
-        _seed_ignores(tree, trust, scratch, git_dir)
+    held = _held_entries(tree, holder, git_dir)
+    files = {
+        path: (mode, oid, git_dir) for path, (mode, oid) in entries.items() if mode != GITLINK_MODE
+    }
+    linked = {
+        path: _submodule_files(tree, path, oid, holder, held, git_dir)
+        for path, (mode, oid) in sorted(entries.items())
+        if mode == GITLINK_MODE
+    }
+    inside = {
+        path + "/" + name: entry for path, found in linked.items() for name, entry in found.items()
+    }
+    empty = {path: (GITLINK_MODE, entries[path][1], None) for path, found in linked.items() if not found}
+    return {**files, **inside, **empty}
 
-        def trusted(queries):
-            return _ignored(scratch, BASE_IGNORE_OPTIONS, queries)
 
-        found = _inventory(checkout, folders, entries, nested, trusted)
-        kept = trusted(
-            [
-                name + "/" if kind == "dir" else name
-                for name, kind in found
-                if name not in entries and name not in folders
-            ]
-        )
-    finally:
-        shutil.rmtree(scratch, ignore_errors=True)
-    removed, shadowing, _ = _strays(found, kept, entries, folders, locked, path + "/")
-    kinds = {name: kind for name, kind in found if name not in removed}
-    rewrites, _ = _rewrites(checkout, entries, kinds, lambda oids: _blobs(tree, oids, git_dir))
-    flipped = tuple(
-        name
-        for name, (mode, _) in sorted(entries.items())
-        if mode in (REGULAR_MODE, EXECUTABLE_MODE)
-        and kinds.get(name) == "file"
-        and name not in rewrites
-        and _wrong_exec_bit(checkout, name, mode)
+def _without_work(with_work, held, implementation):
+    return {
+        **{path: entry for path, entry in with_work.items() if not _under(path, implementation)},
+        **{path: entry for path, entry in held.items() if _under(path, implementation)},
+    }
+
+
+def _gate_listing(folder, kept):
+    found = []
+    pending = [""]
+    while pending:
+        current = pending.pop()
+        full = os.path.join(folder, *_parts(current)) if current else folder
+        mode = stat.S_IMODE(os.lstat(full).st_mode)
+        if mode & stat.S_IRWXU != stat.S_IRWXU:
+            os.chmod(full, mode | stat.S_IRWXU)
+        with os.scandir(full) as listing:
+            names = sorted(entry.name for entry in listing)
+        for name in names:
+            if not current and name in kept:
+                continue
+            path = current + "/" + name if current else name
+            kind = _kind(os.lstat(os.path.join(full, name)).st_mode)
+            found.append((path, kind))
+            if kind == "dir":
+                pending.append(path)
+    return dict(found)
+
+
+def _differs(folder, path, mode, oid, kind):
+    if kind != _expected_kind(mode):
+        return True
+    full = os.path.join(folder, *_parts(path))
+    if mode == SYMLINK_MODE:
+        return _object_id(os.fsencode(os.readlink(full)), oid) != oid
+    executable = bool(os.lstat(full).st_mode & stat.S_IXUSR)
+    data = _read_bytes(folder, path)
+    return data is None or executable != (mode == EXECUTABLE_MODE) or _object_id(data, oid) != oid
+
+
+def reset_gate_folder(tree, folder, target, kept, locked):
+    found = _gate_listing(folder, kept)
+    files = {path: entry for path, entry in target.items() if entry[0] != GITLINK_MODE}
+    folders = frozenset(prefix for path in target for prefix in _prefixes(path)[:-1]) | frozenset(
+        path for path, entry in target.items() if entry[0] == GITLINK_MODE
     )
-    inside = tuple(
-        work
-        for name in sorted(nested)
-        for work in _submodule_work(
-            tree,
-            path + "/" + name,
-            entries[name][1],
-            trust if _gitlink(trusted_entries, name) else commit,
-            name,
-            git_dir,
-            locked,
-            _gitlink(trusted_entries, name),
-        )
+    dropped = frozenset(
+        path
+        for path, kind in found.items()
+        if not (path in folders and kind == "dir")
+        and not (path in files and kind == _expected_kind(files[path][0]))
     )
-    differing = tuple(dict.fromkeys(removed + shadowing + tuple(sorted(rewrites)) + flipped))
-    return tuple(path + "/" + name for name in differing) + inside
+    removed = tuple(
+        path for path in sorted(found) if any(prefix in dropped for prefix in _prefixes(path))
+    )
+    for path in sorted(dropped):
+        if not any(prefix in dropped for prefix in _prefixes(path)[:-1]):
+            _remove_entry(folder, path)
+    stale = tuple(
+        path
+        for path, (mode, oid, _) in sorted(files.items())
+        if path in removed or path not in found or _differs(folder, path, mode, oid, found[path])
+    )
+    blobs = _store_blobs(tree, {path: files[path] for path in stale})
+    for path in stale:
+        mode, oid, store = files[path]
+        _place(folder, path, mode, blobs[(store, oid)])
+    for path in sorted(path for path, entry in target.items() if entry[0] == GITLINK_MODE):
+        if not os.path.isdir(tree_path(folder, path)):
+            _make_parents(folder, path)
+            os.mkdir(os.path.join(folder, *_parts(path)))
+    return tuple(sorted(_referee_marked(set(removed) | set(stale), locked)))
 
 
-def _submodule_work(tree, path, commit, holder, name, holder_dir, locked, trust):
-    full = os.path.join(tree, *_parts(path))
-    if not os.path.lexists(full):
+def _dependency_folders(repo, top):
+    if repo is None:
         return ()
-    try:
-        if not os.path.isdir(tree_path(tree, path)):
-            return (path + "/",)
-        if not os.listdir(full):
-            return ()
-        git_dir = _module_dir(tree, holder, name, holder_dir)
-        return _checkout_work(tree, path, commit, git_dir, locked, trust)
-    except (OSError, GitError, ValueError):
-        return (path + "/",)
-
-
-def submodule_work(tree, path, commit, base, locked=()):
-    try:
-        trust = _gitlink(_committed_entries(tree, base), path)
-    except GitError:
-        return (path + "/",)
-    return _submodule_work(tree, path, commit, base, path, None, tuple(locked), trust)
-
-
-def _dirty_checkouts(tree, entries, checkouts, base, locked):
+    root = os.path.abspath(repo)
+    with os.scandir(root) as listing:
+        names = sorted(entry.name for entry in listing if entry.is_dir())
     return tuple(
-        path + "/"
-        for path in sorted(checkouts)
-        if submodule_work(tree, path, entries[path][1], base, locked)
+        name
+        for name in names
+        if name not in top
+        and (name in INSTALLED_FOLDERS or os.path.isfile(os.path.join(root, name, VENV_MARKER)))
     )
 
 
-def checkout_work(tree, commit, base, locked=()):
-    entries = _committed_entries(tree, commit)
-    return _dirty_checkouts(tree, entries, _base_submodules(tree, entries, base), base, locked)
+def _link_dependencies(repo, folder, top):
+    names = _dependency_folders(repo, top)
+    for name in names:
+        os.symlink(os.path.join(os.path.abspath(repo), name), os.path.join(folder, name))
+    return names
 
 
-def _carried(tree, entries, kinds, paths):
-    hashable = tuple(
-        path
-        for path in paths
-        if kinds.get(path) == "file" and entries[path][0] != SYMLINK_MODE and "\n" not in path
-    )
-    if not hashable:
-        return frozenset()
-    hashed = git_run(
-        ["hash-object", "--stdin-paths"],
-        tree,
-        raw=True,
-        data=b"".join(os.fsencode(path) + b"\n" for path in hashable),
-    )
-    ids = hashed.stdout.split() if hashed.returncode == 0 else ()
-    if len(ids) != len(hashable):
-        return frozenset()
-    return frozenset(
-        path for path, oid in zip(hashable, ids) if oid.decode("ascii") == entries[path][1]
-    )
-
-
-def _uncommitted_work(tree, plan, base, locked, restoring):
-    def unjudged(path):
-        return referee.referee_reason(path, locked) is None and not any(
-            _held_under((path,), _norm(restored)) or _held_under((_norm(restored),), path)
-            for restored in restoring
+def _gate_setup(setup, folder, top, log_dir, timeout, env):
+    out = os.path.join(log_dir, "gate-setup.log")
+    try:
+        code, timed_out = run_command(
+            build_argv(setup, {"worktree": folder}), folder, timeout, out, out + ".err", env
         )
-
-    entries = plan["entries"]
-    differing = tuple(path for path in sorted(plan["rewrites"]) if unjudged(path))
-    try:
-        carried = _carried(tree, entries, dict(plan["found"]), differing)
-    except GitError:
-        carried = frozenset()
-    rewritten = tuple(path for path in differing if path not in carried)
-    loose = tuple(path for path in plan["removed"] if unjudged(path)) + tuple(
-        path + "/" for path in plan["shadowing"] if unjudged(path)
-    )
-    try:
-        ignored = _ignored(tree, ("check-ignore", "--no-index"), loose)
-    except GitError:
-        ignored = frozenset()
-    judged = tuple(
-        path
-        for path in plan["checkouts"]
-        if not any(_held_under((_norm(restored),), path) for restored in restoring)
-    )
-    checkouts = _dirty_checkouts(tree, entries, judged, base, locked)
-    return rewritten + tuple(path for path in loose if path not in ignored) + checkouts
-
-
-def normalize_gate_tree(tree, commit, base, locked=(), discard=False, restoring=()):
-    plan = gate_tree_plan(tree, commit, base, locked)
-    try:
-        work = (
-            ()
-            if discard
-            else _uncommitted_work(tree, plan, base, tuple(locked), tuple(restoring))
-        )
-        if work:
-            raise UncommittedWorkError(tree, commit, work)
-        return _normalized(tree, commit, tuple(locked), plan)
     except OSError as error:
-        raise GateTreeError(tree, commit, error)
-
-
-def _tip_gitlink(tree, tip, name, git_dir):
-    options, env = _object_reader(git_dir)
-    found = git_run([*options, "ls-tree", "-z", tip, "--", name], tree, raw=True, env=env)
-    header = found.stdout.split(b"\t", 1)[0].split(b" ") if found.returncode == 0 else ()
-    linked = len(header) == 3 and header[0] == GITLINK_MODE.encode("ascii")
-    return header[2].decode("ascii") if linked else None
-
-
-def _never_initialized(tree, path, base_oid, tips, git_dir):
-    full = os.path.join(tree, *_parts(path))
-    empty = not os.path.lexists(full) or (
-        not os.path.islink(full) and os.path.isdir(full) and not os.listdir(full)
-    )
-    unmoved = all(not tip or tip == base_oid for tip in tips)
-    return empty and unmoved and not os.path.lexists(git_dir)
-
-
-def _committed_referee(tree, path, base_oid, tips, git_dir, locked):
-    if _never_initialized(tree, path, base_oid, tips, git_dir):
-        return frozenset()
-    options, env = _object_reader(git_dir)
-    moved = tuple(
-        dict.fromkeys(
-            tip
-            for tip in tuple(tips) + (commit_at("HEAD", tree, git_dir=git_dir),)
-            if tip and tip != base_oid
+        raise GateSetupError("the --gate-setup command could not start in %s: %s" % (folder, error))
+    if timed_out:
+        raise GateSetupError(
+            "the --gate-setup command timed out after %s seconds in %s" % (timeout, folder)
         )
-    )
-    named = frozenset(
-        path + "/" + os.fsdecode(name)
-        for tip in moved
-        for name in _checked_run(
-            [*options, "diff-tree", "-r", "-z", "--name-only", "--no-renames", base_oid, tip],
-            tree,
-            env=env,
-        ).split(b"\0")
-        if name
-    )
-    held = _committed_entries(tree, base_oid, git_dir)
-    inside = frozenset(
-        written
-        for name in sorted(name for name, (mode, _) in held.items() if mode == GITLINK_MODE)
-        for written in _committed_referee(
-            tree,
-            path + "/" + name,
-            held[name][1],
-            tuple(_tip_gitlink(tree, tip, name, git_dir) for tip in moved),
-            _module_dir(tree, base_oid, name, git_dir),
-            locked,
+    if code != 0:
+        raise GateSetupError(
+            "the --gate-setup command exited %d in %s: %s"
+            % (code, folder, last_line(out + ".err") or last_line(out) or "<no output>")
         )
-    )
-    judged = frozenset(name for name in named if referee.referee_reason(name, locked) is not None)
-    return judged | inside
+    with os.scandir(folder) as listing:
+        return tuple(sorted(entry.name for entry in listing if entry.name not in top))
 
 
-def _base_checkout_referee(tree, path, base_oid, tip, base, locked):
-    on_disk = frozenset(
-        written
-        for written in submodule_work(tree, path, base_oid, base, locked)
-        if referee.referee_reason(written, locked) is not None
-    )
-    try:
-        committed = _committed_referee(
-            tree, path, base_oid, (tip,), _module_dir(tree, base, path), locked
-        )
-    except (OSError, GitError, ValueError) as error:
-        raise GateTreeError(
-            tree,
-            base_oid,
-            "%s/ cannot be judged, because its commits cannot be read: %s" % (path, error),
-        )
-    return on_disk | committed
-
-
-def base_submodule_referee_writes(tree, commit, base, locked=()):
-    entries = _committed_entries(tree, commit)
-    held = _committed_entries(tree, base)
-    return sorted(
-        written
-        for path in sorted(_base_submodules(tree, entries, base))
-        for written in _base_checkout_referee(
-            tree, path, held[path][1], entries[path][1], base, tuple(locked)
-        )
-    )
+def ignored_paths(tree):
+    args = [
+        *STATUS_SETTINGS,
+        "status",
+        "--porcelain",
+        "-z",
+        "--untracked-files=all",
+        "--ignored=matching",
+        "--no-renames",
+    ]
+    completed = git_run(args, tree, raw=True, env=PINNED_GIT)
+    if completed.returncode != 0:
+        raise GitError(args, completed.returncode, completed.stderr)
+    return sorted(os.fsdecode(entry[3:]) for entry in completed.stdout.split(b"\0") if len(entry) > 3)
 
 
 def _referee_marked(paths, locked):
     return frozenset(path for path in paths if referee.referee_reason(path, locked) is not None)
 
 
-def _referee_diff(tree, base, commit, locked):
-    changed = git_paths(["diff", "-z", "--name-only", "--no-renames", base, commit], tree)
-    return _referee_marked(changed, locked)
+def _submodule_changes(tree, holder, path, old, new, git_dir, prefix):
+    try:
+        store = _module_dir(tree, holder, path, git_dir)
+        return _tree_changes(tree, old, new, store, prefix + path + "/")
+    except (GitError, OSError, ValueError) as error:
+        raise GitError(
+            ["ls-tree", new],
+            1,
+            "%s%s/ cannot be judged, because its commits cannot be read: %s" % (prefix, path, error),
+        )
 
 
-def _referee_strays(tree, commit, base, locked):
-    found = gate_tree_plan(tree, commit, base, locked)
-    return _referee_marked(set(found["removed"]) | set(found["rewrites"]), locked)
+def _tree_changes(tree, old, new, git_dir=None, prefix=""):
+    before = _committed_entries(tree, old, git_dir)
+    after = _committed_entries(tree, new, git_dir)
+    changed = _changed_paths(before, after)
+    inside = tuple(
+        written
+        for path in changed
+        if _gitlink(before, path) and _gitlink(after, path)
+        for written in _submodule_changes(
+            tree, old, path, before[path][1], after[path][1], git_dir, prefix
+        )
+    )
+    return tuple(prefix + path for path in changed) + inside
 
 
 def referee_writes(plan, tree, branch, base):
     locked = tuple(plan.get("locked") or ())
-    committed = _referee_diff(tree, base, branch, locked)
     head = commit_at(branch, tree, required=True)
-    inside = frozenset(base_submodule_referee_writes(tree, head, base, locked))
-    try:
-        _restore_base_submodules(tree, base, tuple(sorted(inside)), False)
-    except (OSError, GitError) as error:
-        raise GateTreeError(tree, head, error)
-    try:
-        normalized = frozenset(
-            normalize_gate_tree(tree, head, base, locked, restoring=tuple(sorted(inside)))
-        )
-    except UncommittedWorkError as error:
-        listed = committed | inside | _referee_strays(tree, head, base, locked)
-        if not listed:
-            raise
-        raise UnjudgedRefereeError(tree, head, error.paths, sorted(listed))
-    return sorted(committed | inside | normalized)
-
-
-def staged_referee_writes(plan, tree, base):
-    locked = tuple(plan.get("locked") or ())
-    staged = git(["write-tree"], tree)
-    inside = frozenset(base_submodule_referee_writes(tree, staged, base, locked))
-    return sorted(
-        _referee_diff(tree, base, staged, locked)
-        | _referee_strays(tree, staged, base, locked)
-        | inside
-    )
-
-
-def restore_gate_commit(tree, branch, commit, locked, base=None, discard=False):
-    written = tuple(normalize_gate_tree(tree, commit, base or commit, locked, discard))
-    git(["update-ref", "refs/heads/" + branch, commit], tree)
-    git(["symbolic-ref", "HEAD", "refs/heads/" + branch], tree)
-    left = written_since(tree) + checkout_work(tree, commit, base or commit, locked)
-    if left:
-        raise RestoreError(branch, commit, left)
-    return written
-
-
-def gate_marker(tree):
-    return os.path.join(git(["rev-parse", "--absolute-git-dir"], tree), GATE_MARKER)
-
-
-def _marked_paths(marker, commit):
-    if not os.path.isfile(marker):
-        return ()
-    recorded = read_json(marker)
-    if not isinstance(recorded, dict) or recorded.get("commit") != commit:
-        return ()
-    return tuple(recorded.get("paths") or ())
-
-
-def mark_gate(tree, branch, commit, paths, locked, base=None):
-    marker = gate_marker(tree)
-    write_json(
-        marker,
-        {
-            "branch": branch,
-            "commit": commit,
-            "paths": sorted(set(_marked_paths(marker, commit)) | set(paths)),
-            "locked": list(locked),
-            "base": base,
-        },
-    )
-
-
-def clear_gate_mark(tree):
-    try:
-        os.remove(gate_marker(tree))
-    except FileNotFoundError:
-        pass
-
-
-def _moved(name, commit, tip):
-    return LaterWorkError(
-        "%s moved from the gated commit %s to %s after the gate was interrupted, so recovering "
-        "it would discard that work" % (name, commit[:12], tip[:12] if tip else "no commit")
-    )
-
-
-def _head_ref(tree):
-    args = ["symbolic-ref", "-q", "HEAD"]
-    found = git_run(args, tree)
-    if found.returncode not in (0, 1):
-        raise GitError(args, found.returncode, found.stderr)
-    return found.stdout.strip() if found.returncode == 0 else None
-
-
-def _refuse_moved_work(tree, branch, commit):
-    probe = "%s/%s" % (PROBE_PREFIX, branch)
-    tip = commit_at("refs/heads/" + branch, tree)
-    if tip != commit:
-        raise _moved(branch, commit, tip)
-    probe_tip = commit_at("refs/heads/" + probe, tree)
-    if probe_tip not in (None, commit):
-        raise _moved(probe, commit, probe_tip)
-    head = _head_ref(tree)
-    if head in ("refs/heads/" + branch, "refs/heads/" + probe):
-        return
-    if head is None:
-        where = "the detached commit %s" % git(["rev-parse", "HEAD"], tree)[:12]
-    else:
-        where = head[len("refs/heads/"):] if head.startswith("refs/heads/") else head
-    raise LaterWorkError(
-        "HEAD is on %s, not %s or %s, so recovering the interrupted gate would discard the "
-        "work there" % (where, branch, probe)
-    )
-
-
-def _kept_blob(tree, path, kind):
-    if kind == "link":
-        return SYMLINK_MODE, os.fsencode(os.readlink(tree_path(tree, path, last=False)))
-    descriptor = os.open(tree_path(tree, path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(descriptor, "rb") as handle:
-        executable = os.fstat(handle.fileno()).st_mode & stat.S_IXUSR
-        return (EXECUTABLE_MODE if executable else REGULAR_MODE), handle.read()
-
-
-def _stored_blob(tree, data):
-    stored = _checked_run(["hash-object", "-w", "--no-filters", "--stdin"], tree, data)
-    return stored.decode("ascii").strip()
-
-
-def _replaced_rows(tree, plan, commit):
-    kinds = dict(plan["found"])
-    rewritten = tuple(sorted(plan["rewrites"]))
-    gone = tuple(path for path in rewritten if kinds.get(path) not in KEPT_KINDS)
-    saved = tuple(
-        (path,) + _kept_blob(tree, path, kinds[path])
-        for path in tuple(plan["removed"]) + rewritten
-        if kinds.get(path) in KEPT_KINDS
-    )
-    absent = ("0" * len(commit)).encode("ascii")
-    rows = b"".join(
-        tuple(b"0 %s\t%s\0" % (absent, os.fsencode(path)) for path in gone)
-        + tuple(
-            b"%s %s\t%s\0"
-            % (mode.encode("ascii"), _stored_blob(tree, data).encode("ascii"), os.fsencode(path))
-            for path, mode, data in saved
-        )
-    )
-    return rows, tuple(path for path, _, _ in saved)
-
-
-def _replaced_tree(tree, commit, rows, paths):
-    folder = tempfile.mkdtemp(prefix="mitosis-recovered-")
-    try:
-        env = {"GIT_INDEX_FILE": os.path.join(folder, "index")}
-        _checked_run(["read-tree", commit], tree, env=env)
-        _checked_run(["update-index", "-z", "--replace", "--index-info"], tree, rows, env)
-        saved = git(["write-tree"], tree, env=env)
-    finally:
-        shutil.rmtree(folder, ignore_errors=True)
-    held = frozenset(git_paths(["ls-tree", "-r", "-z", "--name-only", "--full-tree", saved], tree))
-    refused = tuple(sorted(path for path in paths if path not in held))
-    if refused:
-        named = ", ".join(refused[:3]) + (
-            " and %d more" % (len(refused) - 3) if len(refused) > 3 else ""
-        )
-        raise LaterWorkError(
-            "git cannot store %s in a backup, so recovering the interrupted gate would discard "
-            "it; move it out of %s and run again" % (named, tree)
-        )
-    return saved
-
-
-def _keep_replaced_work(tree, branch, commit, base, locked):
-    rows, paths = _replaced_rows(tree, gate_tree_plan(tree, commit, base, locked), commit)
-    saved = _replaced_tree(tree, commit, rows, paths) if rows else None
-    if saved is None or saved == git(["rev-parse", commit + "^{tree}"], tree):
-        return None
-    ref = RECOVERED_REFS + branch
-    previous = commit_at(ref, tree)
-    parents = ("-p", commit) + (("-p", previous) if previous else ())
-    message = "mitosis: the work recovering the interrupted gate on %s replaced" % branch
-    backup = git(["commit-tree", saved, *parents, "-m", message], tree)
-    git(["update-ref", ref, backup, previous or ""], tree)
-    sys.stderr.write(
-        "mitosis kept the work recovering the interrupted gate in %s replaced in %s at %s\n"
-        % (tree, ref, backup[:12])
-    )
-    sys.stderr.flush()
-    return backup
-
-
-def _recover_from(tree, recorded):
-    branch = recorded["branch"]
-    commit = recorded["commit"]
-    locked = tuple(recorded["locked"])
-    base = recorded.get("base")
-    _refuse_moved_work(tree, branch, commit)
-    clear_caches_beside(tree, tuple(recorded["paths"]))
-    _keep_replaced_work(tree, branch, commit, base or commit, locked)
-    restore_gate_commit(tree, branch, commit, locked, base, discard=True)
-    probe = "%s/%s" % (PROBE_PREFIX, branch)
-    git_run(["branch", "-D", probe], tree)
-    if branch_exists(tree, probe):
-        raise GitError(["branch", "-D", probe], 1, "the probe branch %s is still there" % probe)
-
-
-def recover_gate(tree):
-    marker = gate_marker(tree)
-    if not os.path.isfile(marker):
-        return False
-    try:
-        _recover_from(tree, read_json(marker))
-    except (GitError, OSError, ValueError, KeyError, TypeError) as error:
-        raise GateRecoveryError(tree, marker, error)
-    os.remove(marker)
-    return True
+    held = commit_at(base, tree, required=True)
+    return sorted(_referee_marked(_tree_changes(tree, held, head), locked))
 
 
 def reconcile(plan, msp, tree, branch, base, producer_branches=()):
@@ -3282,9 +2711,6 @@ def ship(
 ):
     label = _label(plan, msp)
     head = commit_at(branch, tree, required=True)
-    dirty = written_since(tree) + checkout_work(tree, head, base, plan.get("locked") or ())
-    if dirty:
-        raise ShipError("%s holds writes no gate judged: %s" % (branch, ", ".join(dirty)))
     gated = (gate_result or {}).get("commit")
     if proven_head is None and gated is not None and head != gated:
         raise ShipError(
@@ -3402,16 +2828,15 @@ def _gate_stage(plan, msp, tree, settings):
             plan,
             msp,
             tree["path"],
-            tree["branch"],
             settings["feature_branch"],
             settings["acceptance_command"],
             os.path.join(settings["run_dir"], "gate", "msp-%d" % msp),
             settings["timeout"],
             settings.get("env"),
+            settings.get("repo"),
+            settings.get("gate_setup"),
         )
-    except GateRecoveryError:
-        raise
-    except (OSError, GitError, subprocess.SubprocessError) as error:
+    except (OSError, GitError, GateSetupError, subprocess.SubprocessError) as error:
         return {"gate": None, "gate_error": str(error)}
     return {"gate": result, "gate_error": None}
 
@@ -3426,8 +2851,6 @@ def _passing_gate(prior):
 def _committed_head(plan, msp, tree):
     try:
         return commit_before_gate(plan, msp, tree["path"]), None
-    except GateRecoveryError:
-        raise
     except GitError as error:
         return None, str(error)
 
@@ -3455,34 +2878,25 @@ def _reconcile_stage(plan, msp, tree, producers, trees, settings):
             settings["feature_branch"],
             tuple(trees[p]["branch"] for p in producers),
         )
-    except UnjudgedRefereeError as error:
-        return {
-            "reconcile": {"referee": list(error.written), "fatal": True},
-            "state": MSP_GATE_FAILED,
-            "reason": "a Worker wrote %s, which the referee owns, beside uncommitted work on %s "
-            "that no gate judged, so mitosis kept that work, restored nothing on the branch, did "
-            "not run the gate and held the MSP back: %s"
-            % (", ".join(error.written), tree["branch"], error),
-        }
-    except GateTreeError as error:
+    except GitError as error:
         return {
             "reconcile": None,
             "state": MSP_GATE_FAILED,
-            "reason": "mitosis could not make %s equal to its commit, so the gate did not run and "
-            "the MSP is held back: %s" % (tree["branch"], error),
+            "reason": "mitosis could not judge the referee paths in the commits of %s, so the gate "
+            "did not run and the MSP is held back: %s" % (tree["branch"], error),
         }
     return {"reconcile": findings}
 
 
-def _staged_reconcile(plan, tree, settings, commit_error):
+def _committed_reconcile(plan, tree, settings, commit_error):
     try:
-        written = staged_referee_writes(plan, tree["path"], settings["feature_branch"])
+        written = referee_writes(plan, tree["path"], tree["branch"], settings["feature_branch"])
     except GitError as error:
         return {
             "reconcile": None,
             "state": MSP_GATE_FAILED,
             "reason": "mitosis could not commit the work on %s before the gate (%s) and could not "
-            "list the referee paths in the work it staged, so the gate did not run and the MSP is "
+            "judge the referee paths its commits hold, so the gate did not run and the MSP is "
             "held back: %s" % (tree["branch"], commit_error, error),
         }
     return {"reconcile": {"referee": written, "fatal": bool(written)}}
@@ -3492,7 +2906,7 @@ def _referee_stage(plan, msp, tree, producers, trees, settings, commit_error=Non
     reconciled = (
         _reconcile_stage(plan, msp, tree, producers, trees, settings)
         if commit_error is None
-        else _staged_reconcile(plan, tree, settings, commit_error)
+        else _committed_reconcile(plan, tree, settings, commit_error)
     )
     if reconciled.get("state") == MSP_GATE_FAILED:
         return {**reconciled, "gate": None, "gate_error": reconciled["reason"]}
@@ -3506,12 +2920,12 @@ def _referee_stage(plan, msp, tree, producers, trees, settings, commit_error=Non
         % commit_error
     )
     try:
-        revert_implementation(tree["path"], settings["feature_branch"], written)
-        if commit_error is None:
-            commit_all(
-                tree["path"],
-                "revert(%s): restore the referee paths a Worker wrote" % _label(plan, msp),
-            )
+        revert_implementation(
+            tree["path"],
+            settings["feature_branch"],
+            written,
+            "revert(%s): restore the referee paths a Worker wrote" % _label(plan, msp),
+        )
     except (GitError, OSError) as error:
         return {
             **reconciled,
@@ -3657,6 +3071,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     if block is not None:
         return write_state(run_dir, _msp_record(state, msp, **block))
     head, commit_error = _committed_head(plan, msp, tree)
+    state = write_state(run_dir, _msp_record(state, msp, ignored=ignored_paths(tree["path"])))
     held = _referee_stage(plan, msp, tree, producers, trees, settings, commit_error)
     if held is not None:
         notify(
@@ -3720,8 +3135,8 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
                 state,
                 msp,
                 state=MSP_REFEREE_REVERTED,
-                reason="an acceptance run wrote %s, which the referee owns; mitosis restored %s "
-                "to the gated commit and held the MSP back" % (", ".join(tampered), tree["branch"]),
+                reason="an acceptance run wrote %s in the gate's clean checkout, which the referee "
+                "owns, so mitosis held %s back" % (", ".join(tampered), tree["branch"]),
             ),
         )
     held_back = _held_back(gated, tree["branch"]) if judged_now else None
@@ -3779,6 +3194,7 @@ def execute(
     observer=None,
     env=None,
     trajectory=None,
+    gate_setup=None,
 ):
     prior = prior_state(run_dir, plan, resume)
     header = carried_header(header, prior)
@@ -3786,6 +3202,8 @@ def execute(
     check_template("acceptance", acceptance_command)
     if not no_push and pr_command is not None:
         check_template("pull-request", pr_command)
+    if gate_setup is not None:
+        check_template("gate-setup", gate_setup)
     if not no_push and header is None:
         raise ConfigError(
             "a run allowed to push needs a pull-request header holding its type, subject and "
@@ -3814,6 +3232,7 @@ def execute(
         "observer": observer,
         "env": env,
         "trajectory": trajectory,
+        "gate_setup": gate_setup,
     }
     os.makedirs(run_dir, exist_ok=True)
     write_json(os.path.join(run_dir, PLAN_FILE), plan)

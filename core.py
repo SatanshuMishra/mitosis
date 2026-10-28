@@ -121,6 +121,7 @@ FLAG_NAMES = (
     "--dispatch-command",
     "--decompose-command",
     "--acceptance-command",
+    "--gate-setup",
     "--pr-command",
     "--pr-type",
     "--pr-scope",

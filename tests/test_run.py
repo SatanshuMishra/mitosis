@@ -227,6 +227,12 @@ class RepoCase(unittest.TestCase):
             shlex.quote(self.markers),
         )
 
+    def gate_checkouts(self):
+        folder = os.path.join(self.run_dir, "gate")
+        if not os.path.isdir(folder):
+            return []
+        return sorted(name for name in os.listdir(folder) if name.startswith(run.GATE_FOLDER_PREFIX))
+
     def gate_runs(self):
         path = os.path.join(self.markers, "gate")
         return read(path).splitlines() if os.path.exists(path) else []
@@ -298,7 +304,6 @@ class RepoCase(unittest.TestCase):
             plan,
             msp,
             trees[msp]["path"],
-            trees[msp]["branch"],
             "main",
             command or self.acceptance_command(accept),
             os.path.join(self.run_dir, "gate"),
@@ -1012,7 +1017,8 @@ class Gate(RepoCase):
         self.assertEqual(sh(["git", "rev-parse", "--abbrev-ref", "HEAD"], tree), trees[0]["branch"])
         self.assertEqual(sh(["git", "status", "--porcelain"], tree), "")
         self.assertEqual(read(os.path.join(tree, "impl.txt")), "work by lane 0\n")
-        self.assertFalse(any(b.startswith(run.PROBE_PREFIX + "/") for b in self.branches()))
+        self.assertFalse(any(b.startswith("probe/") for b in self.branches()))
+        self.assertEqual(self.gate_checkouts(), [])
 
     def an_inert_acceptance_property_holds_the_msp_back(self):
         plan = core.plan([gated_step()])
@@ -1153,7 +1159,8 @@ class Gate(RepoCase):
         tree = trees[0]["path"]
         with self.assertRaises(FileNotFoundError):
             self.gate(plan, trees, command=os.path.join(self.tmp, "no-such-runner") + " {file} {test}")
-        self.assertFalse(any(b.startswith(run.PROBE_PREFIX + "/") for b in self.branches()))
+        self.assertFalse(any(b.startswith("probe/") for b in self.branches()))
+        self.assertEqual(self.gate_checkouts(), [])
         self.assertEqual(sh(["git", "rev-parse", "--abbrev-ref", "HEAD"], tree), trees[0]["branch"])
         self.assertEqual(sh(["git", "status", "--porcelain"], tree), "")
         self.assertEqual(read(os.path.join(tree, "impl.txt")), "work by lane 0\n")

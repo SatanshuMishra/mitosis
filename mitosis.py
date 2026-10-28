@@ -130,6 +130,7 @@ PLACEHOLDER_HELP = {
     "decompose": "{prompt} {model} {document} {session_id}",
     "brief": " ".join("{%s}" % key for key in BRIEF_PLACEHOLDERS),
     "acceptance": "{file} {test} {worktree}",
+    "gate-setup": "{worktree}",
     "pull-request": "{branch} {base} {title} {body} {worktree} {msp} {remote}",
 }
 
@@ -252,6 +253,13 @@ FLAG_SPECS = {
         "help": "runs one acceptance property; placeholders %s; exit 0 passes, exit %d fails, "
         "anything else is inconclusive"
         % (PLACEHOLDER_HELP["acceptance"], run.ACCEPTANCE_FAILURE_EXIT),
+    },
+    "--gate-setup": {
+        "metavar": "TEMPLATE",
+        "help": "prepares the gate's clean checkout once per gate before any acceptance run, "
+        "with the run's --timeout; placeholders %s; when given, the gate links no dependency "
+        "folder from the repository root; a non-zero exit or a timeout holds the MSP back "
+        "gate-failed" % PLACEHOLDER_HELP["gate-setup"],
     },
     "--pr-command": {
         "metavar": "TEMPLATE",
@@ -541,6 +549,7 @@ def check_templates(args):
         ("decompose", args.decompose_command),
         ("brief", args.brief_command),
         ("acceptance", args.acceptance_command),
+        ("gate-setup", args.gate_setup),
         ("pull-request", args.pr_command),
     ):
         if template is None:
@@ -1646,6 +1655,7 @@ def _msp_summary(plan, state):
                     "fatal": bool(findings.get("fatal")),
                 },
                 "crossing": [entry.get("path") for entry in findings.get("crossing") or ()],
+                "ignored": list(record.get("ignored") or ()),
                 "trajectory_error": record.get("trajectory_error"),
             }
         )
@@ -1831,6 +1841,7 @@ def execute(args, plan, models, run_dir, repo, root):
             observer=recorder_of(args).observe,
             env=recorder_of(args).env,
             trajectory=args.trajectory,
+            gate_setup=args.gate_setup,
         ), None
     except (run.ConfigError, run.ResumeError) as error:
         raise Refusal(str(error))

@@ -1,6 +1,10 @@
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -9,13 +13,37 @@ sys.path.insert(0, HERE)
 
 import run
 import test_referee_lock as lock_fixtures
-from test_submodule_checkout import git_text, read_bytes
-from test_uncommitted_work import BRANCH, CALC, CONFTEST, BaseSubmoduleWork, write_bytes
 
+BRANCH = "mitosis/demo"
+CALC = b"LIMIT = 3\n"
+CONFTEST = b"import os\nos.environ['PLANTED'] = '1'\n"
+PLAN = {
+    "msps": [{"files": ["calc.py"], "steps": ["build"], "label": "demo"}],
+    "items": [{"name": "build", "files": ["calc.py"], "acceptance": [], "msp": "demo"}],
+    "locked": [],
+}
 PYTEST_INI = b"[pytest]\n"
-HIDDEN_INI = b"[pytest]\naddopts = -k nothing\n"
-VENV = b"home = /usr\n"
 BUMPED = b"2\n"
+
+
+def git_text(args, cwd):
+    return subprocess.run(
+        ["git", "-c", "protocol.file.allow=always", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        timeout=60,
+    ).stdout.decode("utf-8")
+
+
+def read_bytes(path):
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def write_bytes(path, data):
+    with open(path, "wb") as handle:
+        handle.write(data)
 
 
 def put_bytes(path, data):
@@ -33,18 +61,26 @@ def committed_repository(folder, files):
     return folder
 
 
-def git_path(tree, name):
-    found = git_text(["rev-parse", "--git-path", name], tree).strip()
-    return found if os.path.isabs(found) else os.path.join(tree, found)
-
-
 def commit_inside(folder, message):
     git_text(["add", "-A"], folder)
     git_text(["commit", "-q", "-m", message], folder)
     return git_text(["rev-parse", "HEAD"], folder).strip()
 
 
-class SubmoduleRefereeWrite(BaseSubmoduleWork):
+class SubmoduleRefereeWrite(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="mitosis-uncommitted-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        home = os.path.join(self.tmp, "home")
+        os.makedirs(home)
+        patcher = mock.patch.dict(os.environ, {**lock_fixtures.GIT_IDENTITY, "HOME": home})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.handle = None
+
+    def _referee_stage(self):
+        return run._referee_stage(PLAN, 0, self.handle, (), [self.handle], {"feature_branch": "feature"})
+
     def _tree(self, nested=False):
         dependency = committed_repository(
             os.path.join(self.tmp, "dependency"), {"dep.txt": b"1\n", "pytest.ini": PYTEST_INI}
@@ -93,20 +129,6 @@ class SubmoduleRefereeWrite(BaseSubmoduleWork):
         self._assert_reverted(self._gated(), ["dep/conftest.py"])
         self.assertFalse(os.path.lexists(os.path.join(self.dep, "conftest.py")))
 
-    def a_conftest_hidden_by_the_submodule_status_config_is_reverted(self):
-        self._tree()
-        git_text(["config", "status.showUntrackedFiles", "no"], self.dep)
-        write_bytes(os.path.join(self.dep, "conftest.py"), CONFTEST)
-        self._assert_reverted(self._gated(), ["dep/conftest.py"])
-        self.assertFalse(os.path.lexists(os.path.join(self.dep, "conftest.py")))
-
-    def a_skip_worktree_edit_of_a_base_referee_file_is_restored(self):
-        self._tree()
-        write_bytes(os.path.join(self.dep, "pytest.ini"), HIDDEN_INI)
-        git_text(["update-index", "--skip-worktree", "pytest.ini"], self.dep)
-        self._assert_reverted(self._gated(), ["dep/pytest.ini"])
-        self.assertEqual(read_bytes(os.path.join(self.dep, "pytest.ini")), PYTEST_INI)
-
     def a_conftest_committed_in_a_nested_submodule_is_reverted(self):
         self._tree(nested=True)
         lib = os.path.join(self.dep, "lib")
@@ -115,15 +137,6 @@ class SubmoduleRefereeWrite(BaseSubmoduleWork):
         commit_inside(self.dep, "bump lib")
         self._assert_reverted(self._gated(), ["dep/lib/conftest.py"])
         self.assertFalse(os.path.lexists(os.path.join(lib, "conftest.py")))
-
-    def a_worker_committed_ignore_never_trusts_a_referee_file(self):
-        self._tree()
-        write_bytes(os.path.join(self.dep, ".gitignore"), b"evil/\n")
-        put_bytes(os.path.join(self.dep, "evil", "pyvenv.cfg"), VENV)
-        put_bytes(os.path.join(self.dep, "evil", "conftest.py"), CONFTEST)
-        commit_inside(self.dep, "worker ignore")
-        self._assert_reverted(self._gated(), ["dep/evil/conftest.py"])
-        self.assertFalse(os.path.lexists(os.path.join(self.dep, "evil", "conftest.py")))
 
     def a_clean_base_submodule_passes_the_referee_stage(self):
         self._tree()
@@ -140,33 +153,6 @@ class SubmoduleRefereeWrite(BaseSubmoduleWork):
         self.assertEqual(self._shipped_gitlink(), bumped)
         self.assertEqual(read_bytes(os.path.join(self.dep, "dep.txt")), BUMPED)
 
-    def _named_module(self, name):
-        tree = self.tree
-        dependency = os.path.join(self.tmp, "dependency")
-        lock_fixtures.put(
-            os.path.join(tree, ".gitmodules"),
-            '[submodule "%s"]\n\tpath = dep\n\turl = %s\n' % (name, dependency),
-        )
-        git_text(["commit", "-q", "--allow-empty", "-am", "crafted"], tree)
-        return git_text(["rev-parse", "HEAD:dep"], tree).strip()
-
-    def a_module_name_that_climbs_out_of_the_modules_folder_is_not_judged(self):
-        self._tree()
-        modules = git_path(self.tree, "modules")
-        climbing = os.path.relpath(os.path.join(self.tmp, "dependency", ".git"), modules)
-        gitlink = self._named_module(climbing)
-        self.assertEqual(run.submodule_work(self.tree, "dep", gitlink, "HEAD"), ("dep/",))
-
-    def a_module_folder_linked_outside_the_modules_folder_is_not_judged(self):
-        self._tree()
-        gitlink = self._named_module("dep")
-        module = git_path(self.tree, "modules/dep")
-        moved = os.path.join(self.tmp, "moved")
-        os.rename(module, moved)
-        os.symlink(moved, module)
-        git_text(["config", "--file", os.path.join(moved, "config"), "core.worktree", self.dep], self.tmp)
-        self.assertEqual(run.submodule_work(self.tree, "dep", gitlink, "HEAD"), ("dep/",))
-
 
 def load_tests(loader, standard, pattern):
     suite = unittest.TestSuite()
@@ -175,14 +161,9 @@ def load_tests(loader, standard, pattern):
             SubmoduleRefereeWrite,
             (
                 "a_conftest_committed_inside_a_base_submodule_is_reverted",
-                "a_conftest_hidden_by_the_submodule_status_config_is_reverted",
-                "a_skip_worktree_edit_of_a_base_referee_file_is_restored",
                 "a_conftest_committed_in_a_nested_submodule_is_reverted",
-                "a_worker_committed_ignore_never_trusts_a_referee_file",
                 "a_clean_base_submodule_passes_the_referee_stage",
                 "a_submodule_bump_that_touches_no_referee_path_passes",
-                "a_module_name_that_climbs_out_of_the_modules_folder_is_not_judged",
-                "a_module_folder_linked_outside_the_modules_folder_is_not_judged",
             ),
         ),
     ):

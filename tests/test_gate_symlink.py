@@ -1,6 +1,5 @@
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -51,18 +50,6 @@ def read_bytes(path):
         return None
     with open(path, "rb") as handle:
         return handle.read()
-
-
-def git_in(cwd, *args):
-    return subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        env={**os.environ, **teeth.GIT_IDENTITY},
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=teeth.CALL_LIMIT,
-    ).stdout.strip()
 
 
 class GateSymlink(unittest.TestCase):
@@ -176,24 +163,6 @@ class GateSymlink(unittest.TestCase):
             "would reach outside the worktree",
         )
 
-    def recovering_a_gate_never_clears_a_cache_through_a_link(self):
-        tree, keep = self._outside_cache()
-        git_in(tree, "init", "-q", "-b", "main")
-        teeth.put(os.path.join(tree, "README.md"), "seed\n")
-        git_in(tree, "add", "-A")
-        git_in(tree, "commit", "-q", "-m", "seed")
-        commit = git_in(tree, "rev-parse", "HEAD")
-        run.mark_gate(tree, "main", commit, [LOCKED], ())
-        refusal = None
-        try:
-            run.recover_gate(tree)
-        except run.GateRecoveryError as error:
-            refusal = error
-        self.assertEqual(read_bytes(keep), KEEP)
-        self.assertIn(
-            "mitosis refused to act on tests/__pycache__: tests is a symbolic link", str(refusal)
-        )
-
     def _linked_file(self):
         tree = os.path.join(self.tmp, "tree")
         os.makedirs(tree)
@@ -237,7 +206,6 @@ def load_tests(loader, standard, pattern):
                 "a_link_to_an_outside_data_file_is_never_dropped",
                 "a_linked_tests_folder_keeps_its_outside_cache_through_a_build",
                 "clear_caches_beside_refuses_a_linked_parent",
-                "recovering_a_gate_never_clears_a_cache_through_a_link",
                 "write_text_refuses_a_link",
                 "read_text_refuses_a_link",
             ),
