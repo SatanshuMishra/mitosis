@@ -1,7 +1,7 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T11:10:13.875Z
-Next ids: c7 D2 R3 S1
+Updated: 2026-10-28T11:10:32.142Z
+Next ids: c7 D2 R4 S1
 
 ## Goal
 
@@ -34,6 +34,7 @@ Needs: D1, R1, R2.
 
 - R1 The paused step-commits-render-fields run (branch mitosis/step-commits-render-fields, round 1 diagnose, feature feat/step-commits-render-fields) changes run.py, mitosis.py and core.py too; this run cuts from main, so whichever merges second resolves the conflicts.
 - R2 The owner's checkout holds an uncommitted GLOSSARY.md edit and untracked docs/adr/0004 and 0005 from step-commits-render-fields; this run builds from committed main and never touches them.
+- R3 The installed mitosis 0.7.0 composes its own pull-request title and body, while the owner's hook accepts only what `pull-request render` prints; at ship, a refused title or body is taken from `pull-request render`, never edited by hand.
 
 ## Settled, do not reopen
 
