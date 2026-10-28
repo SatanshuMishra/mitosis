@@ -1540,6 +1540,72 @@ class GateExit(unittest.TestCase):
         self.assertEqual(mitosis.exit_code(state, self.PLAN), mitosis.EXIT_SHIPPED)
         passing = self._state(gate={"outcome": "not-applicable", "blocks": False})
         self.assertEqual(mitosis.exit_code(passing, self.PLAN), mitosis.EXIT_SHIPPED)
+        self.assertEqual(mitosis.findings(passing, self.PLAN), [])
+
+    PAIR = {
+        "plan_id": "p",
+        "lanes": [{"msp": 0, "steps": ["alpha"]}, {"msp": 1, "steps": ["beta"]}],
+        "msps": [{"label": "alpha", "steps": ["alpha"]}, {"label": "beta", "steps": ["beta"]}],
+        "items": [
+            {"name": "alpha", "files": ["a.py"], "acceptance": []},
+            {"name": "beta", "files": ["b.py"], "acceptance": []},
+        ],
+    }
+
+    def _pair(self, first, second):
+        return {
+            "worktrees": [{"msp": 0}, {"msp": 1}],
+            "lanes": {"0": {"state": "ok"}, "1": {"state": "ok"}},
+            "msps": {"0": first, "1": second},
+        }
+
+    def every_msps_findings_are_listed_and_the_worst_decides_the_exit(self):
+        clean = {"undeclared": [], "unwritten": [], "crossing": [], "fatal": False}
+        held = {
+            "state": "gate-failed",
+            "reason": "held",
+            "reconcile": clean,
+            "gate": {
+                "outcome": "inconclusive",
+                "blocks": True,
+                "properties": [
+                    {"file": "tests/test_a.py", "test": "A.works", "outcome": "inconclusive", "reason": "exit 2"},
+                    {"file": "tests/test_a.py", "test": "A.other", "outcome": "pass", "reason": None},
+                ],
+            },
+        }
+        stray = {"state": "committed", "reconcile": {**clean, "undeclared": ["stray.txt"], "unwritten": ["b.py"]}}
+        gate = {
+            "msp": "alpha",
+            "lane": None,
+            "kind": "gate-inconclusive",
+            "exit": 21,
+            "detail": "tests/test_a.py::A.works: exit 2",
+        }
+        undeclared = {"msp": "beta", "lane": None, "kind": "undeclared", "exit": 6, "detail": "stray.txt"}
+        unwritten = {"msp": "beta", "lane": None, "kind": "unwritten", "exit": 6, "detail": "b.py"}
+        forward = self._pair(held, stray)
+        self.assertEqual(mitosis.findings(forward, self.PAIR), [gate, undeclared, unwritten])
+        self.assertEqual(mitosis.exit_code(forward, self.PAIR), 21)
+        backward = self._pair(stray, held)
+        self.assertEqual(mitosis.exit_code(backward, self.PAIR), 21)
+
+    def lanes_come_before_msps_and_a_missing_record_is_incomplete(self):
+        state = {
+            "worktrees": [{"msp": 0}],
+            "lanes": {"1": {"state": "failed", "reason": "the Worker said failed"}},
+            "msps": {"0": {"state": "blocked", "reason": "a predecessor failed"}},
+        }
+        self.assertEqual(
+            mitosis.findings(state, self.PAIR),
+            [
+                {"msp": "alpha", "lane": 0, "kind": "incomplete", "exit": 4, "detail": "Lane 0 has no record"},
+                {"msp": "beta", "lane": 1, "kind": "failed", "exit": 10, "detail": "the Worker said failed"},
+                {"msp": "alpha", "lane": None, "kind": "blocked", "exit": 11, "detail": "a predecessor failed"},
+                {"msp": "beta", "lane": None, "kind": "incomplete", "exit": 4, "detail": "MSP beta has no record"},
+            ],
+        )
+        self.assertEqual(mitosis.exit_code(state, self.PAIR), 10)
 
 
 class CouplingReport(unittest.TestCase):

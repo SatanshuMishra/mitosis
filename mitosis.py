@@ -49,6 +49,8 @@ MSP_EXIT = {
 
 GATE_EXIT = {"gate-inert": 20, "gate-inconclusive": 21, "gate-weak": 24}
 
+EXIT_SEVERITY = (9, 7, 8, 24, 20, 21, 23, 22, 10, 12, 11, 13, 6, 4)
+
 EXIT_MEANING = {
     EXIT_SHIPPED: "every MSP reached shipped, pushed, unchanged or committed, and reconcile found "
     "nothing",
@@ -1412,40 +1414,121 @@ def gate_exit(record):
     return GATE_EXIT.get(flag)
 
 
-def exit_code(state, plan):
-    lanes = plan.get("lanes") or []
-    msps = plan.get("msps") or []
-    if not msps or not (state or {}).get("worktrees"):
-        return EXIT_NO_BRANCHES
-    lane_records = (state or {}).get("lanes") or {}
-    for index in range(len(lanes)):
+def _finding(msp, lane, kind, code, detail):
+    return {"msp": msp, "lane": lane, "kind": kind, "exit": code, "detail": _one_line(detail)}
+
+
+def _lane_findings(plan, lane_records):
+    found = []
+    for index, lane in enumerate(plan.get("lanes") or []):
+        label = _label(plan, lane["msp"])
         record = lane_records.get(str(index))
         if not isinstance(record, dict):
-            return EXIT_INCOMPLETE
-        code = LANE_EXIT.get(record.get("state"), EXIT_INCOMPLETE)
-        if code != EXIT_SHIPPED:
-            return code
-    msp_records = (state or {}).get("msps") or {}
-    for index in range(len(msps)):
-        record = msp_records.get(str(index))
-        if not isinstance(record, dict):
-            return EXIT_INCOMPLETE
-        if record.get("state") == run.MSP_GATE_FAILED:
-            return gate_exit(record) or GATE_EXIT["gate-inconclusive"]
-        code = MSP_EXIT.get(record.get("state"), EXIT_INCOMPLETE)
-        if code != EXIT_SHIPPED:
-            return code
-        flagged = gate_exit(record)
-        if flagged is not None:
-            return flagged
-        if (record.get("reconcile") or {}).get("crossing"):
-            return EXIT_CROSSING
-        if run.msp_foreign_writes(plan, index, lane_records):
-            return EXIT_FOREIGN
-        if reconcile_dirty(record.get("reconcile")):
-            return EXIT_RECONCILE
-    if empty_manifests(plan.get("items") or []):
-        return EXIT_MANIFEST
+            found = found + [_finding(label, index, "incomplete", EXIT_INCOMPLETE, "Lane %d has no record" % index)]
+        elif record.get("state") != "ok":
+            found = found + [
+                _finding(
+                    label,
+                    index,
+                    record.get("state") or "incomplete",
+                    LANE_EXIT.get(record.get("state"), EXIT_INCOMPLETE),
+                    record.get("reason") or "",
+                )
+            ]
+    return found
+
+
+def _gate_detail(record):
+    if record.get("gate_error"):
+        return record["gate_error"]
+    gate = record.get("gate") or {}
+    named = [
+        "%s::%s: %s" % (entry.get("file"), entry.get("test"), _one_line(entry.get("reason")))
+        for entry in gate.get("properties") or []
+        if entry.get("outcome") in run.GATE_STATES
+    ]
+    return "; ".join(named) or record.get("reason") or ""
+
+
+def _gate_findings(label, record):
+    flag = gate_exit(record)
+    if flag is None and record.get("state") == run.MSP_GATE_FAILED:
+        flag = GATE_EXIT["gate-inconclusive"]
+    if flag is None:
+        return []
+    kind = next(name for name, code in GATE_EXIT.items() if code == flag)
+    return [_finding(label, None, kind, flag, _gate_detail(record))]
+
+
+def _reconcile_findings(label, found):
+    return (
+        [_finding(label, None, "referee", EXIT_REFEREE, path) for path in found.get("referee") or []]
+        + [
+            _finding(
+                label,
+                None,
+                "crossing",
+                EXIT_CROSSING,
+                "%s belongs to MSP %s" % (entry.get("path"), entry.get("label")),
+            )
+            for entry in found.get("crossing") or []
+        ]
+    )
+
+
+def _msp_findings(plan, index, record, lane_records):
+    label = _label(plan, index)
+    if not isinstance(record, dict):
+        return [_finding(label, None, "incomplete", EXIT_INCOMPLETE, "MSP %s has no record" % label)]
+    state = record.get("state")
+    stated = (
+        []
+        if state in core.DELIVERED_STATES or state == run.MSP_GATE_FAILED
+        else [
+            _finding(
+                label, None, state or "incomplete", MSP_EXIT.get(state, EXIT_INCOMPLETE), record.get("reason") or ""
+            )
+        ]
+    )
+    found = record.get("reconcile") if isinstance(record.get("reconcile"), dict) else {}
+    foreign = [
+        _finding(label, entry["lane"], "foreign", EXIT_FOREIGN, entry.get("path"))
+        for entry in run.msp_foreign_writes(plan, index, lane_records)
+    ]
+    return (
+        stated
+        + _gate_findings(label, record)
+        + _reconcile_findings(label, found)
+        + foreign
+        + [_finding(label, None, "undeclared", EXIT_RECONCILE, path) for path in found.get("undeclared") or []]
+        + [_finding(label, None, "unwritten", EXIT_RECONCILE, path) for path in found.get("unwritten") or []]
+    )
+
+
+def findings(state, plan):
+    manifests = [
+        _finding(None, None, "manifest", EXIT_MANIFEST, line)
+        for line in manifest_lines(plan.get("items") or [])
+    ]
+    if state is None:
+        return manifests
+    lane_records = state.get("lanes") or {}
+    msp_records = state.get("msps") or {}
+    msps = [
+        entry
+        for index in range(len(plan.get("msps") or []))
+        for entry in _msp_findings(plan, index, msp_records.get(str(index)), lane_records)
+    ]
+    return _lane_findings(plan, lane_records) + msps + manifests
+
+
+def exit_code(state, plan):
+    if not plan.get("msps") or not (state or {}).get("worktrees"):
+        return EXIT_NO_BRANCHES
+    carried = {entry["exit"] for entry in findings(state, plan)}
+    worst = next((code for code in EXIT_SEVERITY if code in carried), None)
+    if worst is not None:
+        return worst
     return EXIT_SHIPPED if run.succeeded(state) else EXIT_INCOMPLETE
 
 
@@ -1661,6 +1744,7 @@ def summary(plan, state, run_dir, code, referee=None, troubles=()):
         "msps": msps,
         "coupling": coupling,
         "referee": referee,
+        "findings": findings(state, plan or {}),
         "attention": _attention(plan or {}, lanes, msps)
         + list(troubles)
         + list(oversized_lines(plan or {}))
