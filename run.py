@@ -2067,23 +2067,30 @@ def _normalized(tree, commit, locked, plan):
     return reported
 
 
+def _raise_unlistable(error):
+    raise error
+
+
 def _ignored_referee(tree, path, folder, locked):
     if not folder:
         return referee.referee_reason(path, locked) is not None
     if _dependency_folder(tree, path):
         return False
-    for root, dirs, files in os.walk(tree_path(tree, path)):
-        inside = _parts(os.path.relpath(root, tree))
-        dirs[:] = [
-            name
-            for name in dirs
-            if not os.path.islink(os.path.join(root, name))
-            and not _dependency_folder(tree, "/".join(inside + (name,)))
-        ]
-        linked = [name for name in os.listdir(root) if os.path.islink(os.path.join(root, name))]
-        for name in sorted(set(files) | set(linked)):
-            if referee.referee_reason("/".join(inside + (name,)), locked) is not None:
-                return True
+    try:
+        for root, dirs, files in os.walk(tree_path(tree, path), onerror=_raise_unlistable):
+            inside = _parts(os.path.relpath(root, tree))
+            dirs[:] = [
+                name
+                for name in dirs
+                if not os.path.islink(os.path.join(root, name))
+                and not _dependency_folder(tree, "/".join(inside + (name,)))
+            ]
+            linked = [name for name in os.listdir(root) if os.path.islink(os.path.join(root, name))]
+            for name in sorted(set(files) | set(linked)):
+                if referee.referee_reason("/".join(inside + (name,)), locked) is not None:
+                    return True
+    except OSError:
+        return True
     return False
 
 
@@ -2093,7 +2100,10 @@ def _checkout_differs(tree, path, gitlink, locked):
         return False
     if not os.path.isdir(full):
         return True
-    names = os.listdir(full)
+    try:
+        names = os.listdir(full)
+    except OSError:
+        return True
     if not names:
         return False
     if ".git" not in names:
@@ -2103,7 +2113,8 @@ def _checkout_differs(tree, path, gitlink, locked):
         status = git_run(["status", "--porcelain", "-z", "--ignored"], full, raw=True)
     except GitError:
         return True
-    if head.returncode != 0 or head.stdout.strip() != gitlink or status.returncode != 0:
+    unchecked = status.returncode != 0 or status.stderr.strip()
+    if head.returncode != 0 or head.stdout.strip() != gitlink or unchecked:
         return True
     for entry in (entry for entry in status.stdout.split(b"\0") if entry):
         if not entry.startswith(b"!! "):
