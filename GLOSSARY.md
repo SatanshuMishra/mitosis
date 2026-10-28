@@ -30,3 +30,17 @@ A metrics run of any tool whose parent is a mitosis metrics run, because a comma
 
 **Caller window**:
 The invoking session's messages timed between a metrics run's start and its summary, counted in mitosis's own spend.
+
+## Pull requests
+
+**Facts file**:
+The JSON file mitosis writes for one MSP at ship, holding the title, problem, change, impact, testing and trade-offs facts that pull-request render --fields turns into the pull request's title and body.
+_Avoid_: body file, pull request template
+
+**Render probe**:
+The call of pull-request render --fields that mitosis makes at the start of a run that names a type and subject, with each MSP's worst-case facts, so a missing, old or refusing renderer stops the run before any Worker is dispatched.
+_Avoid_: preflight check, dry run
+
+**Step commit**:
+The one commit a Step's Worker session lands on its Lane's branch, with the subject `<type>(<scope>): <step name>`.
+_Avoid_: lane commit, landing commit

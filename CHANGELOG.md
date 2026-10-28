@@ -3,6 +3,35 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.8.0 - 2026-10-28
+
+mitosis no longer writes pull-request text itself, and each Step lands as its
+own commit.
+
+- At ship mitosis writes each MSP's facts to a facts file, runs
+  pull-request render --fields on it, and uses the title and body render
+  printed unchanged. Render writes the body from those facts: Problem from
+  the `--pr-why` lines, Change one entry per Step, Impact, Testing one row
+  per acceptance test with a Not run row and its reason for each one left
+  unproven, and Trade-offs and open problems for what reconcile, stacking or
+  the build found. A refusal ends the MSP `ship-failed` with render's problem
+  as its reason and is never retried with altered facts.
+- A run needs pull-request 0.3.0 or later on PATH, or named with the new
+  `--render-command`. Every run that names `--pr-type` and `--pr-subject`,
+  `--plan-only` and `--no-push` included, needs `--timeout` to bound the probe
+  and runs render on each MSP's facts
+  before any Worker is dispatched, and refuses the run when the command is
+  missing, older than 0.3.0 or refuses the facts.
+- The new repeatable `--pr-impact` gives the Impact lines; without it the
+  `--pr-blast-radius` sentence stands in, and a run that names `--pr-type`
+  and `--pr-subject` with neither is refused. `--pr-door` is still accepted
+  and no longer reaches the body.
+- Every Step of a Lane is its own Worker session, run in Step order on its
+  MSP's branch, and lands its own commit with the subject
+  `<type>(<scope>): <step>`, or chore with no scope when the run names no
+  type, and its task's first sentence as the body. `--session-tokens` only
+  sizes the estimate.
+
 ## 0.7.0 - 2026-10-27
 
 mitosis records metrics about its own runs, and a new metrics skill answers

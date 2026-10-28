@@ -423,15 +423,29 @@ class Docs(unittest.TestCase):
             with open(path, encoding="utf-8") as handle:
                 self.assertIn("--proven-head", handle.read(), os.path.relpath(path, ROOT))
 
-    def test_version_is_0_7_0(self):
+    def version_is_0_8_0(self):
         plugin, _ = _manifests(self)
-        self.assertEqual(core.__version__, "0.7.0")
-        self.assertEqual(plugin.get("version"), "0.7.0")
-        path = _changelog_path(ROOT)
-        self.assertIsNotNone(path, "the plugin carries no changelog")
-        with open(path, encoding="utf-8") as handle:
-            head = _changelog_head(handle.read())
-        self.assertTrue(head.startswith("## 0.7.0 "), head.splitlines()[0])
+        self.assertEqual(core.__version__, "0.8.0")
+        self.assertEqual(plugin.get("version"), "0.8.0")
+        with open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+        self.assertTrue(any(line.startswith("## 0.8.0") for line in lines))
+
+    def documents_the_render_hand_off(self):
+        _in_plugin(self)
+        for path in (os.path.join(ROOT, "README.md"), SKILL_PATH):
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+            for phrase in (
+                "pull-request render --fields",
+                "0.3.0",
+                "--pr-impact",
+                "--render-command",
+                "<type>(<scope>): <step>",
+            ):
+                self.assertIn(phrase, text, os.path.relpath(path, ROOT))
+            for phrase in ("house format", "What changed", "Verified:", "Not verified:", "land Lane"):
+                self.assertNotIn(phrase, text, os.path.relpath(path, ROOT))
 
     def test_documents_metrics(self):
         _in_plugin(self)

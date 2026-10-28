@@ -10,7 +10,7 @@ several agents run at once, and produces pull requests a human can merge
 without discovering that the parallelism broke something. A model may produce
 anything; a model may judge nothing. Every gate in mitosis is a program.
 
-This file says when to reach for it and how; --help describes every flag.
+This file says when to reach for it; --help describes every flag.
 
 ## When to reach for it
 
@@ -48,15 +48,16 @@ quotes or newlines lands as one argument and is never reinterpreted by a shell.
 
 | Flag | Spawns | Placeholders |
 |---|---|---|
-| `--dispatch-command` | one Worker per Lane, in its worktree | listed under --help |
+| `--dispatch-command` | one Worker session per Step, in its worktree | listed under --help |
 | `--acceptance-command` | one acceptance property, in a worktree | file, test, worktree |
 | `--pr-command` | one pull request per MSP; optional, refused with `--no-push` | listed under --help |
-| `--pr-type` `--pr-scope` `--pr-subject` `--pr-why` `--pr-door` `--pr-blast-radius` | nothing; they write every title and body | none |
+| `--render-command` | render --fields, per MSP at start and ship | none |
+| `--pr-type` `--pr-scope` `--pr-subject` `--pr-why` `--pr-impact` `--pr-blast-radius` | nothing; they are facts handed to render | none |
 | `--decompose-command` | the structure pass that turns a document into unbriefed Steps | prompt, model, document |
 | `--brief-command` | one Worker per unbriefed Step, writing its task | prompt, model, step, document |
 
-A Worker spawned from this skill, with the Lane brief as its whole prompt
-and the model chosen by tier:
+A Worker spawned from this skill, its brief as its whole prompt and the model
+chosen by tier:
 
 ```
 claude -p {task} --model {model} --session-id {session_id} --permission-mode bypassPermissions
@@ -103,18 +104,21 @@ applied to every Worker, acceptance run and pull-request command; and the
 repository root as the working directory, since every path is relative to it,
 or mitosis refuses to run.
 
-Every pull request is written in the house format. The title is
-`<type>(<scope>): <subject>` from `--pr-type`, the optional `--pr-scope` and
-`--pr-subject`, with the MSP label in parentheses after the subject when the
-plan has several MSPs. The body holds What changed, one entry per Step from
-its task's first sentence; Why, the `--pr-why` lines, one to eight; Risk, the
-door and blast-radius lines if given, then a line if reconcile, a foreign
-write, a manifest, stacking or the gate found something; and Verification, a
-Verified line per property the gate proved, then a Not verified line for every other.
-A run allowed to push needs `--pr-type`, `--pr-subject` and `--pr-why`,
-checked before any Worker spawns. Without `--pr-command` it pushes each MSP
-branch and ends that MSP `pushed`, recording its title and body for the
-caller to open.
+mitosis writes no pull-request text: at ship it writes each MSP's facts file,
+runs pull-request render --fields on it and uses the printed title and body
+unchanged; a refusal ends the MSP `ship-failed` with render's problem, never
+retried. It needs pull-request 0.3.0 or later on PATH or named with
+`--render-command`. Title: `<type>(<scope>): <subject>`, plus the MSP label
+when several. Body: Problem, the `--pr-why` lines; Change, one entry
+per Step; Impact, the `--pr-impact` lines, else the `--pr-blast-radius`
+sentence; Testing, one row per acceptance test, unproven ones Not run with a
+reason; Trade-offs and open problems, what reconcile, stacking or the build
+found. `--pr-door` no longer reaches the body. Naming
+`--pr-type` and `--pr-subject`, even with `--plan-only` or `--no-push`, needs
+`--pr-impact` or `--pr-blast-radius` and `--timeout`, and probes render with every MSP's facts
+before any Worker spawns. Pushing also needs `--pr-why`; without
+`--pr-command` each MSP branch is pushed and ends `pushed`, its title and body
+kept for the caller.
 
 ## The two inputs
 
@@ -160,11 +164,11 @@ the second behind the first; because their write-sets are disjoint, they
 become two MSPs and the second stacks its pull request on the first.
 
 Steps sharing a `contract_group` are halves of one interface, so they ship as
-one MSP and one Worker builds them in sequence, which stops two Workers
+one MSP and one Lane builds them in sequence, which stops two Workers
 inventing two shapes for it. To build the halves in parallel, pin the group:
 give exactly one of its Steps `"type": "contract"` to fix the interface, and
 make every other Step in the group wait on it through `after`. To ship Steps
-together without making them one Worker's, give them one `msp` tag instead.
+together without making them one Lane's, give them one `msp` tag instead.
 
 Plan first. This validates the Steps, schedules them, writes the plan into
 the run directory and prints the plan-stage report; it spawns nothing:
@@ -187,6 +191,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --items plan.json \
   --pr-command "gh pr create --head {branch} --base {base} --title {title} --body {body}" \
   --pr-type feat --pr-subject "validate manifests from the command line" \
   --pr-why "A bad manifest should fail before it ships." \
+  --pr-impact "Bad manifests stop at validation." \
   --tier-model top=claude-opus-5 --tier-model cheap=claude-sonnet-5 \
   --timeout 1800 --concurrency 4
 ```
@@ -227,9 +232,8 @@ is written by a Step built before the modules it must export, so it would ship
 empty while every test still passes. Give that file to a Step with an `after`
 edge reaching every Step whose modules it exports.
 
-`lane-cycle` means Lanes that waited on each other, so one Worker builds them
-all in one sitting. mitosis never refuses a knot: MSPs that wait on each other
-become one MSP, and Lanes that wait on each other one Lane. The work still
+`lane-cycle` means Lanes that waited on each other. mitosis never refuses a
+knot: MSPs that wait on each other become one MSP, and such Lanes one Lane. The work still
 ships, in sequence instead of in parallel, and
 `lane_cycles` and `fused_without_overlap` count what that cost.
 
@@ -277,13 +281,12 @@ one Worker per Lane with producers merged in first, then per MSP: commit,
 gate, reconcile, push, open a pull request stacked on its single
 predecessor when `--pr-command` is given, report.
 
-A Worker session should stay small: mitosis estimates each Lane's tokens from
-its Steps, tasks, write-set, read-set, charter and document, and splits one
-above `--session-tokens` (default 150000) in Step order into consecutive
-Lanes. Each runs as a fresh session once the one before it lands, may edit
-what earlier sessions wrote, and is told which Steps they built; a resume
-starts at the first not `ok`. The split quality section names each split and
-any Step too large alone.
+Every Step of a Lane is its own Worker session, in Step order on its MSP's
+branch, and lands one commit: subject `<type>(<scope>): <step>` (chore, no
+scope, if absent), body its task's first sentence. Each starts once the one
+before lands, may edit what earlier ones wrote and is told which Steps they
+built; a resume starts at the first not `ok`. `--session-tokens` only sizes
+the estimate; a Step above it is named for attention.
 
 The Lanes of one MSP share its worktree, and `--concurrency` Workers run at
 once, four by default. Each brief tells its Worker that others are writing in
@@ -305,9 +308,8 @@ in `attention` before anything is built: add an `after` edge where one needs
 the other's output.
 
 Before anything is written, mitosis checks that git has a commit identity and
-refuses with exit 3 if not. A refused Lane commit fails that Lane alone. Hooks
-see each Lane's message, `chore(<MSP>): land Lane <n> (<Steps>)`, so a
-hook that refuses that form fails every Lane after its Worker has run.
+refuses with exit 3 if not. A refused commit fails that Lane alone, so a hook
+refusing the Step commit's form fails every Lane after its Worker has run.
 
 The gate runs each acceptance property twice, with the work present and with
 the implementation reverted on a probe branch. `pass` means the property
@@ -318,15 +320,16 @@ silence is never mistaken for coverage. Which files count as
 implementation is derived: the MSP's write-set minus the files its acceptance
 properties name.
 
-The gate never withholds a pull request. Every verdict becomes a Verified or
-Not verified line of the body, and an `inert` or `inconclusive` verdict sets
-the exit code, so the reviewer decides what an unproven property is worth.
+The gate never withholds a pull request. Every verdict becomes a Testing row,
+and an `inert` or `inconclusive` verdict sets the exit code, so the reviewer
+decides what an unproven property is worth.
 
 Reconcile compares what the git log says changed against what the Steps
 declared. A write outside the declaration, or a declared path never written,
 is a finding. A write into a file another MSP owns is the serious one: merging
-both pull requests as they stand overwrites one with the other. The Risk line of the pull request that made the write
-names it, and it sets the exit code.
+both pull requests as they stand overwrites one with the other. The pull
+request that made the write names it under Trade-offs and open problems, and
+it sets the exit code.
 
 ## Reading the result
 
@@ -372,28 +375,24 @@ plan id differs and mitosis refuses to resume.
 
 Pass `--no-push` to build, gate and reconcile every MSP and publish nothing.
 Each MSP ends `committed` on its local branch, or `unchanged` when it
-adds nothing to its base. Nothing is pushed or opened, so the pull-request
-flags are not needed and `--pr-command` is refused. Run the
-project's own checks against those branches, then `--resume` without
-`--no-push` ships what was held. Resuming with `--no-push` again leaves a
-`committed` MSP where it is.
+adds nothing to its base. Nothing is pushed or opened, so `--pr-command` is
+refused. Run the project's own checks against those branches, then `--resume`
+without `--no-push` ships what was held; resuming with `--no-push` again
+leaves a `committed` MSP where it is.
 
 `--proven-head <MSP label>=<commit>`, repeatable, ships a later head the
 caller proved without re-gating, when it is the clean HEAD and a passing gate
-is recorded; the Verification section names both commits on a Not verified:
-line. Another head or no recorded gate gates as before; a malformed value or
-unknown label exits 2.
+is recorded; a Proven head row in Testing names both commits. Another head or
+no recorded gate gates as before; a bad value or unknown label exits 2.
 
 ## Metrics
 
 Each invocation is one run in the metrics store, `~/.plugin-metrics` or
 `PLUGIN_METRICS_DIR`: events at its boundaries and one summary of the split,
 parallelism, gates, MSP states and own spend. Each Worker, structure and brief
-call gets a fresh `{session_id}` placeholder on the dispatch, decompose and
-brief templates; given to claude -p --session-id as above, it names the
-transcript the call is priced from. Every command mitosis starts gets
-`PLUGIN_METRICS_PARENT` naming the run. The metrics skill reads these records
-to answer how mitosis performs.
+call gets a fresh `{session_id}` placeholder on its template; given to claude
+-p --session-id as above, it names the transcript the call is priced from. Every command mitosis starts gets
+`PLUGIN_METRICS_PARENT` naming the run; the metrics skill reads these records.
 
 ## Checking an installed copy
 

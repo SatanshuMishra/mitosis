@@ -712,9 +712,10 @@ class Plan(unittest.TestCase):
         self.assertIn("run.py", by_step["core-vocab"]["text"])
         chain = [step("first", ["x.py"], msp="m"), step("second", ["y.py"], msp="m", after=["first"])]
         chained = core.plan(chain)
-        self.assertEqual(len(chained["briefs"]), 1)
-        self.assertEqual([s["name"] for s in chained["briefs"][0]["steps"]], ["first", "second"])
-        self.assertLess(chained["briefs"][0]["text"].index("do first"), chained["briefs"][0]["text"].index("do second"))
+        self.assertEqual(len(chained["briefs"]), 2)
+        self.assertEqual([[s["name"] for s in b["steps"]] for b in chained["briefs"]], [["first"], ["second"]])
+        self.assertEqual(chained["lane_after"], {"1": [0]})
+        self.assertEqual([lane["session"] for lane in chained["lanes"]], [[1, 2], [2, 2]])
 
     def plan_touches_no_git_and_no_subprocess(self):
         import builtins
@@ -763,17 +764,17 @@ class ReadSetCap(unittest.TestCase):
         self.assertIn("(%d more not shown)" % (120 - core.CONTEXT_CAP), brief["text"])
         self.assertEqual(core.CONTEXT_CAP, 40)
 
-    def a_lane_of_several_steps_is_capped_as_a_whole(self):
+    def every_session_of_a_lane_is_capped_on_its_own(self):
         graph = {
             "a.py": ["a%02d.py" % n for n in range(30)],
             "b.py": ["b%02d.py" % n for n in range(30)],
         }
         items = [step("a", ["a.py"], msp="m"), step("b", ["b.py"], msp="m", after=["a"])]
         plan = core.plan(items, graph=graph)
-        self.assertEqual(len(plan["lanes"]), 1)
-        brief = plan["briefs"][0]
-        self.assertEqual(len(brief["read_set"]), core.CONTEXT_CAP)
-        self.assertEqual(brief["read_overflow"], 60 - core.CONTEXT_CAP)
+        self.assertEqual(lane_steps(plan), [["a"], ["b"]])
+        self.assertEqual([len(brief["read_set"]) for brief in plan["briefs"]], [30, 30])
+        self.assertEqual([brief["read_overflow"] for brief in plan["briefs"]], [0, 0])
+        self.assertEqual(plan["briefs"][1]["read_set"][0], "b00.py")
 
     def an_explicit_cap_is_still_honoured(self):
         graph = {"hub.py": ["n%03d.py" % n for n in range(12)]}
@@ -904,31 +905,49 @@ def lane_steps(result):
 
 
 class Sessions(unittest.TestCase):
-    def a_lane_within_the_limit_is_one_session_with_its_estimate(self):
+    def every_step_of_a_shared_lane_is_its_own_session(self):
         result = core.plan(shared_lane(3))
-        self.assertEqual(lane_steps(result), [["s0", "s1", "s2"]])
+        self.assertEqual(lane_steps(result), [["s0"], ["s1"], ["s2"]])
+        self.assertEqual([lane["session"] for lane in result["lanes"]], [[1, 3], [2, 3], [3, 3]])
+        self.assertEqual(result["lane_after"], {"1": [0], "2": [1]})
+        self.assertEqual(
+            result["briefs"][1]["session"], {"index": 2, "count": 3, "built": ["s0"], "later": ["s2"]}
+        )
+        self.assertIn(
+            "Session 2 of 3: each Step of this Lane is built in its own Worker session, "
+            "in a row on one branch, and lands as its own commit",
+            result["briefs"][1]["text"].splitlines(),
+        )
+
+    def a_large_session_limit_still_splits_every_step(self):
+        result = core.plan(shared_lane(6, complexity="simple"), session_tokens=10**9)
+        self.assertEqual(lane_steps(result), [["s0"], ["s1"], ["s2"], ["s3"], ["s4"], ["s5"]])
+        self.assertEqual(result["lane_order"], [0, 1, 2, 3, 4, 5])
+
+    def a_lone_step_has_no_session(self):
+        result = core.plan([step("s0", ["a.py"])])
         self.assertNotIn("session", result["lanes"][0])
         self.assertNotIn("session", result["briefs"][0])
         self.assertNotIn("Session ", result["briefs"][0]["text"])
-        expected = (
-            core.SESSION_BASE_TOKENS
-            + 3 * (core.STEP_TOKENS + core._tokens(len("do s0")))
-            + 4 * core.NEW_FILE_TOKENS
-        )
-        self.assertEqual(result["lanes"][0]["tokens"], expected)
-        self.assertEqual(result["session_tokens"], core.SESSION_TOKENS)
+
+    def each_session_carries_its_own_estimate(self):
+        result = core.plan(shared_lane(3))
+        self.assertEqual([lane["tokens"] for lane in result["lanes"]], [34002, 36002, 38002])
+        self.assertEqual(result["session_tokens"], 150000)
 
     def an_oversized_lane_is_split_in_step_order_into_sessions_that_run_in_a_row(self):
         items = shared_lane(6, complexity="simple")
         limit = core.estimate_tokens(items, (4, 5), {}, {}, earlier=(0, 1, 2, 3)) + 1
         result = core.plan(items, session_tokens=limit)
-        self.assertEqual(lane_steps(result), [["s0", "s1"], ["s2", "s3"], ["s4", "s5"]])
-        self.assertEqual(result["lanes"][2]["tokens"], limit - 1)
-        self.assertEqual([lane["session"] for lane in result["lanes"]], [[1, 3], [2, 3], [3, 3]])
+        self.assertEqual(lane_steps(result), [["s0"], ["s1"], ["s2"], ["s3"], ["s4"], ["s5"]])
+        self.assertEqual(
+            [lane["session"] for lane in result["lanes"]],
+            [[1, 6], [2, 6], [3, 6], [4, 6], [5, 6], [6, 6]],
+        )
         self.assertEqual({lane["msp"] for lane in result["lanes"]}, {0})
         self.assertEqual(len(result["msps"]), 1)
-        self.assertEqual(result["lane_after"], {"1": [0], "2": [1]})
-        self.assertEqual(result["lane_order"], [0, 1, 2])
+        self.assertEqual(result["lane_after"], {"1": [0], "2": [1], "3": [2], "4": [3], "5": [4]})
+        self.assertEqual(result["lane_order"], [0, 1, 2, 3, 4, 5])
         for lane in result["lanes"]:
             self.assertLessEqual(lane["tokens"], limit)
 
