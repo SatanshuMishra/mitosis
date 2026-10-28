@@ -125,9 +125,10 @@ class BaseSubmoduleWork(unittest.TestCase):
         planted = os.path.join(self.tree, "dep", "conftest.py")
         write_bytes(planted, CONFTEST)
         held = self._referee_stage()
-        self.assertEqual((held or {}).get("state"), "gate-failed")
-        self.assertIsNone(held["gate"])
-        self.assertEqual(read_bytes(planted), CONFTEST)
+        self.assertEqual((held or {}).get("state"), "referee-reverted")
+        self.assertEqual(held["reconcile"]["referee"], ["dep/conftest.py"])
+        self.assertTrue(held["reconcile"]["fatal"])
+        self.assertFalse(os.path.lexists(planted))
 
     def a_clean_base_submodule_checkout_is_not_held_back(self):
         self._committed_tree({"dep.txt": "1\n"})

@@ -45,6 +45,16 @@ class SubmoduleCheckoutJudgedFromDisk(BaseSubmoduleWork):
         self.assertEqual(restored.exception.left, ("dep/",))
         self.assertEqual(read_bytes(os.path.join(dep, *planted.split("/"))), payload)
 
+    def _reverted(self, route):
+        tree = self._committed_tree(DEPENDENCY)
+        dep = os.path.join(tree, "dep")
+        planted, _ = route(dep)
+        held = self._referee_stage()
+        self.assertEqual((held or {}).get("state"), "referee-reverted")
+        self.assertEqual(held["reconcile"]["referee"], ["dep/" + planted])
+        self.assertTrue(held["reconcile"]["fatal"])
+        self.assertFalse(os.path.lexists(os.path.join(dep, *planted.split("/"))))
+
     def _untracked_hidden_by_status_config(self, dep):
         write_bytes(os.path.join(dep, "conftest.py"), CONFTEST)
         git_text(["config", "status.showUntrackedFiles", "no"], dep)
@@ -90,7 +100,7 @@ class SubmoduleCheckoutJudgedFromDisk(BaseSubmoduleWork):
         return "conftest.py", CONFTEST
 
     def an_untracked_file_hidden_by_the_status_config_holds_the_msp_back(self):
-        self._held_back(self._untracked_hidden_by_status_config)
+        self._reverted(self._untracked_hidden_by_status_config)
 
     def an_edit_hidden_by_assume_unchanged_holds_the_msp_back(self):
         self._held_back(self._edit_hidden_by_assume_unchanged)
@@ -108,10 +118,10 @@ class SubmoduleCheckoutJudgedFromDisk(BaseSubmoduleWork):
         self._held_back(self._module_trusted_through_worker_gitignore)
 
     def a_referee_file_in_a_worker_venv_folder_holds_the_msp_back(self):
-        self._held_back(self._referee_file_in_worker_venv_folder)
+        self._reverted(self._referee_file_in_worker_venv_folder)
 
     def a_file_hidden_by_a_redirected_core_worktree_holds_the_msp_back(self):
-        self._held_back(self._status_redirected_by_core_worktree)
+        self._reverted(self._status_redirected_by_core_worktree)
 
 
 def load_tests(loader, standard, pattern):

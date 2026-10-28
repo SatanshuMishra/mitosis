@@ -7,7 +7,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
-from test_submodule_checkout import git_text, read_bytes
+from test_submodule_checkout import git_text
 from test_uncommitted_work import CACHE, CONFTEST, BaseSubmoduleWork, write_bytes
 
 LISTABLE = 0o755
@@ -39,25 +39,31 @@ class UnlistableSubmoduleFolder(BaseSubmoduleWork):
 
     def an_unlistable_ignored_folder_in_a_base_submodule_holds_the_msp_back(self):
         held, conftest = self._held_with_unlistable(("build",), "conftest.py")
-        self.assertEqual((held or {}).get("state"), "gate-failed")
-        self.assertIsNone(held["gate"])
-        self.assertEqual(read_bytes(conftest), CONFTEST)
+        written = "dep/build/conftest.py"
+        self.assertEqual((held or {}).get("state"), "referee-reverted")
+        self.assertEqual(held["reconcile"]["referee"], [written])
+        self.assertTrue(held["reconcile"]["fatal"])
+        self.assertFalse(os.path.lexists(conftest))
 
     def an_unlistable_folder_inside_an_ignored_one_holds_the_msp_back(self):
         held, conftest = self._held_with_unlistable(
             ("build", "sub"), "conftest.py", beside=("build", "out.o")
         )
-        self.assertEqual((held or {}).get("state"), "gate-failed")
-        self.assertIsNone(held["gate"])
-        self.assertEqual(read_bytes(conftest), CONFTEST)
+        written = "dep/build/sub/conftest.py"
+        self.assertEqual((held or {}).get("state"), "referee-reverted")
+        self.assertEqual(held["reconcile"]["referee"], [written])
+        self.assertTrue(held["reconcile"]["fatal"])
+        self.assertFalse(os.path.lexists(conftest))
 
     def an_unlistable_folder_in_an_ignored_repository_holds_the_msp_back(self):
         held, conftest = self._held_with_unlistable(
             ("build", "sub"), "conftest.py", repository=("build",)
         )
-        self.assertEqual((held or {}).get("state"), "gate-failed")
-        self.assertIsNone(held["gate"])
-        self.assertEqual(read_bytes(conftest), CONFTEST)
+        written = "dep/build/sub/conftest.py"
+        self.assertEqual((held or {}).get("state"), "referee-reverted")
+        self.assertEqual(held["reconcile"]["referee"], [written])
+        self.assertTrue(held["reconcile"]["fatal"])
+        self.assertFalse(os.path.lexists(conftest))
 
 
 def load_tests(loader, standard, pattern):
