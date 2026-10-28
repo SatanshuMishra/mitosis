@@ -12,6 +12,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 
 import core
+import mutants
 import referee
 import shape
 
@@ -50,6 +51,12 @@ MSP_REFEREE_REVERTED = "referee-reverted"
 PUBLISHED_STATES = ("shipped", MSP_PUSHED, MSP_UNCHANGED)
 
 ACCEPTANCE_FAILURE_EXIT = 1
+
+MUTANT_CAP = 12
+
+MSP_GATE_FAILED = "gate-failed"
+
+BLOCKING_OUTCOMES = ("weak", "inert", "inconclusive")
 
 PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 
@@ -1074,18 +1081,17 @@ def probe_outcome(with_work, reverted):
 
 def gate_outcome(properties):
     outcomes = [entry["outcome"] for entry in properties]
-    for candidate in ("inert", "inconclusive", "pass"):
+    for candidate in ("weak", "inert", "inconclusive", "pass"):
         if candidate in outcomes:
             return candidate
     return "not-applicable"
 
 
+GATE_STATES = {"weak": "gate-weak", "inert": "gate-inert", "inconclusive": "gate-inconclusive"}
+
+
 def gate_state(result):
-    if result.get("outcome") == "inert":
-        return "gate-failed"
-    if result.get("outcome") == "inconclusive":
-        return "gate-inconclusive"
-    return None
+    return GATE_STATES.get(result.get("outcome"))
 
 
 def _gate_result(properties, implementation, commit, reverted):
@@ -1096,7 +1102,7 @@ def _gate_result(properties, implementation, commit, reverted):
     outcome = gate_outcome(resolved)
     return {
         "outcome": outcome,
-        "blocks": outcome in ("inert", "inconclusive"),
+        "blocks": outcome in BLOCKING_OUTCOMES,
         "properties": resolved,
         "implementation": list(implementation),
         "reverted": list(reverted),
@@ -1109,6 +1115,82 @@ def _gate_result(properties, implementation, commit, reverted):
 
 def commit_before_gate(plan, msp, tree):
     return commit_all(tree, "chore(%s): commit the MSP's work before the gate" % _label(plan, msp))
+
+
+def _pycache_of(tree, path):
+    return os.path.join(tree, os.path.dirname(path), "__pycache__")
+
+
+def _read_text(tree, path):
+    with open(os.path.join(tree, path), encoding="utf-8", errors="surrogateescape", newline="") as handle:
+        return handle.read()
+
+
+def _write_text(tree, path, text):
+    with open(os.path.join(tree, path), "w", encoding="utf-8", errors="surrogateescape", newline="") as handle:
+        handle.write(text)
+
+
+def property_mutants(plan, msp, tree, base, commit, entry):
+    paths = step_implementation_paths(plan, msp, entry["step"])
+    if not paths:
+        return ()
+    diff = git(["diff", "-U0", "--no-color", base, commit, "--", *paths], tree)
+    added = mutants.added_lines(diff)
+
+    def read(path):
+        return _read_text(tree, path)
+
+    found = mutants.compute(added, read) or mutants.fallback(added, read)
+    return tuple(mutants.select(found, MUTANT_CAP))
+
+
+def _run_mutant(command, tree, entry, mutant, log_path, timeout, env):
+    path = mutant["file"]
+    mutated = mutants.apply(_read_text(tree, path), mutant)
+    if mutated is None:
+        return None
+    shutil.rmtree(_pycache_of(tree, path), ignore_errors=True)
+    try:
+        _write_text(tree, path, mutated)
+        return run_acceptance(command, tree, entry, log_path, timeout, env)
+    finally:
+        git(["checkout", "-q", "--", path], tree)
+        shutil.rmtree(_pycache_of(tree, path), ignore_errors=True)
+
+
+def _mutant_place(mutant):
+    return {"file": mutant["file"], "line": mutant["line"], "op": mutant["op"]}
+
+
+def mutant_verdict(plan, msp, tree, base, commit, command, index, entry, log_dir, timeout, env):
+    tried = ()
+    for mutant in property_mutants(plan, msp, tree, base, commit, entry):
+        ran = _run_mutant(
+            command,
+            tree,
+            entry,
+            mutant,
+            os.path.join(log_dir, "%d-mutant-%d.log" % (index, len(tried))),
+            timeout,
+            env,
+        )
+        if ran is None:
+            continue
+        tried = tried + (mutant,)
+        if ran[1] or ran[0] != 0:
+            return {**entry, "mutants": {"tried": len(tried), "killed": _mutant_place(mutant)}}
+    record = {"tried": len(tried), "killed": None}
+    if not tried:
+        return {**entry, "mutants": record}
+    first = tried[0]
+    return {
+        **entry,
+        "outcome": "weak",
+        "reason": "no mutant of the work fails it: it still passes when %s:%d changes by %s"
+        % (first["file"], first["line"], first["op"]),
+        "mutants": record,
+    }
 
 
 def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None, env=None):
@@ -1166,7 +1248,13 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None, env=None
                 "reverted": without[index][0] if index in without else None,
             },
         )
-    return _gate_result(judged, implementation, commit, reverted)
+    toothed = tuple(
+        mutant_verdict(plan, msp, tree, base, commit, command, index, entry, log_dir, timeout, env)
+        if index in with_work and entry["outcome"] == "pass"
+        else entry
+        for index, entry in enumerate(judged)
+    )
+    return _gate_result(toothed, implementation, commit, reverted)
 
 
 def changed_files(tree, branch, base, exclude=()):
@@ -1965,7 +2053,7 @@ def _reusable_gate(prior, head):
 
 
 def _proven_head(prior, head, proven):
-    if proven is None or head is None or _passing_gate(prior) is None:
+    if proven is None or head is None or not isinstance(prior.get("gate"), dict):
         return None
     return head if head.startswith(proven) else None
 
@@ -2048,6 +2136,22 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=()):
     return {"state": "shipped", "reason": None, "ship": shipped}
 
 
+def _held_back(gated, branch):
+    if gated["gate_error"] is not None:
+        return {
+            "state": MSP_GATE_FAILED,
+            "reason": "the gate could not run, so %s was committed and not pushed: %s"
+            % (branch, gated["gate_error"]),
+        }
+    if not (gated["gate"] or {}).get("blocks"):
+        return None
+    return {
+        "state": MSP_GATE_FAILED,
+        "reason": "the gate judged %s, so %s was committed and not pushed"
+        % (gated["gate"]["outcome"], branch),
+    }
+
+
 def _finish_msp(plan, msp, trees, producers, state, settings):
     run_dir = settings["run_dir"]
     tree = trees[msp]
@@ -2076,14 +2180,15 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
         )
         return write_state(run_dir, _msp_record(state, msp, **held))
     proven_head = _proven_head(prior, head, settings["proven_heads"].get(msp))
-    reused = _passing_gate(prior) if proven_head is not None else _reusable_gate(prior, head)
+    reused = prior.get("gate") if proven_head is not None else _reusable_gate(prior, head)
+    judged_now = commit_error is not None or (proven_head is None and reused is None)
     gate_started = now()
     gated = (
         {"gate": None, "gate_error": commit_error}
         if commit_error is not None
-        else {"gate": reused, "gate_error": None}
-        if reused is not None
         else _gate_stage(plan, msp, tree, settings)
+        if judged_now
+        else {"gate": reused, "gate_error": None}
     )
     notify(
         settings.get("observer"),
@@ -2106,6 +2211,9 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     state = write_state(run_dir, _msp_record(state, msp, **reconciled))
     if reconciled.get("state") == MSP_BLOCKED:
         return state
+    held_back = _held_back(gated, tree["branch"]) if judged_now else None
+    if held_back is not None:
+        return write_state(run_dir, _msp_record(state, msp, **held_back))
     base, exception = pr_base(
         plan, msp, settings["feature_branch"], trees, settings["repo"], state["msps"]
     )

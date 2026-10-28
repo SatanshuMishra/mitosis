@@ -1481,6 +1481,60 @@ class GateExit(unittest.TestCase):
             "a Worker wrote a referee path; mitosis restored it and held its MSP back",
         )
 
+    def a_held_back_msp_exits_with_its_gates_flag(self):
+        for outcome, code in (("weak", 24), ("inert", 20), ("inconclusive", 21)):
+            with self.subTest(outcome=outcome):
+                state = self._state(state="gate-failed", gate={"outcome": outcome, "blocks": True})
+                self.assertEqual(mitosis.exit_code(state, self.PLAN), code)
+        errored = self._state(state="gate-failed", gate=None, gate_error="no runner")
+        self.assertEqual(mitosis.exit_code(errored, self.PLAN), 21)
+        self.assertEqual(
+            mitosis.EXIT_MEANING[24],
+            "an acceptance property passes against a mutant of the work, so it cannot tell "
+            "working code from broken code",
+        )
+
+    def a_proven_head_over_a_weak_gate_exits_zero(self):
+        state = self._state(gate={"outcome": "weak", "blocks": True}, proven_head="a" * 40)
+        self.assertEqual(mitosis.exit_code(state, self.PLAN), mitosis.EXIT_SHIPPED)
+
+    def a_property_with_no_line_to_mutate_is_named_for_attention(self):
+        gate = {
+            "outcome": "pass",
+            "commit": "c" * 40,
+            "properties": [
+                {
+                    "step": "impl",
+                    "file": "tests/test_impl.py",
+                    "test": "Impl.works",
+                    "outcome": "pass",
+                    "reason": None,
+                    "mutants": {"tried": 0, "killed": None},
+                }
+            ],
+        }
+        state = self._state(gate=gate)
+        msps = mitosis._msp_summary(self.PLAN, state)
+        self.assertEqual(msps[0]["gate"]["commit"], "c" * 40)
+        self.assertEqual(
+            msps[0]["gate"]["properties"],
+            [
+                {
+                    "file": "tests/test_impl.py",
+                    "test": "Impl.works",
+                    "step": "impl",
+                    "outcome": "pass",
+                    "reason": None,
+                    "mutants": {"tried": 0, "killed": None},
+                }
+            ],
+        )
+        self.assertIn(
+            "MSP impl: tests/test_impl.py::Impl.works passed on red and green alone; its Step "
+            "added no line to mutate",
+            mitosis._attention(self.PLAN, [], msps),
+        )
+
     def a_shipped_msp_whose_gate_passed_exits_zero(self):
         state = self._state(gate={"outcome": "pass", "counts": {}, "blocks": False})
         self.assertEqual(mitosis.exit_code(state, self.PLAN), mitosis.EXIT_SHIPPED)

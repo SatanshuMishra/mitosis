@@ -45,7 +45,7 @@ MSP_EXIT = {
     run.MSP_REFEREE_REVERTED: EXIT_REFEREE,
 }
 
-GATE_EXIT = {"gate-failed": 20, "gate-inconclusive": 21}
+GATE_EXIT = {"gate-inert": 20, "gate-inconclusive": 21, "gate-weak": 24}
 
 EXIT_MEANING = {
     EXIT_SHIPPED: "every MSP reached shipped, pushed, unchanged or committed, and reconcile found "
@@ -65,10 +65,12 @@ EXIT_MEANING = {
     LANE_EXIT["blocked"]: "a Lane or MSP was blocked, by a predecessor or by a write across an "
     "MSP boundary",
     LANE_EXIT["merge-blocked"]: "a producer branch would not merge",
-    GATE_EXIT["gate-failed"]: "a branch is pushed or a pull request open with an acceptance "
-    "property that proves nothing: it passes with the implementation reverted",
-    GATE_EXIT["gate-inconclusive"]: "a branch is pushed or a pull request open with an acceptance "
-    "property the gate could not judge",
+    GATE_EXIT["gate-inert"]: "an MSP was held back instead of pushed: an acceptance property "
+    "proves nothing, because it passes with the implementation reverted",
+    GATE_EXIT["gate-inconclusive"]: "an MSP was held back instead of pushed: the gate could not "
+    "judge an acceptance property, or could not run",
+    GATE_EXIT["gate-weak"]: "an acceptance property passes against a mutant of the work, so it "
+    "cannot tell working code from broken code",
     MSP_EXIT["ship-failed"]: "a commit, push or pull-request command failed",
 }
 
@@ -1246,6 +1248,20 @@ def _tally(counts):
     return ", ".join("%d %s" % (counts.get(key, 0), key) for key in core.GATE_OUTCOMES)
 
 
+def _mutant_line(record):
+    if not isinstance(record, dict):
+        return None
+    killed = record.get("killed")
+    tried = _n(record.get("tried") or 0, "mutant") + " tried"
+    if not isinstance(killed, dict):
+        return tried + ", none killed it"
+    return tried + ", killed by %s:%s changed by %s" % (
+        killed.get("file"),
+        killed.get("line"),
+        killed.get("op"),
+    )
+
+
 def gate_lines(plan, state):
     if state is None:
         return ("unavailable: no run has happened",)
@@ -1266,10 +1282,14 @@ def gate_lines(plan, state):
         totals = {key: totals[key] + counts.get(key, 0) for key in totals}
         lines = lines + ("MSP %s: %s (%s)" % (_label(plan, index), gate.get("outcome"), _tally(counts)),)
         for entry in gate.get("properties") or []:
-            if entry.get("outcome") == "pass":
+            tried = _mutant_line(entry.get("mutants"))
+            if entry.get("outcome") == "pass" and tried is None:
                 continue
             where = "%s::%s" % (entry.get("file"), entry.get("test")) if entry.get("file") else entry.get("step")
-            lines = lines + ("  %s: %s (%s)" % (where, entry.get("outcome"), _one_line(entry.get("reason"))),)
+            detail = "; ".join(
+                part for part in (_one_line(entry.get("reason")), tried) if part
+            )
+            lines = lines + ("  %s: %s (%s)" % (where, entry.get("outcome"), detail),)
     return ("%s across %s" % (_tally(totals), _n(gated, "gated MSP")),) + lines
 
 
@@ -1380,6 +1400,8 @@ def reconcile_dirty(findings):
 
 
 def gate_exit(record):
+    if record.get("proven_head"):
+        return None
     if record.get("gate_error"):
         return GATE_EXIT["gate-inconclusive"]
     flag = run.gate_state(record.get("gate") or {})
@@ -1404,6 +1426,8 @@ def exit_code(state, plan):
         record = msp_records.get(str(index))
         if not isinstance(record, dict):
             return EXIT_INCOMPLETE
+        if record.get("state") == run.MSP_GATE_FAILED:
+            return gate_exit(record) or GATE_EXIT["gate-inconclusive"]
         code = MSP_EXIT.get(record.get("state"), EXIT_INCOMPLETE)
         if code != EXIT_SHIPPED:
             return code
@@ -1513,10 +1537,18 @@ def _msp_summary(plan, state):
                     "outcome": gate.get("outcome"),
                     "counts": gate.get("counts") or {},
                     "error": record.get("gate_error"),
+                    "commit": gate.get("commit"),
+                    "properties": [
+                        {
+                            key: entry.get(key)
+                            for key in ("file", "test", "step", "outcome", "reason", "mutants")
+                        }
+                        for entry in gate.get("properties") or []
+                    ],
                     "unproven": [
                         "%s::%s %s" % (entry.get("file"), entry.get("test"), entry.get("outcome"))
                         for entry in gate.get("properties") or []
-                        if entry.get("outcome") in ("inert", "inconclusive")
+                        if entry.get("outcome") in run.BLOCKING_OUTCOMES
                     ],
                 },
                 "reconcile": {
@@ -1560,6 +1592,12 @@ def _attention(plan, lanes, msps):
             )
         if msp["gate"]["error"]:
             lines.append("MSP %s could not be gated: %s" % (msp["msp"], msp["gate"]["error"]))
+        lines.extend(
+            "MSP %s: %s::%s passed on red and green alone; its Step added no line to mutate"
+            % (msp["msp"], entry["file"], entry["test"])
+            for entry in msp["gate"]["properties"]
+            if entry["outcome"] == "pass" and (entry["mutants"] or {}).get("tried") == 0
+        )
         if msp["crossing"]:
             lines.append(
                 "MSP %s wrote files another MSP owns: %s" % (msp["msp"], ", ".join(msp["crossing"]))

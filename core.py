@@ -74,11 +74,12 @@ MSP_STATES = (
     "ship-failed",
     "blocked",
     "referee-reverted",
+    "gate-failed",
 )
 
 DELIVERED_STATES = ("shipped", "pushed", "unchanged", "committed")
 
-GATE_OUTCOMES = ("pass", "inert", "inconclusive", "not-applicable")
+GATE_OUTCOMES = ("pass", "weak", "inert", "inconclusive", "not-applicable")
 
 STEP_TYPES = ("fix", "feature", "port", "design", "sweep", "contract")
 

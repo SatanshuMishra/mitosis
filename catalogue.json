@@ -656,11 +656,11 @@
         "outcome": {
           "type": "enum",
           "description": "The MSP's gate outcome.",
-          "measured_from": "The gate's worst property outcome: inert, then inconclusive, then pass.",
+          "measured_from": "The gate's worst property outcome: weak, then inert, then inconclusive, then pass.",
           "unit": "none",
           "includes": "The outcome only.",
           "excludes": "Each property's reason, which the store never holds.",
-          "reading": "pass means every acceptance test failed without the work; inert means one passed without it; inconclusive means one could not be judged; not-applicable means none could run; null means the gate could not run.",
+          "reading": "pass means every acceptance test failed without the work and against a mutant of it; weak means one passed against every mutant of the work tried; inert means one passed without it; inconclusive means one could not be judged; not-applicable means none could run; null means the gate could not run.",
           "readers": [
             "owner",
             "pipeline"
@@ -668,6 +668,7 @@
           "question": "Were the acceptance tests proven to fail without the work?",
           "values": [
             "pass",
+            "weak",
             "inert",
             "inconclusive",
             "not-applicable"
@@ -818,7 +819,7 @@
           "unit": "none",
           "includes": "The state only.",
           "excludes": "The MSP's reason and pull-request text, which the store never holds.",
-          "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP; referee-reverted when a Worker wrote a referee path, which mitosis restored before holding the MSP back ungated and unpushed.",
+          "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP; referee-reverted when a Worker wrote a referee path, which mitosis restored before holding the MSP back ungated and unpushed; gate-failed when its gate judged weak, inert or inconclusive or could not run, so mitosis committed the branch and held it back unpushed.",
           "readers": [
             "owner",
             "pipeline"
@@ -831,7 +832,8 @@
             "committed",
             "ship-failed",
             "blocked",
-            "referee-reverted"
+            "referee-reverted",
+            "gate-failed"
           ]
         }
       }
@@ -1312,6 +1314,20 @@
               "pipeline"
             ],
             "question": "How many MSPs reached a pull request?"
+          },
+          "gate_failed": {
+            "type": "integer",
+            "description": "The number of MSPs that ended gate-failed.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's MSPs in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How many MSPs reached a pull request?"
           }
         }
       },
@@ -1332,6 +1348,20 @@
           "pass": {
             "type": "integer",
             "description": "The number of gates that ended pass.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's gates in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "Were the acceptance tests proven to fail without the work?"
+          },
+          "weak": {
+            "type": "integer",
+            "description": "The number of gates that ended weak.",
             "measured_from": "Counted by mitosis as it ran.",
             "unit": "count",
             "includes": "This invocation's gates in that state.",
@@ -1750,7 +1780,7 @@
               "unit": "none",
               "includes": "The state only.",
               "excludes": "The MSP's reason and pull-request text, which the store never holds.",
-              "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP; referee-reverted when a Worker wrote a referee path, which mitosis restored before holding the MSP back ungated and unpushed.",
+              "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP; referee-reverted when a Worker wrote a referee path, which mitosis restored before holding the MSP back ungated and unpushed; gate-failed when its gate judged weak, inert or inconclusive or could not run, so mitosis committed the branch and held it back unpushed.",
               "readers": [
                 "owner",
                 "pipeline"
@@ -1763,17 +1793,18 @@
                 "committed",
                 "ship-failed",
                 "blocked",
-                "referee-reverted"
+                "referee-reverted",
+                "gate-failed"
               ]
             },
             "gate": {
               "type": "enum",
               "description": "The MSP's gate outcome.",
-              "measured_from": "The gate's worst property outcome: inert, then inconclusive, then pass.",
+              "measured_from": "The gate's worst property outcome: weak, then inert, then inconclusive, then pass.",
               "unit": "none",
               "includes": "The outcome only.",
               "excludes": "Each property's reason, which the store never holds.",
-              "reading": "pass means every acceptance test failed without the work; inert means one passed without it; inconclusive means one could not be judged; not-applicable means none could run; null means the gate could not run.",
+              "reading": "pass means every acceptance test failed without the work and against a mutant of it; weak means one passed against every mutant of the work tried; inert means one passed without it; inconclusive means one could not be judged; not-applicable means none could run; null means the gate could not run.",
               "readers": [
                 "owner",
                 "pipeline"
@@ -1781,6 +1812,7 @@
               "question": "Were the acceptance tests proven to fail without the work?",
               "values": [
                 "pass",
+                "weak",
                 "inert",
                 "inconclusive",
                 "not-applicable"
