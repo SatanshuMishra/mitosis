@@ -5,6 +5,7 @@ import re
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import time
 import unicodedata
@@ -89,6 +90,11 @@ LANE_RECORD_KEYS = (
     "finished",
     "session_id",
 )
+
+
+INSTALLED_FOLDERS = frozenset(("node_modules",))
+
+VENV_MARKER = "pyvenv.cfg"
 
 
 class GitError(RuntimeError):
@@ -1092,12 +1098,31 @@ def msp_properties(plan, msp, unchanged=frozenset()):
 
 def commit_all(tree, message):
     git(["add", "-A"], tree)
-    if git(["status", "--porcelain"], tree):
+    if not git_ok(["diff", "--cached", "--quiet", "--ignore-submodules=none"], tree):
         git(["commit", "-q", "-m", message], tree)
     return git(["rev-parse", "HEAD"], tree)
 
 
+def _remove_cache(folder):
+    if os.path.islink(folder):
+        os.remove(folder)
+    elif os.path.isdir(folder):
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def clear_caches_beside(tree, paths):
+    for folder in sorted({_pycache_of(tree, path) for path in paths}):
+        _remove_cache(folder)
+
+
+def _clear_index_flags(tree, paths):
+    tracked = git_paths(["ls-files", "-z", "--", *paths], tree) if paths else []
+    for flag in ("--no-skip-worktree", "--no-assume-unchanged") if tracked else ():
+        git(["update-index", flag, "--", *tracked], tree)
+
+
 def revert_implementation(tree, base, paths):
+    _clear_index_flags(tree, paths)
     reverted = ()
     for path in paths:
         if git_ok(["cat-file", "-e", "%s:%s" % (base, path)], tree):
@@ -1110,6 +1135,7 @@ def revert_implementation(tree, base, paths):
             elif os.path.lexists(full):
                 os.remove(full)
         reverted = reverted + (path,)
+    clear_caches_beside(tree, reverted)
     return list(reverted)
 
 
@@ -1387,10 +1413,71 @@ def locked_record(repo, branch, locked):
     }
 
 
+def _installed_folder(entry):
+    return entry.name in INSTALLED_FOLDERS or os.path.isfile(os.path.join(entry.path, VENV_MARKER))
+
+
+def disk_paths(tree, folder=""):
+    try:
+        with os.scandir(os.path.join(tree, folder)) as listing:
+            entries = sorted(listing, key=lambda entry: entry.name)
+    except OSError:
+        return
+    for entry in entries:
+        if entry.name == ".git":
+            continue
+        relative = folder + "/" + entry.name if folder else entry.name
+        if entry.is_dir(follow_symlinks=False):
+            if not _installed_folder(entry):
+                yield from disk_paths(tree, relative)
+        else:
+            yield relative
+
+
+def _disk_bytes(full):
+    try:
+        status = os.lstat(full)
+        if stat.S_ISLNK(status.st_mode):
+            return os.fsencode(os.readlink(full))
+        if not stat.S_ISREG(status.st_mode):
+            return None
+        with open(full, "rb") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def _differs_from(tree, base, path):
+    stored = git_run(["cat-file", "--filters", "%s:%s" % (base, path)], tree, raw=True)
+    on_disk = _disk_bytes(os.path.join(tree, path))
+    return stored.returncode != 0 or on_disk is None or on_disk != stored.stdout
+
+
+def referee_disk_writes(tree, base, locked):
+    locked = tuple(locked)
+    present = tuple(
+        path for path in disk_paths(tree) if referee.referee_reason(path, locked) is not None
+    )
+    held = tuple(
+        path
+        for path in git_paths(["ls-tree", "-r", "-z", "--full-tree", "--name-only", base], tree)
+        if referee.referee_reason(path, locked) is not None
+    )
+    clear_caches_beside(tree, present + held + locked)
+    changed = {
+        path
+        for path in present
+        if os.path.lexists(os.path.join(tree, path)) and _differs_from(tree, base, path)
+    }
+    missing = {path for path in held if not os.path.lexists(os.path.join(tree, path))}
+    return sorted(changed | missing)
+
+
 def referee_writes(plan, tree, branch, base):
     locked = tuple(plan.get("locked") or ())
     changed = git_paths(["diff", "-z", "--name-only", "--no-renames", base, branch], tree)
-    return sorted({path for path in changed if referee.referee_reason(path, locked) is not None})
+    committed = {path for path in changed if referee.referee_reason(path, locked) is not None}
+    return sorted(committed | set(referee_disk_writes(tree, base, locked)))
 
 
 def reconcile(plan, msp, tree, branch, base, producer_branches=()):
@@ -2167,11 +2254,23 @@ def _referee_stage(plan, msp, tree, producers, trees, settings):
     written = reconciled["reconcile"]["referee"]
     if not written:
         return None
-    revert_implementation(tree["path"], settings["feature_branch"], written)
-    commit_all(
-        tree["path"],
-        "revert(%s): restore the referee paths a Worker wrote" % _label(plan, msp),
-    )
+    try:
+        revert_implementation(tree["path"], settings["feature_branch"], written)
+        commit_all(
+            tree["path"],
+            "revert(%s): restore the referee paths a Worker wrote" % _label(plan, msp),
+        )
+    except GitError as error:
+        return {
+            **reconciled,
+            "state": MSP_GATE_FAILED,
+            "gate": None,
+            "gate_error": "the referee restore on %s failed, so the gate did not run: %s"
+            % (tree["branch"], error),
+            "reason": "a Worker wrote %s, which the referee owns; mitosis could not restore them "
+            "on %s, so the gate did not run and the MSP is held back"
+            % (", ".join(written), tree["branch"]),
+        }
     return {
         **reconciled,
         "state": MSP_REFEREE_REVERTED,
