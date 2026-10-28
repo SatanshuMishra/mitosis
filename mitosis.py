@@ -195,8 +195,9 @@ FLAG_SPECS = {
         "help": "continue the run in --run-dir: with --spec, load the persisted structure and "
         "brief every Step still unbriefed before planning; Lanes already ok are skipped, "
         "a gate that blocked is re-run, and a passing gate is reused when it was recorded at "
-        "the commit mitosis gates now, HEAD after its pre-gate commit of the worktree, so a "
-        "leftover edit that commit takes forces a new gate; the plan id must match",
+        "the commit mitosis gates now, the MSP branch's commit after its pre-gate commit of the "
+        "worktree, so a leftover edit that commit takes forces a new gate, and a worktree HEAD "
+        "off that commit is fatal with exit 9; the plan id must match",
     },
     "--proven-head": {
         "metavar": "LABEL=COMMIT",

@@ -150,7 +150,10 @@ finds such a write after the MSP's pre-gate commit, and also when that commit
 fails, by comparing the feature branch's tree with the branch head's tree
 through git's tree objects, with replace objects, system and global config,
 attributes and filters kept out, so no Worker-written setting shapes what it
-reads. The revert is a commit before the gate. The JSON
+reads. The revert is a commit before the gate. The referee and the gate
+judge one commit, the MSP branch's, so a worktree HEAD that is detached, on
+another branch or at another commit is fatal too, with exit 9, and the gate
+does not run. The JSON
 result's `referee` object names the locked paths, their receipt lock and the
 commit they were read at. A real run refuses, with exit 3, a charter whose
 `- Locked:` path the feature branch does not hold, and a `- Locked:` line that

@@ -175,8 +175,14 @@ class PinnedRefereeRun(unittest.TestCase):
     def a_detached_head_is_judged_by_the_commit_the_gate_certifies(self):
         self._calc_scratch()
         self._worker([["git", "checkout", "-q", "--detach"], *self._tamper_then()])
-        msp = self._assert_locked_test_reverted(self._calc_run())
-        self.assertIsNone(msp["gate"]["outcome"])
+        completed = self._calc_run()
+        self.assertEqual(completed.returncode, 9, "mitosis exit code" + lock_fixtures.tail(completed))
+        msp = self._summary(completed)["msps"][0]
+        self.assertIs(msp["reconcile"]["fatal"], True)
+        self.assertEqual(msp["reconcile"]["referee"], [])
+        self.assertEqual(
+            self.scratch.checked("rev-parse", "refs/heads/" + BRANCH).strip(), self.feature_before
+        )
 
     def a_resume_keeps_the_base_pinned_at_the_first_start(self):
         self._calc_scratch()

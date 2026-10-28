@@ -53,6 +53,11 @@ the gate withholds a pull request it cannot certify.
   exit 9.
 - Ship refuses a head that is not the gated commit, as `ship-failed`, with
   exit 22.
+- The referee and the gate judge the MSP branch's commit, never the
+  worktree's HEAD. A worktree HEAD that is detached, on another branch or at
+  another commit holds the MSP back as `referee-reverted`, fatal with exit 9,
+  after any referee write on the branch is reverted, and the gate does not
+  run.
 - A resume's gate reuse and `--proven-head` depend only on the branch head's
   commit, never on files the worktree holds outside it.
 

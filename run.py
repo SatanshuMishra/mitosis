@@ -594,7 +594,12 @@ def merge_producers(tree, consumer_branch, producers, base):
     return merged, None
 
 
-def commit_paths(tree, paths, message):
+def _attached_branch(tree):
+    return git(["symbolic-ref", "--short", "HEAD"], tree, env=PINNED_GIT)
+
+
+def commit_paths(tree, paths, message, branch=None):
+    msp_branch = branch or _attached_branch(tree)
     present = [p for p in paths if os.path.lexists(os.path.join(tree, p))]
     tracked = git_paths(["ls-files", "-z", "--", *paths], tree) if paths else []
     targets = sorted(set(present) | set(tracked))
@@ -602,7 +607,7 @@ def commit_paths(tree, paths, message):
         git(["add", "-A", "--", *targets], tree)
         if git(["status", "--porcelain", "--", *targets], tree):
             git(["commit", "-q", "-m", message, "--", *targets], tree)
-    return git(["rev-parse", "HEAD"], tree)
+    return branch_commit(tree, msp_branch, required=True)
 
 
 def lane_record(lane, msp, state, **fields):
@@ -684,6 +689,7 @@ def _land(plan, lane, tree):
             tree["path"],
             plan["briefs"][lane]["write_set"],
             _landing_message(plan, lane, tree),
+            tree["branch"],
         )
     except GitError as error:
         write_set = plan["briefs"][lane]["write_set"]
@@ -767,6 +773,7 @@ def _foreign_writes(plan, msp, tree, batch, records):
                 touched,
                 "chore(%s): keep changes to files other Lanes own (%s)"
                 % (tree.get("label") or tree["msp"], ", ".join(touched)),
+                tree["branch"],
             )
         except GitTimeout:
             raise
@@ -1182,11 +1189,12 @@ def written_since(tree):
     return _written_paths(tree, "--no-renames")
 
 
-def commit_all(tree, message):
+def commit_all(tree, message, branch=None):
+    msp_branch = branch or _attached_branch(tree)
     git(["add", "-A"], tree)
     if not git_ok(["diff", "--cached", "--quiet", "--ignore-submodules=none"], tree):
         git(["commit", "-q", "-m", message], tree)
-    return git(["rev-parse", "HEAD"], tree)
+    return branch_commit(tree, msp_branch, required=True)
 
 
 class LinkRefusal(OSError):
@@ -1476,8 +1484,10 @@ def _gate_result(properties, implementation, commit, reverted):
     }
 
 
-def commit_before_gate(plan, msp, tree):
-    return commit_all(tree, "chore(%s): commit the MSP's work before the gate" % _label(plan, msp))
+def commit_before_gate(plan, msp, tree, branch=None):
+    return commit_all(
+        tree, "chore(%s): commit the MSP's work before the gate" % _label(plan, msp), branch
+    )
 
 
 def _open_regular(tree, path, flags):
@@ -2962,7 +2972,7 @@ def _passing_gate(prior):
 
 def _committed_head(plan, msp, tree):
     try:
-        return commit_before_gate(plan, msp, tree["path"]), None
+        return commit_before_gate(plan, msp, tree["path"], tree["branch"]), None
     except GitError as error:
         return None, str(error)
 
@@ -2981,7 +2991,17 @@ def _proven_head(prior, head, proven):
 
 
 def _judged_head(tree, head):
-    return head if head is not None else commit_at("HEAD", tree["path"], required=True)
+    return head if head is not None else branch_commit(tree["path"], tree["branch"], required=True)
+
+
+def _head_off_branch(tree, head):
+    judged = head if head is not None else branch_commit(tree["path"], tree["branch"])
+    attached = git_run(["symbolic-ref", "-q", "HEAD"], tree["path"], env=PINNED_GIT).stdout.strip()
+    return (
+        judged is None
+        or attached != "refs/heads/" + tree["branch"]
+        or commit_at("HEAD", tree["path"]) != judged
+    )
 
 
 def _producer_heads(tree, producers, trees):
@@ -3034,8 +3054,17 @@ def _referee_stage(plan, msp, tree, producers, trees, settings, uncommitted=None
     if reconciled.get("state") == MSP_GATE_FAILED:
         return {**reconciled, "gate": None, "gate_error": reconciled["reason"]}
     written = reconciled["reconcile"]["referee"]
-    if not written:
+    off_branch = _head_off_branch(tree, head)
+    if not written and not off_branch:
         return None
+    if not written:
+        return {
+            **reconciled,
+            "reconcile": {**reconciled["reconcile"], "fatal": True},
+            "state": MSP_REFEREE_REVERTED,
+            "reason": "the worktree's HEAD is not %s at its commit, so the referee and the gate "
+            "would not judge one commit; mitosis held the MSP back" % tree["branch"],
+        }
     kept = (
         ""
         if uncommitted is None
