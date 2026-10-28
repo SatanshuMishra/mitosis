@@ -1681,6 +1681,15 @@ def _committed_entries(tree, commit):
     return {path: tuple(header.split(" ")[0::2]) for header, path in rows}
 
 
+def _base_submodules(tree, entries, base):
+    held = _committed_entries(tree, base)
+    return frozenset(
+        path
+        for path, (mode, _) in entries.items()
+        if mode == GITLINK_MODE and held.get(path, ("",))[0] == GITLINK_MODE
+    )
+
+
 def _committed_folders(entries):
     return frozenset(prefix for path in entries for prefix in _prefixes(path)[:-1]) | frozenset(
         path for path, (mode, _) in entries.items() if mode == GITLINK_MODE
@@ -1779,7 +1788,7 @@ def _dependency_folder(tree, path):
         return False
 
 
-def _survey(tree, folders, entries, starts):
+def _survey(tree, folders, entries, checkouts, starts):
     found = []
     candidates = []
     pending = list(starts)
@@ -1794,16 +1803,16 @@ def _survey(tree, folders, entries, starts):
                 candidates.append(path)
                 continue
             found.append((path, kind))
-            if kind == "dir":
+            if kind == "dir" and path not in checkouts:
                 pending.append(path)
     return tuple(found), tuple(candidates)
 
 
-def _inventory(tree, folders, entries, scratch):
+def _inventory(tree, folders, entries, checkouts, scratch):
     found = ()
     starts = ("",)
     while starts:
-        listed, candidates = _survey(tree, folders, entries, starts)
+        listed, candidates = _survey(tree, folders, entries, checkouts, starts)
         installed = _kept(tree, scratch, [path + "/" for path in candidates])
         starts = tuple(path for path in candidates if path + "/" not in installed)
         found = found + listed + tuple((path, "dir") for path in starts)
@@ -1965,7 +1974,7 @@ def _gate_tree_plan(tree, commit, base, locked, scratch):
     entries = _committed_entries(tree, commit)
     folders = _committed_folders(entries)
     _seed_ignores(tree, base, scratch)
-    found = _inventory(tree, folders, entries, scratch)
+    found = _inventory(tree, folders, entries, _base_submodules(tree, entries, base), scratch)
     kept = _kept(
         tree,
         scratch,
