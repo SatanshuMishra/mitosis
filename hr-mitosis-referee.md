@@ -1,7 +1,7 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T23:21:37.972Z
-Next ids: c7 D6 R5 S1
+Updated: 2026-10-28T23:27:01.034Z
+Next ids: c7 D7 R5 S1
 
 ## Goal
 
@@ -33,6 +33,7 @@ Needs: D1, D3, D4, D5, R1.
 - D3 Amendment 1 hand-off: build M1 as a clean gate checkout in MSP hr-mitosis-referee-amend-1: Hand off amendment 1. The gate, the mutant runs and every acceptance run execute in a clean checkout of the MSP's committed tree. A committed referee write, found from tree objects with git's settings pinned, is reverted and exits 9. Uncommitted files are listed as ignored and never restored. The amendment is built with amend-1.zsh (--plan-only first, always --no-push) and merged into mitosis/hr-mitosis-referee, then review round 5 judges it.
 - D4 Round 5 revert shape: object-built revert of the MSP branch, worktree sync that never deletes: Third option, sent to the running fix agent as a refinement of item 6 of review/round-5/fix-brief-pinned-state.md; its receipts assert the branch tree equals the pinned base at every referee path.
 - D5 Amendment 2 hand-off: build the gate-setup referee check and the corrected docs in MSP hr-mitosis-referee-amend-2: Hand off amendment 2 now. Items in /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/amend-2.items.json; tests/test_setup_referee_write.py and tests/test_gate_setup_docs.py are written and locked by a check author before amend-2.zsh --plan-only, which waits until the pinned-state fix agent's commits are verified.
+- D6 Bounded Worker threat model for run 2: Option A. The Worker is a model that may game tests, not an attacker. Run 2 guarantees and proves in code that (1) a committed change to a - Locked: path or referee glob at the commit the gate judges is fatal (exit 9) and reverted; (2) the gate, mutant and acceptance runs see only the clean committed tree plus what --gate-setup prepares, with referee-named files and folders setup leaves made fatal; (3) uncommitted Worker files never reach the gate. Attacks on git internals shared through the common git directory (moving refs, refs/replace, grafts, shared config, index or object-store tampering) and writes outside the Worker's worktree need a sandbox, are rated LOW and do not block; they are listed in ~/.mitosis/mitosis/do-not-flag.md. Round 6's S1 and S2 are inside the model and are fixed; round 7 reviews only that fix diff with the do-not-flag file set, and a bounded-out finding goes to the final report as LOW. The pull request carries it as an assumption citing I1 and I4. The spec text is not amended, because pipeline 0.10.1 amends the spec only on a requirement-wrong diagnosis; it is folded into an amendment if one arises.
 
 ## Open risks
 
