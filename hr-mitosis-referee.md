@@ -1,7 +1,7 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T09:16:52.674Z
-Next ids: c7 D1 R3 S1
+Updated: 2026-10-28T09:32:50.983Z
+Next ids: c7 D2 R3 S1
 
 ## Goal
 
@@ -25,6 +25,8 @@ Interphase Phase 9: spec, record and items written and passing check_spec, check
 Apply the spec reviewer's fixes (also drop tests/fixtures/g14-cases.json from gate-teeth's files), rerender and recheck, then hand off: tree guard verify, record status handed-off.
 
 ## Decisions in force
+
+- D1 Interphase hand-off: build the handed-off spec as one MSP of seven Steps: Hand off now: one MSP, seven ordered Steps, criteria 5.1 to 5.6 as M1 to M6 and 5.7 for docs and version 0.8.0, built from feat/hr-mitosis-referee cut from main 1391d39 after the O2 check author locks the acceptance tests.
 
 ## Open risks
 
