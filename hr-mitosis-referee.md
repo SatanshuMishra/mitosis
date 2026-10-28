@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: active
-Updated: 2026-10-28T13:14:48.391Z
+Updated: 2026-10-28T13:36:37.690Z
 Next ids: c7 D2 R4 S1
 
 ## Goal
@@ -18,7 +18,7 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-Stage 3 review round 1, verdict `loop` (review/round-1/hr-mitosis-referee.verdict.json): blockers S1 unrestored mutant (CRITICAL), S2 write through symlink (CRITICAL), C1 hidden untracked files (HIGH), S4 ungated post-gate write (HIGH), C2 and S5 quoted git path (MEDIUM), C3 binary file read as text (MEDIUM); advisories C5 (README "dropped condition") and C6 (undocumented exit-3 refusals); rejected C4 and S6 (the code follows decision 4), S3 and S7 (repeats), S8 (unreachable). All six blocker kinds are fixed, each with a receipt commit and a fix commit after c98552d (last fix 8d84cd7, write through symlink; suite 650 OK on 3.14 and 3.9); each fix's assumptions are in review/hr-mitosis-referee.assumptions.txt. Running: one fix agent for advisories C5 and C6 (docs only, receipt-cmd probes). The MSP is mitosis/hr-mitosis-referee at 8d84cd7 over base 5a94f41, built at c98552d. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0008, which ship only with the MSP.
+Stage 3 review round 2 at b95181f (MSP mitosis/hr-mitosis-referee over base 5a94f41). Round 1 (at c98552d, verdict loop) had blockers S1, S2, C1, S4, C2/S5 and C3 and advisories C5 and C6, all fixed with receipts; rejected C4, S6, S3, S7 and S8 go to the final report. The locked files are unchanged at b95181f (same receipt-lock). Round 2's diff and both reviewer briefs are written in review/round-2; the suite runs on 3.14 and 3.9 into review/round-2/hr-mitosis-referee.suite.txt. The advisory fix trimmed SKILL.md under its 20480-byte size test and left the newer named errors (RestoreError, GateRecoveryError, ShipError, the gate marker) undocumented. The checkout holds this run's uncommitted glossary section and ADRs 0006 to 0008, which ship only with the MSP.
 
 ## Next step
 
