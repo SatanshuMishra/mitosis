@@ -5,18 +5,23 @@ import re
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
+import sys
+import tempfile
 import time
 import unicodedata
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
+from functools import lru_cache
 
 import core
+import mutants
+import outcomes
+import referee
 import shape
 
 BRANCH_PREFIX = "mitosis"
-
-PROBE_PREFIX = "probe"
 
 PLAN_FILE = "plan.json"
 
@@ -28,11 +33,27 @@ LANE_COMMIT_FAILED = "the Lane's commit failed"
 
 LANE_HELD = "held"
 
+LANE_PARKED = "parked-limit"
+
+MSP_PARKED = "parked"
+
+USAGE_LIMIT = re.compile(
+    r"you've hit your.*limit|usage limit reached|you've reached your.*limit"
+    r"|out of usage credits|limit will reset",
+    re.IGNORECASE,
+)
+
+USAGE_LIMIT_TAIL = 20
+
 LOCK_MARKERS = (".lock': File exists", "Another git process seems to be running")
 
 LOCK_PATH = re.compile(r"[\\/]\.git[\\/][^\s'\"]*\.lock\b")
 
 LOCK_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.6, 3.2)
+
+GIT_TIMEOUT = 600
+
+KILL_GRACE = 30
 
 MSP_UNCHANGED = "unchanged"
 
@@ -40,9 +61,19 @@ MSP_COMMITTED = "committed"
 
 MSP_PUSHED = "pushed"
 
+MSP_REFEREE_REVERTED = "referee-reverted"
+
+NO_REFEREE_WRITE = {"referee": [], "fatal": False}
+
 PUBLISHED_STATES = ("shipped", MSP_PUSHED, MSP_UNCHANGED)
 
 ACCEPTANCE_FAILURE_EXIT = 1
+
+MUTANT_CAP = 12
+
+MSP_GATE_FAILED = "gate-failed"
+
+BLOCKING_OUTCOMES = ("weak", "inert", "inconclusive")
 
 PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 
@@ -64,6 +95,62 @@ LANE_RECORD_KEYS = (
 )
 
 
+INSTALLED_FOLDERS = frozenset(("node_modules",))
+
+VENV_MARKER = "pyvenv.cfg"
+
+GITLINK_MODE = "160000"
+
+SYMLINK_MODE = "120000"
+
+EXECUTABLE_MODE = "100755"
+
+REGULAR_MODE = "100644"
+
+RAW_OBJECTS = {"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull}
+
+PINNED_GIT = {
+    **RAW_OBJECTS,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_ATTR_NOSYSTEM": "1",
+    "GIT_CONFIG_PARAMETERS": "",
+    "GIT_CONFIG_COUNT": "0",
+}
+
+STATUS_SETTINGS = (
+    "-c",
+    "status.showUntrackedFiles=all",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.untrackedCache=false",
+)
+
+HISTORY_SETTINGS = ("-c", "log.showSignature=false", "-c", "diff.relative=false")
+
+GATE_FOLDER_PREFIX = "checkout-"
+
+BINARY_PROBE = 8000
+
+LINE_DIFF = (
+    "diff",
+    "--no-index",
+    "-U0",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-color",
+    "--text",
+)
+
+DIFF_SECTION = re.compile(
+    rb"^(?:diff --git a/old/(\d+) b/new/\d+|@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@)",
+    re.MULTILINE,
+)
+
+STEP_CACHE_SIZE = 8
+
+
 class GitError(RuntimeError):
     def __init__(self, args, code, stderr):
         self.args_run = tuple(args)
@@ -72,6 +159,22 @@ class GitError(RuntimeError):
         super().__init__(
             "git %s exited %d: %s" % (" ".join(args), code, stderr.strip() or "<no stderr>")
         )
+
+
+class GitTimeout(GitError):
+    def __init__(self, args, timeout):
+        self.args_run = tuple(args)
+        self.code = None
+        self.stderr = ""
+        RuntimeError.__init__(
+            self,
+            "git %s timed out after %s seconds; a git hook or a lock may be hanging"
+            % (" ".join(args), timeout),
+        )
+
+
+class GateSetupError(RuntimeError):
+    pass
 
 
 class ConfigError(ValueError):
@@ -86,9 +189,62 @@ class ShipError(RuntimeError):
     pass
 
 
-def _git_once(args, cwd):
-    return subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, stdin=subprocess.DEVNULL
+def _index_lock(cwd, args=()):
+    named = tuple(arg[len("--git-dir="):] for arg in args[:1] if arg.startswith("--git-dir="))
+    if named:
+        return os.path.join(cwd or os.curdir, named[0], "index.lock")
+    dot_git = os.path.join(cwd or os.curdir, ".git")
+    if not os.path.isfile(dot_git):
+        return os.path.join(dot_git, "index.lock")
+    try:
+        with open(dot_git, encoding="utf-8") as handle:
+            pointer = handle.read().strip()
+    except OSError:
+        return None
+    if not pointer.startswith("gitdir:"):
+        return None
+    gitdir = os.path.join(cwd or os.curdir, pointer[len("gitdir:"):].strip())
+    return os.path.join(gitdir, "index.lock")
+
+
+def _left_lock(index_lock, locked_before):
+    if index_lock is None or locked_before or not os.path.exists(index_lock):
+        return
+    try:
+        os.remove(index_lock)
+    except FileNotFoundError:
+        pass
+
+
+def _decoded(data):
+    return data.decode("utf-8", "surrogateescape")
+
+
+def _git_once(args, cwd, timeout, raw=False, data=None, env=None):
+    index_lock = _index_lock(cwd, args)
+    locked_before = index_lock is not None and os.path.exists(index_lock)
+    argv = ["git", *args]
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=None if env is None else {**os.environ, **env},
+        stdin=subprocess.DEVNULL if data is None else subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(input=data, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        kill_tree(proc)
+        try:
+            proc.communicate(timeout=KILL_GRACE)
+        except subprocess.TimeoutExpired:
+            pass
+        _left_lock(index_lock, locked_before)
+        raise GitTimeout(args, timeout)
+    return subprocess.CompletedProcess(
+        argv, proc.returncode, stdout if raw else _decoded(stdout), _decoded(stderr)
     )
 
 
@@ -99,25 +255,44 @@ def _locked(completed):
     )
 
 
-def git_run(args, cwd):
-    completed = _git_once(args, cwd)
+def git_run(args, cwd, timeout=GIT_TIMEOUT, raw=False, data=None, env=None):
+    completed = _git_once(args, cwd, timeout, raw, data, env)
     for delay in LOCK_RETRY_DELAYS:
         if not _locked(completed):
             return completed
         time.sleep(delay)
-        completed = _git_once(args, cwd)
+        completed = _git_once(args, cwd, timeout, raw, data, env)
     return completed
 
 
-def git(args, cwd, check=True):
-    completed = git_run(args, cwd)
+def git(args, cwd, check=True, timeout=GIT_TIMEOUT, env=None):
+    completed = git_run(args, cwd, timeout, env=env)
     if check and completed.returncode != 0:
         raise GitError(args, completed.returncode, completed.stderr)
     return completed.stdout.strip()
 
 
-def git_ok(args, cwd):
-    return git_run(args, cwd).returncode == 0
+def git_paths(args, cwd, timeout=GIT_TIMEOUT, env=None):
+    completed = git_run(args, cwd, timeout, raw=True, env=env)
+    if completed.returncode != 0:
+        raise GitError(args, completed.returncode, completed.stderr)
+    return [os.fsdecode(name) for name in completed.stdout.split(b"\0") if name]
+
+
+def git_ok(args, cwd, timeout=GIT_TIMEOUT, env=None):
+    return git_run(args, cwd, timeout, env=env).returncode == 0
+
+
+def commit_at(ref, cwd, required=False, git_dir=None):
+    options, env = _object_reader(git_dir)
+    quiet = () if required else ("--quiet",)
+    args = [*options, "rev-parse", "--verify", *quiet, ref + "^{commit}"]
+    found = git_run(args, cwd, env=env)
+    if found.returncode == 0:
+        return found.stdout.strip()
+    if required:
+        raise GitError(args, found.returncode, found.stderr)
+    return None
 
 
 def now():
@@ -138,6 +313,15 @@ def notify(observer, boundary, record):
 
 def branch_exists(repo, branch):
     return git_ok(["rev-parse", "--verify", "--quiet", "refs/heads/" + branch], repo)
+
+
+def branch_commit(repo, branch, required=False):
+    return commit_at("refs/heads/" + branch, repo, required=required)
+
+
+def pinned_base(repo, feature_branch, prior):
+    recorded = (prior or {}).get("base_commit")
+    return recorded if recorded else branch_commit(repo, feature_branch, required=True)
 
 
 def slug(label):
@@ -236,6 +420,7 @@ TEMPLATE_PLACEHOLDERS = {
     ),
     "decompose": ("prompt", "model", "document", "session_id"),
     "acceptance": ("file", "test", "worktree"),
+    "gate-setup": ("worktree",),
     "pull-request": ("branch", "base", "title", "body", "worktree", "msp", "remote"),
 }
 
@@ -281,14 +466,26 @@ def lane_edges(plan):
     }
 
 
-def last_line(path):
+def nonempty_lines(path):
     try:
         with open(path, "rb") as handle:
             data = handle.read()
     except OSError:
-        return None
-    lines = [line for line in data.decode("utf-8", "replace").splitlines() if line.strip()]
+        return []
+    return [line for line in data.decode("utf-8", "replace").splitlines() if line.strip()]
+
+
+def last_line(path):
+    lines = nonempty_lines(path)
     return lines[-1] if lines else None
+
+
+def usage_limit_line(stdout_path, stderr_path):
+    for path in (stdout_path, stderr_path):
+        for line in nonempty_lines(path)[-USAGE_LIMIT_TAIL:]:
+            if USAGE_LIMIT.search(line):
+                return line.strip()
+    return None
 
 
 def last_return(path):
@@ -365,7 +562,10 @@ def run_command(argv, cwd, timeout, stdout_path, stderr_path, env=None):
             return proc.wait(timeout=timeout), False
         except subprocess.TimeoutExpired:
             kill_tree(proc)
-            return proc.wait(), True
+            try:
+                return proc.wait(timeout=KILL_GRACE), True
+            except subprocess.TimeoutExpired:
+                return -signal.SIGKILL, True
 
 
 def merge_target(tree, producer, base):
@@ -402,15 +602,20 @@ def merge_producers(tree, consumer_branch, producers, base):
     return merged, None
 
 
-def commit_paths(tree, paths, message):
+def _attached_branch(tree):
+    return git(["symbolic-ref", "--short", "HEAD"], tree, env=PINNED_GIT)
+
+
+def commit_paths(tree, paths, message, branch=None):
+    msp_branch = branch or _attached_branch(tree)
     present = [p for p in paths if os.path.lexists(os.path.join(tree, p))]
-    tracked = git(["ls-files", "--", *paths], tree).splitlines() if paths else []
+    tracked = git_paths(["ls-files", "-z", "--", *paths], tree) if paths else []
     targets = sorted(set(present) | set(tracked))
     if targets:
         git(["add", "-A", "--", *targets], tree)
         if git(["status", "--porcelain", "--", *targets], tree):
             git(["commit", "-q", "-m", message, "--", *targets], tree)
-    return git(["rev-parse", "HEAD"], tree)
+    return branch_commit(tree, msp_branch, required=True)
 
 
 def lane_record(lane, msp, state, **fields):
@@ -492,6 +697,7 @@ def _land(plan, lane, tree):
             tree["path"],
             plan["briefs"][lane]["write_set"],
             _landing_message(plan, lane, tree),
+            tree["branch"],
         )
     except GitError as error:
         write_set = plan["briefs"][lane]["write_set"]
@@ -503,7 +709,9 @@ def _land(plan, lane, tree):
 
 def _verdict(lane, tree, started, merged, out, err, code, timed_out, session_id):
     returned = last_return(out)
-    state, reason = lane_verdict(code, returned, timed_out)
+    judged, why = lane_verdict(code, returned, timed_out)
+    limit = None if timed_out or judged != "failed" else usage_limit_line(out, err)
+    state, reason = (judged, why) if limit is None else (LANE_PARKED, "usage limit: %s" % limit)
     return lane_record(
         lane,
         tree["msp"],
@@ -532,11 +740,16 @@ def _status_paths(entries):
             yield entry[3:]
 
 
-def _dirty_paths(tree):
-    entries = git_run(
-        ["status", "--porcelain", "-z", "--untracked-files=all"], tree["path"]
-    ).stdout.split("\0")
+def _written_paths(path, *options):
+    entries = git_paths(["status", "--porcelain", "-z", "--untracked-files=all", *options], path)
     return tuple(dict.fromkeys(_status_paths(entries)))
+
+
+def _dirty_paths(tree):
+    try:
+        return _written_paths(tree["path"])
+    except GitError:
+        return ()
 
 
 def _foreign_writes(plan, msp, tree, batch, records):
@@ -568,7 +781,10 @@ def _foreign_writes(plan, msp, tree, batch, records):
                 touched,
                 "chore(%s): keep changes to files other Lanes own (%s)"
                 % (tree.get("label") or tree["msp"], ", ".join(touched)),
+                tree["branch"],
             )
+        except GitTimeout:
+            raise
         except GitError:
             pass
     return [{"path": path, "owner": owners[_norm(path)]} for path in touched]
@@ -628,6 +844,7 @@ def dispatch(
     every = ordered + [i for i in range(len(lanes)) if i not in ordered]
     pending = [i for i in every if i not in records and i not in held]
     running = {}
+    parked_by = None
     cap = max(1, int(concurrency))
 
     def settle(known, lane, record):
@@ -659,6 +876,19 @@ def dispatch(
                     )
                 held = {key: value for key, value in held.items() if key not in batch}
                 progressed = True
+            if parked_by is not None:
+                for lane in pending:
+                    records = settle(
+                        records,
+                        lane,
+                        lane_record(
+                            lane,
+                            lanes[lane]["msp"],
+                            LANE_PARKED,
+                            reason="not dispatched: Lane %d stopped at a usage limit" % parked_by,
+                        ),
+                    )
+                pending = []
             waiting = ()
             holding = {lanes[lane]["msp"] for lane in held}
             for lane in pending:
@@ -744,6 +974,8 @@ def dispatch(
                             on_lane(lane, {**judged, "state": LANE_HELD})
                     else:
                         records = settle(records, lane, judged)
+                        if judged["state"] == LANE_PARKED and parked_by is None:
+                            parked_by = lane
             elif pending and not progressed and not held:
                 for lane in pending:
                     records = settle(
@@ -905,11 +1137,12 @@ def step_implementation_paths(plan, msp, name):
     ]
 
 
-def steps_without_implementation_change(plan, msp, tree, base):
+def steps_without_implementation_change(plan, msp, tree, base, commit):
+    changed = _changed_paths(_committed_entries(tree, base), _committed_entries(tree, commit))
     unchanged = ()
     for name in plan["msps"][msp]["steps"]:
         paths = step_implementation_paths(plan, msp, name)
-        if paths and not git(["diff", "--name-only", base, "--", *paths], tree):
+        if paths and not any(_under(path, paths) for path in changed):
             unchanged = unchanged + (name,)
     return frozenset(unchanged)
 
@@ -946,6 +1179,7 @@ def msp_properties(plan, msp, unchanged=frozenset()):
             continue
         outcome, reason = _property_verdict(name, modes, unchanged)
         for entry in acceptance:
+            check = {"check": entry["check"]} if "check" in entry else {}
             found = found + (
                 {
                     "step": name,
@@ -953,32 +1187,267 @@ def msp_properties(plan, msp, unchanged=frozenset()):
                     "test": entry["test"],
                     "outcome": outcome,
                     "reason": reason,
+                    **check,
                 },
             )
     return found
 
 
-def commit_all(tree, message):
+def written_since(tree):
+    return _written_paths(tree, "--no-renames")
+
+
+def commit_all(tree, message, branch=None):
+    msp_branch = branch or _attached_branch(tree)
     git(["add", "-A"], tree)
-    if git(["status", "--porcelain"], tree):
+    if not git_ok(["diff", "--cached", "--quiet", "--ignore-submodules=none"], tree):
         git(["commit", "-q", "-m", message], tree)
-    return git(["rev-parse", "HEAD"], tree)
+    return branch_commit(tree, msp_branch, required=True)
 
 
-def revert_implementation(tree, base, paths):
-    reverted = ()
+class LinkRefusal(OSError):
+    def __init__(self, path, reason):
+        self.path = path
+        super().__init__("mitosis refused to act on %s: %s" % (path, reason))
+
+
+def _parts(path):
+    return tuple(part for part in str(path).replace(os.sep, "/").split("/") if part not in ("", "."))
+
+
+def _prefixes(path):
+    parts = _parts(path)
+    return tuple("/".join(parts[:depth]) for depth in range(1, len(parts) + 1))
+
+
+def tree_path(tree, path, last=True):
+    parts = _parts(path)
+    checked = parts if last else parts[:-1]
+    for depth in range(1, len(checked) + 1):
+        if os.path.islink(os.path.join(tree, *checked[:depth])):
+            raise LinkRefusal(
+                path,
+                "%s is a symbolic link, so the action would reach outside the worktree"
+                % "/".join(checked[:depth]),
+            )
+    full = os.path.join(tree, *parts)
+    root = os.path.realpath(tree)
+    resolved = os.path.realpath(full if last else os.path.dirname(full))
+    if resolved != root and not resolved.startswith(root + os.sep):
+        raise LinkRefusal(path, "it resolves to %s, outside the worktree %s" % (resolved, root))
+    return full
+
+
+def _behind_link(tree, path):
+    try:
+        tree_path(tree, path, last=False)
+    except LinkRefusal:
+        return True
+    return False
+
+
+def _cache_of(path):
+    return "/".join(_parts(os.path.dirname(_norm(path))) + ("__pycache__",))
+
+
+def _remove_cache(folder):
+    if os.path.islink(folder):
+        os.remove(folder)
+    elif os.path.isdir(folder):
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def clear_caches_beside(tree, paths):
+    folders = tuple(
+        tree_path(tree, cache, last=False) for cache in sorted({_cache_of(path) for path in paths})
+    )
+    for folder in folders:
+        _remove_cache(folder)
+
+
+def _remove_entry(tree, path):
+    full = tree_path(tree, path, last=False)
+    if os.path.isdir(full) and not os.path.islink(full):
+        shutil.rmtree(full)
+    elif os.path.lexists(full):
+        os.remove(full)
+
+
+def _held_under(names, path):
+    return any(name == path or name.startswith(path + "/") for name in names)
+
+
+def _under(path, paths):
+    return any(_held_under((path,), _norm(named)) for named in paths)
+
+
+def _checked_run(args, tree, data=None, env=None):
+    completed = git_run(args, tree, raw=True, data=data, env=env)
+    if completed.returncode != 0:
+        raise GitError(args, completed.returncode, completed.stderr)
+    return completed.stdout
+
+
+RESTORE_MESSAGE = "revert: restore the referee paths a Worker wrote"
+
+
+def _restored_targets(paths, held):
+    links = tuple(path for path, (mode, _) in held.items() if mode == GITLINK_MODE)
+    return tuple(
+        sorted({next((link for link in links if _held_under((path,), link)), path) for path in paths})
+    )
+
+
+def _within(entries, target):
+    return {path: entry for path, entry in entries.items() if _held_under((path,), target)}
+
+
+def _restore_rows(current, held, targets):
+    dropped = b"".join(
+        b"0 %s\t%s\0" % (b"0" * len(oid), os.fsencode(path))
+        for path, (_, oid) in sorted(current.items())
+        if _under(path, targets)
+    )
+    return dropped + b"".join(
+        b"%s %s\t%s\0" % (mode.encode("ascii"), oid.encode("ascii"), os.fsencode(path))
+        for path, (mode, oid) in sorted(held.items())
+        if _under(path, targets)
+    )
+
+
+def _restored_tree(tree, head, rows):
+    folder = tempfile.mkdtemp(prefix="mitosis-restore-")
+    try:
+        env = {**PINNED_GIT, "GIT_INDEX_FILE": os.path.join(folder, "index")}
+        _checked_run(["read-tree", head], tree, env=env)
+        _checked_run(["update-index", "-z", "--replace", "--index-info"], tree, rows, env)
+        return _decoded(_checked_run(["write-tree"], tree, env=env)).strip()
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def _reset_submodule_heads(tree, base, held, targets):
+    for path in targets:
+        oid = _gitlink(held, path)
+        store = _module_store(tree, base, path, None) if oid else None
+        if store is not None and os.path.isdir(store):
+            _checked_run(
+                [
+                    "--git-dir=" + store,
+                    "-c",
+                    "core.hooksPath=" + os.devnull,
+                    "update-ref",
+                    "--no-deref",
+                    "HEAD",
+                    oid,
+                ],
+                tree,
+                env=RAW_OBJECTS,
+            )
+
+
+def _lstat_kind(tree, path):
+    try:
+        return _kind(os.lstat(os.path.join(tree, *_parts(path))).st_mode)
+    except FileNotFoundError:
+        return None
+
+
+def _entry_kind(tree, path):
+    if _behind_link(tree, path):
+        return "linked"
+    return _lstat_kind(tree, path)
+
+
+def _walk_parents(tree, path, clear, kind_of):
+    for prefix in _prefixes(path)[:-1]:
+        full = os.path.join(tree, *_parts(prefix))
+        kind = kind_of(tree, prefix)
+        if kind not in (None, "dir"):
+            if not clear(full):
+                return False
+            kind = None
+        if kind is None:
+            os.mkdir(full)
+    return True
+
+
+def _open_parents(tree, path):
+    return _walk_parents(tree, path, lambda full: False, _entry_kind)
+
+
+def _write_blob(full, mode, data):
+    if mode == SYMLINK_MODE:
+        os.symlink(os.fsdecode(data), full)
+        return
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    descriptor = os.open(full, flags, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        os.fchmod(handle.fileno(), 0o755 if mode == EXECUTABLE_MODE else 0o644)
+        handle.write(data)
+
+
+def _write_entry(tree, path, mode, data):
+    kind = _entry_kind(tree, path)
+    if kind not in (None, "file", "link") or not _open_parents(tree, path):
+        return False
+    full = tree_path(tree, path, last=False)
+    if kind is not None:
+        os.remove(full)
+    _write_blob(full, mode, data)
+    return True
+
+
+def _drop_entry(tree, path):
+    if _entry_kind(tree, path) not in ("file", "link"):
+        return False
+    os.remove(tree_path(tree, path, last=False))
+    return True
+
+
+def _sync_worktree(tree, commit, base, paths):
+    restored = _expanded(tree, commit, base)
+    wanted = {
+        path: restored[path]
+        for path in paths
+        if path in restored and restored[path][0] != GITLINK_MODE
+    }
+    blobs = _store_blobs(tree, wanted)
+    placed = ()
     for path in paths:
-        if git_ok(["cat-file", "-e", "%s:%s" % (base, path)], tree):
-            git(["checkout", "-q", base, "--", path], tree)
+        if path in wanted:
+            mode, oid, store = wanted[path]
+            synced = _write_entry(tree, path, mode, blobs[(store, oid)])
         else:
-            git(["rm", "-r", "-q", "--ignore-unmatch", "--", path], tree)
-            full = os.path.join(tree, path)
-            if os.path.isdir(full) and not os.path.islink(full):
-                shutil.rmtree(full)
-            elif os.path.lexists(full):
-                os.remove(full)
-        reverted = reverted + (path,)
-    return list(reverted)
+            synced = path not in restored and _drop_entry(tree, path)
+        placed = placed + ((path,) if synced else ())
+    return placed
+
+
+def revert_implementation(tree, branch, head, base, paths, message=RESTORE_MESSAGE):
+    written = tuple(sorted({_norm(path) for path in paths}))
+    ref = "refs/heads/" + branch
+    moved_from = branch_commit(tree, branch, required=True)
+    held = _committed_entries(tree, base)
+    current = _committed_entries(tree, head)
+    targets = _restored_targets(written, held)
+    rows = _restore_rows(current, held, targets)
+    restored = _restored_tree(tree, head, rows)
+    commit = git(["commit-tree", restored, "-p", head, "-m", message], tree, env=RAW_OBJECTS)
+    git(["update-ref", "-m", message, ref, commit, moved_from], tree, env=RAW_OBJECTS)
+    _checked_run(["update-index", "-z", "--replace", "--index-info"], tree, rows, PINNED_GIT)
+    _reset_submodule_heads(tree, base, held, targets)
+    placed = _sync_worktree(tree, commit, base, written)
+    clear_caches_beside(tree, placed)
+    after = _committed_entries(tree, branch_commit(tree, branch, required=True))
+    left = tuple(target for target in targets if _within(after, target) != _within(held, target))
+    if left:
+        raise GitError(
+            ["update-ref", ref, commit],
+            1,
+            "the referee restore left %s different from %s" % (", ".join(left), base),
+        )
+    return list(targets)
 
 
 def run_acceptance(command, tree, entry, log_path, timeout, env=None):
@@ -1006,29 +1475,28 @@ def probe_outcome(with_work, reverted):
 
 def gate_outcome(properties):
     outcomes = [entry["outcome"] for entry in properties]
-    for candidate in ("inert", "inconclusive", "pass"):
+    for candidate in ("weak", "inert", "inconclusive", "pass"):
         if candidate in outcomes:
             return candidate
     return "not-applicable"
 
 
+GATE_STATES = {"weak": "gate-weak", "inert": "gate-inert", "inconclusive": "gate-inconclusive"}
+
+
 def gate_state(result):
-    if result.get("outcome") == "inert":
-        return "gate-failed"
-    if result.get("outcome") == "inconclusive":
-        return "gate-inconclusive"
-    return None
+    return GATE_STATES.get(result.get("outcome"))
 
 
 def _gate_result(properties, implementation, commit, reverted):
     resolved = [
-        {**entry, "outcome": entry["outcome"] or "inconclusive"}
+        {**entry, "outcome": entry["outcome"] or "inconclusive", "seconds": entry.get("seconds", 0)}
         for entry in properties
     ]
     outcome = gate_outcome(resolved)
     return {
         "outcome": outcome,
-        "blocks": outcome in ("inert", "inconclusive"),
+        "blocks": outcome in BLOCKING_OUTCOMES,
         "properties": resolved,
         "implementation": list(implementation),
         "reverted": list(reverted),
@@ -1039,50 +1507,340 @@ def _gate_result(properties, implementation, commit, reverted):
     }
 
 
-def commit_before_gate(plan, msp, tree):
-    return commit_all(tree, "chore(%s): commit the MSP's work before the gate" % _label(plan, msp))
+def commit_before_gate(plan, msp, tree, branch=None):
+    return commit_all(
+        tree, "chore(%s): commit the MSP's work before the gate" % _label(plan, msp), branch
+    )
 
 
-def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None, env=None):
-    commit = commit_before_gate(plan, msp, tree)
+def _open_regular(tree, path, flags):
+    descriptor = os.open(tree_path(tree, path), flags | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        regular = stat.S_ISREG(os.fstat(descriptor).st_mode)
+    except OSError:
+        os.close(descriptor)
+        raise
+    if not regular:
+        os.close(descriptor)
+        raise LinkRefusal(path, "it is not a regular file, so the gate cannot mutate it")
+    return descriptor
+
+
+def _read_text(tree, path):
+    descriptor = _open_regular(tree, path, os.O_RDONLY)
+    with os.fdopen(descriptor, encoding="utf-8", errors="surrogateescape", newline="") as handle:
+        return handle.read()
+
+
+def _write_text(tree, path, text):
+    descriptor = _open_regular(tree, path, os.O_WRONLY)
+    with os.fdopen(descriptor, "w", encoding="utf-8", errors="surrogateescape", newline="") as handle:
+        os.ftruncate(descriptor, 0)
+        handle.write(text)
+
+
+LINK_REASON = "the Step changed %s, a symbolic link the gate cannot mutate without writing through it"
+
+
+def linked_paths(tree, commit, paths):
+    wanted = sorted({prefix for path in paths for prefix in _prefixes(path)})
+    if not wanted:
+        return ()
+    entries = git_paths(
+        ["ls-tree", "-z", "--full-tree", commit, "--", *(":(literal)" + path for path in wanted)],
+        tree,
+        env=PINNED_GIT,
+    )
+    return tuple(
+        sorted(entry.split("\t", 1)[1] for entry in entries if entry.startswith("120000 "))
+    )
+
+
+def _changed_paths(before, after):
+    return tuple(
+        sorted(path for path in set(before) | set(after) if before.get(path) != after.get(path))
+    )
+
+
+def _changes(tree, base, commit, paths):
+    before = _committed_entries(tree, base)
+    after = _committed_entries(tree, commit)
+    names = tuple(path for path in _changed_paths(before, after) if _under(path, paths))
+    return names, before, after
+
+
+def _step_changes(plan, msp, tree, base, commit, entry):
+    paths = tuple(step_implementation_paths(plan, msp, entry["step"]))
+    if not paths:
+        return (), (), {}, {}
+    names, before, after = _changes(tree, base, commit, paths)
+    return paths, names, before, after
+
+
+def step_links(plan, msp, tree, base, commit, entry):
+    paths, names, _, _ = _step_changes(plan, msp, tree, base, commit, entry)
+    return linked_paths(tree, commit, paths + names)
+
+
+def _binary(data):
+    return b"\0" in data[:BINARY_PROBE]
+
+
+def _line_file(folder, name, data):
+    with open(os.path.join(folder, name), "wb") as handle:
+        handle.write(data + b"\n")
+
+
+def _added_lines_of_each(pairs):
+    if not pairs:
+        return ()
+    with tempfile.TemporaryDirectory(prefix="mitosis-diff-") as folder:
+        for side in ("old", "new"):
+            os.mkdir(os.path.join(folder, side))
+        for number, (old, new) in enumerate(pairs):
+            _line_file(os.path.join(folder, "old"), str(number), old)
+            _line_file(os.path.join(folder, "new"), str(number), new)
+        args = [*LINE_DIFF, "old", "new"]
+        env = {**PINNED_GIT, "GIT_CEILING_DIRECTORIES": os.path.dirname(folder)}
+        completed = git_run(args, folder, raw=True, env=env)
+    if completed.returncode not in (0, 1):
+        raise GitError(args, completed.returncode, completed.stderr)
+    per_file = [[] for _ in pairs]
+    current = None
+    for section in DIFF_SECTION.finditer(completed.stdout):
+        if section.group(1) is not None:
+            current = int(section.group(1))
+            continue
+        if current is None:
+            raise GitError(args, completed.returncode, "a hunk header arrived before any file header")
+        start = int(section.group(2))
+        count = int(section.group(3) or b"1")
+        per_file[current].extend(range(start, start + count))
+    return tuple(tuple(numbers) for numbers in per_file)
+
+
+def _added_lines(old, new):
+    return list(_added_lines_of_each(((old, new),))[0])
+
+
+def _text_blobs(tree, entries, names):
+    regular = {
+        name: entries[name][1]
+        for name in names
+        if entries.get(name, ("",))[0] in (REGULAR_MODE, EXECUTABLE_MODE)
+    }
+    blobs = _blobs(tree, regular.values())
+    return {name: blobs[oid] for name, oid in regular.items()}
+
+
+@lru_cache(maxsize=STEP_CACHE_SIZE)
+def _step_added(tree, base, commit, paths):
+    names, before, after = _changes(tree, base, commit, paths)
+    old = _text_blobs(tree, before, names)
+    new = _text_blobs(tree, after, names)
+    measured = tuple(
+        name
+        for name in sorted(new)
+        if not _binary(new[name]) and not _binary(old.get(name, b""))
+    )
+    lines = _added_lines_of_each(tuple((old.get(name, b""), new[name]) for name in measured))
+    added = tuple((name, found) for name, found in zip(measured, lines) if found)
+    return added, tuple((name, new[name]) for name, _ in added)
+
+
+def property_mutants(plan, msp, tree, base, commit, entry):
+    paths = tuple(step_implementation_paths(plan, msp, entry["step"]))
+    if not paths:
+        return ()
+    pairs, texts = _step_added(tree, base, commit, paths)
+    added = dict(pairs)
+    held = dict(texts)
+
+    def read(path):
+        return _decoded(held[path])
+
+    found = mutants.compute(added, read) or mutants.fallback(added, read)
+    return tuple(mutants.select(found, MUTANT_CAP))
+
+
+def _run_mutant(command, folder, entry, mutant, log_path, timeout, env, reset):
+    written = reset()
+    path = mutant["file"]
+    mutated = mutants.apply(_read_text(folder, path), mutant)
+    if mutated is None:
+        return None, written
+    clear_caches_beside(folder, (path,))
+    _write_text(folder, path, mutated)
+    return run_acceptance(command, folder, entry, log_path, timeout, env), written
+
+
+def _mutant_place(mutant):
+    return {"file": mutant["file"], "line": mutant["line"], "op": mutant["op"]}
+
+
+def _timed(call):
+    started = time.monotonic()
+    result = call()
+    return result, time.monotonic() - started
+
+
+def mutant_verdict(
+    plan, msp, tree, base, commit, command, index, entry, log_dir, timeout, env, folder, reset
+):
+    tried = ()
+    written = ()
+    seconds = entry.get("seconds", 0)
+    linked = step_links(plan, msp, tree, base, commit, entry)
+    if linked:
+        return (
+            {
+                **entry,
+                "outcome": "inconclusive",
+                "reason": LINK_REASON % linked[0],
+                "mutants": {"tried": 0, "killed": None},
+            },
+            written,
+        )
+    for mutant in property_mutants(plan, msp, tree, base, commit, entry):
+        (ran, left), spent = _timed(
+            lambda mutant=mutant: _run_mutant(
+                command,
+                folder,
+                entry,
+                mutant,
+                os.path.join(log_dir, "%d-mutant-%d.log" % (index, len(tried))),
+                timeout,
+                env,
+                reset,
+            )
+        )
+        seconds = seconds + spent
+        written = written + left
+        if ran is None:
+            continue
+        tried = tried + (mutant,)
+        if ran[1] or ran[0] != 0:
+            return (
+                {
+                    **entry,
+                    "mutants": {"tried": len(tried), "killed": _mutant_place(mutant)},
+                    "seconds": seconds,
+                },
+                written,
+            )
+    record = {"tried": len(tried), "killed": None}
+    if not tried:
+        return {**entry, "mutants": record, "seconds": seconds}, written
+    first = tried[0]
+    return (
+        {
+            **entry,
+            "seconds": seconds,
+            "outcome": "weak",
+            "reason": "no mutant of the work fails it: it still passes when %s:%d changes by %s"
+            % (first["file"], first["line"], first["op"]),
+            "mutants": record,
+        },
+        written,
+    )
+
+
+def _remove_gate_folders(log_dir):
+    with os.scandir(log_dir) as listing:
+        left = sorted(
+            entry.path
+            for entry in listing
+            if entry.name.startswith(GATE_FOLDER_PREFIX) and entry.is_dir(follow_symlinks=False)
+        )
+    for path in left:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def gate(
+    plan, msp, tree, base, command, log_dir, timeout=None, env=None, repo=None, setup=None, head=None
+):
+    commit = commit_before_gate(plan, msp, tree) if head is None else head
     properties = msp_properties(
-        plan, msp, steps_without_implementation_change(plan, msp, tree, base)
+        plan, msp, steps_without_implementation_change(plan, msp, tree, base, commit)
     )
     implementation = implementation_paths(plan, msp)
-    runnable = [index for index, entry in enumerate(properties) if entry["outcome"] is None]
-    if not runnable:
-        return _gate_result(properties, implementation, commit, ())
+    if not any(entry["outcome"] is None for entry in properties):
+        return {**_gate_result(properties, implementation, commit, ()), "referee": []}
     os.makedirs(log_dir, exist_ok=True)
-    with_work = {
-        index: run_acceptance(
-            command,
-            tree,
-            properties[index],
-            os.path.join(log_dir, "%d-with-work.log" % index),
-            timeout,
-            env,
-        )
-        for index in runnable
-    }
-    probe = "%s/%s" % (PROBE_PREFIX, branch)
-    git(["checkout", "-q", "-B", probe], tree)
+    _remove_gate_folders(log_dir)
+    folder = tempfile.mkdtemp(prefix=GATE_FOLDER_PREFIX, dir=log_dir)
     try:
-        reverted = revert_implementation(tree, base, implementation)
-        without = {
-            index: run_acceptance(
+        result, written = _gate_runs(
+            plan, msp, tree, base, command, log_dir, timeout, env, commit, properties, folder, repo, setup
+        )
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    referee_written = sorted(set(written))
+    return {
+        **result,
+        "referee": referee_written,
+        "blocks": result["blocks"] or bool(referee_written),
+    }
+
+
+def _setup_unrun(properties, written):
+    reason = (
+        "the --gate-setup command wrote %s, which the referee owns, so no acceptance run was judged"
+        % ", ".join(written)
+    )
+    return tuple(
+        {**entry, "reason": reason} if entry["outcome"] is None else entry for entry in properties
+    )
+
+
+def _gate_runs(
+    plan, msp, tree, base, command, log_dir, timeout, env, commit, properties, folder, repo, setup
+):
+    locked = tuple(plan.get("locked") or ())
+    implementation = implementation_paths(plan, msp)
+    runnable = [index for index, entry in enumerate(properties) if entry["outcome"] is None]
+    with_work_tree = _expanded(tree, commit, base)
+    without_work_tree = _without_work(with_work_tree, _expanded(tree, base, base), implementation)
+    reset_gate_folder(tree, folder, with_work_tree, (), locked)
+    top = frozenset(_parts(path)[0] for path in with_work_tree)
+    kept = (
+        _link_dependencies(repo, folder, top)
+        if setup is None
+        else _gate_setup(setup, folder, top, log_dir, timeout, env)
+    )
+    setup_written = (
+        ()
+        if setup is None
+        else tuple(name for name in kept if referee.top_level_reason(name, locked) is not None)
+    )
+    if setup_written:
+        unrun = _setup_unrun(properties, setup_written)
+        return _gate_result(unrun, implementation, commit, ()), setup_written
+
+    def reset(target):
+        return reset_gate_folder(tree, folder, target, kept, locked)
+
+    def accepted(index, target, name):
+        written = reset(target)
+        return written, _timed(
+            lambda: run_acceptance(
                 command,
-                tree,
+                folder,
                 properties[index],
-                os.path.join(log_dir, "%d-reverted.log" % index),
+                os.path.join(log_dir, "%d-%s.log" % (index, name)),
                 timeout,
                 env,
             )
-            for index in runnable
-            if with_work[index] == (0, False)
-        }
-    finally:
-        git(["checkout", "-q", "-f", branch], tree)
-        git_run(["branch", "-D", probe], tree)
+        )
+
+    with_work_runs = {index: accepted(index, with_work_tree, "with-work") for index in runnable}
+    with_work = {index: ran for index, (_, (ran, _)) in with_work_runs.items()}
+    without_runs = {
+        index: accepted(index, without_work_tree, "reverted")
+        for index in runnable
+        if with_work[index] == (0, False)
+    }
+    without = {index: ran for index, (_, (ran, _)) in without_runs.items()}
     judged = ()
     for index, entry in enumerate(properties):
         if index not in with_work:
@@ -1096,18 +1854,59 @@ def gate(plan, msp, tree, branch, base, command, log_dir, timeout=None, env=None
                 "reason": reason,
                 "with_work": with_work[index][0],
                 "reverted": without[index][0] if index in without else None,
+                "seconds": with_work_runs[index][1][1]
+                + (without_runs[index][1][1] if index in without_runs else 0),
             },
         )
-    return _gate_result(judged, implementation, commit, reverted)
-
-
-def changed_files(tree, branch, base, exclude=()):
-    excluded = ["^" + ref for ref in exclude if branch_exists(tree, ref)]
-    out = git(
-        ["log", "--format=", "--name-only", "--no-renames", branch, "^" + base, *excluded], tree
+    verdicts = tuple(
+        mutant_verdict(
+            plan,
+            msp,
+            tree,
+            base,
+            commit,
+            command,
+            index,
+            entry,
+            log_dir,
+            timeout,
+            env,
+            folder,
+            lambda: reset(with_work_tree),
+        )
+        if index in with_work and entry["outcome"] == "pass"
+        else (entry, ())
+        for index, entry in enumerate(judged)
     )
-    stripped = (line.strip() for line in out.splitlines())
-    return sorted(dict.fromkeys(path for path in stripped if path))
+    toothed = tuple(entry for entry, _ in verdicts)
+    written = (
+        tuple(path for left, _ in with_work_runs.values() for path in left)
+        + tuple(path for left, _ in without_runs.values() for path in left)
+        + tuple(path for _, left in verdicts for path in left)
+        + reset(with_work_tree)
+    )
+    return _gate_result(toothed, implementation, commit, implementation), written
+
+
+def changed_files(tree, head, base, exclude=()):
+    excluded = ["^" + commit for commit in exclude]
+    names = git_paths(
+        [
+            *HISTORY_SETTINGS,
+            "log",
+            "-z",
+            "--format=",
+            "--name-only",
+            "--no-renames",
+            "--ignore-submodules=none",
+            head,
+            "^" + base,
+            *excluded,
+        ],
+        tree,
+        env=PINNED_GIT,
+    )
+    return sorted(dict.fromkeys(names))
 
 
 def msp_owner_of(plan, path):
@@ -1128,8 +1927,372 @@ def _unproven_paths(plan, msp):
     }
 
 
-def reconcile(plan, msp, tree, branch, base, producer_branches=()):
-    changed = changed_files(tree, branch, base, producer_branches)
+def locked_record(repo, branch, commit, locked):
+    files = ()
+    for path in locked:
+        shown = git_run(
+            ["cat-file", "blob", "%s:%s" % (commit, path)], repo, raw=True, env=PINNED_GIT
+        )
+        if shown.returncode != 0:
+            raise ConfigError(
+                "--charter locks %s, which %s does not hold; commit the locked checks on it "
+                "before the build" % (path, branch)
+            )
+        files = files + ((path, shown.stdout),)
+    return {
+        "locked": list(locked),
+        "receipt_lock": referee.receipt_lock(files),
+        "commit": commit,
+    }
+
+
+def _object_id(data, oid):
+    digest = hashlib.new("sha1" if len(oid) == 40 else "sha256")
+    digest.update(b"blob %d\0" % len(data))
+    digest.update(data)
+    return digest.hexdigest()
+
+
+def _object_reader(git_dir):
+    return (() if git_dir is None else ("--git-dir=" + git_dir,)), PINNED_GIT
+
+
+def _committed_entries(tree, commit, git_dir=None):
+    options, env = _object_reader(git_dir)
+    output = _checked_run([*options, "ls-tree", "-r", "-z", "--full-tree", commit], tree, env=env)
+    rows = tuple(os.fsdecode(entry).split("\t", 1) for entry in output.split(b"\0") if entry)
+    return {path: tuple(header.split(" ")[0::2]) for header, path in rows}
+
+
+def _batch_records(output):
+    records = []
+    offset = 0
+    while offset < len(output):
+        end = output.index(b"\n", offset)
+        header = output[offset:end].split(b" ")
+        if len(header) != 3:
+            raise GitError(["cat-file", "--batch"], 1, "git holds no object %s" % _decoded(header[0]))
+        size = int(header[2])
+        records.append((header[0].decode("ascii"), output[end + 1 : end + 1 + size]))
+        offset = end + 2 + size
+    return records
+
+
+def _blobs(tree, oids, git_dir=None):
+    wanted = tuple(dict.fromkeys(oids))
+    if not wanted:
+        return {}
+    options, env = _object_reader(git_dir)
+    requests = "".join(oid + "\n" for oid in wanted).encode("ascii")
+    output = _checked_run([*options, "cat-file", "--batch"], tree, requests, env)
+    return dict(_batch_records(output))
+
+
+def _store_blobs(tree, entries):
+    stores = sorted({store for _, _, store in entries.values()}, key=lambda store: store or "")
+    return {
+        (store, oid): data
+        for store in stores
+        for oid, data in _blobs(
+            tree, [oid for _, oid, held in entries.values() if held == store], store
+        ).items()
+    }
+
+
+def _kind(mode):
+    if stat.S_ISLNK(mode):
+        return "link"
+    if stat.S_ISDIR(mode):
+        return "dir"
+    return "file" if stat.S_ISREG(mode) else "other"
+
+
+def _read_bytes(tree, path):
+    try:
+        descriptor = os.open(tree_path(tree, path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    with os.fdopen(descriptor, "rb") as handle:
+        return handle.read()
+
+
+def _expected_kind(mode):
+    return "link" if mode == SYMLINK_MODE else "file"
+
+
+def _clear_obstruction(full):
+    if os.path.islink(full) or (os.path.lexists(full) and not os.path.isdir(full)):
+        os.remove(full)
+    return True
+
+
+def _make_parents(tree, path):
+    _walk_parents(tree, path, _clear_obstruction, _lstat_kind)
+
+
+def _place(tree, path, mode, data):
+    _make_parents(tree, path)
+    _remove_entry(tree, path)
+    _write_blob(tree_path(tree, path, last=False), mode, data)
+
+
+def _safe_module_name(name):
+    parts = re.split(r"[/\\]", name)
+    return bool(name) and not os.path.isabs(name) and parts[0] != "" and ".." not in parts
+
+
+def _git_path(tree, options, name):
+    found = os.fsdecode(
+        _checked_run([*options, "rev-parse", "--git-path", name], tree, env=PINNED_GIT).strip()
+    )
+    return found if os.path.isabs(found) else os.path.join(tree, found)
+
+
+def _module_dir(tree, holder, path, git_dir=None):
+    options, env = _object_reader(git_dir)
+    args = [*options, "config", "--blob", holder + ":.gitmodules", "-z", "--get-regexp"]
+    rows = _checked_run([*args, r"^submodule\..*\.path$"], tree, env=env).split(b"\0")
+    names = tuple(
+        key[len("submodule.") : -len(".path")]
+        for key, _, value in (os.fsdecode(row).partition("\n") for row in rows if row)
+        if "/".join(_parts(value)) == path
+    )
+    if len(names) != 1:
+        raise GitError(args, 1, "%s:.gitmodules names no single submodule at %s" % (holder, path))
+    if not _safe_module_name(names[0]):
+        raise GitError(
+            args, 1, "%s:.gitmodules names %s with the unsafe name %r" % (holder, path, names[0])
+        )
+    found = _git_path(tree, options, "modules/" + names[0])
+    modules = os.path.realpath(_git_path(tree, options, "modules"))
+    if not os.path.realpath(found).startswith(modules + os.sep):
+        raise GitError(args, 1, "the git folder of %s resolves outside %s" % (path, modules))
+    return found
+
+
+def _module_store(tree, holder, path, git_dir):
+    try:
+        return _module_dir(tree, holder, path, git_dir)
+    except (GitError, OSError, ValueError):
+        return None
+
+
+def _gitlink(entries, path):
+    entry = entries.get(path)
+    return entry[1] if entry is not None and entry[0] == GITLINK_MODE else None
+
+
+def _held_entries(tree, holder, git_dir):
+    try:
+        return _committed_entries(tree, holder, git_dir)
+    except GitError:
+        return {}
+
+
+def _submodule_files(tree, path, oid, holder, held, git_dir):
+    base_link = _gitlink(held, path)
+    store = _module_store(tree, holder, path, git_dir) if base_link else None
+    if store is None or not os.path.isdir(store):
+        return {}
+    try:
+        return _expanded(tree, oid, base_link, store)
+    except GitError:
+        return {}
+
+
+def _expanded(tree, commit, holder, git_dir=None):
+    entries = _committed_entries(tree, commit, git_dir)
+    held = _held_entries(tree, holder, git_dir)
+    files = {
+        path: (mode, oid, git_dir) for path, (mode, oid) in entries.items() if mode != GITLINK_MODE
+    }
+    linked = {
+        path: _submodule_files(tree, path, oid, holder, held, git_dir)
+        for path, (mode, oid) in sorted(entries.items())
+        if mode == GITLINK_MODE
+    }
+    inside = {
+        path + "/" + name: entry for path, found in linked.items() for name, entry in found.items()
+    }
+    empty = {path: (GITLINK_MODE, entries[path][1], None) for path, found in linked.items() if not found}
+    return {**files, **inside, **empty}
+
+
+def _without_work(with_work, held, implementation):
+    return {
+        **{path: entry for path, entry in with_work.items() if not _under(path, implementation)},
+        **{path: entry for path, entry in held.items() if _under(path, implementation)},
+    }
+
+
+def _gate_listing(folder, kept):
+    found = []
+    pending = [""]
+    while pending:
+        current = pending.pop()
+        full = os.path.join(folder, *_parts(current)) if current else folder
+        mode = stat.S_IMODE(os.lstat(full).st_mode)
+        if mode & stat.S_IRWXU != stat.S_IRWXU:
+            os.chmod(full, mode | stat.S_IRWXU)
+        with os.scandir(full) as listing:
+            names = sorted(entry.name for entry in listing)
+        for name in names:
+            if not current and name in kept:
+                continue
+            path = current + "/" + name if current else name
+            kind = _kind(os.lstat(os.path.join(full, name)).st_mode)
+            found.append((path, kind))
+            if kind == "dir":
+                pending.append(path)
+    return dict(found)
+
+
+def _differs(folder, path, mode, oid, kind):
+    if kind != _expected_kind(mode):
+        return True
+    full = os.path.join(folder, *_parts(path))
+    if mode == SYMLINK_MODE:
+        return _object_id(os.fsencode(os.readlink(full)), oid) != oid
+    executable = bool(os.lstat(full).st_mode & stat.S_IXUSR)
+    data = _read_bytes(folder, path)
+    return data is None or executable != (mode == EXECUTABLE_MODE) or _object_id(data, oid) != oid
+
+
+def reset_gate_folder(tree, folder, target, kept, locked):
+    found = _gate_listing(folder, kept)
+    files = {path: entry for path, entry in target.items() if entry[0] != GITLINK_MODE}
+    folders = frozenset(prefix for path in target for prefix in _prefixes(path)[:-1]) | frozenset(
+        path for path, entry in target.items() if entry[0] == GITLINK_MODE
+    )
+    dropped = frozenset(
+        path
+        for path, kind in found.items()
+        if not (path in folders and kind == "dir")
+        and not (path in files and kind == _expected_kind(files[path][0]))
+    )
+    removed = tuple(
+        path for path in sorted(found) if any(prefix in dropped for prefix in _prefixes(path))
+    )
+    for path in sorted(dropped):
+        if not any(prefix in dropped for prefix in _prefixes(path)[:-1]):
+            _remove_entry(folder, path)
+    stale = tuple(
+        path
+        for path, (mode, oid, _) in sorted(files.items())
+        if path in removed or path not in found or _differs(folder, path, mode, oid, found[path])
+    )
+    blobs = _store_blobs(tree, {path: files[path] for path in stale})
+    for path in stale:
+        mode, oid, store = files[path]
+        _place(folder, path, mode, blobs[(store, oid)])
+    for path in sorted(path for path, entry in target.items() if entry[0] == GITLINK_MODE):
+        if not os.path.isdir(tree_path(folder, path)):
+            _make_parents(folder, path)
+            os.mkdir(os.path.join(folder, *_parts(path)))
+    return tuple(sorted(_referee_marked(set(removed) | set(stale), locked)))
+
+
+def _dependency_folders(repo, top):
+    if repo is None:
+        return ()
+    root = os.path.abspath(repo)
+    with os.scandir(root) as listing:
+        names = sorted(entry.name for entry in listing if entry.is_dir())
+    return tuple(
+        name
+        for name in names
+        if name not in top
+        and (name in INSTALLED_FOLDERS or os.path.isfile(os.path.join(root, name, VENV_MARKER)))
+    )
+
+
+def _link_dependencies(repo, folder, top):
+    names = _dependency_folders(repo, top)
+    for name in names:
+        os.symlink(os.path.join(os.path.abspath(repo), name), os.path.join(folder, name))
+    return names
+
+
+def _gate_setup(setup, folder, top, log_dir, timeout, env):
+    out = os.path.join(log_dir, "gate-setup.log")
+    try:
+        code, timed_out = run_command(
+            build_argv(setup, {"worktree": folder}), folder, timeout, out, out + ".err", env
+        )
+    except OSError as error:
+        raise GateSetupError("the --gate-setup command could not start in %s: %s" % (folder, error))
+    if timed_out:
+        raise GateSetupError(
+            "the --gate-setup command timed out after %s seconds in %s" % (timeout, folder)
+        )
+    if code != 0:
+        raise GateSetupError(
+            "the --gate-setup command exited %d in %s: %s"
+            % (code, folder, last_line(out + ".err") or last_line(out) or "<no output>")
+        )
+    with os.scandir(folder) as listing:
+        return tuple(sorted(entry.name for entry in listing if entry.name not in top))
+
+
+def ignored_paths(tree):
+    args = [
+        *STATUS_SETTINGS,
+        "status",
+        "--porcelain",
+        "-z",
+        "--untracked-files=all",
+        "--ignored=matching",
+        "--no-renames",
+    ]
+    completed = git_run(args, tree, raw=True, env=PINNED_GIT)
+    if completed.returncode != 0:
+        raise GitError(args, completed.returncode, completed.stderr)
+    return sorted(os.fsdecode(entry[3:]) for entry in completed.stdout.split(b"\0") if len(entry) > 3)
+
+
+def _referee_marked(paths, locked):
+    return frozenset(
+        path
+        for path in paths
+        if referee.referee_reason(path, locked) is not None
+        or any(_held_under((path,), _norm(entry)) for entry in locked)
+    )
+
+
+def _submodule_changes(tree, holder, path, old, new, git_dir, prefix):
+    try:
+        store = _module_dir(tree, holder, path, git_dir)
+        return _tree_changes(tree, old, new, store, prefix + path + "/")
+    except (GitError, OSError, ValueError) as error:
+        raise GitError(
+            ["ls-tree", new],
+            1,
+            "%s%s/ cannot be judged, because its commits cannot be read: %s" % (prefix, path, error),
+        )
+
+
+def _tree_changes(tree, old, new, git_dir=None, prefix=""):
+    before = _committed_entries(tree, old, git_dir)
+    after = _committed_entries(tree, new, git_dir)
+    changed = _changed_paths(before, after)
+    inside = tuple(
+        written
+        for path in changed
+        if _gitlink(before, path) and _gitlink(after, path)
+        for written in _submodule_changes(
+            tree, old, path, before[path][1], after[path][1], git_dir, prefix
+        )
+    )
+    return tuple(prefix + path for path in changed) + inside
+
+
+def referee_writes(plan, tree, head, base):
+    locked = tuple(plan.get("locked") or ())
+    return sorted(_referee_marked(_tree_changes(tree, base, head), locked))
+
+
+def reconcile(plan, msp, tree, head, base, producer_heads=()):
+    changed = changed_files(tree, head, base, producer_heads)
     declared = sorted({_norm(f) for f in plan["msps"][msp].get("files") or ()})
     undeclared = [path for path in changed if _norm(path) not in declared]
     missing = [path for path in declared if path not in {_norm(c) for c in changed}]
@@ -1137,7 +2300,8 @@ def reconcile(plan, msp, tree, branch, base, producer_branches=()):
     untouched = [
         path
         for path in missing
-        if path in unproven and git_ok(["cat-file", "-e", "%s:%s" % (base, path)], tree)
+        if path in unproven
+        and git_ok(["cat-file", "-e", "%s:%s" % (base, path)], tree, env=PINNED_GIT)
     ]
     unwritten = [path for path in missing if path not in untouched]
     crossing = ()
@@ -1145,6 +2309,7 @@ def reconcile(plan, msp, tree, branch, base, producer_branches=()):
         owner = msp_owner_of(plan, path)
         if owner is not None and owner != msp:
             crossing = crossing + ({"path": path, "msp": owner, "label": _label(plan, owner)},)
+    written = referee_writes(plan, tree, head, base)
     return {
         "changed": changed,
         "declared": declared,
@@ -1152,7 +2317,8 @@ def reconcile(plan, msp, tree, branch, base, producer_branches=()):
         "unwritten": unwritten,
         "untouched": untouched,
         "crossing": list(crossing),
-        "fatal": bool(crossing),
+        "referee": written,
+        "fatal": bool(crossing or written),
     }
 
 
@@ -1722,7 +2888,12 @@ def ship(
     env=None,
 ):
     label = _label(plan, msp)
-    head = commit_all(tree, "chore(%s): commit the MSP's work before shipping" % label)
+    head = commit_at(branch, tree, required=True)
+    gated = (gate_result or {}).get("commit")
+    if proven_head is None and gated is not None and head != gated:
+        raise ShipError(
+            "%s is at %s, not the gated commit %s" % (branch, head[:12], gated[:12])
+        )
     held = {
         "branch": branch,
         "base": base,
@@ -1800,6 +2971,12 @@ def _msp_record(run_state, msp, **fields):
 def _lane_block(plan, msp, state):
     for index in _lane_indexes(plan, msp):
         lane_state = (state["lanes"].get(str(index)) or {}).get("state")
+        if lane_state == LANE_PARKED:
+            return {
+                "state": MSP_PARKED,
+                "reason": "Lane %d is %s; pass --resume after the usage limit resets"
+                % (index, LANE_PARKED),
+            }
         if lane_state != "ok":
             return {"state": MSP_BLOCKED, "reason": "Lane %d is %s" % (index, lane_state)}
     return None
@@ -1808,6 +2985,12 @@ def _lane_block(plan, msp, state):
 def _producer_block(plan, msp, state, producers):
     for producer in producers:
         producer_state = (state["msps"].get(str(producer)) or {}).get("state")
+        if producer_state == MSP_PARKED:
+            return {
+                "state": MSP_PARKED,
+                "reason": "MSP %s is %s; pass --resume after the usage limit resets"
+                % (_label(plan, producer), MSP_PARKED),
+            }
         if producer_state not in core.DELIVERED_STATES:
             return {
                 "state": MSP_BLOCKED,
@@ -1817,20 +3000,22 @@ def _producer_block(plan, msp, state, producers):
     return None
 
 
-def _gate_stage(plan, msp, tree, settings):
+def _gate_stage(plan, msp, tree, settings, head):
     try:
         result = gate(
             plan,
             msp,
             tree["path"],
-            tree["branch"],
-            settings["feature_branch"],
+            settings["base_commit"],
             settings["acceptance_command"],
             os.path.join(settings["run_dir"], "gate", "msp-%d" % msp),
             settings["timeout"],
             settings.get("env"),
+            settings.get("repo"),
+            settings.get("gate_setup"),
+            head,
         )
-    except (OSError, GitError, subprocess.SubprocessError) as error:
+    except (OSError, GitError, GateSetupError, subprocess.SubprocessError) as error:
         return {"gate": None, "gate_error": str(error)}
     return {"gate": result, "gate_error": None}
 
@@ -1844,9 +3029,9 @@ def _passing_gate(prior):
 
 def _committed_head(plan, msp, tree):
     try:
-        return commit_before_gate(plan, msp, tree["path"])
-    except GitError:
-        return None
+        return commit_before_gate(plan, msp, tree["path"], tree["branch"]), None
+    except GitError as error:
+        return None, str(error)
 
 
 def _reusable_gate(prior, head):
@@ -1857,21 +3042,117 @@ def _reusable_gate(prior, head):
 
 
 def _proven_head(prior, head, proven):
-    if proven is None or head is None or _passing_gate(prior) is None:
+    if proven is None or head is None or not isinstance(prior.get("gate"), dict):
         return None
     return head if head.startswith(proven) else None
 
 
-def _reconcile_stage(plan, msp, tree, producers, trees, settings):
-    findings = reconcile(
-        plan,
-        msp,
-        tree["path"],
-        tree["branch"],
-        settings["feature_branch"],
-        tuple(trees[p]["branch"] for p in producers),
+def _judged_head(tree, head):
+    return head if head is not None else branch_commit(tree["path"], tree["branch"], required=True)
+
+
+def _head_off_branch(tree, head):
+    judged = head if head is not None else branch_commit(tree["path"], tree["branch"])
+    attached = git_run(["symbolic-ref", "-q", "HEAD"], tree["path"], env=PINNED_GIT).stdout.strip()
+    return (
+        judged is None
+        or attached != "refs/heads/" + tree["branch"]
+        or commit_at("HEAD", tree["path"]) != judged
     )
+
+
+def _producer_heads(tree, producers, trees):
+    found = tuple(branch_commit(tree["path"], trees[p]["branch"]) for p in producers)
+    return tuple(commit for commit in found if commit is not None)
+
+
+def _reconcile_stage(plan, msp, tree, producers, trees, settings, head=None):
+    try:
+        findings = reconcile(
+            plan,
+            msp,
+            tree["path"],
+            _judged_head(tree, head),
+            settings["base_commit"],
+            _producer_heads(tree, producers, trees),
+        )
+    except GitError as error:
+        return {
+            "reconcile": None,
+            "state": MSP_GATE_FAILED,
+            "reason": "mitosis could not judge the referee paths in the commits of %s, so the gate "
+            "did not run and the MSP is held back: %s" % (tree["branch"], error),
+        }
     return {"reconcile": findings}
+
+
+def _committed_reconcile(plan, tree, settings, uncommitted, head=None):
+    try:
+        written = referee_writes(
+            plan, tree["path"], _judged_head(tree, head), settings["base_commit"]
+        )
+    except GitError as error:
+        return {
+            "reconcile": None,
+            "state": MSP_GATE_FAILED,
+            "reason": "mitosis judged only the commits on %s, because %s, and could not judge the "
+            "referee paths they hold, so the gate did not run and the MSP is held back: %s"
+            % (tree["branch"], uncommitted, error),
+        }
+    return {"reconcile": {"referee": written, "fatal": bool(written)}}
+
+
+def _referee_stage(plan, msp, tree, producers, trees, settings, uncommitted=None, head=None):
+    reconciled = (
+        _reconcile_stage(plan, msp, tree, producers, trees, settings, head)
+        if uncommitted is None
+        else _committed_reconcile(plan, tree, settings, uncommitted, head)
+    )
+    if reconciled.get("state") == MSP_GATE_FAILED:
+        return {**reconciled, "gate": None, "gate_error": reconciled["reason"]}
+    written = reconciled["reconcile"]["referee"]
+    off_branch = _head_off_branch(tree, head)
+    if not written and not off_branch:
+        return None
+    if not written:
+        return {
+            **reconciled,
+            "reconcile": {**reconciled["reconcile"], "fatal": True},
+            "state": MSP_REFEREE_REVERTED,
+            "reason": "the worktree's HEAD is not %s at its commit, so the referee and the gate "
+            "would not judge one commit; mitosis held the MSP back" % tree["branch"],
+        }
+    kept = (
+        ""
+        if uncommitted is None
+        else "; the rest of the work stays uncommitted, because %s" % uncommitted
+    )
+    try:
+        revert_implementation(
+            tree["path"],
+            tree["branch"],
+            _judged_head(tree, head),
+            settings["base_commit"],
+            written,
+            "revert(%s): restore the referee paths a Worker wrote" % _label(plan, msp),
+        )
+    except (GitError, OSError) as error:
+        return {
+            **reconciled,
+            "state": MSP_GATE_FAILED,
+            "gate": None,
+            "gate_error": "the referee restore on %s failed, so the gate did not run: %s"
+            % (tree["branch"], error),
+            "reason": "a Worker wrote %s, which the referee owns; mitosis could not restore them "
+            "on %s, so the gate did not run and the MSP is held back%s"
+            % (", ".join(written), tree["branch"], kept),
+        }
+    return {
+        **reconciled,
+        "state": MSP_REFEREE_REVERTED,
+        "reason": "a Worker wrote %s, which the referee owns; mitosis restored them on %s and "
+        "held the MSP back%s" % (", ".join(written), tree["branch"], kept),
+    }
 
 
 def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=()):
@@ -1922,6 +3203,95 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=()):
     return {"state": "shipped", "reason": None, "ship": shipped}
 
 
+def _gate_outcomes(plan, msp, result, settings):
+    run_name = slug(os.path.basename(os.path.normpath(settings["run_dir"])))
+    msp_name = msp_slugs(plan["msps"])[msp]
+    repo_name = os.path.basename(os.path.normpath(settings["repo"]))
+    return [
+        outcomes.entry(
+            repo_name,
+            run_name,
+            msp_name,
+            result["commit"],
+            prop,
+            (prop.get("seconds") or 0) / 60,
+        )
+        for prop in result.get("properties") or ()
+        if prop.get("file") and prop.get("test")
+    ]
+
+
+def _setup_refereed_without_runs(result):
+    return bool(result.get("referee")) and not any(
+        "with_work" in prop for prop in result.get("properties") or ()
+    )
+
+
+def _trajectory_stage(plan, msp, gated, settings):
+    path = settings.get("trajectory")
+    if not path or gated["gate"] is None or _setup_refereed_without_runs(gated["gate"]):
+        return {}
+    try:
+        outcomes.append(path, _gate_outcomes(plan, msp, gated["gate"], settings))
+    except OSError as error:
+        return {"trajectory_error": str(error)}
+    return {}
+
+
+def _gate_referee_writes(gated):
+    return list((gated["gate"] or {}).get("referee") or [])
+
+
+def _with_gate_referee(reconciled, tampered):
+    if not tampered or reconciled["reconcile"] is None:
+        return reconciled
+    found = reconciled["reconcile"]
+    return {
+        **reconciled,
+        "reconcile": {
+            **found,
+            "referee": sorted(set(found["referee"]) | set(tampered)),
+            "fatal": True,
+        },
+    }
+
+
+def _held_back(gated, branch):
+    if gated["gate_error"] is not None:
+        return {
+            "state": MSP_GATE_FAILED,
+            "reason": "the gate could not run, so %s was committed and not pushed: %s"
+            % (branch, gated["gate_error"]),
+        }
+    if not (gated["gate"] or {}).get("blocks"):
+        return None
+    return {
+        "state": MSP_GATE_FAILED,
+        "reason": "the gate judged %s, so %s was committed and not pushed"
+        % (gated["gate"]["outcome"], branch),
+    }
+
+
+def _uncommitted_reason(block, commit_error):
+    if block is not None:
+        return "mitosis made no commit before the gate: %s" % block["reason"]
+    if commit_error is not None:
+        return "the commit before the gate failed: %s" % commit_error
+    return None
+
+
+def _blocked_record(block, held):
+    if held is None:
+        return {**block, "reconcile": NO_REFEREE_WRITE}
+    if held.get("state") == MSP_REFEREE_REVERTED:
+        return held
+    return {
+        **block,
+        "reconcile": held.get("reconcile"),
+        "reason": "%s; %s" % (block["reason"], held["reason"]),
+    }
+
+
 def _finish_msp(plan, msp, trees, producers, state, settings):
     run_dir = settings["run_dir"]
     tree = trees[msp]
@@ -1934,16 +3304,31 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
         ],
     }
     block = _lane_block(plan, msp, state) or _producer_block(plan, msp, state, producers)
+    head, commit_error = (None, None) if block is not None else _committed_head(plan, msp, tree)
+    if block is None:
+        state = write_state(run_dir, _msp_record(state, msp, ignored=ignored_paths(tree["path"])))
+    uncommitted = _uncommitted_reason(block, commit_error)
+    held = _referee_stage(plan, msp, tree, producers, trees, settings, uncommitted, head)
+    if held is not None:
+        notify(
+            settings.get("observer"),
+            "reconciled",
+            {"msp": msp, "findings": held["reconcile"]},
+        )
     if block is not None:
-        return write_state(run_dir, _msp_record(state, msp, **block))
-    head = _committed_head(plan, msp, tree)
+        return write_state(run_dir, _msp_record(state, msp, **_blocked_record(block, held)))
+    if held is not None:
+        return write_state(run_dir, _msp_record(state, msp, **held))
     proven_head = _proven_head(prior, head, settings["proven_heads"].get(msp))
-    reused = _passing_gate(prior) if proven_head is not None else _reusable_gate(prior, head)
+    reused = prior.get("gate") if proven_head is not None else _reusable_gate(prior, head)
+    judged_now = commit_error is not None or (proven_head is None and reused is None)
     gate_started = now()
     gated = (
-        {"gate": reused, "gate_error": None}
-        if reused is not None
-        else _gate_stage(plan, msp, tree, settings)
+        {"gate": None, "gate_error": commit_error}
+        if commit_error is not None
+        else _gate_stage(plan, msp, tree, settings, head)
+        if judged_now
+        else {"gate": reused, "gate_error": None}
     )
     notify(
         settings.get("observer"),
@@ -1956,16 +3341,47 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
         },
     )
     proof = {} if proven_head is None else {"proven_head": proven_head}
-    state = write_state(run_dir, _msp_record(state, msp, **gated, **proof))
-    reconciled = _reconcile_stage(plan, msp, tree, producers, trees, settings)
+    logged = _trajectory_stage(plan, msp, gated, settings) if judged_now else {}
+    state = write_state(run_dir, _msp_record(state, msp, **gated, **proof, **logged))
+    if commit_error is not None:
+        return write_state(
+            run_dir,
+            _msp_record(
+                state,
+                msp,
+                reconcile=NO_REFEREE_WRITE,
+                state=MSP_GATE_FAILED,
+                reason="mitosis could not commit the work on %s before the gate, so it kept the "
+                "work uncommitted in the worktree, did not run the gate and held the MSP back: %s"
+                % (tree["branch"], commit_error),
+            ),
+        )
+    tampered = _gate_referee_writes(gated) if judged_now else []
+    reconciled = _with_gate_referee(
+        _reconcile_stage(plan, msp, tree, producers, trees, settings, head), tampered
+    )
     notify(
         settings.get("observer"),
         "reconciled",
         {"msp": msp, "findings": reconciled["reconcile"]},
     )
     state = write_state(run_dir, _msp_record(state, msp, **reconciled))
-    if reconciled.get("state") == MSP_BLOCKED:
+    if reconciled.get("state") in (MSP_BLOCKED, MSP_GATE_FAILED):
         return state
+    if tampered:
+        return write_state(
+            run_dir,
+            _msp_record(
+                state,
+                msp,
+                state=MSP_REFEREE_REVERTED,
+                reason="a gate run wrote %s in the gate's clean checkout, which the referee "
+                "owns, so mitosis held %s back" % (", ".join(tampered), tree["branch"]),
+            ),
+        )
+    held_back = _held_back(gated, tree["branch"]) if judged_now else None
+    if held_back is not None:
+        return write_state(run_dir, _msp_record(state, msp, **held_back))
     base, exception = pr_base(
         plan, msp, settings["feature_branch"], trees, settings["repo"], state["msps"]
     )
@@ -2017,6 +3433,9 @@ def execute(
     proven_heads=None,
     observer=None,
     env=None,
+    trajectory=None,
+    gate_setup=None,
+    base_commit=None,
 ):
     prior = prior_state(run_dir, plan, resume)
     header = carried_header(header, prior)
@@ -2024,6 +3443,8 @@ def execute(
     check_template("acceptance", acceptance_command)
     if not no_push and pr_command is not None:
         check_template("pull-request", pr_command)
+    if gate_setup is not None:
+        check_template("gate-setup", gate_setup)
     if not no_push and header is None:
         raise ConfigError(
             "a run allowed to push needs a pull-request header holding its type, subject and "
@@ -2038,9 +3459,11 @@ def execute(
         for index in range(len(plan.get("lanes") or []))
     ):
         check_identity(repo)
+    base = base_commit or pinned_base(repo, feature_branch, prior)
     settings = {
         "repo": repo,
         "feature_branch": feature_branch,
+        "base_commit": base,
         "run_dir": run_dir,
         "acceptance_command": acceptance_command,
         "pr_command": pr_command,
@@ -2051,6 +3474,8 @@ def execute(
         "proven_heads": dict(proven_heads or {}),
         "observer": observer,
         "env": env,
+        "trajectory": trajectory,
+        "gate_setup": gate_setup,
     }
     os.makedirs(run_dir, exist_ok=True)
     write_json(os.path.join(run_dir, PLAN_FILE), plan)
@@ -2060,6 +3485,7 @@ def execute(
             "version": core.__version__,
             "plan_id": plan.get("plan_id"),
             "feature_branch": feature_branch,
+            "base_commit": base,
             "started": now(),
             "drift": document_drift(plan, root or repo),
             "worktrees": [],
@@ -2070,7 +3496,7 @@ def execute(
         },
     )
     trees = prepare_worktrees(
-        plan["msps"], feature_branch, trees_root or os.path.join(run_dir, "trees"), repo, prefix
+        plan["msps"], base, trees_root or os.path.join(run_dir, "trees"), repo, prefix
     )
     state = write_state(run_dir, {**state, "worktrees": trees})
 
@@ -2088,7 +3514,7 @@ def execute(
         timeout,
         concurrency,
         run_dir,
-        feature_branch,
+        base,
         models=models,
         prior=state["lanes"],
         on_lane=on_lane,

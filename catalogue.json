@@ -570,7 +570,7 @@
           "unit": "none",
           "includes": "The state only.",
           "excludes": "The Lane's reason, Worker notes and output, which the store never holds.",
-          "reading": "ok built and committed; failed exited non-zero or returned failed; blocked by a producer; merge-blocked when a producer branch would not merge; held while committed work waits to land.",
+          "reading": "ok built and committed; failed exited non-zero or returned failed; blocked by a producer; merge-blocked when a producer branch would not merge; held while committed work waits to land; parked-limit when its Worker stopped at a usage limit, or it was not dispatched after another Lane did, so --resume runs it again after the limit resets.",
           "readers": [
             "owner",
             "pipeline"
@@ -581,7 +581,8 @@
             "failed",
             "blocked",
             "merge-blocked",
-            "held"
+            "held",
+            "parked-limit"
           ]
         },
         "exit": {
@@ -656,11 +657,11 @@
         "outcome": {
           "type": "enum",
           "description": "The MSP's gate outcome.",
-          "measured_from": "The gate's worst property outcome: inert, then inconclusive, then pass.",
+          "measured_from": "The gate's worst property outcome: weak, then inert, then inconclusive, then pass.",
           "unit": "none",
           "includes": "The outcome only.",
           "excludes": "Each property's reason, which the store never holds.",
-          "reading": "pass means every acceptance test failed without the work; inert means one passed without it; inconclusive means one could not be judged; not-applicable means none could run; null means the gate could not run.",
+          "reading": "pass means every acceptance test failed without the work and against a mutant of it; weak means one passed against every mutant of the work tried; inert means one passed without it; inconclusive means one could not be judged; not-applicable means none could run; null means the gate could not run.",
           "readers": [
             "owner",
             "pipeline"
@@ -668,6 +669,7 @@
           "question": "Were the acceptance tests proven to fail without the work?",
           "values": [
             "pass",
+            "weak",
             "inert",
             "inconclusive",
             "not-applicable"
@@ -818,7 +820,7 @@
           "unit": "none",
           "includes": "The state only.",
           "excludes": "The MSP's reason and pull-request text, which the store never holds.",
-          "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP.",
+          "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP; referee-reverted when a Worker wrote a referee path, which mitosis restored before holding the MSP back ungated and unpushed; gate-failed when its gate judged weak, inert or inconclusive or could not run, so mitosis committed the branch and held it back unpushed; parked when one of its Lanes, or a producer MSP, is parked at a usage limit, so --resume picks it up after the limit resets.",
           "readers": [
             "owner",
             "pipeline"
@@ -830,7 +832,10 @@
             "unchanged",
             "committed",
             "ship-failed",
-            "blocked"
+            "blocked",
+            "referee-reverted",
+            "gate-failed",
+            "parked"
           ]
         }
       }
@@ -1155,6 +1160,20 @@
               "pipeline"
             ],
             "question": "How did this invocation's Lanes end?"
+          },
+          "parked_limit": {
+            "type": "integer",
+            "description": "The number of Lanes that ended parked-limit.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's Lanes in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How did this invocation's Lanes end?"
           }
         }
       },
@@ -1297,6 +1316,48 @@
               "pipeline"
             ],
             "question": "How many MSPs reached a pull request?"
+          },
+          "referee_reverted": {
+            "type": "integer",
+            "description": "The number of MSPs that ended referee-reverted.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's MSPs in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How many MSPs reached a pull request?"
+          },
+          "gate_failed": {
+            "type": "integer",
+            "description": "The number of MSPs that ended gate-failed.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's MSPs in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How many MSPs reached a pull request?"
+          },
+          "parked": {
+            "type": "integer",
+            "description": "The number of MSPs that ended parked.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's MSPs in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "How many MSPs reached a pull request?"
           }
         }
       },
@@ -1317,6 +1378,20 @@
           "pass": {
             "type": "integer",
             "description": "The number of gates that ended pass.",
+            "measured_from": "Counted by mitosis as it ran.",
+            "unit": "count",
+            "includes": "This invocation's gates in that state.",
+            "excludes": "Other states.",
+            "reading": "0 means none; higher means more.",
+            "readers": [
+              "owner",
+              "pipeline"
+            ],
+            "question": "Were the acceptance tests proven to fail without the work?"
+          },
+          "weak": {
+            "type": "integer",
+            "description": "The number of gates that ended weak.",
             "measured_from": "Counted by mitosis as it ran.",
             "unit": "count",
             "includes": "This invocation's gates in that state.",
@@ -1656,7 +1731,7 @@
               "unit": "none",
               "includes": "The state only.",
               "excludes": "The Lane's reason, Worker notes and output, which the store never holds.",
-              "reading": "ok built and committed; failed exited non-zero or returned failed; blocked by a producer; merge-blocked when a producer branch would not merge; held while committed work waits to land.",
+              "reading": "ok built and committed; failed exited non-zero or returned failed; blocked by a producer; merge-blocked when a producer branch would not merge; held while committed work waits to land; parked-limit when its Worker stopped at a usage limit, or it was not dispatched after another Lane did, so --resume runs it again after the limit resets.",
               "readers": [
                 "owner",
                 "pipeline"
@@ -1667,7 +1742,8 @@
                 "failed",
                 "blocked",
                 "merge-blocked",
-                "held"
+                "held",
+                "parked-limit"
               ]
             },
             "seconds": {
@@ -1735,7 +1811,7 @@
               "unit": "none",
               "includes": "The state only.",
               "excludes": "The MSP's reason and pull-request text, which the store never holds.",
-              "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP.",
+              "reading": "shipped opened a pull request; pushed pushed without one; unchanged added nothing; committed held on its local branch; ship-failed when a commit, push or pull-request command failed; blocked by a Lane or a producer MSP; referee-reverted when a Worker wrote a referee path, which mitosis restored before holding the MSP back ungated and unpushed; gate-failed when its gate judged weak, inert or inconclusive or could not run, so mitosis committed the branch and held it back unpushed; parked when one of its Lanes, or a producer MSP, is parked at a usage limit, so --resume picks it up after the limit resets.",
               "readers": [
                 "owner",
                 "pipeline"
@@ -1747,17 +1823,20 @@
                 "unchanged",
                 "committed",
                 "ship-failed",
-                "blocked"
+                "blocked",
+                "referee-reverted",
+                "gate-failed",
+                "parked"
               ]
             },
             "gate": {
               "type": "enum",
               "description": "The MSP's gate outcome.",
-              "measured_from": "The gate's worst property outcome: inert, then inconclusive, then pass.",
+              "measured_from": "The gate's worst property outcome: weak, then inert, then inconclusive, then pass.",
               "unit": "none",
               "includes": "The outcome only.",
               "excludes": "Each property's reason, which the store never holds.",
-              "reading": "pass means every acceptance test failed without the work; inert means one passed without it; inconclusive means one could not be judged; not-applicable means none could run; null means the gate could not run.",
+              "reading": "pass means every acceptance test failed without the work and against a mutant of it; weak means one passed against every mutant of the work tried; inert means one passed without it; inconclusive means one could not be judged; not-applicable means none could run; null means the gate could not run.",
               "readers": [
                 "owner",
                 "pipeline"
@@ -1765,6 +1844,7 @@
               "question": "Were the acceptance tests proven to fail without the work?",
               "values": [
                 "pass",
+                "weak",
                 "inert",
                 "inconclusive",
                 "not-applicable"

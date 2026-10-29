@@ -1,0 +1,123 @@
+[
+  {
+    "files": [
+      {
+        "path": "tests/test_locked.py",
+        "content": "import unittest\n"
+      }
+    ],
+    "lock": "6f81afaf514524a2e4566288e60ae173b1934baa570572b36aa08b5842406d60"
+  },
+  {
+    "files": [
+      {
+        "path": "tests/Button.test.tsx",
+        "content": "it(\"renders\", () => {});\r\nexport {};\r\n"
+      },
+      {
+        "path": "tests/b/x.py",
+        "content": "x = 1"
+      },
+      {
+        "path": "tests/a1.py",
+        "content": "café = \"crème brûlée\"\n"
+      },
+      {
+        "path": "tests/A.py",
+        "content": "A = 1\r\n"
+      },
+      {
+        "path": "tests/a.b.py",
+        "content": "dotted = True\n"
+      },
+      {
+        "path": "tests/a-b.py",
+        "content": "dashed = True"
+      },
+      {
+        "path": "tests/a_b.py",
+        "content": "under = True\n"
+      }
+    ],
+    "lock": "4e8c182ed77be90ca2ed7982f4f13390b6a17c0b7d67091ca8b1d530bec71ab4"
+  },
+  {
+    "files": [
+      {
+        "path": "tests/b.py",
+        "content": "lower b\n"
+      },
+      {
+        "path": "tests/B.py",
+        "content": "upper B\n"
+      },
+      {
+        "path": "tests/a.py",
+        "content": "lower a\n"
+      },
+      {
+        "path": "tests/A.py",
+        "content": "upper A\n"
+      }
+    ],
+    "lock": "03daa6336b0d4b4d333511cc3e51c8613efa7952056074230441dd66962527cf"
+  },
+  {
+    "files": [
+      {
+        "path": "tests/test_Mixed_Case.py",
+        "content": "mixed\r\nline ends\nhere\r\n"
+      },
+      {
+        "path": "tests/test_mixed-case.py",
+        "content": "日本語 · ☃\n"
+      },
+      {
+        "path": "tests/test_mixed.case.py",
+        "content": ""
+      },
+      {
+        "path": "tests/test_mixed/case.py",
+        "content": "\n"
+      },
+      {
+        "path": "tests/test_mixed_case.py",
+        "content": "no final newline"
+      }
+    ],
+    "lock": "274dedc3f2924a3ff1636b9ac1ddba0ecd63437e6bc19bcdb4579891ad047519"
+  },
+  {
+    "files": [
+      {
+        "path": "docs/x.md",
+        "content": "a\r\nb"
+      },
+      {
+        "path": "Docs/X.md",
+        "content": "c\r\n\r\n"
+      },
+      {
+        "path": "docs/X.md",
+        "content": "d\n"
+      },
+      {
+        "path": "docs_x.md",
+        "content": "e\n"
+      },
+      {
+        "path": "docs-x.md",
+        "content": "f\n"
+      },
+      {
+        "path": "docs.x.md",
+        "content": "g\n"
+      },
+      {
+        "path": "docs1.md",
+        "content": "h\n"
+      }
+    ],
+    "lock": "9009188e52d3f28670a373882dbcd89765ac85dd8ed40f7a730794bc33a90db1"
+  }
+]

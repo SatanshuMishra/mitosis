@@ -3,6 +3,69 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.8.0 - 2026-10-28
+
+The files that judge the work are a locked referee no Worker may write, and
+the gate withholds a pull request it cannot certify.
+
+- A charter names its locked checks one per line as `- Locked: <path>`, and
+  built-in referee markers cover test configuration, snapshots, baselines,
+  allowlists and skip lists. Planning refuses a Step whose files hold a
+  referee path, with exit 3. A Worker's committed write to one, found from
+  git's tree objects with Worker-written settings kept out, is reverted in
+  its own commit, and its MSP is held back as `referee-reverted` and never
+  pushed, with exit 9. The JSON result's `referee` object names the locked
+  paths, their receipt lock and the commit they were read at.
+- A `- Locked:` path the feature branch does not hold, in a real run, and a
+  `- Locked:` line that is empty, absolute or contains `..` are refused with
+  exit 3.
+- The gate runs each passing property against up to 12 mutants of its Step's
+  added lines and judges it `weak` when no mutant fails it, with exit 24. An
+  MSP whose gate is `weak`, `inert` or `inconclusive` ends `gate-failed`,
+  committed and never pushed, so the gate now withholds the pull request.
+- The JSON result carries a `findings` list, one entry per problem with its
+  MSP, Lane, kind, exit code and detail, and the exit code is the most severe
+  finding's.
+- Every git call times out after 600 seconds with an error naming the
+  command.
+- A Worker that stops at a usage limit leaves its Lane `parked-limit` and its
+  MSP `parked`, with exit 13, and `--resume` runs every Lane that is not `ok`.
+- `--trajectory` also receives one outcome entry per acceptance test after
+  every gate.
+- The gate, every mutant run and every acceptance run execute in a clean
+  checkout of the MSP's committed tree, a folder outside the Worker's
+  worktree reset to the commit's raw blobs before every run. It is
+  not a git repository. Files the commit does not carry never reach the gate
+  and are listed in each MSP's `ignored` list, never restored.
+- `--gate-setup` runs once per gate, so what it writes survives each run's
+  reset only at top-level names the commit lacks, such as the `.git` folder
+  an acceptance command that runs git needs it to make. A Git LFS file
+  reaches the gate as pointer text and a committed eol attribute is not
+  applied in every run, whatever `--gate-setup` does, so a test that reads
+  the real content ends `inconclusive` and holds its MSP back with exit 21.
+- A top-level file or folder `--gate-setup` makes is a referee write, fatal
+  with exit 9, when its name is a referee path such as `conftest.py`, a
+  referee folder such as `__snapshots__` or `.receipts`, or a folder holding
+  a `- Locked:` path; mitosis never walks into a kept folder such as
+  node_modules.
+- Dependency folders come from the repository root's node_modules and
+  virtual-environment folders, or from the new `--gate-setup` command, run
+  once per gate with `{worktree}`. A failed or timed-out gate setup holds the
+  MSP back as `gate-failed`, with exit 21, and so does a refused pre-gate
+  commit.
+- An acceptance run that leaves a referee path in the clean checkout
+  differing from the commit holds its MSP back as `referee-reverted`, with
+  exit 9.
+- Ship refuses a head that is not the gated commit, as `ship-failed`, with
+  exit 22.
+- The referee and the gate judge the MSP branch's commit, never the
+  worktree's HEAD. A worktree HEAD that is detached, on another branch or at
+  another commit holds the MSP back as `referee-reverted`, fatal with exit 9,
+  after any referee write on the branch is reverted, and the gate does not
+  run.
+- A resume's gate reuse and `--proven-head` depend only on the branch head's
+  commit, never on files the worktree holds outside it.
+
 ## 0.7.0 - 2026-10-27
 
 mitosis records metrics about its own runs, and a new metrics skill answers
@@ -49,7 +112,8 @@ or proven.
   always retried. Only the same run directory's state is read.
 - `--proven-head <MSP label>=<commit>`, repeatable, lets a caller that proved
   a later head ship it without gating again, when the MSP's HEAD equals that
-  commit, its worktree is clean and a gate result that passed is recorded.
+  commit, its worktree holds no uncommitted change and a gate result that
+  passed is recorded.
   The pull request's Verification section then ends with a Not verified:
   line naming the commit the gate ran at and the commit the caller proved. A
   head that differs, or an MSP with no recorded gate result, is gated as

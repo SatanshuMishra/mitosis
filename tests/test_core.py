@@ -650,7 +650,7 @@ def rich_items():
 class Plan(unittest.TestCase):
     def the_plan_emits_exactly_the_declared_keys(self):
         result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
-        self.assertEqual(set(result), set(core.PLAN_KEYS) - {"coupling_order"})
+        self.assertEqual(set(result), set(core.PLAN_KEYS) - {"coupling_order", "locked"})
         self.assertEqual(list(result), [key for key in core.PLAN_KEYS if key in result])
         self.assertEqual(result["version"], core.__version__)
         self.assertEqual(result["source"], SOURCE)
@@ -729,7 +729,7 @@ class Plan(unittest.TestCase):
         self.assertIsNone(re.search(r"\bgit\b", source))
         with mock.patch.object(builtins, "open", side_effect=AssertionError("plan opened a file")):
             result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
-        self.assertEqual(set(result), set(core.PLAN_KEYS) - {"coupling_order"})
+        self.assertEqual(set(result), set(core.PLAN_KEYS) - {"coupling_order", "locked"})
 
     def plan_refuses_invalid_items_with_messages(self):
         with self.assertRaises(core.ValidationError) as caught:
@@ -1061,6 +1061,101 @@ class Sessions(unittest.TestCase):
         self.assertNotIn("coupling_review", result)
 
 
+class Referee(unittest.TestCase):
+    def _planned(self, charter_text, items):
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "charter.md"), "w", encoding="utf-8") as handle:
+                handle.write(charter_text)
+            return core.plan(items, charter="charter.md", root=root)
+
+    def locked_paths_reads_the_locked_lines_in_order_once_each(self):
+        import referee
+
+        text = "# Charter\n- Locked: `tests/b.py`\n- Locked: tests\\a.py \n- Locked: tests/b.py\n- Other: x\n"
+        self.assertEqual(referee.locked_paths(text), ("tests/b.py", "tests/a.py"))
+
+    def locked_paths_refuses_an_absolute_or_climbing_path(self):
+        import referee
+
+        for line in ("- Locked: /etc/passwd", "- Locked: tests/../core.py"):
+            with self.subTest(line=line):
+                with self.assertRaises(ValueError) as caught:
+                    referee.locked_paths("# Charter\n" + line + "\n")
+                self.assertIn(line.split(": ", 1)[1], str(caught.exception))
+
+    def referee_reason_names_the_lock_or_the_first_marker(self):
+        import referee
+
+        locked = ("tests/test_locked.py",)
+        self.assertEqual(referee.referee_reason("tests/test_locked.py", locked), "locked by the charter")
+        self.assertEqual(
+            referee.referee_reason("web/jest.config.js", ()), "matches the referee marker *jest.config.*"
+        )
+        self.assertEqual(
+            referee.referee_reason("tests/perf_baseline.json", ()), "matches the referee marker *baseline*"
+        )
+        self.assertEqual(
+            referee.referee_reason("src/calc.test.ts.snap", ()), "matches the referee marker *.snap"
+        )
+        self.assertIsNone(referee.referee_reason("src/auth/ip_allowlist.py", ()))
+        self.assertIsNone(referee.referee_reason("perf_baseline.json", ()))
+        self.assertIsNone(referee.referee_reason("calc.py", locked))
+
+    def in_test_location_reads_folders_and_test_file_names(self):
+        import referee
+
+        for path in ("tests/x.json", "src/__tests__/a.js", "e2e/flow.ts", "test_calc.py", "calc_test.go", "a.spec.ts"):
+            self.assertTrue(referee.in_test_location(path), path)
+        for path in ("src/calc.py", "contest/x.py", "docs/testing.md"):
+            self.assertFalse(referee.in_test_location(path), path)
+
+    def the_plan_holds_the_locked_list_and_hands_a_locked_acceptance_file_read_only(self):
+        result = self._planned(
+            "- Locked: tests/test_locked.py\n",
+            [
+                step(
+                    "build",
+                    ["calc.py", "tests/test_locked.py"],
+                    acceptance=[{"file": "tests/test_locked.py", "test": "Locked.works"}],
+                )
+            ],
+        )
+        self.assertEqual(result["locked"], ["tests/test_locked.py"])
+        self.assertEqual(result["msps"][0]["files"], ["calc.py"])
+        self.assertEqual(result["items"][0]["files"], ["calc.py"])
+        brief = result["briefs"][0]
+        self.assertEqual(brief["write_set"], ["calc.py"])
+        self.assertEqual(brief["locked"], ["tests/test_locked.py"])
+        self.assertIn(
+            "The locked checks tests/test_locked.py are read-only. Never write them or any test "
+            "configuration, snapshot, baseline, allowlist or skip list: mitosis reverts such a "
+            "write and holds the MSP back.",
+            brief["text"],
+        )
+
+    def the_plan_refuses_a_step_writing_a_referee_path(self):
+        with self.assertRaises(core.ValidationError) as caught:
+            self._planned(
+                "- Locked: tests/test_locked.py\n",
+                [step("build", ["calc.py", "tests/test_locked.py"]), step("conf", ["tests/conftest.py"])],
+            )
+        self.assertEqual(
+            caught.exception.errors,
+            (
+                "build: writes tests/test_locked.py, which locked by the charter; no Step may "
+                "write the referee",
+                "conf: writes tests/conftest.py, which matches the referee marker conftest.py; no "
+                "Step may write the referee",
+            ),
+        )
+
+    def a_bad_locked_line_is_a_validation_error(self):
+        with self.assertRaises(core.ValidationError) as caught:
+            self._planned("- Locked: ../outside.py\n", [step("build", ["calc.py"])])
+        self.assertEqual(len(caught.exception.errors), 1)
+        self.assertIn("../outside.py", caught.exception.errors[0])
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -1072,7 +1167,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, SharedTree, ReadSetCap, Sessions):
+    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, SharedTree, ReadSetCap, Sessions, Referee):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

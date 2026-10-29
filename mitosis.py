@@ -24,6 +24,8 @@ EXIT_CROSSING = 7
 
 EXIT_FOREIGN = 8
 
+EXIT_REFEREE = 9
+
 EXIT_MANIFEST = 23
 
 LANE_EXIT = {
@@ -31,6 +33,7 @@ LANE_EXIT = {
     "failed": 10,
     "blocked": 11,
     "merge-blocked": 12,
+    run.LANE_PARKED: 13,
 }
 
 MSP_EXIT = {
@@ -40,9 +43,13 @@ MSP_EXIT = {
     run.MSP_COMMITTED: EXIT_SHIPPED,
     run.MSP_BLOCKED: 11,
     "ship-failed": 22,
+    run.MSP_REFEREE_REVERTED: EXIT_REFEREE,
+    run.MSP_PARKED: 13,
 }
 
-GATE_EXIT = {"gate-failed": 20, "gate-inconclusive": 21}
+GATE_EXIT = {"gate-inert": 20, "gate-inconclusive": 21, "gate-weak": 24}
+
+EXIT_SEVERITY = (9, 7, 8, 24, 20, 21, 23, 22, 10, 12, 11, 13, 6, 4)
 
 EXIT_MEANING = {
     EXIT_SHIPPED: "every MSP reached shipped, pushed, unchanged or committed, and reconcile found "
@@ -55,16 +62,21 @@ EXIT_MEANING = {
     EXIT_CROSSING: "an MSP branch, pushed or with its pull request open, writes files another MSP "
     "owns and also changes",
     EXIT_FOREIGN: "a Lane changed a file another Lane of its MSP owns and had already committed",
+    EXIT_REFEREE: "a Worker wrote a referee path; mitosis restored it and held its MSP back",
     EXIT_MANIFEST: "a branch is pushed or a pull request open with a package manifest that "
     "exports nothing",
     LANE_EXIT["failed"]: "a Lane failed",
     LANE_EXIT["blocked"]: "a Lane or MSP was blocked, by a predecessor or by a write across an "
     "MSP boundary",
     LANE_EXIT["merge-blocked"]: "a producer branch would not merge",
-    GATE_EXIT["gate-failed"]: "a branch is pushed or a pull request open with an acceptance "
-    "property that proves nothing: it passes with the implementation reverted",
-    GATE_EXIT["gate-inconclusive"]: "a branch is pushed or a pull request open with an acceptance "
-    "property the gate could not judge",
+    LANE_EXIT[run.LANE_PARKED]: "a Worker stopped at a usage limit; the run is parked: pass "
+    "--resume after the limit resets",
+    GATE_EXIT["gate-inert"]: "an MSP was held back instead of pushed: an acceptance property "
+    "proves nothing, because it passes with the implementation reverted",
+    GATE_EXIT["gate-inconclusive"]: "an MSP was held back instead of pushed: the gate could not "
+    "judge an acceptance property, or could not run",
+    GATE_EXIT["gate-weak"]: "an acceptance property passes against a mutant of the work, so it "
+    "cannot tell working code from broken code",
     MSP_EXIT["ship-failed"]: "a commit, push or pull-request command failed",
 }
 
@@ -118,6 +130,7 @@ PLACEHOLDER_HELP = {
     "decompose": "{prompt} {model} {document} {session_id}",
     "brief": " ".join("{%s}" % key for key in BRIEF_PLACEHOLDERS),
     "acceptance": "{file} {test} {worktree}",
+    "gate-setup": "{worktree}",
     "pull-request": "{branch} {base} {title} {body} {worktree} {msp} {remote}",
 }
 
@@ -181,8 +194,10 @@ FLAG_SPECS = {
         "action": "store_true",
         "help": "continue the run in --run-dir: with --spec, load the persisted structure and "
         "brief every Step still unbriefed before planning; Lanes already ok are skipped, "
-        "a gate that blocked is re-run, and a passing gate recorded at the MSP's current HEAD "
-        "with no uncommitted change is reused; the plan id must match",
+        "a gate that blocked is re-run, and a passing gate is reused when it was recorded at "
+        "the commit mitosis gates now, the MSP branch's commit after its pre-gate commit of the "
+        "worktree, so a leftover edit that commit takes forces a new gate, and a worktree HEAD "
+        "off that commit is fatal with exit 9; the plan id must match",
     },
     "--proven-head": {
         "metavar": "LABEL=COMMIT",
@@ -240,6 +255,14 @@ FLAG_SPECS = {
         "help": "runs one acceptance property; placeholders %s; exit 0 passes, exit %d fails, "
         "anything else is inconclusive"
         % (PLACEHOLDER_HELP["acceptance"], run.ACCEPTANCE_FAILURE_EXIT),
+    },
+    "--gate-setup": {
+        "metavar": "TEMPLATE",
+        "help": "prepares the gate's clean checkout once per gate before any acceptance run, "
+        "with the run's --timeout; placeholders %s; when given, the gate links no dependency "
+        "folder from the repository root; only what it writes at new top-level names survives "
+        "each run's reset; a non-zero exit or a timeout holds the MSP back "
+        "gate-failed" % PLACEHOLDER_HELP["gate-setup"],
     },
     "--pr-command": {
         "metavar": "TEMPLATE",
@@ -529,6 +552,7 @@ def check_templates(args):
         ("decompose", args.decompose_command),
         ("brief", args.brief_command),
         ("acceptance", args.acceptance_command),
+        ("gate-setup", args.gate_setup),
         ("pull-request", args.pr_command),
     ):
         if template is None:
@@ -1242,6 +1266,20 @@ def _tally(counts):
     return ", ".join("%d %s" % (counts.get(key, 0), key) for key in core.GATE_OUTCOMES)
 
 
+def _mutant_line(record):
+    if not isinstance(record, dict):
+        return None
+    killed = record.get("killed")
+    tried = _n(record.get("tried") or 0, "mutant") + " tried"
+    if not isinstance(killed, dict):
+        return tried + ", none killed it"
+    return tried + ", killed by %s:%s changed by %s" % (
+        killed.get("file"),
+        killed.get("line"),
+        killed.get("op"),
+    )
+
+
 def gate_lines(plan, state):
     if state is None:
         return ("unavailable: no run has happened",)
@@ -1262,10 +1300,14 @@ def gate_lines(plan, state):
         totals = {key: totals[key] + counts.get(key, 0) for key in totals}
         lines = lines + ("MSP %s: %s (%s)" % (_label(plan, index), gate.get("outcome"), _tally(counts)),)
         for entry in gate.get("properties") or []:
-            if entry.get("outcome") == "pass":
+            tried = _mutant_line(entry.get("mutants"))
+            if entry.get("outcome") == "pass" and tried is None:
                 continue
             where = "%s::%s" % (entry.get("file"), entry.get("test")) if entry.get("file") else entry.get("step")
-            lines = lines + ("  %s: %s (%s)" % (where, entry.get("outcome"), _one_line(entry.get("reason"))),)
+            detail = "; ".join(
+                part for part in (_one_line(entry.get("reason")), tried) if part
+            )
+            lines = lines + ("  %s: %s (%s)" % (where, entry.get("outcome"), detail),)
     return ("%s across %s" % (_tally(totals), _n(gated, "gated MSP")),) + lines
 
 
@@ -1287,6 +1329,7 @@ def reconcile_lines(plan, state):
         unwritten = found.get("unwritten") or []
         untouched = found.get("untouched") or []
         crossing = found.get("crossing") or []
+        written = found.get("referee") or []
         findings = findings + len(undeclared) + len(unwritten)
         lines = lines + (
             "MSP %s: %d undeclared, %d unwritten, %d crossing an MSP boundary,"
@@ -1306,6 +1349,7 @@ def reconcile_lines(plan, state):
             "  crossing: %s belongs to MSP %s" % (entry.get("path"), entry.get("label"))
             for entry in crossing
         )
+        lines = lines + tuple("  referee: " + path for path in written)
     return ("%s from the git log" % _n(findings, "finding"),) + lines
 
 
@@ -1374,44 +1418,129 @@ def reconcile_dirty(findings):
 
 
 def gate_exit(record):
+    if record.get("proven_head"):
+        return None
     if record.get("gate_error"):
         return GATE_EXIT["gate-inconclusive"]
     flag = run.gate_state(record.get("gate") or {})
     return GATE_EXIT.get(flag)
 
 
-def exit_code(state, plan):
-    lanes = plan.get("lanes") or []
-    msps = plan.get("msps") or []
-    if not msps or not (state or {}).get("worktrees"):
-        return EXIT_NO_BRANCHES
-    lane_records = (state or {}).get("lanes") or {}
-    for index in range(len(lanes)):
+def _finding(msp, lane, kind, code, detail):
+    return {"msp": msp, "lane": lane, "kind": kind, "exit": code, "detail": _one_line(detail)}
+
+
+def _lane_findings(plan, lane_records):
+    found = []
+    for index, lane in enumerate(plan.get("lanes") or []):
+        label = _label(plan, lane["msp"])
         record = lane_records.get(str(index))
         if not isinstance(record, dict):
-            return EXIT_INCOMPLETE
-        code = LANE_EXIT.get(record.get("state"), EXIT_INCOMPLETE)
-        if code != EXIT_SHIPPED:
-            return code
-    msp_records = (state or {}).get("msps") or {}
-    for index in range(len(msps)):
-        record = msp_records.get(str(index))
-        if not isinstance(record, dict):
-            return EXIT_INCOMPLETE
-        code = MSP_EXIT.get(record.get("state"), EXIT_INCOMPLETE)
-        if code != EXIT_SHIPPED:
-            return code
-        flagged = gate_exit(record)
-        if flagged is not None:
-            return flagged
-        if (record.get("reconcile") or {}).get("crossing"):
-            return EXIT_CROSSING
-        if run.msp_foreign_writes(plan, index, lane_records):
-            return EXIT_FOREIGN
-        if reconcile_dirty(record.get("reconcile")):
-            return EXIT_RECONCILE
-    if empty_manifests(plan.get("items") or []):
-        return EXIT_MANIFEST
+            found = found + [_finding(label, index, "incomplete", EXIT_INCOMPLETE, "Lane %d has no record" % index)]
+        elif record.get("state") != "ok":
+            found = found + [
+                _finding(
+                    label,
+                    index,
+                    record.get("state") or "incomplete",
+                    LANE_EXIT.get(record.get("state"), EXIT_INCOMPLETE),
+                    record.get("reason") or "",
+                )
+            ]
+    return found
+
+
+def _gate_detail(record):
+    if record.get("gate_error"):
+        return record["gate_error"]
+    gate = record.get("gate") or {}
+    named = [
+        "%s::%s: %s" % (entry.get("file"), entry.get("test"), _one_line(entry.get("reason")))
+        for entry in gate.get("properties") or []
+        if entry.get("outcome") in run.GATE_STATES
+    ]
+    return "; ".join(named) or record.get("reason") or ""
+
+
+def _gate_findings(label, record):
+    flag = gate_exit(record)
+    if flag is None and record.get("state") == run.MSP_GATE_FAILED:
+        flag = GATE_EXIT["gate-inconclusive"]
+    if flag is None:
+        return []
+    kind = next(name for name, code in GATE_EXIT.items() if code == flag)
+    return [_finding(label, None, kind, flag, _gate_detail(record))]
+
+
+def _reconcile_findings(label, found):
+    return (
+        [_finding(label, None, "referee", EXIT_REFEREE, path) for path in found.get("referee") or []]
+        + [
+            _finding(
+                label,
+                None,
+                "crossing",
+                EXIT_CROSSING,
+                "%s belongs to MSP %s" % (entry.get("path"), entry.get("label")),
+            )
+            for entry in found.get("crossing") or []
+        ]
+    )
+
+
+def _msp_findings(plan, index, record, lane_records):
+    label = _label(plan, index)
+    if not isinstance(record, dict):
+        return [_finding(label, None, "incomplete", EXIT_INCOMPLETE, "MSP %s has no record" % label)]
+    state = record.get("state")
+    stated = (
+        []
+        if state in core.DELIVERED_STATES or state == run.MSP_GATE_FAILED
+        else [
+            _finding(
+                label, None, state or "incomplete", MSP_EXIT.get(state, EXIT_INCOMPLETE), record.get("reason") or ""
+            )
+        ]
+    )
+    found = record.get("reconcile") if isinstance(record.get("reconcile"), dict) else {}
+    foreign = [
+        _finding(label, entry["lane"], "foreign", EXIT_FOREIGN, entry.get("path"))
+        for entry in run.msp_foreign_writes(plan, index, lane_records)
+    ]
+    return (
+        stated
+        + _gate_findings(label, record)
+        + _reconcile_findings(label, found)
+        + foreign
+        + [_finding(label, None, "undeclared", EXIT_RECONCILE, path) for path in found.get("undeclared") or []]
+        + [_finding(label, None, "unwritten", EXIT_RECONCILE, path) for path in found.get("unwritten") or []]
+    )
+
+
+def findings(state, plan):
+    manifests = [
+        _finding(None, None, "manifest", EXIT_MANIFEST, line)
+        for line in manifest_lines(plan.get("items") or [])
+    ]
+    if state is None:
+        return manifests
+    lane_records = state.get("lanes") or {}
+    msp_records = state.get("msps") or {}
+    msps = [
+        entry
+        for index in range(len(plan.get("msps") or []))
+        for entry in _msp_findings(plan, index, msp_records.get(str(index)), lane_records)
+    ]
+    return _lane_findings(plan, lane_records) + msps + manifests
+
+
+def exit_code(state, plan):
+    if not plan.get("msps") or not (state or {}).get("worktrees"):
+        return EXIT_NO_BRANCHES
+    carried = {entry["exit"] for entry in findings(state, plan)}
+    worst = next((code for code in EXIT_SEVERITY if code in carried), None)
+    if worst is not None:
+        return worst
     return EXIT_SHIPPED if run.succeeded(state) else EXIT_INCOMPLETE
 
 
@@ -1485,6 +1614,12 @@ def _lane_summary(plan, state):
     ]
 
 
+def _referee_verdict(findings):
+    if not isinstance(findings, dict):
+        return {"referee": None, "fatal": None}
+    return {"referee": list(findings.get("referee") or ()), "fatal": bool(findings.get("fatal"))}
+
+
 def _msp_summary(plan, state):
     records = (state or {}).get("msps") or {}
     summaries = []
@@ -1507,17 +1642,30 @@ def _msp_summary(plan, state):
                     "outcome": gate.get("outcome"),
                     "counts": gate.get("counts") or {},
                     "error": record.get("gate_error"),
+                    "commit": gate.get("commit"),
+                    "properties": [
+                        {
+                            key: entry.get(key)
+                            for key in ("file", "test", "step", "outcome", "reason", "mutants")
+                        }
+                        for entry in gate.get("properties") or []
+                    ],
                     "unproven": [
                         "%s::%s %s" % (entry.get("file"), entry.get("test"), entry.get("outcome"))
                         for entry in gate.get("properties") or []
-                        if entry.get("outcome") in ("inert", "inconclusive")
+                        if entry.get("outcome") in run.BLOCKING_OUTCOMES
                     ],
                 },
                 "reconcile": {
-                    key: list(findings.get(key) or ())
-                    for key in ("undeclared", "unwritten", "untouched")
+                    **{
+                        key: list(findings.get(key) or ())
+                        for key in ("undeclared", "unwritten", "untouched")
+                    },
+                    **_referee_verdict(record.get("reconcile")),
                 },
                 "crossing": [entry.get("path") for entry in findings.get("crossing") or ()],
+                "ignored": list(record.get("ignored") or ()),
+                "trajectory_error": record.get("trajectory_error"),
             }
         )
     return summaries
@@ -1551,9 +1699,20 @@ def _attention(plan, lanes, msps):
             )
         if msp["gate"]["error"]:
             lines.append("MSP %s could not be gated: %s" % (msp["msp"], msp["gate"]["error"]))
+        lines.extend(
+            "MSP %s: %s::%s passed on red and green alone; its Step added no line to mutate"
+            % (msp["msp"], entry["file"], entry["test"])
+            for entry in msp["gate"]["properties"]
+            if entry["outcome"] == "pass" and (entry["mutants"] or {}).get("tried") == 0
+        )
         if msp["crossing"]:
             lines.append(
                 "MSP %s wrote files another MSP owns: %s" % (msp["msp"], ", ".join(msp["crossing"]))
+            )
+        if msp.get("trajectory_error"):
+            lines.append(
+                "MSP %s's outcome entries were not appended to the trajectory: %s"
+                % (msp["msp"], msp["trajectory_error"])
             )
     return lines
 
@@ -1590,7 +1749,7 @@ def _coupling_attention(coupling):
     ]
 
 
-def summary(plan, state, run_dir, code):
+def summary(plan, state, run_dir, code, referee=None, troubles=()):
     lanes = _lane_summary(plan or {}, state)
     msps = _msp_summary(plan or {}, state)
     coupling = _coupling_summary(plan or {})
@@ -1603,16 +1762,59 @@ def summary(plan, state, run_dir, code):
         "lanes": lanes,
         "msps": msps,
         "coupling": coupling,
+        "referee": referee,
+        "findings": findings(state, plan or {}),
         "attention": _attention(plan or {}, lanes, msps)
+        + list(troubles)
         + list(oversized_lines(plan or {}))
         + list(manifest_lines((plan or {}).get("items") or []))
         + _coupling_attention(coupling),
     }
 
 
-def _summarised(plan, state, run_dir, code):
-    _print((json.dumps(summary(plan, state, run_dir, code), separators=(",", ":")),))
+def _summarised(plan, state, run_dir, code, referee=None, troubles=()):
+    _print(
+        (
+            json.dumps(
+                summary(plan, state, run_dir, code, referee, troubles), separators=(",", ":")
+            ),
+        )
+    )
     return code
+
+
+def referee_record(args, plan, repo, base):
+    locked = plan.get("locked") or ()
+    if not locked or base is None:
+        return None
+    return run.locked_record(repo, args.feature_branch, base, locked)
+
+
+def planned_referee(args, plan, repo):
+    try:
+        base = (
+            run.branch_commit(repo, args.feature_branch)
+            if args.feature_branch and repo is not None
+            else None
+        )
+        return referee_record(args, plan, repo, base), ()
+    except (run.ConfigError, run.GitError) as error:
+        return None, (str(error),)
+
+
+def pinned_base(args, plan, run_dir, repo):
+    try:
+        prior = run.prior_state(run_dir, plan, args.resume)
+        return run.pinned_base(repo, args.feature_branch, prior)
+    except (run.ResumeError, run.GitError) as error:
+        raise Refusal(str(error))
+
+
+def locked_referee(args, plan, repo, base):
+    try:
+        return referee_record(args, plan, repo, base)
+    except (run.ConfigError, run.GitError) as error:
+        raise Refusal(str(error))
 
 
 def report(plan, state, decomposed, root, run_dir, code, from_items, decisions=None, items=None):
@@ -1637,7 +1839,7 @@ def report(plan, state, decomposed, root, run_dir, code, from_items, decisions=N
     return lines
 
 
-def execute(args, plan, models, run_dir, repo, root):
+def execute(args, plan, models, run_dir, repo, root, base=None):
     try:
         return run.execute(
             plan,
@@ -1658,6 +1860,9 @@ def execute(args, plan, models, run_dir, repo, root):
             proven_heads=proven_heads(args.proven_head, plan),
             observer=recorder_of(args).observe,
             env=recorder_of(args).env,
+            trajectory=args.trajectory,
+            gate_setup=args.gate_setup,
+            base_commit=base,
         ), None
     except (run.ConfigError, run.ResumeError) as error:
         raise Refusal(str(error))
@@ -1737,11 +1942,14 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
         _print(
             report(plan, None, decomposed, root, run_dir, planned_code(items), from_items, decisions)
         )
-        return _summarised(plan, None, run_dir, planned_code(items))
+        locked, troubles = planned_referee(args, plan, repo)
+        return _summarised(plan, None, run_dir, planned_code(items), locked, troubles)
     refuse_run(args, plan, models, run_dir, repo)
+    base = pinned_base(args, plan, run_dir, repo)
+    locked = locked_referee(args, plan, repo, base)
     run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
     if plan.get("msps"):
-        state, failure = execute(args, plan, models, run_dir, repo, root)
+        state, failure = execute(args, plan, models, run_dir, repo, root, base)
     else:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
         state, failure = {}, None
@@ -1751,7 +1959,7 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     _print(report(plan, state, decomposed, root, run_dir, code, from_items, decisions))
     if failure is not None:
         _print(("the run stopped: %s" % failure,), sys.stderr)
-    return _summarised(plan, state, run_dir, code)
+    return _summarised(plan, state, run_dir, code, locked)
 
 
 def main(argv=None):
