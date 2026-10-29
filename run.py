@@ -1353,14 +1353,29 @@ def _entry_kind(tree, path):
         return None
 
 
-def _open_parents(tree, path):
+def _walk_parents(tree, path, clear):
     for prefix in _prefixes(path)[:-1]:
-        kind = _entry_kind(tree, prefix)
-        if kind is None:
-            os.mkdir(os.path.join(tree, *_parts(prefix)))
-        elif kind != "dir":
+        full = os.path.join(tree, *_parts(prefix))
+        if _entry_kind(tree, prefix) not in (None, "dir") and not clear(full):
             return False
+        if not os.path.lexists(full):
+            os.mkdir(full)
     return True
+
+
+def _open_parents(tree, path):
+    return _walk_parents(tree, path, lambda full: False)
+
+
+def _write_blob(full, mode, data):
+    if mode == SYMLINK_MODE:
+        os.symlink(os.fsdecode(data), full)
+        return
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    descriptor = os.open(full, flags, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        os.fchmod(handle.fileno(), 0o755 if mode == EXECUTABLE_MODE else 0o644)
+        handle.write(data)
 
 
 def _write_entry(tree, path, mode, data):
@@ -1370,14 +1385,7 @@ def _write_entry(tree, path, mode, data):
     full = tree_path(tree, path, last=False)
     if kind is not None:
         os.remove(full)
-    if mode == SYMLINK_MODE:
-        os.symlink(os.fsdecode(data), full)
-        return True
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-    descriptor = os.open(full, flags, 0o600)
-    with os.fdopen(descriptor, "wb") as handle:
-        os.fchmod(handle.fileno(), 0o755 if mode == EXECUTABLE_MODE else 0o644)
-        handle.write(data)
+    _write_blob(full, mode, data)
     return True
 
 
@@ -2003,27 +2011,20 @@ def _expected_kind(mode):
     return "link" if mode == SYMLINK_MODE else "file"
 
 
+def _clear_obstruction(full):
+    if os.path.islink(full) or (os.path.lexists(full) and not os.path.isdir(full)):
+        os.remove(full)
+    return True
+
+
 def _make_parents(tree, path):
-    for prefix in _prefixes(path)[:-1]:
-        full = os.path.join(tree, *_parts(prefix))
-        if os.path.islink(full) or (os.path.lexists(full) and not os.path.isdir(full)):
-            os.remove(full)
-        if not os.path.lexists(full):
-            os.mkdir(full)
+    _walk_parents(tree, path, _clear_obstruction)
 
 
 def _place(tree, path, mode, data):
     _make_parents(tree, path)
     _remove_entry(tree, path)
-    full = tree_path(tree, path, last=False)
-    if mode == SYMLINK_MODE:
-        os.symlink(os.fsdecode(data), full)
-        return
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-    descriptor = os.open(full, flags, 0o600)
-    with os.fdopen(descriptor, "wb") as handle:
-        os.fchmod(handle.fileno(), 0o755 if mode == EXECUTABLE_MODE else 0o644)
-        handle.write(data)
+    _write_blob(tree_path(tree, path, last=False), mode, data)
 
 
 def _safe_module_name(name):
