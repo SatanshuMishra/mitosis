@@ -15,6 +15,10 @@ RETURN_KEYS = ("items", "assumptions", "constraints")
 
 DISPATCH_ATTEMPTS = 2
 
+GIT_TIMEOUT = 600
+
+KILL_GRACE = 30
+
 PROMPT_PLACEHOLDER = "{prompt}"
 MODEL_PLACEHOLDER = "{model}"
 DOCUMENT_PLACEHOLDER = "{document}"
@@ -411,8 +415,9 @@ def _tracked(base):
             ["git", "-C", base, "ls-files", "-z"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
+            timeout=GIT_TIMEOUT,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     if completed.returncode != 0:
         return None
@@ -631,7 +636,10 @@ def spawn(argv, prompt, timeout, cwd=None, log=None, env=None):
         out, err = process.communicate(prompt.encode("utf-8"), timeout=timeout)
     except subprocess.TimeoutExpired:
         _kill_tree(process)
-        out, err = process.communicate()
+        try:
+            out, err = process.communicate(timeout=KILL_GRACE)
+        except subprocess.TimeoutExpired:
+            out, err = b"", b""
         reason = "timeout after %s seconds" % timeout
     _write_log(log, out, err)
     lines = [line.strip() for line in out.decode("utf-8", "replace").splitlines() if line.strip()]
