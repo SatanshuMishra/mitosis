@@ -1730,6 +1730,16 @@ def gate(
     }
 
 
+def _setup_unrun(properties, written):
+    reason = (
+        "the --gate-setup command wrote %s, which the referee owns, so no acceptance run was judged"
+        % ", ".join(written)
+    )
+    return tuple(
+        {**entry, "reason": reason} if entry["outcome"] is None else entry for entry in properties
+    )
+
+
 def _gate_runs(
     plan, msp, tree, base, command, log_dir, timeout, env, commit, properties, folder, repo, setup
 ):
@@ -1751,7 +1761,8 @@ def _gate_runs(
         else tuple(name for name in kept if referee.top_level_reason(name, locked) is not None)
     )
     if setup_written:
-        return _gate_result(properties, implementation, commit, ()), setup_written
+        unrun = _setup_unrun(properties, setup_written)
+        return _gate_result(unrun, implementation, commit, ()), setup_written
 
     def reset(target):
         return reset_gate_folder(tree, folder, target, kept, locked)
@@ -3164,9 +3175,15 @@ def _gate_outcomes(plan, msp, result, settings):
     ]
 
 
+def _setup_refereed_without_runs(result):
+    return bool(result.get("referee")) and not any(
+        "with_work" in prop for prop in result.get("properties") or ()
+    )
+
+
 def _trajectory_stage(plan, msp, gated, settings):
     path = settings.get("trajectory")
-    if not path or gated["gate"] is None:
+    if not path or gated["gate"] is None or _setup_refereed_without_runs(gated["gate"]):
         return {}
     try:
         outcomes.append(path, _gate_outcomes(plan, msp, gated["gate"], settings))
