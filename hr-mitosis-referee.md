@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
-Status: active
-Updated: 2026-10-29T01:56:10.997Z
+Status: parked
+Updated: 2026-10-29T01:56:22.306Z
 Next ids: c7 D8 R5 S1
 
 ## Goal
@@ -22,9 +22,9 @@ MSP mitosis/hr-mitosis-referee is pushed at e69ab25 (the green-reviewed 477fe8b 
 
 ## Next step
 
-Run SHIP=1 /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/run.zsh --resume --proven-head hr-mitosis-referee=477fe8b3fc826da233bd7c3762a6ece1585f9d82, open the ready pull request from mitosis's JSON title and body, assign the user, post review/hr-mitosis-referee.comment.md plus the receipt-lock lines and D6, turn on Auto-fix, then park at awaiting-merge and update PROGRAM.md row 2.
+Awaiting merge of https://github.com/SatanshuMishra/mitosis/pull/27. The user starts Integration by saying the MSP pull request merged: then resume_thread hr-mitosis-referee, read /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/CHARTER.md, and run the pipeline:run skill's Integration stage on feat/hr-mitosis-referee.
 
-Needs: D6, D7, R1, R3.
+Needs: D6, R1, R2.
 
 ## Decisions in force
 
