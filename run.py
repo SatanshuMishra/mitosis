@@ -13,6 +13,7 @@ import time
 import unicodedata
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
+from functools import lru_cache
 
 import core
 import mutants
@@ -140,7 +141,12 @@ LINE_DIFF = (
     "--text",
 )
 
-HUNK_HEADER = re.compile(rb"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
+DIFF_SECTION = re.compile(
+    rb"^(?:diff --git a/old/(\d+) b/new/\d+|@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@)",
+    re.MULTILINE,
+)
+
+STEP_CACHE_SIZE = 8
 
 
 class GitError(RuntimeError):
@@ -1539,13 +1545,18 @@ def _changed_paths(before, after):
     )
 
 
+def _changes(tree, base, commit, paths):
+    before = _committed_entries(tree, base)
+    after = _committed_entries(tree, commit)
+    names = tuple(path for path in _changed_paths(before, after) if _under(path, paths))
+    return names, before, after
+
+
 def _step_changes(plan, msp, tree, base, commit, entry):
     paths = tuple(step_implementation_paths(plan, msp, entry["step"]))
     if not paths:
         return (), (), {}, {}
-    before = _committed_entries(tree, base)
-    after = _committed_entries(tree, commit)
-    names = tuple(path for path in _changed_paths(before, after) if _under(path, paths))
+    names, before, after = _changes(tree, base, commit, paths)
     return paths, names, before, after
 
 
@@ -1563,20 +1574,36 @@ def _line_file(folder, name, data):
         handle.write(data + b"\n")
 
 
-def _added_lines(old, new):
+def _added_lines_of_each(pairs):
+    if not pairs:
+        return ()
     with tempfile.TemporaryDirectory(prefix="mitosis-diff-") as folder:
-        _line_file(folder, "old", old)
-        _line_file(folder, "new", new)
+        for side in ("old", "new"):
+            os.mkdir(os.path.join(folder, side))
+        for number, (old, new) in enumerate(pairs):
+            _line_file(os.path.join(folder, "old"), str(number), old)
+            _line_file(os.path.join(folder, "new"), str(number), new)
         args = [*LINE_DIFF, "old", "new"]
         env = {**PINNED_GIT, "GIT_CEILING_DIRECTORIES": os.path.dirname(folder)}
         completed = git_run(args, folder, raw=True, env=env)
     if completed.returncode not in (0, 1):
         raise GitError(args, completed.returncode, completed.stderr)
-    return [
-        number
-        for start, count in HUNK_HEADER.findall(completed.stdout)
-        for number in range(int(start), int(start) + int(count or b"1"))
-    ]
+    found = {}
+    current = None
+    for section in DIFF_SECTION.finditer(completed.stdout):
+        if section.group(1) is not None:
+            current = int(section.group(1))
+            continue
+        if current is None:
+            continue
+        start = int(section.group(2))
+        count = int(section.group(3) or b"1")
+        found = {**found, current: found.get(current, ()) + tuple(range(start, start + count))}
+    return tuple(list(found.get(number, ())) for number in range(len(pairs)))
+
+
+def _added_lines(old, new):
+    return _added_lines_of_each(((old, new),))[0]
 
 
 def _text_blobs(tree, entries, names):
@@ -1589,22 +1616,31 @@ def _text_blobs(tree, entries, names):
     return {name: blobs[oid] for name, oid in regular.items()}
 
 
-def property_mutants(plan, msp, tree, base, commit, entry):
-    paths, names, before, after = _step_changes(plan, msp, tree, base, commit, entry)
-    if not paths:
-        return ()
+@lru_cache(maxsize=STEP_CACHE_SIZE)
+def _step_added(tree, base, commit, paths):
+    names, before, after = _changes(tree, base, commit, paths)
     old = _text_blobs(tree, before, names)
     new = _text_blobs(tree, after, names)
-    added = {
-        name: lines
+    measured = tuple(
+        name
         for name in sorted(new)
         if not _binary(new[name]) and not _binary(old.get(name, b""))
-        for lines in (_added_lines(old.get(name, b""), new[name]),)
-        if lines
-    }
+    )
+    lines = _added_lines_of_each(tuple((old.get(name, b""), new[name]) for name in measured))
+    added = tuple((name, found) for name, found in zip(measured, lines) if found)
+    return added, tuple((name, new[name]) for name, _ in added)
+
+
+def property_mutants(plan, msp, tree, base, commit, entry):
+    paths = tuple(step_implementation_paths(plan, msp, entry["step"]))
+    if not paths:
+        return ()
+    pairs, texts = _step_added(tree, base, commit, paths)
+    added = dict(pairs)
+    held = dict(texts)
 
     def read(path):
-        return _decoded(new[path])
+        return _decoded(held[path])
 
     found = mutants.compute(added, read) or mutants.fallback(added, read)
     return tuple(mutants.select(found, MUTANT_CAP))
