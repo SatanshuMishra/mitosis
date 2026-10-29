@@ -1346,27 +1346,34 @@ def _reset_submodule_heads(tree, base, held, targets):
             )
 
 
-def _entry_kind(tree, path):
-    if _behind_link(tree, path):
-        return "linked"
+def _lstat_kind(tree, path):
     try:
         return _kind(os.lstat(os.path.join(tree, *_parts(path))).st_mode)
     except FileNotFoundError:
         return None
 
 
-def _walk_parents(tree, path, clear):
+def _entry_kind(tree, path):
+    if _behind_link(tree, path):
+        return "linked"
+    return _lstat_kind(tree, path)
+
+
+def _walk_parents(tree, path, clear, kind_of):
     for prefix in _prefixes(path)[:-1]:
         full = os.path.join(tree, *_parts(prefix))
-        if _entry_kind(tree, prefix) not in (None, "dir") and not clear(full):
-            return False
-        if not os.path.lexists(full):
+        kind = kind_of(tree, prefix)
+        if kind not in (None, "dir"):
+            if not clear(full):
+                return False
+            kind = None
+        if kind is None:
             os.mkdir(full)
     return True
 
 
 def _open_parents(tree, path):
-    return _walk_parents(tree, path, lambda full: False)
+    return _walk_parents(tree, path, lambda full: False, _entry_kind)
 
 
 def _write_blob(full, mode, data):
@@ -2020,7 +2027,7 @@ def _clear_obstruction(full):
 
 
 def _make_parents(tree, path):
-    _walk_parents(tree, path, _clear_obstruction)
+    _walk_parents(tree, path, _clear_obstruction, _lstat_kind)
 
 
 def _place(tree, path, mode, data):
