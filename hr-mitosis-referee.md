@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: parked
-Updated: 2026-10-29T03:48:29.048Z
+Updated: 2026-10-29T03:48:34.165Z
 Next ids: c7 D8 R5 S1
 
 ## Goal
@@ -22,9 +22,9 @@ The FEATURE pull request https://github.com/SatanshuMishra/mitosis/pull/28 (feat
 
 ## Next step
 
-Awaiting merge of https://github.com/SatanshuMishra/mitosis/pull/27. The user starts Integration by saying the MSP pull request merged: then resume_thread hr-mitosis-referee, read /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/CHARTER.md, and run the pipeline:run skill's Integration stage on feat/hr-mitosis-referee.
+Awaiting merge of the FEATURE pull request https://github.com/SatanshuMishra/mitosis/pull/28. The user starts Clean-up by saying the FEATURE pull request merged: then resume_thread hr-mitosis-referee, read /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/CHARTER.md, and run the pipeline:run skill's Clean-up stage.
 
-Needs: D6, R1, R2.
+Needs: R1, R2.
 
 ## Decisions in force
 
