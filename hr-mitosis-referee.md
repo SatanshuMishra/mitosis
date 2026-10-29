@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: parked
-Updated: 2026-10-29T01:56:22.306Z
+Updated: 2026-10-29T03:33:51.909Z
 Next ids: c7 D8 R5 S1
 
 ## Goal
@@ -18,7 +18,7 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-MSP mitosis/hr-mitosis-referee is pushed at e69ab25 (the green-reviewed 477fe8b plus the glossary section and ADRs 0006 to 0009) and open as ready pull request https://github.com/SatanshuMishra/mitosis/pull/27 into feat/hr-mitosis-referee, assigned to the user, with the review comment and a second comment holding the receipt-lock lines, D6 and the later assumptions; Auto-fix is on. The ship run exited 6 only for expected reconcile findings: 36 undeclared writes (fix receipts and the docs commit) and 8 declared acceptance files no Worker wrote (the check author wrote them). For the final report: the rejected and outside-class items (round 1 C4, S6, S3, S7, S8; round 2 C2, S1, S4; round 3 S2, S3; round 4 S3; round 5 C6; round 6 S3; round 7 S1; round 8 C1, S1, S2; the automated commit flags) and the GIT_DIFF_OPTS follow-up (an inherited GIT_DIFF_OPTS overrides -U0; pin it in PINNED_GIT with a receipt). The owner's checkout still holds this run's uncommitted glossary section and untracked ADRs 0006 to 0009, identical to the shipped copies.
+Integration: the MSP pull request https://github.com/SatanshuMishra/mitosis/pull/27 merged into feat/hr-mitosis-referee at 1b1bab9; pipeline integration-ready reports ready; the checkout's main is up to date with origin/main, so Sync deleted nothing. lighthouse:test run 1 on feat/hr-mitosis-referee against main is next, results in the run home's lighthouse/run-1. For the final report: the rejected and outside-class items (round 1 C4, S6, S3, S7, S8; round 2 C2, S1, S4; round 3 S2, S3; round 4 S3; round 5 C6; round 6 S3; round 7 S1; round 8 C1, S1, S2; the automated commit flags) and the GIT_DIFF_OPTS follow-up (an inherited GIT_DIFF_OPTS overrides -U0; pin it in PINNED_GIT with a receipt). The owner's checkout still holds this run's uncommitted glossary section and untracked ADRs 0006 to 0009, identical to the shipped copies.
 
 ## Next step
 
