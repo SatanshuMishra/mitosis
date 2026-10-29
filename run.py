@@ -114,6 +114,8 @@ PINNED_GIT = {
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_CONFIG_GLOBAL": os.devnull,
     "GIT_ATTR_NOSYSTEM": "1",
+    "GIT_CONFIG_PARAMETERS": "",
+    "GIT_CONFIG_COUNT": "0",
 }
 
 STATUS_SETTINGS = (
@@ -1603,7 +1605,7 @@ def _added_lines_of_each(pairs):
             current = int(section.group(1))
             continue
         if current is None:
-            continue
+            raise GitError(args, completed.returncode, "a hunk header arrived before any file header")
         start = int(section.group(2))
         count = int(section.group(3) or b"1")
         found = {**found, current: found.get(current, ()) + tuple(range(start, start + count))}
