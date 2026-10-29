@@ -1,6 +1,6 @@
 # hr-mitosis-referee: Run 2 of the harness-redesign program: mitosis as one locked referee
 Status: parked
-Updated: 2026-10-29T03:48:34.165Z
+Updated: 2026-10-29T04:08:20.147Z
 Next ids: c7 D8 R5 S1
 
 ## Goal
@@ -18,13 +18,11 @@ Run 2 of the harness-redesign program (~/.mitosis/harness-redesign/PROGRAM.md, t
 
 ## Where things stand
 
-The FEATURE pull request https://github.com/SatanshuMishra/mitosis/pull/28 (feat/hr-mitosis-referee into main) is open, ready, assigned to the user, bound with Auto-fix on, after lighthouse run 1 judged it green: suite passed on both builds, 29 of 29 paths passed (23 new, 6 neighbours), 5,816,604 tokens, 10.8 minutes, 5.36 dollars (results in the run home's lighthouse/run-1). For the final report: the rejected and outside-class items (round 1 C4, S6, S3, S7, S8; round 2 C2, S1, S4; round 3 S2, S3; round 4 S3; round 5 C6; round 6 S3; round 7 S1; round 8 C1, S1, S2; the automated commit flags) and the GIT_DIFF_OPTS follow-up (an inherited GIT_DIFF_OPTS overrides -U0; pin it in PINNED_GIT with a receipt). The owner's checkout still holds this run's uncommitted glossary section and untracked ADRs 0006 to 0009, identical to the shipped copies.
+Done: the FEATURE pull request https://github.com/SatanshuMishra/mitosis/pull/28 merged into main at 58f258c, and pipeline clean removed the run's worktrees, branches, run folders, run home and spec files, keeping nothing. Worked examples (automated-security-notes.md, rounds.md, the D6 do-not-flag lines and the round-6 diagnoses) are in ~/.mitosis/harness-redesign/examples/hr-mitosis-referee/. The checkout's main is still at 1391d39: its GLOSSARY.md is main's plus the paused step-commits-render-fields run's Pull requests section, so the fast-forward is refused and the checkout is left as it is. Follow-up: pin GIT_DIFF_OPTS in PINNED_GIT with a receipt.
 
 ## Next step
 
-Awaiting merge of the FEATURE pull request https://github.com/SatanshuMishra/mitosis/pull/28. The user starts Clean-up by saying the FEATURE pull request merged: then resume_thread hr-mitosis-referee, read /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/CHARTER.md, and run the pipeline:run skill's Clean-up stage.
-
-Needs: R1, R2.
+None: run 2 is done and cleaned; close the thread.
 
 ## Decisions in force
 
@@ -60,3 +58,4 @@ Needs: R1, R2.
 - Fix agent rules: /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/review/round-1/fix-brief-common.md
 - Parent's pinned-state guidance for S1, P2, P3 and C1 (one class, one fix agent when one implementation covers them; requirement-wrong if the requirement forces reading the Worker's submodule checkout, reported to the parent): /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/review/round-5/pinned-state-guidance.md
 - Ship result (mitosis JSON) and the posted comments: /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-referee/ship.out, review/hr-mitosis-referee.comment.md and review/hr-mitosis-referee.comment-locks.md
+- Worked examples kept after clean: /Users/satanshumishra/.mitosis/harness-redesign/examples/hr-mitosis-referee/
