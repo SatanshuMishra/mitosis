@@ -1598,7 +1598,7 @@ def _added_lines_of_each(pairs):
         completed = git_run(args, folder, raw=True, env=env)
     if completed.returncode not in (0, 1):
         raise GitError(args, completed.returncode, completed.stderr)
-    found = {}
+    per_file = [[] for _ in pairs]
     current = None
     for section in DIFF_SECTION.finditer(completed.stdout):
         if section.group(1) is not None:
@@ -1608,12 +1608,12 @@ def _added_lines_of_each(pairs):
             raise GitError(args, completed.returncode, "a hunk header arrived before any file header")
         start = int(section.group(2))
         count = int(section.group(3) or b"1")
-        found = {**found, current: found.get(current, ()) + tuple(range(start, start + count))}
-    return tuple(list(found.get(number, ())) for number in range(len(pairs)))
+        per_file[current].extend(range(start, start + count))
+    return tuple(tuple(numbers) for numbers in per_file)
 
 
 def _added_lines(old, new):
-    return _added_lines_of_each(((old, new),))[0]
+    return list(_added_lines_of_each(((old, new),))[0])
 
 
 def _text_blobs(tree, entries, names):

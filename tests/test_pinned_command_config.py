@@ -54,7 +54,7 @@ def command_scope_lines():
 
 class PinnedCommandConfig(unittest.TestCase):
     def the_baseline_is_the_two_added_runs_of_each_pair(self):
-        self.assertEqual(added_lines_without_command_scope(), ([2, 3], [2]))
+        self.assertEqual(added_lines_without_command_scope(), ((2, 3), (2,)))
 
     def inherited_parameters_do_not_change_the_added_lines(self):
         expected = added_lines_without_command_scope()
