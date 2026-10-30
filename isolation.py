@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import stat
+import unicodedata
 
 import run
 
@@ -220,13 +221,22 @@ def place_entries(tree, entries):
             run._place(tree, path, *entry)
 
 
+def _names_git_folder(part):
+    return unicodedata.normalize("NFC", part).casefold() == CLONE_GIT
+
+
+def _git_depth(path):
+    parts = run._parts(path)
+    return next((depth for depth, part in enumerate(parts, 1) if _names_git_folder(part)), None)
+
+
 def _inside_nested_git(path):
-    return CLONE_GIT in run._parts(path)
+    return _git_depth(path) is not None
 
 
 def _reported(path):
-    parts = run._parts(path)
-    return "/".join(parts[: parts.index(CLONE_GIT) + 1]) if CLONE_GIT in parts else path
+    depth = _git_depth(path)
+    return path if depth is None else "/".join(run._parts(path)[:depth])
 
 
 def _escapes(clone, path):
