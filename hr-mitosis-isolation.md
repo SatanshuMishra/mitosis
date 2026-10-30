@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: parked
-Updated: 2026-10-30T08:42:16.647Z
+Updated: 2026-10-30T09:01:38.874Z
 Next ids: c8 D3 R3 S3
 
 ## Goal
@@ -19,11 +19,11 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override), pushed. MSP branch mitosis/isolation is pushed at bb7adda as SatanshuMishra/mitosis#29 (ready, assigned, bound, Auto-fix on); the driver has told the owner to hold its merge until round 3 is green. Round 3 (driver escalation of W1, a --worker-write path overlapping the run folder, and W2, a confined process outliving its run): both fixes and the ADR lint fix that turned #29's CI red are on mitosis/isolation, not pushed (fix-check clean, locked files unchanged; fix notes in review/round-3/fix-*.out.txt); round 3 is green (review/round-3/isolation.verdict.json) with advisory C1 fixed at 4f5fdd1; S1 (a --worker-write overlapping the repository or its git directory) is ruled closed (S2) and fixed at 2892811; round 4 reviews the fix diff 27f92e7..2892811 in review/round-4/. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md. Four assumptions are in review/isolation.assumptions.txt.
+FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override), pushed. MSP branch mitosis/isolation is pushed at bb7adda as SatanshuMishra/mitosis#29 (ready, assigned, bound, Auto-fix on); the driver has the owner holding its merge. Local head 2892811, not pushed, carries the driver-escalated fixes W1 (worker write paths, with S2) and W2 (confined processes ended before output is read), advisory C1 and the ADR lint fix for #29's red CI; rounds 3 and 4 are green (review/round-3/, review/round-4/); slow checks and release-check at 2892811 are running. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md. Four assumptions are in review/isolation.assumptions.txt.
 
 ## Next step
 
-When round 4's reviewers end, run candidates, validator, record, verdict and outcome; on green record a ship boundary superseding D2, re-ship with --proven-head isolation=<head> so #29 updates, refresh its review comment, and report to the driver.
+When the round 4 slow checks pass, record a ship boundary superseding D2, re-ship with --proven-head isolation=<head> so #29 updates, refresh its review comment, and report to the driver.
 
 Needs: D2, R1.
 
