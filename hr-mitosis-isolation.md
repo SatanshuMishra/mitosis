@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T02:01:05.332Z
+Updated: 2026-10-30T02:04:44.720Z
 Next ids: c8 D2 R3 S2
 
 ## Goal
@@ -19,11 +19,11 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-Stage 2 setup done: FEATURE feat/hr-mitosis-isolation at 58f258c; run home holds worker-rules.txt (with prevent standards), CHARTER.md (19 Locked lines), dispatch.zsh, run.zsh, items.json (check-author removed) and graph.json. The seven locked tests (29 acceptance lines) are written, uncommitted, in the lock-tree worktree under the run home (O2 override); all 29 lines exit 1 at base (lock-verify.txt), and a full-suite run there (lock-suite.txt) is pending before the lock commit. Base suite at 58f258c passes 718 of 718 in a clean worktree; the owner's checkout fails 2 only because of R1's files.
+FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (seven test files, 29 acceptance lines, written by a hand-dispatched check-author: O2 override), pushed. At the lock every new line exits 1 by assertion and the other 718 tests pass (lock-suite.txt: 33 failures, all new). run.zsh --plan-only exits 0: one MSP isolation of six Lanes, referee K2 at b7d8b44 over 19 locked paths; every Lane is flagged above 150000 estimated tokens (attention only).
 
 ## Next step
 
-When the check-author returns, confirm every acceptance line exits 1 at base and run 2's locked tests still pass, commit the seven files on FEATURE as "test: lock the acceptance checks" in lock-tree, push, remove lock-tree, then run run.zsh --plan-only.
+Start the first build with run.zsh (no SHIP, --no-push) in the background, then read its JSON result and write lane Assumption notes to review/isolation.assumptions.txt.
 
 Needs: D1, R1.
 
