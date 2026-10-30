@@ -42,13 +42,14 @@ claude plugin marketplace add SatanshuMishra/mitosis
 claude plugin install mitosis@mitosis
 ```
 
-The plugin carries the skill and the ten modules it runs — `core.py`,
+The plugin carries the skill and the thirteen modules it runs — `core.py`,
 `shape.py`, `decompose.py`, `briefs.py`, `run.py`, `pr_facts.py`,
-`mitosis.py`, `metrics.py`, `spend.py`, `metrics_writer.py` — and the two data
-files they read, `prices.json` and `catalogue.json`, which need Python 3.9 or
-later. A run that names `--pr-type` and `--pr-subject` also needs the
-pull-request command, 0.3.0 or later, on PATH or named with
-`--render-command`, because mitosis writes no pull-request text itself.
+`mitosis.py`, `metrics.py`, `spend.py`, `metrics_writer.py`, `referee.py`,
+`mutants.py`, `outcomes.py` — and the two data files they read,
+`prices.json` and `catalogue.json`, which need Python 3.9 or later. A run
+that names `--pr-type` and `--pr-subject` also needs the pull-request
+command, 0.3.0 or later, on PATH or named with `--render-command`, because
+mitosis writes no pull-request text itself.
 
 To update, refresh the marketplace, update the plugin, and restart:
 
@@ -62,7 +63,7 @@ release changes it; `CHANGELOG.md` lists them. The version is part of each
 plan's id, so finish a run before updating: it cannot be resumed on another
 release.
 
-Without Claude Code, copy the ten modules into one directory and invoke
+Without Claude Code, copy the thirteen modules into one directory and invoke
 `mitosis.py` by path. They import one another, so they must stay side by
 side.
 
@@ -142,17 +143,125 @@ not the full surface.
 `--no-push` builds, gates and reconciles every MSP and publishes nothing;
 `--resume` with the same input and run directory continues a run, and
 without `--no-push` ships what was held. A resume reuses an MSP's recorded
-gate result when it passed, the MSP's HEAD is the commit the gate ran at and
-its worktree holds no uncommitted change; otherwise the MSP is gated again.
+gate result when it passed and the MSP's HEAD is the commit the gate ran at;
+otherwise the MSP is gated again. Files the worktree holds outside that commit
+play no part, since the gate never reads them.
 
 A caller that proved a later head itself names it with
 `--proven-head <MSP label>=<commit>`, once per MSP. mitosis ships that head
-without gating again when the MSP's HEAD equals the commit, its worktree is
-clean and a passing gate result is recorded, and the pull request's Testing
-section gets a Proven head row, marked Not run, naming both commits. A head
-that differs, or an MSP with no recorded gate result, is gated as before; a
+without gating again when the MSP's HEAD equals the commit and a passing
+gate result is recorded, and the pull request's Testing section gets a
+Proven head row, marked Not run, naming both commits. A head that
+differs, or an MSP with no recorded gate result, is gated as before; a
 malformed value or a label the plan does not hold exits 2 before anything is
 built.
+
+A gate that is interrupted leaves the Worker's worktree as it was, because
+the gate never runs there; the next gate removes the gate folder left behind.
+
+## The referee and the gate
+
+The referee is the set of files that decide whether the work is done, and no
+Worker may write it. A charter names its locked checks one per line, as
+`- Locked: tests/test_search.py`, and mitosis adds built-in referee markers
+for test configuration such as `conftest.py` or `pytest.ini`, snapshots,
+baselines, allowlists and skip lists. Planning refuses a Step whose files
+hold a referee path, with exit 3, before anything is built. A Worker that
+writes one anyway has the file restored from the feature branch, and its MSP
+is held back as `referee-reverted` and never pushed, with exit 9. mitosis
+finds such a write after the MSP's pre-gate commit, and also when that commit
+fails, by comparing the feature branch's tree with the branch head's tree
+through git's tree objects, with replace objects, system and global config,
+attributes and filters kept out, so no Worker-written setting shapes what it
+reads. The revert is a commit before the gate. The referee and the gate
+judge one commit, the MSP branch's, so a worktree HEAD that is detached, on
+another branch or at another commit is fatal too, with exit 9, and the gate
+does not run. The JSON
+result's `referee` object names the locked paths, their receipt lock and the
+commit they were read at. A real run refuses, with exit 3, a charter whose
+`- Locked:` path the feature branch does not hold, and a `- Locked:` line that
+is empty, absolute or contains `..`.
+
+The gate runs each acceptance property with the work present and with the
+implementation reverted, then runs each passing property against up to 12
+mutants of its Step's added lines, each one a small change to an added line,
+such as a flipped comparison, a swapped operator, a flipped true or false, a
+number shifted by one or a replaced return value. Strings and comments are
+left alone, and when no operator applies to any added line the gate drops the
+added lines of each file instead. A Step that changed a symbolic link is
+judged `inconclusive`, because the gate never writes through a link. A
+property no mutant fails is judged `weak`, with exit 24: it passes whether or
+not the work is right. An MSP
+whose gate is `weak`, `inert` or `inconclusive` ends `gate-failed`: its work
+is committed on its branch and never pushed, so no pull request opens on an
+unproven property.
+
+The gate, every mutant run and every acceptance run execute in a clean
+checkout of the MSP's committed tree, a folder outside the Worker's worktree
+written from git's tree objects and passed as `{worktree}`. The folder is
+reset to its target tree before every run and removed after the gate. It is
+not a git repository and holds the commit's raw blob bytes. Files the commit
+does not carry never reach the gate: each MSP's `ignored` list in the JSON
+result names them, and mitosis never restores, removes or judges them.
+
+The folder is reset to the commit's raw blob bytes before every acceptance
+and mutant run, while `--gate-setup` runs once per gate, so what setup writes
+survives that reset only at top-level names the commit lacks, such as the
+`.git` folder a setup's `git init` makes or a new top-level build folder. An
+acceptance command or test that runs git needs `--gate-setup`, which can make
+`.git` at the top level. A top-level file the setup makes at a referee path,
+such as `conftest.py`, and a top-level folder whose name is a referee folder or
+holds a `- Locked:` path, such as `__snapshots__` or `.receipts`, is a referee
+write, fatal with exit 9; mitosis judges that top-level name and never walks
+into a kept folder such as node_modules. A Git LFS file
+arrives as its pointer text, and a committed eol attribute is not applied in
+every run, whatever `--gate-setup` does. An acceptance test that reads the
+real content ends `inconclusive` and holds the MSP back as `gate-failed`, with
+exit 21. The gate cannot tell pointer text from real content, so a property
+that holds on pointer text is judged on pointer text.
+
+Dependency folders come from outside the Worker's control. Without
+`--gate-setup`, the gate links in each node_modules folder and each
+virtual-environment folder, one holding `pyvenv.cfg`, that the repository
+root holds and the commit lacks. With `--gate-setup`, the gate links nothing
+and runs that command once per gate in the clean checkout, with `{worktree}`
+naming it and the run's `--timeout`; a project whose root folders point back
+into the root checkout, such as an editable install, uses it. A gate setup
+that exits non-zero or times out runs no acceptance test and holds the MSP
+back as `gate-failed`, with exit 21, and a gate error naming the gate setup.
+A pre-gate commit that git refuses holds the MSP back the same way, with
+exit 21, its work left uncommitted in the worktree and no gate run.
+
+An acceptance run that leaves a referee path in the clean checkout differing
+from the commit is caught the same way as a committed write: the gate lists
+it under its `referee` list, and the MSP is held back as `referee-reverted`
+and never pushed, with exit 9.
+
+A base submodule whose gitlink the branch changed and whose commits cannot be
+read holds the MSP back as `gate-failed`, with exit 21, and a gate error
+saying the submodule cannot be judged. A committed referee write inside a base
+submodule is reverted by resetting the submodule's gitlink to the base's, and
+holds the MSP back as `referee-reverted`, with exit 9.
+
+Ship refuses an MSP whose branch head is not the gated commit unless
+`--proven-head` names that head; the refusal ends the MSP `ship-failed`, with
+exit 22, and nothing is pushed.
+
+`--trajectory PATH` reads prior outcomes to raise a surface's tier, and after
+every gate also receives one outcome entry per acceptance test, appended to
+that file.
+
+Every git call times out after 600 seconds and fails with an error naming the
+command and that a hook or a lock may be hanging, so a stuck git never stalls
+a run.
+
+A Worker that stops at a usage limit leaves its Lane `parked-limit`; Lanes
+not yet dispatched park with it, and their MSPs end `parked`, with exit 13.
+After the limit resets, `--resume` runs every Lane that is not `ok`.
+
+The JSON result's `findings` list carries one entry per problem the run
+found, each naming its MSP, its Lane, its kind, its exit code and a detail,
+and the exit code is the most severe finding's.
 
 ## Metrics
 

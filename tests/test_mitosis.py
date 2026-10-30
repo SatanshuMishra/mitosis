@@ -567,7 +567,7 @@ class Staging(unittest.TestCase):
             write(root, "run/structure.json", json.dumps([briefed("alpha"), bare("beta")]))
             seen = None
 
-            def fake_execute(args, plan, models, run_dir, repo, root_dir):
+            def fake_execute(args, plan, models, run_dir, repo, root_dir, base=None):
                 nonlocal seen
                 seen = plan
                 return {}, None
@@ -765,6 +765,19 @@ class ReconcileReporting(unittest.TestCase):
         self.assertIn("1 finding from the git log", lines[0])
         self.assertTrue(mitosis.reconcile_dirty(found))
 
+    def a_referee_write_is_listed_and_carried_in_the_summary(self):
+        found = {"undeclared": ["tests/conftest.py"], "unwritten": [], "untouched": [],
+                 "crossing": [], "referee": ["tests/conftest.py"], "fatal": True}
+        state = {"msps": {"0": {"state": "referee-reverted", "reconcile": found}}}
+        lines = mitosis.reconcile_lines(self.PLAN, state)
+        self.assertIn("  referee: tests/conftest.py", lines)
+        summarised = mitosis._msp_summary(self.PLAN, state)[0]["reconcile"]
+        self.assertEqual(
+            summarised,
+            {"undeclared": ["tests/conftest.py"], "unwritten": [], "untouched": [],
+             "referee": ["tests/conftest.py"], "fatal": True},
+        )
+
 
 class ItemsEntryPointRefusals(unittest.TestCase):
     CYCLIC = [
@@ -949,6 +962,30 @@ class HeldRun(unittest.TestCase):
         code, out, err = self._run("--no-push")
         self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
         self.assertIn("MSP alpha: committed", out)
+
+    def a_run_whose_charter_locks_a_file_the_branch_lacks_is_refused(self):
+        with tempfile.TemporaryDirectory() as folder:
+            charter = write(folder, "charter.md", "- Locked: tests/test_locked.py\n")
+            code, out, err = self._run("--no-push", "--charter", charter)
+        self.assertEqual(code, mitosis.EXIT_REFUSED, out + err)
+        self.assertIn(
+            "--charter locks tests/test_locked.py, which feature does not hold; commit the "
+            "locked checks on it before the build",
+            err,
+        )
+
+    def a_plan_only_run_reports_an_unsealable_lock_as_attention(self):
+        with tempfile.TemporaryDirectory() as folder:
+            charter = write(folder, "charter.md", "- Locked: tests/test_locked.py\n")
+            code, out, err = self._run("--plan-only", "--charter", charter)
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        found = json.loads(out.splitlines()[-1])
+        self.assertIsNone(found["referee"])
+        self.assertIn(
+            "--charter locks tests/test_locked.py, which feature does not hold; commit the "
+            "locked checks on it before the build",
+            found["attention"],
+        )
 
     def a_held_run_with_a_pull_request_command_is_refused(self):
         code, _, err = self._run("--no-push", "--pr-command", "opener {branch}")
@@ -1579,11 +1616,141 @@ class GateExit(unittest.TestCase):
         self.assertEqual(mitosis.exit_code(state, self.PLAN), mitosis.EXIT_FOREIGN)
         self.assertIn("another Lane", mitosis.EXIT_MEANING[mitosis.EXIT_FOREIGN])
 
+    def a_referee_reverted_msp_exits_nine(self):
+        referee = {"undeclared": [], "unwritten": [], "crossing": [],
+                   "referee": ["tests/conftest.py"], "fatal": True}
+        state = self._state(state="referee-reverted", reconcile=referee)
+        self.assertEqual(mitosis.exit_code(state, self.PLAN), 9)
+        self.assertEqual(
+            mitosis.EXIT_MEANING[9],
+            "a Worker wrote a referee path; mitosis restored it and held its MSP back",
+        )
+
+    def a_held_back_msp_exits_with_its_gates_flag(self):
+        for outcome, code in (("weak", 24), ("inert", 20), ("inconclusive", 21)):
+            with self.subTest(outcome=outcome):
+                state = self._state(state="gate-failed", gate={"outcome": outcome, "blocks": True})
+                self.assertEqual(mitosis.exit_code(state, self.PLAN), code)
+        errored = self._state(state="gate-failed", gate=None, gate_error="no runner")
+        self.assertEqual(mitosis.exit_code(errored, self.PLAN), 21)
+        self.assertEqual(
+            mitosis.EXIT_MEANING[24],
+            "an acceptance property passes against a mutant of the work, so it cannot tell "
+            "working code from broken code",
+        )
+
+    def a_proven_head_over_a_weak_gate_exits_zero(self):
+        state = self._state(gate={"outcome": "weak", "blocks": True}, proven_head="a" * 40)
+        self.assertEqual(mitosis.exit_code(state, self.PLAN), mitosis.EXIT_SHIPPED)
+
+    def a_property_with_no_line_to_mutate_is_named_for_attention(self):
+        gate = {
+            "outcome": "pass",
+            "commit": "c" * 40,
+            "properties": [
+                {
+                    "step": "impl",
+                    "file": "tests/test_impl.py",
+                    "test": "Impl.works",
+                    "outcome": "pass",
+                    "reason": None,
+                    "mutants": {"tried": 0, "killed": None},
+                }
+            ],
+        }
+        state = self._state(gate=gate)
+        msps = mitosis._msp_summary(self.PLAN, state)
+        self.assertEqual(msps[0]["gate"]["commit"], "c" * 40)
+        self.assertEqual(
+            msps[0]["gate"]["properties"],
+            [
+                {
+                    "file": "tests/test_impl.py",
+                    "test": "Impl.works",
+                    "step": "impl",
+                    "outcome": "pass",
+                    "reason": None,
+                    "mutants": {"tried": 0, "killed": None},
+                }
+            ],
+        )
+        self.assertIn(
+            "MSP impl: tests/test_impl.py::Impl.works passed on red and green alone; its Step "
+            "added no line to mutate",
+            mitosis._attention(self.PLAN, [], msps),
+        )
+
     def a_shipped_msp_whose_gate_passed_exits_zero(self):
         state = self._state(gate={"outcome": "pass", "counts": {}, "blocks": False})
         self.assertEqual(mitosis.exit_code(state, self.PLAN), mitosis.EXIT_SHIPPED)
         passing = self._state(gate={"outcome": "not-applicable", "blocks": False})
         self.assertEqual(mitosis.exit_code(passing, self.PLAN), mitosis.EXIT_SHIPPED)
+        self.assertEqual(mitosis.findings(passing, self.PLAN), [])
+
+    PAIR = {
+        "plan_id": "p",
+        "lanes": [{"msp": 0, "steps": ["alpha"]}, {"msp": 1, "steps": ["beta"]}],
+        "msps": [{"label": "alpha", "steps": ["alpha"]}, {"label": "beta", "steps": ["beta"]}],
+        "items": [
+            {"name": "alpha", "files": ["a.py"], "acceptance": []},
+            {"name": "beta", "files": ["b.py"], "acceptance": []},
+        ],
+    }
+
+    def _pair(self, first, second):
+        return {
+            "worktrees": [{"msp": 0}, {"msp": 1}],
+            "lanes": {"0": {"state": "ok"}, "1": {"state": "ok"}},
+            "msps": {"0": first, "1": second},
+        }
+
+    def every_msps_findings_are_listed_and_the_worst_decides_the_exit(self):
+        clean = {"undeclared": [], "unwritten": [], "crossing": [], "fatal": False}
+        held = {
+            "state": "gate-failed",
+            "reason": "held",
+            "reconcile": clean,
+            "gate": {
+                "outcome": "inconclusive",
+                "blocks": True,
+                "properties": [
+                    {"file": "tests/test_a.py", "test": "A.works", "outcome": "inconclusive", "reason": "exit 2"},
+                    {"file": "tests/test_a.py", "test": "A.other", "outcome": "pass", "reason": None},
+                ],
+            },
+        }
+        stray = {"state": "committed", "reconcile": {**clean, "undeclared": ["stray.txt"], "unwritten": ["b.py"]}}
+        gate = {
+            "msp": "alpha",
+            "lane": None,
+            "kind": "gate-inconclusive",
+            "exit": 21,
+            "detail": "tests/test_a.py::A.works: exit 2",
+        }
+        undeclared = {"msp": "beta", "lane": None, "kind": "undeclared", "exit": 6, "detail": "stray.txt"}
+        unwritten = {"msp": "beta", "lane": None, "kind": "unwritten", "exit": 6, "detail": "b.py"}
+        forward = self._pair(held, stray)
+        self.assertEqual(mitosis.findings(forward, self.PAIR), [gate, undeclared, unwritten])
+        self.assertEqual(mitosis.exit_code(forward, self.PAIR), 21)
+        backward = self._pair(stray, held)
+        self.assertEqual(mitosis.exit_code(backward, self.PAIR), 21)
+
+    def lanes_come_before_msps_and_a_missing_record_is_incomplete(self):
+        state = {
+            "worktrees": [{"msp": 0}],
+            "lanes": {"1": {"state": "failed", "reason": "the Worker said failed"}},
+            "msps": {"0": {"state": "blocked", "reason": "a predecessor failed"}},
+        }
+        self.assertEqual(
+            mitosis.findings(state, self.PAIR),
+            [
+                {"msp": "alpha", "lane": 0, "kind": "incomplete", "exit": 4, "detail": "Lane 0 has no record"},
+                {"msp": "beta", "lane": 1, "kind": "failed", "exit": 10, "detail": "the Worker said failed"},
+                {"msp": "alpha", "lane": None, "kind": "blocked", "exit": 11, "detail": "a predecessor failed"},
+                {"msp": "beta", "lane": None, "kind": "incomplete", "exit": 4, "detail": "MSP beta has no record"},
+            ],
+        )
+        self.assertEqual(mitosis.exit_code(state, self.PAIR), 10)
 
 
 class CouplingReport(unittest.TestCase):

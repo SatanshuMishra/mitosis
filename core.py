@@ -7,12 +7,15 @@ import os
 import re
 import uuid
 
-__version__ = "0.8.0"
+import referee
+
+__version__ = "0.9.0"
 
 PLAN_KEYS = (
     "version",
     "plan_id",
     "source",
+    "locked",
     "items",
     "msps",
     "lanes",
@@ -61,7 +64,7 @@ ACCEPTANCE_KEYS = ("file", "test")
 
 SOURCE_KEYS = ("path", "sha256")
 
-LANE_STATES = ("ok", "failed", "blocked", "merge-blocked", "held")
+LANE_STATES = ("ok", "failed", "blocked", "merge-blocked", "held", "parked-limit")
 
 MSP_STATES = (
     "shipped",
@@ -70,11 +73,14 @@ MSP_STATES = (
     "committed",
     "ship-failed",
     "blocked",
+    "referee-reverted",
+    "gate-failed",
+    "parked",
 )
 
 DELIVERED_STATES = ("shipped", "pushed", "unchanged", "committed")
 
-GATE_OUTCOMES = ("pass", "inert", "inconclusive", "not-applicable")
+GATE_OUTCOMES = ("pass", "weak", "inert", "inconclusive", "not-applicable")
 
 STEP_TYPES = ("fix", "feature", "port", "design", "sweep", "contract")
 
@@ -115,6 +121,7 @@ FLAG_NAMES = (
     "--dispatch-command",
     "--decompose-command",
     "--acceptance-command",
+    "--gate-setup",
     "--pr-command",
     "--pr-type",
     "--pr-scope",
@@ -1216,6 +1223,16 @@ SHARED_TREE_LINE = (
 )
 
 
+def referee_line(locked):
+    named = (
+        "The locked checks %s are read-only. " % ", ".join(locked) if locked else ""
+    )
+    return (
+        "%sNever write them or any test configuration, snapshot, baseline, allowlist or skip "
+        "list: mitosis reverts such a write and holds the MSP back." % named
+    )
+
+
 def brief_text(brief):
     header = ["Lane %d of MSP %s" % (brief["lane"], brief["msp_label"])]
     if brief.get("charter"):
@@ -1262,6 +1279,7 @@ def brief_text(brief):
     footer = [
         "Write-set for this Lane, the only files you may edit: %s" % ", ".join(brief["write_set"]),
         SHARED_TREE_LINE,
+        referee_line(brief.get("locked") or ()),
     ]
     if brief.get("read_set"):
         footer.append(
@@ -1288,6 +1306,7 @@ def _brief(
     cap=CONTEXT_CAP,
     earlier=(),
     session=None,
+    locked=(),
 ):
     write_set = tuple(
         dict.fromkeys(path for i in tuple(lane) + tuple(earlier) for path in _files(items[i]))
@@ -1304,6 +1323,7 @@ def _brief(
         "charter": charter,
         "document": source.get("path") if isinstance(source, dict) else None,
         "return_contract": RETURN_CONTRACT,
+        "locked": list(locked),
         **({"session": session} if session else {}),
     }
     return {**partial, "text": brief_text(partial)}
@@ -1355,6 +1375,44 @@ def _sized_paths(items, packs, shared):
     )
 
 
+def _charter_text(charter, root):
+    if not isinstance(charter, str) or not charter:
+        return ""
+    path = charter if os.path.isabs(charter) or root is None else os.path.join(root, charter)
+    if not os.path.isfile(path):
+        return ""
+    with open(path, encoding="utf-8") as handle:
+        return handle.read()
+
+
+def charter_locks(charter, root=None):
+    try:
+        return referee.locked_paths(_charter_text(charter, root)), ()
+    except ValueError as error:
+        return (), ("the charter %s: %s" % (charter, error),)
+
+
+def _read_only(item, locked):
+    owned = {referee.normalised(path) for path in _acceptance_files(item)} & {
+        referee.normalised(path) for path in locked
+    }
+    return {**item, "files": [path for path in item["files"] if _norm(path) not in owned]}
+
+
+def without_locked_acceptance(items, locked):
+    return [_read_only(item, locked) for item in items]
+
+
+def referee_errors(items, locked):
+    return tuple(
+        "%s: writes %s, which %s; no Step may write the referee" % (item["name"], path, reason)
+        for item in items
+        for path in _files(item)
+        for reason in (referee.referee_reason(path, locked),)
+        if reason is not None
+    )
+
+
 def plan(
     items,
     charter=None,
@@ -1369,9 +1427,14 @@ def plan(
     session_tokens=SESSION_TOKENS,
     sizes=None,
 ):
+    locked, lock_errors = charter_locks(charter, root)
     checked = validate(items, root=root)
-    if checked["errors"]:
-        raise ValidationError(checked["errors"])
+    if checked["errors"] or lock_errors:
+        raise ValidationError(tuple(checked["errors"]) + lock_errors)
+    items = without_locked_acceptance(items, locked)
+    refused = referee_errors(items, locked)
+    if refused:
+        raise ValidationError(refused)
     items, ordered = order_coupled(items, graph, risk_markers, history)
     msps = msp_items(items)
     whole = lane_items(items)
@@ -1405,6 +1468,7 @@ def plan(
     body = {
         "version": __version__,
         "source": source,
+        "locked": list(locked),
         "items": items,
         "msps": [
             {
@@ -1456,6 +1520,7 @@ def plan(
                 cap,
                 places[index]["earlier"],
                 _session(items, places[index]),
+                locked,
             )
             for index, lane in enumerate(lanes)
         ],
