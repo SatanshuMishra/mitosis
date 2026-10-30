@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: parked
-Updated: 2026-10-30T18:46:14.047Z
+Updated: 2026-10-30T18:46:20.286Z
 Next ids: c8 D5 R3 S3
 
 ## Goal
@@ -30,12 +30,11 @@ Needs: D4, R1.
 ## Decisions in force
 
 - D1 Interphase hand-off: spec hr-mitosis-isolation handed off for build: Handed off. Next: pipeline feature-branch, then a fresh check-author agent writes and locks the seven test files on FEATURE (O2 override), then plan-only and build.
-- D3 Ship boundary: MSP isolation re-ships at proven head 2892811: Re-ship with SHIP=1 run.zsh --resume --proven-head isolation=2892811b21a934cd6defed09e73bd85cb08bc9bb, update #29's body only if mitosis's rendered body changed, refresh its review comment, and report round 3 green to the driver.
 - D4 FEATURE takes main and releases as 0.10.0: Merge origin/main into FEATURE with no rebase, keep both sides (clone landing threads the render header; caller-classed properties read Not run in Testing), bump to 0.10.0 including the locked test_referee_docs.py version, run the suite on 3.9 and 3.14, then push FEATURE and continue Integration.
 
 ## Open risks
 
-- R1 The checkout holds the owner's uncommitted GLOSSARY.md Pull requests section and untracked docs/adr/0004 and 0005 from a paused run; never touch, commit or delete them; build from the committed state.
+- R1 The checkout holds the owner's uncommitted GLOSSARY.md and untracked docs/adr/0004 and 0005, now byte-identical to origin/main, so it cannot fast-forward; never touch, commit or delete them; build from the committed state.
 
 ## Settled, do not reopen
 
@@ -52,4 +51,5 @@ Needs: D4, R1.
 - Spec, decisions, record, items: /Users/satanshumishra/Documents/DevLabs/mitosis/docs/specs/hr-mitosis-isolation.* (gitignored)
 - Decision records of this change: docs/adr/0010 to 0014 on mitosis/isolation
 - Citable run material: /Users/satanshumishra/.mitosis/harness-redesign/examples/hr-mitosis-isolation/
-- Pipeline defects found: run home pipeline-0.11.0-defects.md (P1 to P9)
+- Pipeline defects found: run home pipeline-0.11.0-defects.md (P1 to P10)
+- Integration worktree: ~/.mitosis/runs/mitosis/hr-mitosis-isolation/integration (FEATURE branch)
