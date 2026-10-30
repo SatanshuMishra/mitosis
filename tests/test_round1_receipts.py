@@ -85,7 +85,7 @@ MIXED_HOOKS = (
     ("hook.sh", "#!/bin/sh\n[ \"$#\" -gt 3 ]\n", "-gt 3 ]", "number +1"),
 )
 
-FOLDED_GIT = (".GIT", ".Git", ".gIT")
+FOLDED_GIT = (".GIT", ".Git", ".gIT", ".g\u200cit", "\ufeff.GIT")
 
 
 def escaping(targets):

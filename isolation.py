@@ -20,6 +20,8 @@ WRITABLE_DEVICE_PATTERN = "^/dev/fd/"
 
 CLONE_GIT = ".git"
 
+HFS_IGNORABLE = re.compile("[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]")
+
 
 LOCK_CLONE = "lock"
 
@@ -222,7 +224,8 @@ def place_entries(tree, entries):
 
 
 def _names_git_folder(part):
-    return unicodedata.normalize("NFC", part).casefold() == CLONE_GIT
+    visible = HFS_IGNORABLE.sub("", unicodedata.normalize("NFC", part))
+    return visible.casefold() == CLONE_GIT
 
 
 def _git_depth(path):
