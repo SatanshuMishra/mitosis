@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T06:44:03.736Z
+Updated: 2026-10-30T06:45:14.333Z
 Next ids: c8 D3 R3 S2
 
 ## Goal
@@ -9,12 +9,12 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Done when
 
-- [ ] c1 W1: each Worker builds in its own clone with no shared git directory, sandboxed to that clone; mitosis takes only its committed changes into a checkout it controls; a Worker that moves a ref, writes refs/replace, a graft or shared config, or writes outside its clone changes nothing mitosis judges
-- [ ] c2 W2: every git call mitosis makes clears GIT_DIFF_OPTS, GIT_EXTERNAL_DIFF and the other diff-shaping variables; a receipt with GIT_DIFF_OPTS=-U5 inherited still finds the weak check
-- [ ] c3 W3: mitosis runs a role check-author Lane first, lets it write exactly the record's locked paths, commits and locks them on FEATURE, then plans the other Lanes; an interphase 0.14.0 items file plans and builds with no manual O2 step
-- [ ] c4 W4: mutants are sampled only from lines the acceptance test executes on the work; a property reading no Worker code is not-applicable; a survivor the full suite kills is covered-elsewhere naming the killing tests
-- [ ] c5 W5: a gate classification change is recorded per property outside the plan id, so --resume keeps every built Lane and re-gates only the changed properties
-- [ ] c6 MSP pull requests open, ready, assigned, bound with Auto-fix, review green; M1 to M6 locked tests from run 2 still locked and passing
+- [x] c1 W1: each Worker builds in its own clone with no shared git directory, sandboxed to that clone; mitosis takes only its committed changes into a checkout it controls; a Worker that moves a ref, writes refs/replace, a graft or shared config, or writes outside its clone changes nothing mitosis judges evidence: tests/test_worker_isolation.py's 13 acceptance tests and the round 1 and round 2 sandbox receipts pass alone at cacce46 (review/isolation.proofs.jsonl); conformance MET; security-reviewer clean on the advisory diff
+- [x] c2 W2: every git call mitosis makes clears GIT_DIFF_OPTS, GIT_EXTERNAL_DIFF and the other diff-shaping variables; a receipt with GIT_DIFF_OPTS=-U5 inherited still finds the weak check evidence: tests/test_pinned_diff_env.py's two acceptance tests pass alone at cacce46 and fail with the work reverted (mitosis gate)
+- [x] c3 W3: mitosis runs a role check-author Lane first, lets it write exactly the record's locked paths, commits and locks them on FEATURE, then plans the other Lanes; an interphase 0.14.0 items file plans and builds with no manual O2 step evidence: tests/test_check_author_lane.py's six acceptance tests, including an_items_file_with_a_check_author_plans, pass alone at cacce46; conformance MET
+- [x] c4 W4: mutants are sampled only from lines the acceptance test executes on the work; a property reading no Worker code is not-applicable; a survivor the full suite kills is covered-elsewhere naming the killing tests evidence: tests/test_mutant_coverage.py's five acceptance tests pass alone at cacce46; round 1 C3 and C4 fixes confirmed by the round 2 validator
+- [x] c5 W5: a gate classification change is recorded per property outside the plan id, so --resume keeps every built Lane and re-gates only the changed properties evidence: tests/test_gate_classes.py's two acceptance tests pass alone at cacce46
+- [x] c6 MSP pull requests open, ready, assigned, bound with Auto-fix, review green; M1 to M6 locked tests from run 2 still locked and passing evidence: SatanshuMishra/mitosis#29 open, ready, assigned to SatanshuMishra, review comment posted, bound with Auto-fix; round 2 verdict green; run 2's locked tests unchanged since 58f258c except the permitted version_is_0_9_0 re-lock, suite 778 OK on 3.9 and 3.14
 - [ ] c7 C14 and F1: mitosis version bumped in the FEATURE pull request; at Clean-up the merged version is installed and matches main file by file; later commands run from the installed cache path
 
 ## Where things stand
