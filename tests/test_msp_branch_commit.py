@@ -36,6 +36,8 @@ class MspBranchCommit(pinned.PinnedRefereeRun):
             *lock_fixtures.PR_FLAGS,
             "--pr-command",
             scratch.stub("pr.py", "{branch}"),
+            "--render-command",
+            scratch.render,
             "--charter",
             scratch.file("charter.md", pinned.LOCKED_CALC_CHARTER),
         )
