@@ -1,7 +1,7 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T01:33:39.021Z
-Next ids: c8 D2 R2 S1
+Updated: 2026-10-30T01:33:44.000Z
+Next ids: c8 D2 R3 S1
 
 ## Goal
 
@@ -23,7 +23,9 @@ Stage 1 starting: main synced at 58f258c, lighthouse readiness ready with nothin
 
 ## Next step
 
-Invoke interphase:feature with the run 7 request and Work autonomously., answering every question as an Assumption citing I1 to I6 (O1).
+Run pipeline feature-branch --type feat, write worker-rules.txt, prevent, CHARTER.md, dispatch.zsh and run.zsh in ~/.mitosis/mitosis/hr-mitosis-isolation/, then dispatch a fresh check-author agent to write and lock the seven test files on FEATURE (O2 override), then plan-only and build.
+
+Needs: D1, R1.
 
 ## Decisions in force
 
@@ -32,6 +34,7 @@ Invoke interphase:feature with the run 7 request and Work autonomously., answeri
 ## Open risks
 
 - R1 The checkout holds the owner's uncommitted GLOSSARY.md Pull requests section and untracked docs/adr/0004 and 0005 from a paused run; never touch, commit or delete them; build from the committed state.
+- R2 ADRs 0010 to 0014 are untracked in the owner's checkout beside the owner's untracked 0004 and 0005; ship only 0010 to 0014 on the FEATURE branch through a temporary worktree, never 0004 or 0005. Bears on c6.
 
 ## Settled, do not reopen
 
