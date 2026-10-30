@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: parked
-Updated: 2026-10-30T06:52:00.460Z
+Updated: 2026-10-30T06:52:39.869Z
 Next ids: c8 D3 R3 S2
 
 ## Goal
@@ -19,7 +19,7 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override), pushed. MSP branch mitosis/isolation is pushed at bb7adda as SatanshuMishra/mitosis#29 (ready, assigned, bound, Auto-fix on); the driver has told the owner to hold its merge until round 3 is green. Round 3: the driver escalated two gaps the round 2 fix left documented, W1 (a --worker-write path overlapping the run folder) and W2 (a confined process outliving its run); fix agents run one after the other in the MSP worktree (briefs in review/round-3/). CI on #29 is red on 3.9 and 3.14: the docs identifier lint fails on ADRs 0011 and 0012; a docs fix agent is rewording them (defect P9). Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md. Four assumptions are in review/isolation.assumptions.txt.
+FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override), pushed. MSP branch mitosis/isolation is pushed at bb7adda as SatanshuMishra/mitosis#29 (ready, assigned, bound, Auto-fix on); the driver has told the owner to hold its merge until round 3 is green. Round 3: the driver escalated two gaps the round 2 fix left documented, W1 (a --worker-write path overlapping the run folder) and W2 (a confined process outliving its run); fix agents run one after the other in the MSP worktree (briefs in review/round-3/). CI on #29 is red on 3.9 and 3.14: the docs identifier lint fails on ADRs 0011 and 0012; their rewording is committed locally as d39aa62 and reaches #29 with the round 3 push (defect P9). Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md. Four assumptions are in review/isolation.assumptions.txt.
 
 ## Next step
 
@@ -50,4 +50,4 @@ Needs: R1.
 - Spec, decisions, record, items: /Users/satanshumishra/Documents/DevLabs/mitosis/docs/specs/hr-mitosis-isolation.* (gitignored)
 - Decision records of this change: docs/adr/0010 to 0014 on mitosis/isolation
 - Citable run material: /Users/satanshumishra/.mitosis/harness-redesign/examples/hr-mitosis-isolation/
-- Pipeline defects found: run home pipeline-0.11.0-defects.md (P1 to P8)
+- Pipeline defects found: run home pipeline-0.11.0-defects.md (P1 to P9)
