@@ -1,0 +1,5 @@
+# A check-author Step is the lock stage
+
+Status: accepted
+
+A Step with role check-author never becomes a Lane, an MSP or a pull request. Its files are the locked paths, its name leaves every other Step's after list, and it runs before every Lane when the feature branch lacks a locked path: in its own clone, landing only the locked paths, then each other Step's acceptance test must exit 1 at that tree before mitosis commits the locked files on the feature branch as "test: lock the acceptance checks" and pins the base there. The commit is written with a temporary index, commit-tree and a compare-and-swap ref update, so a checkout that has the feature branch checked out is never touched. Its record lives under its own lock key in the state and the summary, never among the numbered Lanes. We chose this over an ordinary Lane in its own MSP, which would ship the checks as a pull request only after the builders had run against them. When the feature branch already holds every locked path, no check-author runs, so checks locked by hand keep working.

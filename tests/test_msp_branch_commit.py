@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 import unittest
@@ -40,26 +39,38 @@ class MspBranchCommit(pinned.PinnedRefereeRun):
             scratch.file("charter.md", pinned.LOCKED_CALC_CHARTER),
         )
 
-    def an_msp_branch_tamper_under_a_detached_head_is_reverted_and_fatal(self):
+    def an_msp_branch_tamper_under_a_detached_head_never_reaches_the_branch(self):
         self._calc_scratch()
-        self._worker(self._tamper_then(["git", "checkout", "-q", "--detach", "feature"]))
-        self._assert_locked_test_reverted(self._calc_run())
+        self._worker(self._tamper_then(["git", "checkout", "-q", "--detach", "HEAD~1"]))
+        completed = self._calc_run()
+        self.assertEqual(completed.returncode, 21, "mitosis exit code" + lock_fixtures.tail(completed))
+        msp = self._summary(completed)["msps"][0]
+        self.assertEqual(msp["reconcile"]["referee"], [])
+        self.assertEqual(msp["gate"]["properties"][0]["reason"], "exit 1 with the work present")
+        self.assertEqual(
+            self.scratch.checked("show", "refs/heads/%s:tests/test_calc.py" % pinned.BRANCH),
+            pinned.LOCKED_CALC_TEST,
+        )
+        self.assertEqual(
+            self.scratch.checked("show", "refs/heads/%s:calc.py" % pinned.BRANCH), pinned.BROKEN_CALC
+        )
+        self.assertEqual(
+            self.scratch.checked("rev-parse", "refs/heads/feature").strip(), self.feature_before
+        )
 
-    def a_worktree_head_off_the_msp_commit_is_fatal(self):
+    def a_detached_head_in_the_clone_ships_as_without_it(self):
         scratch = self._calc_scratch()
         self._worker([["git", "checkout", "-q", "--detach"], ["write", "calc.py", CORRECT_CALC]])
         completed = self._pushing_calc_run()
-        self.assertEqual(completed.returncode, 9, "mitosis exit code" + lock_fixtures.tail(completed))
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
         msp = self._summary(completed)["msps"][0]
-        self.assertEqual(msp["state"], "referee-reverted")
-        self.assertIs(msp["reconcile"]["fatal"], True)
+        self.assertEqual(msp["state"], "shipped")
+        self.assertIs(msp["reconcile"]["fatal"], False)
+        self.assertEqual(msp["gate"]["outcome"], "pass")
         self.assertEqual(
-            (msp["gate"]["outcome"], msp["gate"]["commit"], msp["gate"]["properties"]), (None, None, [])
+            scratch.checked("ls-remote", "origin", "refs/heads/" + pinned.BRANCH).split()[0],
+            msp["gate"]["commit"],
         )
-        with open(os.path.join(scratch.run_dir, "state.json"), encoding="utf-8") as handle:
-            self.assertIsNone(json.load(handle)["msps"]["0"].get("gate"))
-        self.assertEqual(scratch.checked("ls-remote", "origin", "refs/heads/" + pinned.BRANCH), "")
-        self.assertFalse(os.path.exists(scratch.pr_log), "a pull-request command ran")
 
 
 def load_tests(loader, standard, pattern):
@@ -67,8 +78,8 @@ def load_tests(loader, standard, pattern):
     suite.addTests(
         MspBranchCommit(name)
         for name in (
-            "an_msp_branch_tamper_under_a_detached_head_is_reverted_and_fatal",
-            "a_worktree_head_off_the_msp_commit_is_fatal",
+            "an_msp_branch_tamper_under_a_detached_head_never_reaches_the_branch",
+            "a_detached_head_in_the_clone_ships_as_without_it",
         )
     )
     return suite

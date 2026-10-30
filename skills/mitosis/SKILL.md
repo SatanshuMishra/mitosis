@@ -28,13 +28,11 @@ Reach for mitosis when all three hold:
 
 Do not reach for it when:
 
-- There is one change, or every change touches the same files. The plan
-  collapses to one Lane, and the worktree, gate and pull request cost more
-  than doing the work directly. Run with `--plan-only` when unsure; the
-  report's split quality section shows the Lane count before anything spawns.
-- The result must land in the current working tree. Workers build on
-  branches cut from `--feature-branch`; anything uncommitted there is
-  invisible to them. Commit first.
+- There is one change, or every change touches the same files: the plan
+  collapses to one Lane. Run with `--plan-only` when unsure; the report shows
+  the Lane count before anything spawns.
+- The result must land in the current working tree. Workers build from
+  `--feature-branch` and never see uncommitted work. Commit first.
 - The work needs the whole test suite or a merge to be verified. mitosis runs
   one acceptance property at a time and never merges; continuous integration
   on the pull request does the rest.
@@ -48,12 +46,16 @@ quotes or newlines lands as one argument and is never reinterpreted by a shell.
 
 | Flag | Spawns | Placeholders |
 |---|---|---|
-| `--dispatch-command` | one Worker per Lane, in its worktree | listed under --help |
+| `--dispatch-command` | one Worker per Lane, in its own clone | listed under --help |
 | `--acceptance-command` | one acceptance property, in a worktree | file, test, worktree |
 | `--pr-command` | one pull request per MSP; optional, refused with `--no-push` | listed under --help |
 | `--pr-type` `--pr-scope` `--pr-subject` `--pr-why` `--pr-door` `--pr-blast-radius` | nothing; they write every title and body | none |
 | `--decompose-command` | the structure pass that turns a document into unbriefed Steps | prompt, model, document |
 | `--brief-command` | one Worker per unbriefed Step, writing its task | prompt, model, step, document |
+| `--worker-sandbox` | each Worker, gate and lock-stage run under sandbox-exec, writing only its clone or checkout, temp, transcript and `--worker-write` paths; exit 3 without it; exit 14 if a leftover process lingers | none |
+| `--worker-write` | nothing; one more sandbox-writable path; repeatable; exit 3 if it overlaps the run directory, repository or its git directory | none |
+| `--suite-command` | the full suite unmutated, then per surviving mutant; exit 1 kills only after an unmutated pass, else `weak` | worktree, report |
+| `--gate-classes` | nothing; a JSON `{test, class, reason}` list classing properties | none |
 
 A Worker spawned from this skill, with the Lane brief as its whole prompt
 and the model chosen by tier:
@@ -62,10 +64,9 @@ and the model chosen by tier:
 claude -p {task} --model {model} --session-id {session_id} --permission-mode bypassPermissions
 ```
 
-The brief carries all the Worker needs: the charter and document paths, the
-Steps in order, write-set, read-set and return contract. The last
-line of its output that parses as a JSON object is its return, so narration
-after it or a fence around it is tolerated.
+The brief carries the charter and document paths, the Steps in order,
+write-set, read-set and return contract. Its last output line that parses
+as a JSON object is its return.
 
 Tiers are labels, not models. When the dispatch template uses the model
 placeholder, every tier the plan assigns must be mapped, or mitosis refuses
@@ -76,16 +77,15 @@ to start:
 ```
 
 The acceptance template must exit 0 when the property passes, 1 when it
-fails, and anything else when it could not run. That third code is what lets
-the gate tell a broken build from a failing test:
+fails, and anything else when it could not run. The third code lets the gate
+tell a broken build from a failing test:
 
 ```
 --acceptance-command "python3 -m pytest {file} -k {test} -q"
 ```
 
 pytest exits 5 when it collects nothing, so a misspelled test reads as
-inconclusive, not a pass. For another runner, point the template at a small
-wrapper that maps its exit codes to those three.
+inconclusive. Wrap another runner to map its exit codes to those three.
 
 The wrapper has one more duty. Reverting the implementation deletes what the
 work created, so a test importing a new module stops loading. A module missing
@@ -93,8 +93,7 @@ because it was reverted means the behaviour does not exist: exit 1. Any other
 load error stays inconclusive. Catch the whole import family, since importing
 a name out of a surviving package raises the general error.
 
-Exclude whatever else writes into a worktree, such as editor state and build
-caches, or it arrives as undeclared writes against every MSP.
+Exclude editor state and build caches, or they arrive as undeclared writes.
 
 Three more things every run needs: `--feature-branch`, which must exist and is
 what every MSP branches from; `--timeout` in seconds on a monotonic clock,
@@ -122,14 +121,14 @@ tell them apart. Pass one, never both.
 ### Items: hand-written Steps
 
 `--items` takes a JSON array. Each Step is one entry with the five required
-fields and any of the optional ones; --help lists them.
+fields and any optional ones; --help lists them.
 Two Steps that build a validator and then its command-line flag:
 
 ```json
 [
   {
     "name": "validate-manifest",
-    "task": "Add validate_manifest(path) to app/manifest.py, returning one error string per missing required key (name, version, entry) and an empty list for a complete manifest.",
+    "task": "Add validate_manifest(path) to app/manifest.py, returning one error per missing key.",
     "files": ["app/manifest.py", "tests/test_manifest.py"],
     "source": null,
     "acceptance": [
@@ -140,7 +139,7 @@ Two Steps that build a validator and then its command-line flag:
   },
   {
     "name": "validate-flag",
-    "task": "Add a --validate flag to app/cli.py that prints validate_manifest's errors for the given path, one per line, and exits 1 if there are any, else 0.",
+    "task": "Add --validate to app/cli.py, printing those errors and exiting 1 if any.",
     "files": ["app/cli.py", "tests/test_cli.py"],
     "source": null,
     "acceptance": [
@@ -157,12 +156,10 @@ Two Steps that build a validator and then its command-line flag:
 the second behind the first; because their write-sets are disjoint, they
 become two MSPs and the second stacks its pull request on the first.
 
-Steps sharing a `contract_group` are halves of one interface, so one Worker
-builds them in sequence in one MSP, which stops two Workers inventing two
-shapes for it. To build the halves in parallel, give exactly one of them
-`"type": "contract"` to fix the interface and make every other wait on it
-through `after`. To ship Steps together without making them one Worker's, give
-them one `msp` tag.
+Steps sharing a `contract_group` are halves of one interface, built by one
+Worker in one MSP. To build them in parallel, give one `"type": "contract"`
+and make the others wait on it through `after`. One `msp` tag ships Steps
+together.
 
 Plan first. This validates and schedules the Steps, writes the plan into the
 run directory and prints the plan-stage report; it spawns nothing:
@@ -200,7 +197,7 @@ can read its split before any brief is bought.
 two fields that join its distant parts, `after` and `contract_group`, cannot
 be seen from one section. The stage needs `--decompose-command`, and its
 prompt is large, so let it arrive on stdin. No Step returned here carries a
-`task`; nothing is briefed yet:
+`task` yet:
 
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --spec docs/specs/search.md --plan-only \
@@ -209,58 +206,42 @@ python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --spec docs/specs/search.md --plan-on
   --timeout 900
 ```
 
-It spawns one model process, persists
-its Steps and prints a report. Read four things: the Split shape findings,
-worst first; the scalars below them, which score the split before any brief
-exists; the coverage map of sections no Step claimed; and the assumptions,
-each a reading chosen where the document was underdetermined, which keeps
-its Step from being rated `simple`.
+It persists its Steps and prints a report. Read the Split shape findings,
+the scalars that score the split, the coverage map of sections no Step
+claimed, and the assumptions, each of which keeps its Step from `simple`.
 
-No finding stops a run. Each one is printed, written into the pull request it
-belongs to, listed for the caller and given a distinct exit code.
+No finding stops a run; each is printed, put in its pull request and given an
+exit code.
 
-`manifest-exports-nothing` means the file that declares what a package exports
-is written by a Step built before the modules it must export, so it would ship
-empty while every test still passes. Give that file to a Step with an `after`
-edge reaching every Step whose modules it exports.
+`manifest-exports-nothing` means a package's export file is written before the
+modules it exports; give it a Step with an `after` edge reaching them.
 
-`lane-cycle` means Lanes that waited on each other, so one Worker builds them
-in one sitting; mitosis fuses such MSPs and Lanes rather than refuse, and
-`lane_cycles` and `fused_without_overlap` count what that cost.
+`lane-cycle` means Lanes waited on each other, so mitosis fuses them;
+`lane_cycles` and `fused_without_overlap` count the cost.
 
-An assumption you would have decided differently goes into the decisions file,
-in your own words, not back into the document; name it with `--decisions PATH`
-(default: `<document without extension>.decisions.md` when that file exists);
-the report's Decisions section counts its settled questions. That file binds
-every later structure dispatch and brief for this document; mitosis never
-rewords an entry or re-asks a question answered once.
+An assumption you would decide differently goes into the decisions file,
+`--decisions PATH` (default: `<document without extension>.decisions.md` when
+it exists), which binds every later structure dispatch and brief.
 
-`--structure-samples N` runs N structure dispatches at once, ranks them by
-the same scalars and shows where they disagree; the best is persisted, or the
-Kth with `--pick K`. A file in dispute is one the document never assigned.
+`--structure-samples N` runs N structure dispatches, ranks them and shows
+where they disagree; the best is persisted, or the Kth with `--pick K`.
 
-Revise the structure once the decisions file has grown, without paying to
-rebuild every Step: run the same `--plan-only` command with `--revise` added.
+Add `--revise` to the same `--plan-only` command to revise the structure: one
+small dispatch returns a delta, and only the Steps it touches cost a brief.
 
-`--revise` hands the persisted structure to one small dispatch that returns
-only a delta; every other Step is kept as it was, brief included, so only the
-Steps the delta changes, adds or removes cost a brief.
-
-When the plan reads right, run it with `--resume`. It writes a brief for every
-Step still unbriefed, in parallel, then plans and builds; a revision that
-touched three Steps buys three brief dispatches. Pass the items run's flags
-with `--spec` and `--resume` in place of `--items`, plus `--brief-command`
-taking the structure stage's template.
+When the plan reads right, run it with `--resume`, the items run's flags with
+`--spec` in place of `--items`, plus `--brief-command`; it briefs every
+unbriefed Step in parallel, then builds.
 
 Every Step carries the document's path and hash in `source`, so each Worker
-opens the document from its own worktree, and the report's drift section says
+opens the document from its own clone, and the report's drift section says
 whether it changed since the Steps were cut.
 
 ## What a run does
 
-Validate, schedule, one worktree and branch per MSP under the run directory,
-one Worker per Lane with producers merged in first, then per MSP: commit,
-gate, reconcile, push, open a pull request stacked on its single
+Validate, schedule, lock the checks, one worktree and branch per MSP under the
+run directory, one Worker per Lane in its own clone with producers merged in
+first, then per MSP: land, commit, gate, reconcile, push, open a pull request stacked on its single
 predecessor when `--pr-command` is given, report.
 
 mitosis estimates each Lane's tokens and splits one above `--session-tokens` (default 150000), in Step order, into consecutive
@@ -269,22 +250,24 @@ earlier ones wrote and is told which Steps they built; a resume starts at the
 first not `ok`. The split quality section names each split and any Step too
 large alone.
 
-The Lanes of one MSP share its worktree; `--concurrency` Workers, four by
-default, run at once, each told to change only its write-set.
-A finished Lane is `held` until no Worker runs in its worktree, then
-committed, so a hook that stashes unstaged files never touches a sibling's
-work; no new Lane starts in that MSP meanwhile, and a resume lands a `held`
-Lane without paying again. Producer merges run no hooks; a git command meeting
+Each Lane's Worker builds in its own clone of the MSP branch under the run
+directory's `clones` folder; no Worker runs in the MSP worktree.
+`--concurrency` Workers, four by default, run at once. mitosis reads a
+finished Lane's write-set from the clone's files, never running git there,
+and lands only those paths as one commit. A finished Lane is `held` until no
+Worker runs in its MSP, and a resume lands it without paying again. A write
+outside the write-set is judged by reconcile only, exit 6, or reverted as a
+referee write, exit 9; the gate never sees it. JSON `sandbox` says
+sandbox-exec or `off`. Every git call
+drops the diff, pathspec, repository and object variables. Producer merges run no hooks; a git command meeting
 another process's lock is retried, and every git call times out after 600
 seconds with a named error. A later change to a file whose Lane already
 committed is kept in its own commit and named in the pull request, `attention`
 and the exit code.
 
-Steps with no file in common are ordered when both touch one risk marker, a
-recorded regression links them, or both add a numbered migration to one
-folder. A pair joined only by an import runs in parallel and is named in the
-Coupling section and `attention`: add an `after` edge where one needs the
-other's output.
+Steps with no file in common are ordered when they share a risk marker, a
+recorded regression or a migration folder. A pair joined only by an import
+runs in parallel and is named in `attention`; add an `after` edge if needed.
 
 mitosis refuses with exit 3 when git has no commit identity. A refused Lane
 commit fails that Lane alone. Hooks
@@ -303,6 +286,21 @@ fits. `weak` means no mutant failed it, exit 24. An MSP whose gate is `weak`, `i
 ends `gate-failed`: committed, never pushed, no pull request. `--trajectory`
 also gets one outcome entry per acceptance test after every gate.
 
+Mutants come only from added lines the with-work run executed. Each
+property's mutation is killed, `weak`, `not-applicable` (the test loads none
+of the Step's files) or covered-elsewhere (`--suite-command` passed unmutated,
+then failed on each survivor; `killers` names the tests); `coverage` is
+`untraced` unless its mutants came from the trace. `--gate-classes` classes a property `<file>::<name>`
+`not-applicable`, covered-elsewhere or `removed` with a reason, judged
+without a run and kept out of the plan id, so `--resume` rebuilds nothing; an
+entry naming no property is refused.
+
+A Step with `"role": "check-author"` is the lock stage, never a Lane, MSP
+or pull request. When the feature branch lacks a `- Locked:` path it runs
+first in its own clone; each other acceptance test must exit 1 at its tree,
+then mitosis commits the locked paths on the feature branch and builds from
+there. Its record is the JSON `lock` object; a failed one blocks every Lane.
+
 The referee is what judges the work, and no Worker writes it: the charter's
 `- Locked:` lines, plus built-in markers for test configuration, snapshots,
 baselines, allowlists and skip lists. Planning refuses a Step whose files hold
@@ -314,7 +312,7 @@ a `- Locked:` line that is empty, absolute or contains `..`.
 
 Every gate, mutant and acceptance run uses a clean checkout of the commit,
 not a git repository, reset to raw blobs before each run; files the commit
-lacks never reach it and are listed in `ignored`.
+lacks never reach it; `ignored` lists them.
 
 Dependencies are the root's node_modules and venvs, or `--gate-setup`, run
 once per gate with `{worktree}`; its output survives only at top-level names
@@ -355,9 +353,8 @@ with its branch, base, pull request, title, body, gate verdict and reconcile
 findings, and an `attention` list of what a human or the caller should look
 at. An agent that dispatched mitosis reads that line, not the report.
 
-The run directory holds the plan, the state, the persisted Steps, every
-Worker's full stdout and stderr, and the worktrees, which survive a failure
-with their branches for inspection. Read a Lane's log there; its return is a
+The run directory holds the plan, the state, the Steps, every Worker's
+output, and the worktrees, which survive a failure for inspection. Read a Lane's log there; its return is a
 claim, and the git log is the record.
 
 ## Resuming
