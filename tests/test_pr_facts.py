@@ -129,6 +129,20 @@ class Facts(unittest.TestCase):
             {"check": "tests/t.py::one", "result": "Not run: the gate does not apply to it"},
         )
 
+    def a_caller_classed_property_is_never_reported_proven(self):
+        import pr_facts
+
+        for name, outcome in (("covered-elsewhere", "pass"), ("not-applicable", "not-applicable")):
+            gate = first_gate(outcome)
+            classed = {**gate, "properties": [{**gate["properties"][0], "class": name}]}
+            self.assertEqual(
+                pr_facts.facts(HEADER, first_plan(), 0, classed)["testing"][0],
+                {
+                    "check": "tests/t.py::one",
+                    "result": "Not run: the caller classed it %s, so no run judged it" % name,
+                },
+            )
+
     def many_tests_fold_into_one_row_per_step(self):
         import pr_facts
 

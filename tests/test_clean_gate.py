@@ -58,7 +58,7 @@ def load_tests(loader, standard, pattern):
 
 REFUSING_COMMIT_MSG_HOOK = """#!/bin/sh
 case "$(head -n 1 "$1")" in
-  "chore("*) echo "refused: chore commits" >&2; exit 1 ;;
+  "chore"*) echo "refused: chore commits" >&2; exit 1 ;;
 esac
 exit 0
 """
@@ -343,9 +343,9 @@ class CleanGate(unittest.TestCase):
         for entry in entries:
             self.assertNotIn("local_only.py", entry["listing"])
         self.assertIn("local_only.py", self._ignored(self._msp(completed)))
-        self.assertEqual(read_text(self._tree("local_only.py")), LOCAL_ONLY)
+        self.assertFalse(os.path.lexists(self._tree("local_only.py")))
 
-    def a_hidden_uncommitted_referee_file_never_reaches_the_gate(self):
+    def a_referee_file_hidden_by_the_clone_exclude_is_reverted_before_the_gate(self):
         self._scratch()
         self._worker(
             [
@@ -355,15 +355,15 @@ class CleanGate(unittest.TestCase):
             ]
         )
         completed = self._build(flags=self._charter(lock_fixtures.PLAIN_CHARTER))
-        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
-        entries = self._accept_log()
-        self._gate_folders(entries)
-        for entry in entries:
-            self.assertNotIn("tests/conftest.py", entry["listing"])
+        self.assertEqual(completed.returncode, 9, "mitosis exit code" + lock_fixtures.tail(completed))
+        self.assertEqual(self._accept_log(), [])
         msp = self._msp(completed)
-        self.assertEqual(msp["reconcile"]["referee"], [])
-        self.assertIn("tests/conftest.py", self._ignored(msp))
-        self.assertEqual(read_text(self._tree("tests", "conftest.py")), HIDDEN_CONFTEST)
+        self.assertEqual(msp["state"], "referee-reverted")
+        self.assertEqual(msp["reconcile"]["referee"], ["tests/conftest.py"])
+        self.assertIs(msp["reconcile"]["fatal"], True)
+        self.assertNotEqual(
+            self.scratch.git("cat-file", "-e", "mitosis/demo:tests/conftest.py").returncode, 0
+        )
 
     def worker_written_git_settings_never_shape_the_gate_bytes(self):
         self._scratch()
@@ -388,7 +388,7 @@ class CleanGate(unittest.TestCase):
             [
                 ["write", "calc.py", CALC],
                 ["write", lock_fixtures.LOCKED, TAMPERED_LOCKED],
-                ["replace-tree", "feature", lock_fixtures.LOCKED],
+                ["replace-tree", "HEAD", lock_fixtures.LOCKED],
             ]
         )
         completed = self._build(acceptance=(), flags=self._charter(lock_fixtures.LOCKED_CHARTER))
@@ -422,6 +422,7 @@ class CleanGate(unittest.TestCase):
         self.assertEqual(read_text(os.path.join(repo, "node_modules", "dep", "index.js")), "root\n")
         self.assertEqual(read_text(os.path.join(repo, ".venv", "marker.txt")), "root-venv\n")
         self.assertIn("node_modules/", self._ignored(self._msp(completed)))
+        self.assertFalse(os.path.lexists(self._tree("node_modules")))
 
     def gate_setup_runs_in_the_clean_checkout_first(self):
         self._scratch(ignored=("node_modules/",))
@@ -502,7 +503,7 @@ class CleanGate(unittest.TestCase):
         self.assertIn("gate-setup", self._recorded().get("gate_error") or "")
         self.assertFalse(os.path.exists(os.path.join(self.scratch.tmp, "accept.log")))
 
-    def a_conftest_committed_inside_a_base_submodule_is_reverted_and_fatal(self):
+    def a_conftest_committed_inside_a_base_submodule_fails_the_lane(self):
         self._scratch()
         scratch = self.scratch
         dep = os.path.join(scratch.tmp, "dep")
@@ -526,15 +527,17 @@ class CleanGate(unittest.TestCase):
             declared=("calc.py", "dep"),
         )
         completed = self._build(files=("calc.py", "dep"), acceptance=())
-        self.assertEqual(completed.returncode, 9, "mitosis exit code" + lock_fixtures.tail(completed))
-        msp = self._msp(completed)
-        self.assertEqual(msp["state"], "referee-reverted")
-        self.assertIn("dep/conftest.py", msp["reconcile"]["referee"])
+        self.assertEqual(completed.returncode, 10, "mitosis exit code" + lock_fixtures.tail(completed))
+        lane = lock_fixtures.summary_of(completed)["lanes"][0]
+        self.assertEqual(lane["state"], "failed")
+        self.assertIn("dep is a folder", lane["reason"])
+        self.assertEqual(self._msp(completed)["state"], "blocked")
+        self.assertNotEqual(scratch.git("cat-file", "-e", "mitosis/demo:dep/conftest.py").returncode, 0)
         self.assertEqual(
             scratch.checked("ls-tree", "mitosis/demo", "dep"), scratch.checked("ls-tree", "feature", "dep")
         )
 
-    def a_committed_referee_write_is_fatal_when_the_pre_gate_commit_fails(self):
+    def a_committed_referee_write_never_lands_when_the_landing_commit_fails(self):
         self._scratch()
         hook = os.path.join(self.scratch.repo, ".git", "hooks", "commit-msg")
         lock_fixtures.put(hook, REFUSING_COMMIT_MSG_HOOK)
@@ -549,14 +552,16 @@ class CleanGate(unittest.TestCase):
             ]
         )
         completed = self._build(acceptance=(), flags=self._charter(lock_fixtures.PLAIN_CHARTER))
-        self.assertEqual(completed.returncode, 9, "mitosis exit code" + lock_fixtures.tail(completed))
-        msp = self._msp(completed)
-        self.assertEqual(msp["reconcile"]["referee"], ["tests/conftest.py"])
-        self.assertIn("notes.txt", self._ignored(msp))
+        self.assertEqual(completed.returncode, 10, "mitosis exit code" + lock_fixtures.tail(completed))
+        lane = lock_fixtures.summary_of(completed)["lanes"][0]
+        self.assertEqual(lane["state"], "failed")
+        self.assertIn("refused: chore commits", lane["reason"])
+        self.assertEqual(self._msp(completed)["state"], "blocked")
         self.assertNotEqual(
             self.scratch.git("cat-file", "-e", "mitosis/demo:tests/conftest.py").returncode, 0
         )
-        self.assertTrue(os.path.exists(self._tree("notes.txt")))
+        self.assertFalse(os.path.lexists(self._tree("tests", "conftest.py")))
+        self.assertFalse(os.path.lexists(self._tree("notes.txt")))
 
 
 class CleanGateDocs(unittest.TestCase):
@@ -589,7 +594,7 @@ def load_tests(loader, standard, pattern):
             CleanGate,
             (
                 "the_gate_runs_in_a_clean_checkout_of_the_commit",
-                "a_hidden_uncommitted_referee_file_never_reaches_the_gate",
+                "a_referee_file_hidden_by_the_clone_exclude_is_reverted_before_the_gate",
                 "worker_written_git_settings_never_shape_the_gate_bytes",
                 "a_locked_edit_hidden_by_a_replace_ref_is_reverted_and_fatal",
                 "dependency_folders_come_from_the_repository_root",
@@ -599,8 +604,8 @@ def load_tests(loader, standard, pattern):
                 "a_locked_path_a_gate_run_writes_is_fatal",
                 "a_file_one_gate_run_leaves_never_reaches_the_next_run",
                 "a_gate_setup_that_times_out_holds_the_msp_back",
-                "a_conftest_committed_inside_a_base_submodule_is_reverted_and_fatal",
-                "a_committed_referee_write_is_fatal_when_the_pre_gate_commit_fails",
+                "a_conftest_committed_inside_a_base_submodule_fails_the_lane",
+                "a_committed_referee_write_never_lands_when_the_landing_commit_fails",
             ),
         ),
         (CleanGateDocs, ("the_docs_describe_the_clean_gate_checkout",)),

@@ -1,0 +1,5 @@
+# Mutants come from the lines the acceptance test executes
+
+Status: accepted
+
+The with-work acceptance run of each property runs with a standard-library tracer first on PYTHONPATH that records the lines executed under the gate folder. The gate samples its twelve mutants only from added lines executed inside a function and from added module-level or class-level assignments an executed function reads. A test that loads none of the Step's Python files makes the property's mutation not-applicable; a test that loads them but executes no candidate line falls back to sampling every added line, so an import-only test cannot pass silently; a run that wrote no trace is sampled as before and marked untraced. With `--suite-command`, a property whose mutants all survive is covered-elsewhere when the suite fails on each survivor, naming the failing tests. We chose a built-in tracer over coverage.py, which a project may not install, and over an uncapped sample, which multiplies gate time. JavaScript, TypeScript and shell lines stay untraced.

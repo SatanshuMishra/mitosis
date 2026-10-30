@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import itertools
 import json
 import os
@@ -9,7 +10,9 @@ from datetime import datetime
 import briefs
 import core
 import decompose
+import isolation
 import metrics
+import referee
 import pr_facts
 import run
 import shape
@@ -28,6 +31,8 @@ EXIT_FOREIGN = 8
 EXIT_REFEREE = 9
 
 EXIT_MANIFEST = 23
+
+EXIT_LINGERING = 14
 
 LANE_EXIT = {
     "ok": EXIT_SHIPPED,
@@ -66,6 +71,8 @@ EXIT_MEANING = {
     EXIT_REFEREE: "a Worker wrote a referee path; mitosis restored it and held its MSP back",
     EXIT_MANIFEST: "a branch is pushed or a pull request open with a package manifest that "
     "exports nothing",
+    EXIT_LINGERING: "a run left a process mitosis could not end, so mitosis stopped before reading "
+    "anything that process could change",
     LANE_EXIT["failed"]: "a Lane failed",
     LANE_EXIT["blocked"]: "a Lane or MSP was blocked, by a predecessor or by a write across an "
     "MSP boundary",
@@ -132,6 +139,7 @@ PLACEHOLDER_HELP = {
     "brief": " ".join("{%s}" % key for key in BRIEF_PLACEHOLDERS),
     "acceptance": "{file} {test} {worktree}",
     "gate-setup": "{worktree}",
+    "suite": "{worktree} {report}",
     "pull-request": "{branch} {base} {title} {body} {worktree} {msp} {remote}",
 }
 
@@ -142,9 +150,17 @@ STAGE_FLAG_NAMES = (
     "--pick",
     "--revise",
     "--proven-head",
+    "--worker-sandbox",
+    "--worker-write",
+    "--suite-command",
+    "--gate-classes",
     "--pr-impact",
     "--render-command",
 )
+
+GATE_CLASS_KEYS = ("class", "reason", "test")
+
+GATE_CLASS_REASON_LIMIT = 500
 
 PROVEN_HEAD = re.compile(r"^(.+)=([0-9a-f]{7,40})$")
 
@@ -259,6 +275,24 @@ FLAG_SPECS = {
         "folder from the repository root; only what it writes at new top-level names survives "
         "each run's reset; a non-zero exit or a timeout holds the MSP back "
         "gate-failed" % PLACEHOLDER_HELP["gate-setup"],
+    },
+    "--suite-command": {
+        "metavar": "TEMPLATE",
+        "help": "the project's full test suite, run in the gate's checkout once with no mutant "
+        "and then once for each mutant that every acceptance test of a property survives, with "
+        "the run's --timeout; "
+        "placeholders %s, where {report} is a fresh path for an optional JUnit XML report; "
+        "exit 1 kills the mutant only when the run with no mutant passed, and makes the property "
+        "covered-elsewhere when every survivor is killed; any other exit, or a run with no mutant "
+        "that fails, keeps the property weak" % PLACEHOLDER_HELP["suite"],
+    },
+    "--gate-classes": {
+        "metavar": "PATH",
+        "help": "a JSON list of {test, class, reason} objects, test naming one acceptance "
+        "property as <file>::<name>, class one of %s and reason one non-empty line of at most "
+        "%d characters; a classed property is judged by its class without a run, the plan id "
+        "stays unchanged, and with --resume every other property keeps the verdict recorded at "
+        "the MSP's unchanged commit" % (", ".join(run.GATE_CLASSES), GATE_CLASS_REASON_LIMIT),
     },
     "--pr-command": {
         "metavar": "TEMPLATE",
@@ -391,6 +425,24 @@ FLAG_SPECS = {
         "help": "a JSONL file of prior outcomes; a recorded regression on a surface raises "
         "its tier and never lowers one",
     },
+    "--worker-sandbox": {
+        "action": "store_true",
+        "help": "run every Worker under sandbox-exec with a profile that refuses file writes "
+        "outside its clone, a private temp folder passed as TMPDIR, its Claude Code transcript "
+        "folder, /dev/null, /dev/tty, /dev/fd and each --worker-write path, and run the gate's "
+        "setup, acceptance, mutant and suite runs and the lock stage's checks under sandbox-exec "
+        "too, writing only their checkout, a private temp folder and each --worker-write path; "
+        "a host without sandbox-exec refuses the run before any Worker starts",
+    },
+    "--worker-write": {
+        "metavar": "PATH",
+        "action": "append",
+        "default": [],
+        "help": "one more path a sandboxed Worker, gate run or lock-stage check may write "
+        "under, such as one a --gate-setup needs; repeatable; a path that is, holds or lies "
+        "inside the run directory, the repository or its git directory refuses the run with "
+        "exit 3",
+    },
     "--version": {"action": "version", "version": core.__version__},
     "--help": {"action": "help", "help": "show this message and exit"},
 }
@@ -447,8 +499,7 @@ def tier_models(pairs):
 def unmapped_tiers(plan, template, models):
     if not template or "{model}" not in template:
         return ()
-    used = sorted({lane.get("tier") for lane in plan.get("lanes") or ()}, key=str)
-    return tuple(tier for tier in used if tier not in (models or {}))
+    return tuple(tier for tier in core.plan_tiers(plan) if tier not in (models or {}))
 
 
 def refuse_unmapped(plan, template, models):
@@ -565,11 +616,19 @@ def check_templates(args):
         ("brief", args.brief_command),
         ("acceptance", args.acceptance_command),
         ("gate-setup", args.gate_setup),
+        ("suite", args.suite_command),
         ("pull-request", args.pr_command),
     ):
         if template is None:
             continue
         check_template(name, template)
+
+
+def check_worker_writes(args, run_dir, repo):
+    try:
+        isolation.refuse_overlapping_writes(run_dir, args.worker_write, repo)
+    except run.ConfigError as error:
+        raise Refusal(str(error))
 
 
 def check_document(args, root):
@@ -953,6 +1012,73 @@ def proven_heads(values, plan):
     return {labels[label]: commit for label, commit in pairs}
 
 
+def _class_label(position, entry):
+    test = entry.get("test") if isinstance(entry, dict) else None
+    if isinstance(test, str):
+        return "entry %d (%s)" % (position, json.dumps(test[:200]))
+    return "entry %d" % position
+
+
+def plan_properties(plan):
+    return frozenset(
+        run.property_key(entry["file"], entry["test"])
+        for item in plan.get("items") or []
+        for entry in item.get("acceptance") or []
+    )
+
+
+def _class_fault(entry, properties, seen):
+    if not isinstance(entry, dict) or sorted(entry) != sorted(GATE_CLASS_KEYS):
+        return "is not an object holding exactly the keys %s" % ", ".join(GATE_CLASS_KEYS)
+    test, name, reason = entry["test"], entry["class"], entry["reason"]
+    if not isinstance(test, str) or test not in properties:
+        return "names no acceptance property of the plan"
+    if test in seen:
+        return "names a property an earlier entry already classes"
+    if name not in run.GATE_CLASSES:
+        return "has class %s, which is none of %s" % (
+            json.dumps(name)[:80],
+            ", ".join(run.GATE_CLASSES),
+        )
+    if not isinstance(reason, str) or not reason.strip():
+        return "has no reason"
+    if len(reason.splitlines()) != 1:
+        return "has a reason of more than one line"
+    if len(reason) > GATE_CLASS_REASON_LIMIT:
+        return "has a reason longer than %d characters" % GATE_CLASS_REASON_LIMIT
+    return None
+
+
+def gate_classes(path, plan):
+    if path is None:
+        return None, None
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError as error:
+        raise Refusal("--gate-classes %s could not be read: %s" % (path, error.strerror))
+    try:
+        loaded = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise Refusal("--gate-classes %s is not UTF-8 JSON" % path)
+    if not isinstance(loaded, list):
+        raise Refusal("--gate-classes %s does not hold a JSON list" % path)
+    properties = plan_properties(plan)
+    seen = frozenset()
+    for position, entry in enumerate(loaded, 1):
+        fault = _class_fault(entry, properties, seen)
+        if fault is not None:
+            raise Refusal(
+                "--gate-classes %s: %s %s" % (path, _class_label(position, entry), fault)
+            )
+        seen = seen | {entry["test"]}
+    classes = tuple(
+        {"test": entry["test"], "class": entry["class"], "reason": entry["reason"]}
+        for entry in loaded
+    )
+    return classes, hashlib.sha256(raw).hexdigest()
+
+
 def refuse_run(args, plan, models, run_dir, repo):
     refuse_unbuildable(args, repo)
     refuse_unmapped(plan, args.dispatch_command, models)
@@ -1196,6 +1322,17 @@ def session_lines(plan):
     ) + oversized_lines(plan)
 
 
+def lock_stage_lines(plan):
+    author = plan.get("check_author")
+    if not author:
+        return ()
+    return (
+        "lock stage: the %s Step %s writes and locks %s before every Lane, and every Lane "
+        "builds with them read-only"
+        % (core.CHECK_AUTHOR, author["name"], ", ".join(plan.get("locked") or ())),
+    )
+
+
 def split_lines(plan, state):
     if plan is None:
         return (NO_PLAN,)
@@ -1210,7 +1347,7 @@ def split_lines(plan, state):
         "%d of %s declare no acceptance property; %s do not exist yet"
         % (counts.get("no_acceptance", 0), _n(total, "Step"), _n(counts.get("missing_paths", 0), "write-set path")),
     )
-    lines = lines + session_lines(plan)
+    lines = lines + session_lines(plan) + lock_stage_lines(plan)
     lines = lines + tuple(
         "Lane %d (MSP %s, %s): %s, cost %s, about %s tokens%s: %s"
         % (
@@ -1251,11 +1388,19 @@ def _tally(counts):
     return ", ".join("%d %s" % (counts.get(key, 0), key) for key in core.GATE_OUTCOMES)
 
 
-def _mutant_line(record):
+def _mutant_line(record, mutation=None, killers=()):
     if not isinstance(record, dict):
         return None
     killed = record.get("killed")
     tried = _n(record.get("tried") or 0, "mutant") + " tried"
+    if mutation == "not-applicable" and not record.get("tried"):
+        return "no mutant tried: the test loaded none of the Step's Python files"
+    if mutation == "not-applicable":
+        return tried + ", none killed it; the Step added no code, so mutation does not apply"
+    if mutation == "covered-elsewhere":
+        return tried + ", none killed it; the suite killed each, failing %s" % (
+            ", ".join(killers) or "tests it did not name"
+        )
     if not isinstance(killed, dict):
         return tried + ", none killed it"
     return tried + ", killed by %s:%s changed by %s" % (
@@ -1285,7 +1430,9 @@ def gate_lines(plan, state):
         totals = {key: totals[key] + counts.get(key, 0) for key in totals}
         lines = lines + ("MSP %s: %s (%s)" % (_label(plan, index), gate.get("outcome"), _tally(counts)),)
         for entry in gate.get("properties") or []:
-            tried = _mutant_line(entry.get("mutants"))
+            tried = _mutant_line(
+                entry.get("mutants"), entry.get("mutation"), tuple(entry.get("killers") or ())
+            )
             if entry.get("outcome") == "pass" and tried is None:
                 continue
             where = "%s::%s" % (entry.get("file"), entry.get("test")) if entry.get("file") else entry.get("step")
@@ -1502,6 +1649,39 @@ def _msp_findings(plan, index, record, lane_records):
     )
 
 
+def lock_of(state):
+    lock = (state or {}).get("lock")
+    return lock if isinstance(lock, dict) else None
+
+
+def lock_stopped(state):
+    lock = lock_of(state)
+    return lock is not None and lock.get("state") != "ok"
+
+
+def _lock_findings(state):
+    lock = lock_of(state)
+    if lock is None:
+        return []
+    stated = (
+        []
+        if lock.get("state") == "ok"
+        else [
+            _finding(
+                core.LOCK_MSP,
+                None,
+                lock.get("state") or "incomplete",
+                LANE_EXIT.get(lock.get("state"), EXIT_INCOMPLETE),
+                lock.get("reason") or "",
+            )
+        ]
+    )
+    return stated + [
+        _finding(core.LOCK_MSP, None, "undeclared", EXIT_RECONCILE, path)
+        for path in lock.get("undeclared") or []
+    ]
+
+
 def findings(state, plan):
     manifests = [
         _finding(None, None, "manifest", EXIT_MANIFEST, line)
@@ -1516,11 +1696,11 @@ def findings(state, plan):
         for index in range(len(plan.get("msps") or []))
         for entry in _msp_findings(plan, index, msp_records.get(str(index)), lane_records)
     ]
-    return _lane_findings(plan, lane_records) + msps + manifests
+    return _lock_findings(state) + _lane_findings(plan, lane_records) + msps + manifests
 
 
 def exit_code(state, plan):
-    if not plan.get("msps") or not (state or {}).get("worktrees"):
+    if not plan.get("msps") or not ((state or {}).get("worktrees") or lock_stopped(state)):
         return EXIT_NO_BRANCHES
     carried = {entry["exit"] for entry in findings(state, plan)}
     worst = next((code for code in EXIT_SEVERITY if code in carried), None)
@@ -1551,6 +1731,13 @@ def outcome_lines(plan, state, run_dir, code):
                 if code != EXIT_SHIPPED
                 else "the plan was written and nothing was spawned",
             ),
+        )
+    lines = lines + ("sandbox: %s" % sandbox_of(state),)
+    lock = lock_of(state)
+    if lock is not None:
+        reason = _one_line(lock.get("reason"))
+        lines = lines + (
+            "lock stage: %s%s" % (lock.get("state"), " (%s)" % reason if reason else ""),
         )
     lane_records = state.get("lanes") or {}
     for index in range(len(plan.get("lanes") or [])):
@@ -1630,8 +1817,15 @@ def _msp_summary(plan, state):
                     "commit": gate.get("commit"),
                     "properties": [
                         {
-                            key: entry.get(key)
-                            for key in ("file", "test", "step", "outcome", "reason", "mutants")
+                            **{
+                                key: entry.get(key)
+                                for key in ("file", "test", "step", "outcome", "reason", "mutants")
+                            },
+                            **{
+                                key: entry[key]
+                                for key in ("mutation", "coverage", "killers")
+                                if key in entry
+                            },
                         }
                         for entry in gate.get("properties") or []
                     ],
@@ -1654,6 +1848,37 @@ def _msp_summary(plan, state):
             }
         )
     return summaries
+
+
+def _lock_summary(state):
+    lock = lock_of(state)
+    if lock is None:
+        return None
+    return {key: lock.get(key) for key in ("state", "reason", "commit", "session_id")}
+
+
+def _lock_attention(state):
+    lock = lock_of(state) or {}
+    stopped = (
+        ["the lock stage ended %s: %s" % (lock.get("state"), _one_line(lock.get("reason")))]
+        if lock and lock.get("state") != "ok"
+        else []
+    )
+    undeclared = (
+        [
+            "the check-author wrote outside the locked paths, and mitosis landed none of it: %s"
+            % ", ".join(lock["undeclared"])
+        ]
+        if lock.get("undeclared")
+        else []
+    )
+    checked_out = [
+        "%s has the feature branch checked out; mitosis moved the branch to the lock commit "
+        "%s and left that checkout's files untouched, so update it before working there"
+        % (path, lock.get("commit"))
+        for path in lock.get("checked_out") or []
+    ]
+    return stopped + undeclared + checked_out
 
 
 def _attention(plan, lanes, msps):
@@ -1688,7 +1913,17 @@ def _attention(plan, lanes, msps):
             "MSP %s: %s::%s passed on red and green alone; its Step added no line to mutate"
             % (msp["msp"], entry["file"], entry["test"])
             for entry in msp["gate"]["properties"]
-            if entry["outcome"] == "pass" and (entry["mutants"] or {}).get("tried") == 0
+            if entry["outcome"] == "pass"
+            and (entry["mutants"] or {}).get("tried") == 0
+            and entry.get("mutation") != "not-applicable"
+        )
+        lines.extend(
+            "MSP %s: %s::%s passed without a mutant; its test loaded none of the Step's Python "
+            "files" % (msp["msp"], entry["file"], entry["test"])
+            for entry in msp["gate"]["properties"]
+            if entry["outcome"] == "pass"
+            and (entry["mutants"] or {}).get("tried") == 0
+            and entry.get("mutation") == "not-applicable"
         )
         if msp["crossing"]:
             lines.append(
@@ -1734,6 +1969,10 @@ def _coupling_attention(coupling):
     ]
 
 
+def sandbox_of(state):
+    return (state or {}).get("sandbox") or isolation.SANDBOX_OFF
+
+
 def summary(plan, state, run_dir, code, referee=None, troubles=()):
     lanes = _lane_summary(plan or {}, state)
     msps = _msp_summary(plan or {}, state)
@@ -1748,8 +1987,11 @@ def summary(plan, state, run_dir, code, referee=None, troubles=()):
         "msps": msps,
         "coupling": coupling,
         "referee": referee,
+        "lock": _lock_summary(state),
         "findings": findings(state, plan or {}),
-        "attention": _attention(plan or {}, lanes, msps)
+        "sandbox": sandbox_of(state),
+        "attention": _lock_attention(state)
+        + _attention(plan or {}, lanes, msps)
         + list(troubles)
         + list(oversized_lines(plan or {}))
         + list(manifest_lines((plan or {}).get("items") or []))
@@ -1775,6 +2017,22 @@ def referee_record(args, plan, repo, base):
     return run.locked_record(repo, args.feature_branch, base, locked)
 
 
+def lock_stage_referee(args, plan, repo, base):
+    author = plan.get("check_author")
+    if not author or base is None:
+        return referee_record(args, plan, repo, base)
+    missing = run.missing_paths(repo, base, plan.get("locked") or ())
+    owned = frozenset(referee.normalised(path) for path in author.get("files") or ())
+    unowned = [path for path in missing if referee.normalised(path) not in owned]
+    if unowned:
+        raise run.ConfigError(
+            "--charter locks %s, which %s does not hold and the %s Step %s does not write; "
+            "commit the locked checks on it before the build"
+            % (unowned[0], args.feature_branch, core.CHECK_AUTHOR, author["name"])
+        )
+    return None if missing else referee_record(args, plan, repo, base)
+
+
 def planned_referee(args, plan, repo):
     try:
         base = (
@@ -1782,7 +2040,7 @@ def planned_referee(args, plan, repo):
             if args.feature_branch and repo is not None
             else None
         )
-        return referee_record(args, plan, repo, base), ()
+        return lock_stage_referee(args, plan, repo, base), ()
     except (run.ConfigError, run.GitError) as error:
         return None, (str(error),)
 
@@ -1797,7 +2055,7 @@ def pinned_base(args, plan, run_dir, repo):
 
 def locked_referee(args, plan, repo, base):
     try:
-        return referee_record(args, plan, repo, base)
+        return lock_stage_referee(args, plan, repo, base)
     except (run.ConfigError, run.GitError) as error:
         raise Refusal(str(error))
 
@@ -1822,6 +2080,10 @@ def report(plan, state, decomposed, root, run_dir, code, from_items, decisions=N
     for title, body in zip(REPORT_SECTIONS, sections):
         lines = lines + (title + ":",) + tuple("  " + line for line in body) + ("",)
     return lines
+
+
+def loaded_gate_classes(args):
+    return getattr(args, "loaded_gate_classes", (None, None))
 
 
 def execute(args, plan, models, run_dir, repo, root, base=None):
@@ -1849,7 +2111,12 @@ def execute(args, plan, models, run_dir, repo, root, base=None):
             env=recorder_of(args).env,
             trajectory=args.trajectory,
             gate_setup=args.gate_setup,
+            suite_command=args.suite_command,
             base_commit=base,
+            worker_sandbox=args.worker_sandbox,
+            worker_writes=tuple(args.worker_write),
+            gate_classes=loaded_gate_classes(args)[0],
+            gate_classes_sha256=loaded_gate_classes(args)[1],
         ), None
     except (run.ConfigError, run.ResumeError) as error:
         raise Refusal(str(error))
@@ -1883,6 +2150,7 @@ def run_pipeline(args):
     charter = check_charter(args.charter)
     graph = load_graph(args.graph, root)
     run_dir = input_run_dir(args, root)
+    check_worker_writes(args, run_dir, repo)
     recorder = metrics.opened(args, repo, cwd, run_dir, models, achieved_parallelism)
     recorded = argparse.Namespace(**{**vars(args), "recorder": recorder})
     try:
@@ -1892,6 +2160,9 @@ def run_pipeline(args):
         raise
     except Refusal:
         recorder.ended(EXIT_REFUSED, EXIT_MEANING[EXIT_REFUSED])
+        raise
+    except run.LingeringProcess:
+        recorder.ended(EXIT_LINGERING, EXIT_MEANING[EXIT_LINGERING])
         raise
     except BaseException:
         recorder.ended(None, None)
@@ -1922,6 +2193,9 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     plan = build_plan(args, items, root, charter, graph, run_dir)
     recorder.planned(plan, lane_width(plan), len(empty_manifests(plan.get("items") or [])))
     proven_heads(args.proven_head, plan)
+    args = argparse.Namespace(
+        **{**vars(args), "loaded_gate_classes": gate_classes(args.gate_classes, plan)}
+    )
     refuse_unrenderable(args, plan, run_dir)
     if args.plan_only:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
@@ -1940,6 +2214,8 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     else:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
         state, failure = {}, None
+    if plan.get("check_author"):
+        locked = (state or {}).get("referee")
     code = exit_code(state, plan)
     if failure is not None and code == EXIT_SHIPPED:
         code = EXIT_INCOMPLETE
@@ -1987,6 +2263,12 @@ def main(argv=None):
     except Refusal as refusal:
         _print(("mitosis: %s" % refusal, "exit %d: %s" % (EXIT_REFUSED, EXIT_MEANING[EXIT_REFUSED])), sys.stderr)
         return EXIT_REFUSED
+    except run.LingeringProcess as lingering:
+        _print(
+            ("mitosis: %s" % lingering, "exit %d: %s" % (EXIT_LINGERING, EXIT_MEANING[EXIT_LINGERING])),
+            sys.stderr,
+        )
+        return EXIT_LINGERING
 
 
 if __name__ == "__main__":

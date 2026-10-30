@@ -30,6 +30,8 @@ RESULTS = {
 
 UNJUDGED = "Not run: the gate did not judge it"
 
+CLASSED = "Not run: the caller classed it %s, so no run judged it"
+
 NO_ACCEPTANCE = "Not run: the Step names no acceptance test"
 
 GATE_FAILED = {"check": "Acceptance gate", "result": "Not run: the gate could not run"}
@@ -110,6 +112,16 @@ def _probe_folded(_, total):
     return _partly_folded(total, total)
 
 
+def _result(judged):
+    if judged.get("class"):
+        return CLASSED % judged["class"]
+    return RESULTS.get(judged.get("outcome"), UNJUDGED)
+
+
+def _passed(judged):
+    return judged.get("outcome") == "pass" and not judged.get("class")
+
+
 def _testing(plan, msp, outcome_of, fold, closing):
     steps = _steps(plan, msp)
     tests = tuple(
@@ -119,7 +131,7 @@ def _testing(plan, msp, outcome_of, fold, closing):
         proven = [
             {
                 "check": "%s::%s" % (entry.get("file"), entry.get("test")),
-                "result": RESULTS.get(outcome_of(name, entry), UNJUDGED),
+                "result": _result(outcome_of(name, entry)),
             }
             for name, entry in tests
         ]
@@ -128,7 +140,7 @@ def _testing(plan, msp, outcome_of, fold, closing):
             {
                 "check": name,
                 "result": fold(
-                    sum(1 for entry in item["acceptance"] if outcome_of(name, entry) == "pass"),
+                    sum(1 for entry in item["acceptance"] if _passed(outcome_of(name, entry))),
                     len(item["acceptance"]),
                 ),
             }
@@ -160,10 +172,10 @@ def _closing(gate_result, gate_error, proven_head):
 
 def _outcomes(gate_result):
     judged = {
-        (entry.get("step"), entry.get("file"), entry.get("test")): entry.get("outcome")
+        (entry.get("step"), entry.get("file"), entry.get("test")): entry
         for entry in (gate_result or {}).get("properties") or []
     }
-    return lambda name, entry: judged.get((name, entry.get("file"), entry.get("test")))
+    return lambda name, entry: judged.get((name, entry.get("file"), entry.get("test"))) or {}
 
 
 def _nameable(path):
@@ -278,7 +290,7 @@ def probe_facts(header, plan, msp):
     closing = [GATE_FAILED, _proven_head_row(PROBE_COMMIT, PROBE_COMMIT)]
     return {
         **_base(header, plan, msp),
-        "testing": _testing(plan, msp, lambda name, entry: "pass", _probe_folded, closing),
+        "testing": _testing(plan, msp, lambda name, entry: {"outcome": "pass"}, _probe_folded, closing),
     }
 
 

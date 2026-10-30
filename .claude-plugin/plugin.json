@@ -1,6 +1,6 @@
 {
   "name": "mitosis",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Splits a batch of changes or a document into parts built in parallel on their own branches, checks each part's acceptance test fails without the work, and opens one pull request per part. Never merges.",
   "author": {
     "name": "Satanshu Mishra",
