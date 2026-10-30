@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T06:44:01.759Z
+Updated: 2026-10-30T06:44:03.736Z
 Next ids: c8 D3 R3 S2
 
 ## Goal
@@ -23,9 +23,9 @@ FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override: ha
 
 ## Next step
 
-When the review/advisory suite and security-reviewer finish, act on any confirmed security finding, then run rerun-plan and proofs for the slow checks at the head, then Ship.
+Run SHIP=1 ~/.mitosis/mitosis/hr-mitosis-isolation/run.zsh --resume --proven-head isolation=bb7addad14457aa7bf72f5f4818f695f43d5db6e, then open the MSP PR with create_pull_request from mitosis's JSON result, assign it, post review/isolation.comment.md, bind it and turn on Auto-fix.
 
-Needs: D1, R1.
+Needs: D2, R1.
 
 ## Decisions in force
 
@@ -35,7 +35,6 @@ Needs: D1, R1.
 ## Open risks
 
 - R1 The checkout holds the owner's uncommitted GLOSSARY.md Pull requests section and untracked docs/adr/0004 and 0005 from a paused run; never touch, commit or delete them; build from the committed state.
-- R2 ADRs 0010 to 0014 are untracked in the owner's checkout beside the owner's untracked 0004 and 0005; ship only 0010 to 0014 on the FEATURE branch through a temporary worktree, never 0004 or 0005. Bears on c6.
 
 ## Settled, do not reopen
 
