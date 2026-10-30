@@ -131,24 +131,29 @@ def transcript_folder(home, clone):
     return os.path.join(home, ".claude", "projects", TRANSCRIPT_KEY.sub("-", os.path.realpath(clone)))
 
 
-def sandbox_profile(allowed):
+def sandbox_profile(allowed, pinned=()):
     rules = (
         tuple("(subpath %s)" % _profile_string(path) for path in allowed)
         + tuple("(literal %s)" % _profile_string(device) for device in WRITABLE_DEVICES)
         + ('(regex #"%s")' % WRITABLE_DEVICE_PATTERN,)
     )
-    return "(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write* %s)\n" % " ".join(
-        rules
+    pins = (
+        "(deny file-write* %s)\n" % " ".join("(literal %s)" % _profile_string(path) for path in pinned)
+        if pinned
+        else ""
+    )
+    return "(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write* %s)\n%s" % (
+        " ".join(rules),
+        pins,
     )
 
 
 def _confinement(sandbox, profile, temporary, writable):
-    allowed = tuple(os.path.realpath(path) for path in writable) + tuple(
-        os.path.realpath(path) for path in sandbox["writes"]
-    )
+    pinned = tuple(os.path.realpath(path) for path in (temporary,) + tuple(writable))
+    allowed = pinned + tuple(os.path.realpath(path) for path in sandbox["writes"])
     with open(profile, "w", encoding="utf-8") as handle:
-        handle.write(sandbox_profile((os.path.realpath(temporary),) + allowed))
-    return {"program": sandbox["program"], "profile": profile, "tmp": os.path.realpath(temporary)}
+        handle.write(sandbox_profile(allowed, pinned))
+    return {"program": sandbox["program"], "profile": profile, "tmp": pinned[0]}
 
 
 def confined(argv, env, confinement):
@@ -177,13 +182,17 @@ def gate_folders(log_dir):
     return {"log": root, "tmp": root + ".tmp", "profile": root + ".sb"}
 
 
-def gate_confinement(sandbox, log_dir):
+def gate_confinement(sandbox, log_dir, checkout):
     if sandbox is None:
         return None
     folders = gate_folders(log_dir)
     release_gate(folders)
     os.makedirs(folders["tmp"])
-    return _confinement(sandbox, folders["profile"], folders["tmp"], (folders["log"],))
+    return _confinement(sandbox, folders["profile"], folders["tmp"], (checkout,))
+
+
+def gate_outputs(log_dir, confinement):
+    return log_dir if confinement is None else confinement["tmp"]
 
 
 def release_gate(folders):

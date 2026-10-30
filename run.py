@@ -2037,7 +2037,7 @@ def _run_suite_mutant(suite, folder, mutant, report, log_path, timeout, env, res
 
 def _run_suite_unmutated(suite, folder, log_dir, timeout, env, reset, sandbox=None):
     written = reset()
-    report = os.path.join(log_dir, "suite-unmutated.xml")
+    report = os.path.join(isolation.gate_outputs(log_dir, sandbox), "suite-unmutated.xml")
     log_path = os.path.join(log_dir, "suite-unmutated.log")
     _removed(report)
     argv = build_argv(suite, {"worktree": folder, "report": report})
@@ -2069,7 +2069,9 @@ def _suite_verdicts(
     for position, mutant in enumerate(survivors):
         key = _mutant_key(mutant)
         if key not in seen:
-            report = os.path.join(log_dir, "%d-suite-%d.xml" % (index, position))
+            report = os.path.join(
+                isolation.gate_outputs(log_dir, sandbox), "%d-suite-%d.xml" % (index, position)
+            )
             log_path = os.path.join(log_dir, "%d-suite-%d.log" % (index, position))
             (ran, left), spent = _timed(
                 lambda mutant=mutant, report=report, log_path=log_path: _run_suite_mutant(
@@ -2325,7 +2327,7 @@ def gate(
     _remove_gate_folders(log_dir)
     folder = tempfile.mkdtemp(prefix=GATE_FOLDER_PREFIX, dir=log_dir)
     try:
-        confinement = isolation.gate_confinement(sandbox, log_dir)
+        confinement = isolation.gate_confinement(sandbox, log_dir, folder)
         result, written = _gate_runs(
             plan,
             msp,
@@ -2421,8 +2423,9 @@ def _gate_runs(
             )
         )
 
+    outputs = isolation.gate_outputs(log_dir, sandbox)
     trace_folders = {
-        index: fresh_folder(os.path.join(log_dir, "%d-trace" % index)) for index in runnable
+        index: fresh_folder(os.path.join(outputs, "%d-trace" % index)) for index in runnable
     }
     with_work_runs = {
         index: accepted(
@@ -4224,7 +4227,7 @@ def _locked_tree_faults(plan, settings, base, stored):
     _remove_gate_folders(log_dir)
     folder = tempfile.mkdtemp(prefix=GATE_FOLDER_PREFIX, dir=log_dir)
     try:
-        confinement = isolation.gate_confinement(settings.get("sandbox"), log_dir)
+        confinement = isolation.gate_confinement(settings.get("sandbox"), log_dir, folder)
         reset_gate_folder(repo, folder, target, (), locked)
         top = frozenset(_parts(path)[0] for path in target)
         setup = settings["gate_setup"]
