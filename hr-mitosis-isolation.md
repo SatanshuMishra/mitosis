@@ -1,7 +1,7 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: parked
-Updated: 2026-10-30T08:13:34.742Z
-Next ids: c8 D3 R3 S2
+Updated: 2026-10-30T08:23:18.943Z
+Next ids: c8 D3 R3 S3
 
 ## Goal
 
@@ -19,11 +19,11 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override), pushed. MSP branch mitosis/isolation is pushed at bb7adda as SatanshuMishra/mitosis#29 (ready, assigned, bound, Auto-fix on); the driver has told the owner to hold its merge until round 3 is green. Round 3 (driver escalation of W1, a --worker-write path overlapping the run folder, and W2, a confined process outliving its run): both fixes and the ADR lint fix that turned #29's CI red are on mitosis/isolation at head 27f92e7, not pushed (fix-check clean, locked files unchanged; fix notes in review/round-3/fix-*.out.txt); round 3 is green (review/round-3/isolation.verdict.json) with advisory C1 (_denied naming) being fixed; S1 (a --worker-write overlapping the repository or its git directory, reproduced, rejected on the bar) is with the driver as close or leave. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md. Four assumptions are in review/isolation.assumptions.txt.
+FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override), pushed. MSP branch mitosis/isolation is pushed at bb7adda as SatanshuMishra/mitosis#29 (ready, assigned, bound, Auto-fix on); the driver has told the owner to hold its merge until round 3 is green. Round 3 (driver escalation of W1, a --worker-write path overlapping the run folder, and W2, a confined process outliving its run): both fixes and the ADR lint fix that turned #29's CI red are on mitosis/isolation, not pushed (fix-check clean, locked files unchanged; fix notes in review/round-3/fix-*.out.txt); round 3 is green (review/round-3/isolation.verdict.json) with advisory C1 fixed at 4f5fdd1; S1 (a --worker-write overlapping the repository or its git directory) is ruled closed (S2); its fix agent is running on 4f5fdd1. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md. Four assumptions are in review/isolation.assumptions.txt.
 
 ## Next step
 
-When the C1 fix agent ends and the driver answers on S1 (close: one fix agent as W1's second attempt, then a code-reviewer and security-reviewer on its diff), run the suite on 3.9 and 3.14 at the head, record a ship boundary superseding D2, re-ship with --proven-head isolation=<head> so #29 updates, refresh its review comment, and report to the driver.
+When the S2 fix agent ends, run fix-check and the locked-file check, a code-reviewer and security-reviewer on its diff, run the suite on 3.9 and 3.14 at the head, record a ship boundary superseding D2, re-ship with --proven-head isolation=<head> so #29 updates, refresh its review comment, and report to the driver.
 
 Needs: R1.
 
@@ -39,6 +39,7 @@ Needs: R1.
 ## Settled, do not reopen
 
 - S1 Driver ruling on outside writes: files replayed from a Worker's clone are judged by reconcile only (exit 6 kept or exit 9 reverted) and never reach the gate's tree, which holds each such path as at the Lane's start; only regular files and start-tree deletions are replayed; proven by acceptance row an_outside_write_never_reaches_the_gate.
+- S2 Driver ruling on worker write paths (I4, C13), W1's second and last fix attempt: every --worker-write path is resolved through realpath and refused with a named error when it equals, contains or lies inside the repository root, its resolved git common directory, the run folder or the checkout mitosis controls; one receipt per protected root, including the reproduced overwrite of refs/heads/feature.
 
 ## Where the details live
 
