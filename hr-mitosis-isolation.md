@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: parked
-Updated: 2026-10-30T08:23:18.943Z
+Updated: 2026-10-30T08:42:16.647Z
 Next ids: c8 D3 R3 S3
 
 ## Goal
@@ -19,13 +19,13 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override), pushed. MSP branch mitosis/isolation is pushed at bb7adda as SatanshuMishra/mitosis#29 (ready, assigned, bound, Auto-fix on); the driver has told the owner to hold its merge until round 3 is green. Round 3 (driver escalation of W1, a --worker-write path overlapping the run folder, and W2, a confined process outliving its run): both fixes and the ADR lint fix that turned #29's CI red are on mitosis/isolation, not pushed (fix-check clean, locked files unchanged; fix notes in review/round-3/fix-*.out.txt); round 3 is green (review/round-3/isolation.verdict.json) with advisory C1 fixed at 4f5fdd1; S1 (a --worker-write overlapping the repository or its git directory) is ruled closed (S2); its fix agent is running on 4f5fdd1. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md. Four assumptions are in review/isolation.assumptions.txt.
+FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override), pushed. MSP branch mitosis/isolation is pushed at bb7adda as SatanshuMishra/mitosis#29 (ready, assigned, bound, Auto-fix on); the driver has told the owner to hold its merge until round 3 is green. Round 3 (driver escalation of W1, a --worker-write path overlapping the run folder, and W2, a confined process outliving its run): both fixes and the ADR lint fix that turned #29's CI red are on mitosis/isolation, not pushed (fix-check clean, locked files unchanged; fix notes in review/round-3/fix-*.out.txt); round 3 is green (review/round-3/isolation.verdict.json) with advisory C1 fixed at 4f5fdd1; S1 (a --worker-write overlapping the repository or its git directory) is ruled closed (S2) and fixed at 2892811; round 4 reviews the fix diff 27f92e7..2892811 in review/round-4/. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md. Four assumptions are in review/isolation.assumptions.txt.
 
 ## Next step
 
-When the S2 fix agent ends, run fix-check and the locked-file check, a code-reviewer and security-reviewer on its diff, run the suite on 3.9 and 3.14 at the head, record a ship boundary superseding D2, re-ship with --proven-head isolation=<head> so #29 updates, refresh its review comment, and report to the driver.
+When round 4's reviewers end, run candidates, validator, record, verdict and outcome; on green record a ship boundary superseding D2, re-ship with --proven-head isolation=<head> so #29 updates, refresh its review comment, and report to the driver.
 
-Needs: R1.
+Needs: D2, R1.
 
 ## Decisions in force
 
