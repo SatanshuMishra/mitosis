@@ -3,6 +3,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -176,6 +177,20 @@ def refusal(given, run_dir):
     )
 
 
+def overlap_refusal(given, root):
+    name, path = root
+    return "--worker-write %s overlaps %s %s; sandboxed code may never write %s, so no Worker was started" % (
+        (given, name, path) + (PROTECTED_REASONS[name],)
+    )
+
+
+PROTECTED_REASONS = {
+    "the repository": "the working tree mitosis runs git in",
+    "the repository's git directory": "the repository's refs, objects, hooks or config",
+    "the mitosis checkout folder": "the MSP worktrees mitosis lands and gates",
+}
+
+
 def case_insensitive(folder):
     return os.path.exists(folder.swapcase())
 
@@ -324,6 +339,197 @@ class Receipts(unittest.TestCase):
             self.items, "--resume", *(self._sandbox_flags() + self._disjoint())
         )
         self._assert_built(completed)
+
+
+class ProtectedRoots(unittest.TestCase):
+    def setUp(self):
+        self.scratch = Scratch({TEST_FILE: EXACT_TEST})
+        self.addCleanup(self.scratch.close)
+        runs = os.path.realpath(tempfile.mkdtemp(prefix="mitosis-runs-"))
+        self.addCleanup(shutil.rmtree, runs, True)
+        self.scratch.run_dir = os.path.join(runs, "run")
+        self.items = self.scratch.items([step("add", ["calc.py"], "demo", acceptance=[ADDS])])
+        self.scratch.jobs({"add": {"writes": {"calc.py": CORRECT_ADD}}})
+        self.main_checkout = self.scratch.repo
+
+    def _git_directory(self):
+        return ("the repository's git directory", os.path.join(self.main_checkout, ".git"))
+
+    def _linked(self):
+        linked = os.path.join(self.scratch.tmp, "linked")
+        self.scratch.checked("worktree", "add", "-q", "-b", "linked", linked, "feature")
+        self.assertTrue(os.path.isfile(os.path.join(linked, ".git")))
+        common = self.scratch.checked("-C", linked, "rev-parse", "--git-common-dir").strip()
+        self.assertEqual(os.path.realpath(os.path.join(linked, common)), self._git_directory()[1])
+        self.scratch.repo = linked
+        return linked
+
+    def _link(self, target, label):
+        link = os.path.join(self.scratch.tmp, "link-%s" % label)
+        os.symlink(target, link)
+        return link
+
+    def _spellings(self, label, given):
+        folder, below = given
+        joined = os.path.join(folder, below) if below else folder
+        linked = self._link(folder, label)
+        return (("absolute", joined), ("symlink", os.path.join(linked, below) if below else linked))
+
+    def _build(self, given, *extra):
+        return self.scratch.build(
+            self.items,
+            "--worker-sandbox",
+            "--worker-write",
+            given,
+            "--worker-write",
+            self.scratch.stubs,
+            *extra
+        )
+
+    def _assert_refused(self, completed, given, root):
+        self.assertEqual(completed.returncode, EXIT_REFUSED, "mitosis exit code" + tail(completed))
+        self.assertEqual(
+            completed.stderr.splitlines(),
+            ["mitosis: " + overlap_refusal(given, root), REFUSED_LINE],
+            tail(completed),
+        )
+        self.assertEqual(self.scratch.dispatched(), [], "a Worker started" + tail(completed))
+        self.assertFalse(os.path.exists(os.path.join(self.scratch.run_dir, run.STATE_FILE)))
+
+    def _assert_cases(self, cases, root, *extra):
+        for label, given in cases:
+            for spelling, path in self._spellings(label, given):
+                with self.subTest(relation=label, spelling=spelling, extra=extra):
+                    self._assert_refused(self._build(path, *extra), path, root)
+
+    def a_run_refuses_a_worker_write_that_overlaps_the_repository(self):
+        root = ("the repository", self.scratch.repo)
+        cases = (
+            ("equal", (self.scratch.repo, "")),
+            ("holds", (self.scratch.tmp, "")),
+            ("inside", (self.scratch.repo, "build")),
+        )
+        self._assert_cases(cases, root)
+        completed = self.scratch.build(self.items, "--plan-only")
+        self.assertEqual(completed.returncode, 0, "plan-only exit code" + tail(completed))
+        resumed = tuple(("resumed-" + label, given) for label, given in cases)
+        self._assert_cases(resumed, root, "--resume")
+
+    def a_run_refuses_a_worker_write_that_overlaps_the_git_directory(self):
+        root = self._git_directory()
+        self._assert_cases(
+            (
+                ("equal", (self.scratch.repo, ".git")),
+                ("inside", (self.scratch.repo, os.path.join(".git", "refs", "heads"))),
+            ),
+            root,
+        )
+        self._linked()
+        self._assert_cases(
+            (
+                ("linked-equal", (self.main_checkout, ".git")),
+                ("linked-inside", (self.main_checkout, os.path.join(".git", "refs", "heads"))),
+                ("linked-holds", (self.main_checkout, "")),
+            ),
+            root,
+        )
+
+    def a_linked_worktree_run_refuses_a_worker_write_that_overlaps_its_own_folder(self):
+        linked = self._linked()
+        self._assert_cases(
+            (("linked-own", (linked, "")), ("linked-git-file", (linked, ".git"))),
+            ("the repository", linked),
+        )
+
+    def _execute(self, given, trees_root, resume):
+        return run.execute(
+            {"lanes": [], "msps": []},
+            self.scratch.repo,
+            "feature",
+            self.scratch.run_dir,
+            self.scratch.stub("worker.py", "{msp}", "{task}"),
+            self.scratch.stub("accept.py", "unittest", "{file}", "{test}"),
+            None,
+            120,
+            1,
+            resume=resume,
+            trees_root=trees_root,
+            no_push=True,
+            env=self.scratch.env,
+            worker_sandbox=True,
+            worker_writes=(given,),
+        )
+
+    def the_plan_refuses_a_worker_write_that_overlaps_a_mitosis_checkout_folder(self):
+        holder = os.path.join(self.scratch.tmp, "elsewhere")
+        trees_root = os.path.join(holder, "trees")
+        root = ("the mitosis checkout folder", trees_root)
+        cases = (
+            ("equal", (trees_root, "")),
+            ("holds", (holder, "")),
+            ("inside", (trees_root, "demo")),
+        )
+        for resume in (False, True):
+            for label, given in cases:
+                for spelling, path in self._spellings("%s-%s" % (label, resume), given):
+                    with self.subTest(relation=label, spelling=spelling, resume=resume):
+                        with self.assertRaises(run.OverlappingWrite) as raised:
+                            self._execute(path, trees_root, resume)
+                        self.assertEqual(str(raised.exception), overlap_refusal(path, root))
+                        self.assertEqual(self.scratch.dispatched(), [])
+                        self.assertFalse(os.path.exists(trees_root))
+                        self.assertFalse(os.path.exists(self.scratch.run_dir))
+
+    def a_run_refuses_a_worker_write_inside_its_default_worktree_or_gate_checkout(self):
+        for label, below in (
+            ("worktree", os.path.join("trees", "demo")),
+            ("gate", os.path.join("gate", "msp-0", "checkout-0")),
+        ):
+            given = os.path.join(self.scratch.run_dir, below)
+            with self.subTest(checkout=label):
+                completed = self._build(given)
+                self.assertEqual(completed.returncode, EXIT_REFUSED, tail(completed))
+                self.assertEqual(
+                    completed.stderr.splitlines(),
+                    ["mitosis: " + refusal(given, self.scratch.run_dir), REFUSED_LINE],
+                    tail(completed),
+                )
+                self.assertEqual(self.scratch.dispatched(), [], tail(completed))
+
+    def a_sandboxed_worker_granted_the_repository_never_moves_its_branch(self):
+        branch = os.path.join(self.scratch.repo, ".git", "refs", "heads", "feature")
+        original = self.scratch.checked("rev-parse", "refs/heads/feature").strip()
+        other = self.scratch.checked("rev-parse", "refs/heads/main").strip()
+        self.assertNotEqual(original, other)
+        self.scratch.jobs(
+            {
+                "add": {
+                    "writes": {"calc.py": CORRECT_ADD},
+                    "script": "attempt(%r, %r, 'w')\n" % (branch, other + "\n"),
+                }
+            }
+        )
+        completed = self._build(self.scratch.repo)
+        self.assertEqual(
+            self.scratch.checked("rev-parse", "refs/heads/feature").strip(),
+            original,
+            "sandboxed Worker code moved the repository's branch" + tail(completed),
+        )
+        self._assert_refused(completed, self.scratch.repo, ("the repository", self.scratch.repo))
+
+    def a_disjoint_worker_write_beside_the_repository_is_accepted(self):
+        beside = (self.scratch.repo + "-sibling", os.path.join(self.scratch.tmp, "elsewhere"))
+        for path in beside:
+            os.makedirs(path)
+        beside = beside + (self.scratch.stubs,)
+        flags = ("--worker-sandbox",) if sys.platform == "darwin" else ()
+        for path in beside:
+            flags = flags + ("--worker-write", path + os.sep)
+        completed = self.scratch.build(self.items, *flags)
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
+        self.assertEqual(self.scratch.dispatched(), ["add"], tail(completed))
+        expected = "sandbox-exec" if sys.platform == "darwin" else "off"
+        self.assertEqual(summary_of(completed).get("sandbox"), expected, tail(completed))
 
 
 class Outlived(unittest.TestCase):
@@ -556,6 +762,18 @@ def load_tests(loader, standard, pattern):
                 "a_retargeted_link_never_widens_a_checked_worker_write",
                 "a_fresh_run_accepts_a_disjoint_worker_write",
                 "a_resumed_run_accepts_a_disjoint_worker_write",
+            ),
+        ),
+        (
+            ProtectedRoots,
+            (
+                "a_run_refuses_a_worker_write_that_overlaps_the_repository",
+                "a_run_refuses_a_worker_write_that_overlaps_the_git_directory",
+                "a_linked_worktree_run_refuses_a_worker_write_that_overlaps_its_own_folder",
+                "the_plan_refuses_a_worker_write_that_overlaps_a_mitosis_checkout_folder",
+                "a_run_refuses_a_worker_write_inside_its_default_worktree_or_gate_checkout",
+                "a_sandboxed_worker_granted_the_repository_never_moves_its_branch",
+                "a_disjoint_worker_write_beside_the_repository_is_accepted",
             ),
         ),
         (
