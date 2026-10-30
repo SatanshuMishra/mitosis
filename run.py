@@ -232,6 +232,10 @@ class ConfigError(ValueError):
     pass
 
 
+class OverlappingWrite(ConfigError):
+    pass
+
+
 class ResumeError(RuntimeError):
     pass
 
@@ -4455,6 +4459,7 @@ def execute(
         check_template("gate-setup", gate_setup)
     if suite_command is not None:
         check_template("suite", suite_command)
+    isolation.refuse_overlapping_writes(run_dir, worker_writes)
     if not no_push and header is None:
         raise ConfigError(
             "a run allowed to push needs a pull-request header holding its type, subject and "

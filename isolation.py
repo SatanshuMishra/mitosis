@@ -127,6 +127,37 @@ def refuse_unquotable(paths):
         _profile_string(path)
 
 
+def _folded_name(part):
+    return HFS_IGNORABLE.sub("", unicodedata.normalize("NFC", part)).casefold()
+
+
+def _identity_parts(path):
+    parts = tuple(part for part in os.path.realpath(path).split(os.sep) if part)
+    found = ()
+    for depth in range(len(parts)):
+        try:
+            status = os.stat(os.sep + os.path.join(*parts[: depth + 1]))
+        except OSError:
+            return found + tuple(("name", _folded_name(part)) for part in parts[depth:])
+        found = found + (("node", status.st_dev, status.st_ino),)
+    return found
+
+
+def _overlapping(first, second):
+    shorter = min(len(first), len(second))
+    return first[:shorter] == second[:shorter]
+
+
+def refuse_overlapping_writes(run_dir, writes):
+    folder = _identity_parts(run_dir)
+    for path in writes:
+        if _overlapping(folder, _identity_parts(path)):
+            raise run.OverlappingWrite(
+                "--worker-write %s overlaps the run folder %s; sandboxed code may never write "
+                "mitosis's own state, logs or gate folders, so no Worker was started" % (path, run_dir)
+            )
+
+
 def transcript_folder(home, clone):
     return os.path.join(home, ".claude", "projects", TRANSCRIPT_KEY.sub("-", os.path.realpath(clone)))
 
@@ -233,8 +264,7 @@ def place_entries(tree, entries):
 
 
 def _names_git_folder(part):
-    visible = HFS_IGNORABLE.sub("", unicodedata.normalize("NFC", part))
-    return visible.casefold() == CLONE_GIT
+    return _folded_name(part) == CLONE_GIT
 
 
 def _git_depth(path):
