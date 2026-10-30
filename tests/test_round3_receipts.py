@@ -1,4 +1,5 @@
 import os
+import signal
 import sys
 import unittest
 
@@ -9,8 +10,148 @@ sys.path.insert(0, HERE)
 
 import isolation
 import run
-from test_mutant_coverage import ADDS, CORRECT_ADD, TEST_FILE, Scratch, step, summary_of, tail
+from test_mutant_coverage import ADDS, CORRECT_ADD, TEST_FILE, Scratch, put, step, summary_of, tail
 from test_round1_receipts import EXACT_TEST
+
+EXIT_LINGERING = 14
+LINGERING_MEANING = (
+    "a run left a process mitosis could not end, so mitosis stopped before reading anything "
+    "that process could change"
+)
+LATE_ADD = "def add(a, b):\n    return b + a\n"
+BROKEN_ADD = "def add(a, b):\n    return a - b\n"
+LINGER_DELAY = "1"
+LINGER_LIFE = "60"
+REAP_SECONDS = 10
+SLOW_LANE = "import time\ntime.sleep(5)\n"
+STUB_LEFTOVERS = (
+    "worker.pid",
+    "worker.log",
+    "gate.pid",
+    "gate.log",
+    "gate.once",
+    "dispatch.log",
+)
+
+LINGER = r'''
+import os
+import sys
+import time
+
+target, content, pid_file, log_file, parent, delay, life = sys.argv[1:8]
+with open(pid_file, "w", encoding="utf-8") as handle:
+    handle.write(str(os.getpid()))
+deadline = time.monotonic() + float(life)
+while os.getppid() == int(parent) and time.monotonic() < deadline:
+    time.sleep(0.01)
+time.sleep(float(delay))
+staged = pid_file + ".staged"
+while time.monotonic() < deadline:
+    try:
+        with open(staged, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        os.replace(staged, target)
+        with open(log_file, "a", encoding="utf-8") as handle:
+            handle.write("wrote\n")
+    except OSError:
+        pass
+    time.sleep(0.05)
+'''
+
+LINGERING_ACCEPT = r'''
+import os
+import runpy
+import subprocess
+import sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+mode = sys.argv.pop(1)
+try:
+    os.close(os.open(os.path.join(here, "gate.once"), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+except FileExistsError:
+    pass
+else:
+    subprocess.Popen(
+        [
+            sys.executable,
+            os.path.join(here, "linger.py"),
+            os.path.abspath("calc.py"),
+            %r,
+            os.path.join(here, "gate.pid"),
+            os.path.join(here, "gate.log"),
+            str(os.getpid()),
+            %r,
+            %r,
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=mode == "setsid",
+    )
+sys.argv[0] = os.path.join(here, "accept.py")
+runpy.run_path(sys.argv[0], run_name="__main__")
+''' % (BROKEN_ADD, LINGER_DELAY, LINGER_LIFE)
+
+SHIELD = r'''
+import os
+import signal
+import sys
+
+if os.path.basename(sys.argv[0]) == "mitosis.py":
+    _pid_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "worker.pid")
+    _kill, _killpg = os.kill, os.killpg
+
+    def _shielded():
+        try:
+            with open(_pid_file, encoding="utf-8") as handle:
+                return int(handle.read())
+        except (OSError, ValueError):
+            return None
+
+    def _guarded_kill(pid, signum):
+        if signum == signal.SIGKILL and pid == _shielded():
+            return None
+        return _kill(pid, signum)
+
+    def _guarded_killpg(group, signum):
+        shielded = _shielded()
+        if signum == signal.SIGKILL and shielded is not None:
+            try:
+                if os.getpgid(shielded) == group:
+                    return None
+            except OSError:
+                pass
+        return _killpg(group, signum)
+
+    os.kill, os.killpg = _guarded_kill, _guarded_killpg
+'''
+
+
+def lingering(content, mode):
+    return (
+        "subprocess.Popen([sys.executable, os.path.join(here, 'linger.py'), "
+        "os.path.abspath('calc.py'), %r, os.path.join(here, 'worker.pid'), "
+        "os.path.join(here, 'worker.log'), str(os.getpid()), %r, %r], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
+        "start_new_session=%r)\n" % (content, LINGER_DELAY, LINGER_LIFE, mode == "setsid")
+    )
+
+
+def lingering_refusal(folder):
+    return (
+        "the run in %s left a process mitosis could not end within %d seconds, so mitosis read "
+        "nothing that run could change" % (folder, REAP_SECONDS)
+    )
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 EXIT_REFUSED = 3
 REFUSED_LINE = "exit 3: refused to start"
@@ -174,6 +315,155 @@ class Receipts(unittest.TestCase):
         self._assert_built(completed)
 
 
+class Outlived(unittest.TestCase):
+    def setUp(self):
+        self.scratch = Scratch({TEST_FILE: EXACT_TEST})
+        self.addCleanup(self.scratch.close)
+        put(os.path.join(self.scratch.stubs, "linger.py"), LINGER)
+        put(os.path.join(self.scratch.stubs, "accept-linger.py"), LINGERING_ACCEPT)
+        put(os.path.join(self.scratch.stubs, "shield", "sitecustomize.py"), SHIELD)
+        for name in ("worker.pid", "gate.pid"):
+            self.addCleanup(self._end_leftover, name)
+
+    def _modes(self):
+        sandboxed = ("--worker-sandbox", "--worker-write", self.scratch.stubs)
+        return (("group", ()),) + ((("setsid", sandboxed),) if sys.platform == "darwin" else ())
+
+    def _stub_file(self, name):
+        return os.path.join(self.scratch.stubs, name)
+
+    def _pid(self, name):
+        path = self._stub_file(name)
+        if not os.path.exists(path):
+            return None
+        with open(path, encoding="utf-8") as handle:
+            return int(handle.read())
+
+    def _end_leftover(self, name):
+        pid = self._pid(name)
+        if pid is not None and alive(pid):
+            os.kill(pid, signal.SIGKILL)
+
+    def _fresh(self):
+        for name in ("worker.pid", "gate.pid"):
+            self._end_leftover(name)
+        for name in STUB_LEFTOVERS:
+            if os.path.exists(self._stub_file(name)):
+                os.remove(self._stub_file(name))
+        if os.path.exists(self.scratch.run_dir):
+            isolation._remove_left(self.scratch.run_dir)
+        self.scratch.git("branch", "-D", "mitosis/demo")
+
+    def _assert_ended(self, name, completed):
+        pid = self._pid(name)
+        self.assertIsNotNone(pid, "the lingering process never started" + tail(completed))
+        self.assertFalse(
+            alive(pid),
+            "process %d from the run is still alive after mitosis exited" % pid + tail(completed),
+        )
+        self.assertFalse(
+            os.path.exists(self._stub_file(name.replace(".pid", ".log"))),
+            "the lingering process wrote after mitosis ended its run" + tail(completed),
+        )
+
+    def _landed(self, path):
+        return self.scratch.git("show", "mitosis/demo:%s" % path).stdout
+
+    def _build(self, items, acceptance, *flags, env=None):
+        return self.scratch.mitosis(
+            "--items",
+            items,
+            "--run-dir",
+            self.scratch.run_dir,
+            "--feature-branch",
+            "feature",
+            "--dispatch-command",
+            self.scratch.stub("worker.py", "{msp}", "{task}"),
+            "--acceptance-command",
+            acceptance,
+            "--timeout",
+            "120",
+            "--no-push",
+            *flags,
+            env=env,
+        )
+
+    def _accept(self):
+        return self.scratch.stub("accept.py", "unittest", "{file}", "{test}")
+
+    def a_worker_process_left_behind_never_changes_what_mitosis_lands(self):
+        items = self.scratch.items(
+            [
+                step("add", ["calc.py"], "demo", acceptance=[ADDS]),
+                step("slow", ["slow.txt"], "demo"),
+            ]
+        )
+        for mode, flags in self._modes():
+            with self.subTest(mode=mode):
+                self._fresh()
+                self.scratch.jobs(
+                    {
+                        "add": {"writes": {"calc.py": CORRECT_ADD}, "script": lingering(LATE_ADD, mode)},
+                        "slow": {"writes": {"slow.txt": "slow\n"}, "script": SLOW_LANE},
+                    }
+                )
+                completed = self._build(items, self._accept(), "--concurrency", "2", *flags)
+                self.assertEqual(
+                    self._landed("calc.py"),
+                    CORRECT_ADD,
+                    "mitosis landed bytes written after the Worker ended" + tail(completed),
+                )
+                self._assert_ended("worker.pid", completed)
+                self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
+
+    def a_gate_process_left_behind_never_writes_the_checkout_after_its_run(self):
+        items = self.scratch.items([step("add", ["calc.py"], "demo", acceptance=[ADDS])])
+        self.scratch.jobs({"add": {"writes": {"calc.py": CORRECT_ADD}}})
+        for mode, flags in self._modes():
+            with self.subTest(mode=mode):
+                self._fresh()
+                acceptance = self.scratch.stub(
+                    "accept-linger.py", mode, "unittest", "{file}", "{test}"
+                )
+                completed = self._build(items, acceptance, *flags)
+                self._assert_ended("gate.pid", completed)
+                self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
+                gate = summary_of(completed)["msps"][0]["gate"]
+                self.assertEqual(gate["properties"][0]["outcome"], "pass", tail(completed))
+                self.assertEqual(gate["properties"][0].get("mutation"), "killed", tail(completed))
+                self.assertEqual(self._landed("calc.py"), CORRECT_ADD, tail(completed))
+
+    def a_process_mitosis_cannot_end_stops_the_run_before_it_reads_the_clone(self):
+        items = self.scratch.items([step("add", ["calc.py"], "demo", acceptance=[ADDS])])
+        shield = {"PYTHONPATH": os.path.join(self.scratch.stubs, "shield")}
+        for mode, flags in self._modes():
+            with self.subTest(mode=mode):
+                self._fresh()
+                self.scratch.jobs(
+                    {"add": {"writes": {"calc.py": CORRECT_ADD}, "script": lingering(LATE_ADD, mode)}}
+                )
+                completed = self._build(items, self._accept(), *flags, env=shield)
+                self._end_leftover("worker.pid")
+                self.assertEqual(
+                    completed.returncode, EXIT_LINGERING, "mitosis exit code" + tail(completed)
+                )
+                clone = isolation.lane_folders(self.scratch.run_dir, 0)["clone"]
+                self.assertEqual(
+                    completed.stderr.splitlines()[-2:],
+                    [
+                        "mitosis: " + lingering_refusal(clone),
+                        "exit %d: %s" % (EXIT_LINGERING, LINGERING_MEANING),
+                    ],
+                    tail(completed),
+                )
+                self.assertEqual(
+                    self.scratch.git("log", "--all", "--format=%H", "--", "calc.py").stdout,
+                    "",
+                    "mitosis landed the clone of a run it could not end" + tail(completed),
+                )
+                self.assertEqual(self.scratch.dispatched(), ["add"], tail(completed))
+
+
 def load_tests(loader, standard, pattern):
     suite = unittest.TestSuite()
     for case, names in (
@@ -186,6 +476,14 @@ def load_tests(loader, standard, pattern):
                 "a_retargeted_link_never_widens_a_checked_worker_write",
                 "a_fresh_run_accepts_a_disjoint_worker_write",
                 "a_resumed_run_accepts_a_disjoint_worker_write",
+            ),
+        ),
+        (
+            Outlived,
+            (
+                "a_worker_process_left_behind_never_changes_what_mitosis_lands",
+                "a_gate_process_left_behind_never_writes_the_checkout_after_its_run",
+                "a_process_mitosis_cannot_end_stops_the_run_before_it_reads_the_clone",
             ),
         ),
     ):
