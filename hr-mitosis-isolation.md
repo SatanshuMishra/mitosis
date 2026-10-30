@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T04:38:15.424Z
+Updated: 2026-10-30T04:44:07.932Z
 Next ids: c8 D2 R3 S2
 
 ## Goal
@@ -19,7 +19,7 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override: hand-dispatched check-author), pushed. Build 1 ran all six Lanes ok on mitosis/isolation (head f6cae57, worktree ~/.mitosis/runs/mitosis/hr-mitosis-isolation/trees/isolation); mitosis 0.8.0's gate passed 26 of 29 properties and judged 3 weak (exit 24, committed, not pushed), all classed sampler-only or criterion-equivalent by coverage proof in weak-proof-classes.md. Review round 1 verdict is diagnose (review/round-1/isolation.verdict.json; conformance all eleven criteria MET): blockers S1 CRITICAL sandbox escape at gate, C3 unverified suite baseline, C4 mixed step sampling skipped, S2 case folded git folder, U1 and U2 failing test (vendor-tree exclude case, test_docs 0.8.0); advisories C5, C6, C7. Five diagnosis agents (Opus) are running, writing review/round-1/isolation.<kind slug>.diagnosis.agent.json. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md (overrides for the final report). Three Lane assumptions are in review/isolation.assumptions.txt.
+FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override: hand-dispatched check-author), pushed. Build 1 ran all six Lanes ok on mitosis/isolation (head f6cae57, worktree ~/.mitosis/runs/mitosis/hr-mitosis-isolation/trees/isolation); mitosis 0.8.0's gate passed 26 of 29 properties and judged 3 weak (exit 24, committed, not pushed), all classed sampler-only or criterion-equivalent by coverage proof in weak-proof-classes.md. Review round 1 verdict is loop (review/round-1/isolation.verdict.json; conformance all eleven criteria MET): blockers S1 CRITICAL sandbox escape at gate, C3 unverified suite baseline, C4 mixed step sampling skipped, S2 case folded git folder, U1 and U2 failing test, each kind diagnosed fixable and recorded; advisories C5, C6, C7. A fresh fix agent (Opus, fix 1 of at most 2 per kind) is committing receipts and fixes on mitosis/isolation, writing review/round-1/fix.out.txt. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md (overrides for the final report). Three Lane assumptions are in review/isolation.assumptions.txt.
 
 ## Next step
 
