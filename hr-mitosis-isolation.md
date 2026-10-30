@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: parked
-Updated: 2026-10-30T06:45:36.396Z
+Updated: 2026-10-30T06:48:03.436Z
 Next ids: c8 D3 R3 S2
 
 ## Goal
@@ -19,13 +19,13 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override: hand-dispatched check-author), pushed. MSP branch mitosis/isolation (worktree ~/.mitosis/runs/mitosis/hr-mitosis-isolation/trees/isolation) is committed, not pushed; mitosis 0.8.0's gate judged 3 properties weak, all classed in weak-proof-classes.md, so ship passes --proven-head. Review round 2 (fix diff f6cae57..b8254af) is green (review/round-2/isolation.verdict.json): round 1 blockers fixed, advisories C1 docs and S1 write through symlink (reproduced sandbox escape, capped at advisory: defect P8) confirmed; their fixes are on mitosis/isolation at head cacce46 (fix-check clean, locked files unchanged), with the suite and a security-reviewer on b8254af..cacce46 running in review/advisory/. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md (overrides for the final report). Four assumptions are in review/isolation.assumptions.txt.
+FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override), pushed. MSP branch mitosis/isolation is pushed at bb7adda as SatanshuMishra/mitosis#29 (ready, assigned, bound, Auto-fix on); the driver has told the owner to hold its merge until round 3 is green. Round 3: the driver escalated two gaps the round 2 fix left documented, W1 (a --worker-write path overlapping the run folder) and W2 (a confined process outliving its run); fix agents run one after the other in the MSP worktree (briefs in review/round-3/). Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md. Four assumptions are in review/isolation.assumptions.txt.
 
 ## Next step
 
-The owner merges SatanshuMishra/mitosis#29 into feat/hr-mitosis-isolation and says the MSP pull requests merged; that starts Integration: resume_thread, read CHARTER.md, Sync, lighthouse:test on the FEATURE branch, then open the FEATURE PR to main with Auto-fix.
+When both round 3 fix agents end, run fix-check and the locked-file check on their commits, then round 3 review of bb7adda..head: review-diff, suite on 3.9 and 3.14, standard-checks, code-reviewer and security-reviewer, candidates, validator, record, verdict, outcome; on green push mitosis/isolation so #29 updates, refresh its review comment, and report to the driver with where W4's sampling lives (run.py and linetrace/sitecustomize.py; mutants.py unchanged, write-set wider than needed).
 
-Needs: D2, R1.
+Needs: R1.
 
 ## Decisions in force
 
@@ -48,5 +48,6 @@ Needs: D2, R1.
 - Run home: /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-isolation/
 - Program driver session: local_1353e243-8b09-4cc3-a370-2b58b294d057
 - Spec, decisions, record, items: /Users/satanshumishra/Documents/DevLabs/mitosis/docs/specs/hr-mitosis-isolation.* (gitignored)
-- Decision records of this change: docs/adr/0010 to 0014 in the owner's checkout, untracked
+- Decision records of this change: docs/adr/0010 to 0014 on mitosis/isolation
+- Citable run material: /Users/satanshumishra/.mitosis/harness-redesign/examples/hr-mitosis-isolation/
 - Pipeline defects found: run home pipeline-0.11.0-defects.md (P1 to P8)
