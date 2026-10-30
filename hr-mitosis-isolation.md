@@ -1,7 +1,7 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T01:41:27.090Z
-Next ids: c8 D2 R3 S1
+Updated: 2026-10-30T01:41:29.109Z
+Next ids: c8 D2 R3 S2
 
 ## Goal
 
@@ -37,6 +37,8 @@ Needs: D1, R1.
 - R2 ADRs 0010 to 0014 are untracked in the owner's checkout beside the owner's untracked 0004 and 0005; ship only 0010 to 0014 on the FEATURE branch through a temporary worktree, never 0004 or 0005. Bears on c6.
 
 ## Settled, do not reopen
+
+- S1 Driver ruling on outside writes: files replayed from a Worker's clone are judged by reconcile only (exit 6 kept or exit 9 reverted) and never reach the gate's tree, which holds each such path as at the Lane's start; only regular files and start-tree deletions are replayed; proven by acceptance row an_outside_write_never_reaches_the_gate.
 
 ## Where the details live
 
