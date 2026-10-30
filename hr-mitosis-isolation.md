@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: parked
-Updated: 2026-10-30T18:46:49.114Z
+Updated: 2026-10-30T19:13:49.943Z
 Next ids: c8 D5 R3 S3
 
 ## Goal
@@ -19,7 +19,7 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-Integration is under way. SatanshuMishra/mitosis#29 merged into FEATURE (b37201d) and SatanshuMishra/mitosis#26 into main (1ca0ee5, 0.9.0). The integration worktree ~/.mitosis/runs/mitosis/hr-mitosis-isolation/integration holds an uncommitted merge of origin/main into FEATURE per D4, all conflicts resolved, with the receipt tests/test_pr_facts.py a_caller_classed_property_is_never_reported_proven red before and green after; its full suite is running on 3.9 and 3.14 in the background, results in the session scratchpad as int-suite-3.9.txt and int-suite-3.14.txt. Stages run by hand, not through pipeline drive.
+Integration is under way. SatanshuMishra/mitosis#29 merged into FEATURE (b37201d) and SatanshuMishra/mitosis#26 into main (1ca0ee5, 0.9.0). The integration worktree ~/.mitosis/runs/mitosis/hr-mitosis-isolation/integration holds an uncommitted merge of origin/main into FEATURE per D4, all conflicts resolved and staged. The first full suite left four cross-side failures, now each green alone: caller-classed Testing rows (receipt tests/test_pr_facts.py a_caller_classed_property_is_never_reported_proven), git error messages flattened so a refused multi-line Step commit keeps the hook's reason (receipt test_clean_gate a_committed_referee_write_never_lands_when_the_landing_commit_fails, its hook widened to refuse every chore subject), test_run's classed check moved to pr_facts, and, with the owner's approval, the locked test_worker_isolation landing subject changed to "chore: add". A second full suite is running on 3.9 and 3.14, results in the session scratchpad as int2-suite-3.9.txt and int2-suite-3.14.txt. Stages run by hand, not through pipeline drive.
 
 ## Next step
 
