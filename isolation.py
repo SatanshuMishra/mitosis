@@ -47,7 +47,6 @@ SETTLE_ROUNDS = 50
 
 SANDBOX_ALLOWED = 0
 DENIED = 1
-SANDBOX_CHECK_FAILED = -1
 
 
 def lane_folders(run_dir, lane):
