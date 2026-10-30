@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T03:22:41.266Z
+Updated: 2026-10-30T03:59:56.249Z
 Next ids: c8 D2 R3 S2
 
 ## Goal
@@ -19,11 +19,11 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (seven test files, 29 acceptance lines, written by a hand-dispatched check-author: O2 override), pushed. At the lock every new line exits 1 by assertion and the other 718 tests pass (lock-suite.txt: 33 failures, all new). run.zsh --plan-only exits 0: one MSP isolation of six Lanes, referee K2 at b7d8b44 over 19 locked paths; every Lane is flagged above 150000 estimated tokens (attention only). The first build (run.zsh, --no-push) is running in the background, writing build-1.out.txt and build-1.err.txt in the run home; MSP PR subject is "isolate Workers in clones and gate on executed lines". Lanes 0 to 3 are ok and landed on mitosis/isolation; Lane 4 is running. Stages are run by hand, not through pipeline drive (an override to name in the final report). For review: Lane 1 left tests/test_installed_vendor_tree's worker-exclude case failing (it relied on the Worker's .git/info/exclude, outside every write-set); Lane 1 assumed the gate holds replayed paths at the post-landing head and Lane 2 required exit 1 only for acceptance entries on locked files, both to check against S1 and spec 5.7.
+FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override: hand-dispatched check-author), pushed. Build 1 ran all six Lanes ok on mitosis/isolation (head f6cae57, worktree ~/.mitosis/runs/mitosis/hr-mitosis-isolation/trees/isolation); mitosis 0.8.0's gate passed 26 of 29 properties and judged 3 weak (exit 24, committed, not pushed), all classed sampler-only or criterion-equivalent by coverage proof in weak-proof-classes.md. Review round 1 is under way: diff, 67 obligations, standards (1 LOW) and 29 with-work proofs are written; the round suite against base-tree (b7d8b44) is running. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md (overrides for the final report). Known for review: test_installed_vendor_tree's worker-exclude case and a test_docs version check hardcoding 0.8.0 fail, both outside every write-set; three Lane assumptions are in review/isolation.assumptions.txt.
 
 ## Next step
 
-When the build ends, read the last JSON line of build-1.out.txt, write each lane Assumption note to review/isolation.assumptions.txt, then start review round 1.
+When the round suite ends, run render-briefs.zsh 1 b7d8b44d1129306fac1020f49ac84dc76bfbf895 f6cae57a66412b2ae33f561b5876595e3f36775b none none none, dispatch code-reviewer, conformance-auditor and security-reviewer with pipeline agent in the background, then collect findings, candidates, validator, record and verdict.
 
 Needs: D1, R1.
 
