@@ -48,6 +48,36 @@ RED_SUITE_REASON = (
     "and the suite fails before any mutant is applied (exit 1)"
 )
 
+HELPER = "def helper(value):\n    return value * 2\n"
+HOOK_TEST = (
+    "import os\n"
+    "import unittest\n"
+    "\n"
+    "ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n"
+    "\n"
+    "\n"
+    "class Hooks(unittest.TestCase):\n"
+    "    def reads(self):\n"
+    "        with open(os.path.join(ROOT, %r), encoding=\"utf-8\") as handle:\n"
+    "            self.assertIn(%r, handle.read())\n"
+)
+READS = {"file": "tests/test_hook.py", "test": "Hooks.reads"}
+MIXED_HOOKS = (
+    (
+        "hook.js",
+        "module.exports = function hook(event) {\n  return event.length > 3;\n};\n",
+        "length > 3",
+        "> -> >=",
+    ),
+    (
+        "hook.ts",
+        "export function hook(event: string): boolean {\n  return event.length > 3;\n}\n",
+        "length > 3",
+        "> -> >=",
+    ),
+    ("hook.sh", "#!/bin/sh\n[ \"$#\" -gt 3 ]\n", "-gt 3 ]", "number +1"),
+)
+
 
 def escaping(targets):
     return (
@@ -197,6 +227,26 @@ class Receipts(unittest.TestCase):
     def a_suite_that_cannot_import_keeps_the_property_weak(self):
         self._assert_weak_on_a_red_suite(self._red_suite_run(UNIMPORTABLE_TEST))
 
+    def a_hook_beside_an_unloaded_python_file_is_still_sampled(self):
+        for hook, text, needle, op in MIXED_HOOKS:
+            with self.subTest(hook=hook):
+                scratch = self._scratch({READS["file"]: HOOK_TEST % (hook, needle)})
+                items = scratch.items(
+                    [step("hooks", [hook, "helper.py"], "demo", acceptance=[READS])]
+                )
+                scratch.jobs({"hooks": {"writes": {hook: text, "helper.py": HELPER}}})
+                completed = scratch.build(items, acceptance="keep")
+                self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
+                first = self._first_property(completed)
+                self.assertEqual(first["outcome"], "pass")
+                self.assertEqual(first.get("mutation"), "killed")
+                self.assertEqual(
+                    first.get("mutants"),
+                    {"tried": 1, "killed": {"file": hook, "line": 2, "op": op}},
+                )
+                scratch.close()
+                self.scratch = None
+
 
 def load_tests(loader, standard, pattern):
     suite = unittest.TestSuite()
@@ -210,6 +260,7 @@ def load_tests(loader, standard, pattern):
                 "sandboxed_check_author_code_cannot_write_outside_at_the_lock_stage",
                 "a_suite_red_before_any_mutant_keeps_the_property_weak",
                 "a_suite_that_cannot_import_keeps_the_property_weak",
+                "a_hook_beside_an_unloaded_python_file_is_still_sampled",
             ),
         ),
     ):
