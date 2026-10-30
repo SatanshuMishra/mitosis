@@ -82,6 +82,8 @@ TRACE_ROOT_VARIABLE = "MITOSIS_TRACE_ROOT"
 
 SUITE_FAILURE_EXIT = 1
 
+SUITE_BASELINE = "unmutated"
+
 UNITTEST_FAILURE = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([^)\s]+)\)", re.MULTILINE)
 
 PYTEST_FAILURE = re.compile(r"^FAILED (\S+::\S+)", re.MULTILINE)
@@ -2030,12 +2032,37 @@ def _run_suite_mutant(suite, folder, mutant, report, log_path, timeout, env, res
     return run_command(argv, folder, timeout, log_path, log_path + ".err", env, sandbox), written
 
 
+def _run_suite_unmutated(suite, folder, log_dir, timeout, env, reset, sandbox=None):
+    written = reset()
+    report = os.path.join(log_dir, "suite-unmutated.xml")
+    log_path = os.path.join(log_dir, "suite-unmutated.log")
+    _removed(report)
+    argv = build_argv(suite, {"worktree": folder, "report": report})
+    return run_command(argv, folder, timeout, log_path, log_path + ".err", env, sandbox), written
+
+
+def suite_baseline_fault(seen):
+    ran = seen.get(SUITE_BASELINE)
+    if ran is None or ran == (0, False):
+        return None
+    if ran[1]:
+        return "the suite times out before any mutant is applied"
+    return "the suite fails before any mutant is applied (exit %d)" % ran[0]
+
+
 def _suite_verdicts(
     suite, survivors, index, log_dir, timeout, env, folder, reset, seen, sandbox=None
 ):
     written = ()
     seconds = 0
     verdicts = ()
+    if SUITE_BASELINE not in seen:
+        (ran, written), seconds = _timed(
+            lambda: _run_suite_unmutated(suite, folder, log_dir, timeout, env, reset, sandbox)
+        )
+        seen = {**seen, SUITE_BASELINE: ran}
+    if suite_baseline_fault(seen) is not None:
+        return ((survivors[0], (False, ())),), written, seconds, seen
     for position, mutant in enumerate(survivors):
         key = _mutant_key(mutant)
         if key not in seen:
@@ -2056,13 +2083,13 @@ def _suite_verdicts(
     return verdicts, written, seconds, seen
 
 
-def _weak(entry, mutant, record, coverage, seconds):
+def _weak(entry, mutant, record, coverage, seconds, fault=None):
     return {
         **entry,
         "seconds": seconds,
         "outcome": "weak",
-        "reason": "no mutant of the work fails it: it still passes when %s:%d changes by %s"
-        % (mutant["file"], mutant["line"], mutant["op"]),
+        "reason": "no mutant of the work fails it: it still passes when %s:%d changes by %s%s"
+        % (mutant["file"], mutant["line"], mutant["op"], "" if fault is None else ", and " + fault),
         "mutants": record,
         "mutation": "weak",
         "coverage": coverage,
@@ -2173,7 +2200,8 @@ def mutant_verdict(
     seconds = seconds + spent
     missed = [mutant for mutant, (killed, _) in verdicts if not killed]
     if missed:
-        return _weak(entry, missed[0], record, coverage, seconds), written, seen
+        fault = suite_baseline_fault(seen)
+        return _weak(entry, missed[0], record, coverage, seconds, fault), written, seen
     return (
         {
             **entry,
