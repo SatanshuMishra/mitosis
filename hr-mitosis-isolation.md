@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T03:19:28.828Z
+Updated: 2026-10-30T03:22:41.266Z
 Next ids: c8 D2 R3 S2
 
 ## Goal
@@ -19,7 +19,7 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (seven test files, 29 acceptance lines, written by a hand-dispatched check-author: O2 override), pushed. At the lock every new line exits 1 by assertion and the other 718 tests pass (lock-suite.txt: 33 failures, all new). run.zsh --plan-only exits 0: one MSP isolation of six Lanes, referee K2 at b7d8b44 over 19 locked paths; every Lane is flagged above 150000 estimated tokens (attention only). The first build (run.zsh, --no-push) is running in the background, writing build-1.out.txt and build-1.err.txt in the run home; MSP PR subject is "isolate Workers in clones and gate on executed lines". Lanes 0 to 2 are ok and landed on mitosis/isolation; Lane 3 is running. For review: Lane 1 left tests/test_installed_vendor_tree's worker-exclude case failing (it relied on the Worker's .git/info/exclude, outside every write-set); Lane 1 assumed the gate holds replayed paths at the post-landing head and Lane 2 required exit 1 only for acceptance entries on locked files, both to check against S1 and spec 5.7.
+FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (seven test files, 29 acceptance lines, written by a hand-dispatched check-author: O2 override), pushed. At the lock every new line exits 1 by assertion and the other 718 tests pass (lock-suite.txt: 33 failures, all new). run.zsh --plan-only exits 0: one MSP isolation of six Lanes, referee K2 at b7d8b44 over 19 locked paths; every Lane is flagged above 150000 estimated tokens (attention only). The first build (run.zsh, --no-push) is running in the background, writing build-1.out.txt and build-1.err.txt in the run home; MSP PR subject is "isolate Workers in clones and gate on executed lines". Lanes 0 to 3 are ok and landed on mitosis/isolation; Lane 4 is running. Stages are run by hand, not through pipeline drive (an override to name in the final report). For review: Lane 1 left tests/test_installed_vendor_tree's worker-exclude case failing (it relied on the Worker's .git/info/exclude, outside every write-set); Lane 1 assumed the gate holds replayed paths at the post-landing head and Lane 2 required exit 1 only for acceptance entries on locked files, both to check against S1 and spec 5.7.
 
 ## Next step
 
