@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: parked
-Updated: 2026-10-30T18:45:57.280Z
+Updated: 2026-10-30T18:46:14.047Z
 Next ids: c8 D5 R3 S3
 
 ## Goal
@@ -19,13 +19,13 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override), pushed. MSP branch mitosis/isolation is pushed at 2892811 as SatanshuMishra/mitosis#29 (ready, assigned, bound, Auto-fix on; pushed by hand because mitosis 0.8.0's resume treats pushed as terminal, defect P10); its CI is re-running. 2892811 carries the driver-escalated fixes W1 (worker write paths, with S2) and W2 (confined processes ended before output is read), advisory C1 and the ADR lint fix; rounds 3 and 4 are green (review/round-3/, review/round-4/), with 29 of 29 acceptance tests passing alone at 2892811. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md. Four assumptions are in review/isolation.assumptions.txt.
+Integration is under way. SatanshuMishra/mitosis#29 merged into FEATURE (b37201d) and SatanshuMishra/mitosis#26 into main (1ca0ee5, 0.9.0). The integration worktree ~/.mitosis/runs/mitosis/hr-mitosis-isolation/integration holds an uncommitted merge of origin/main into FEATURE per D4, all conflicts resolved, with the receipt tests/test_pr_facts.py a_caller_classed_property_is_never_reported_proven red before and green after; its full suite is running on 3.9 and 3.14. Stages run by hand, not through pipeline drive.
 
 ## Next step
 
-The owner merges SatanshuMishra/mitosis#29 (head 2892811, CI green) into feat/hr-mitosis-isolation and says the MSP pull requests merged; that starts Integration: resume_thread, read CHARTER.md, Sync, lighthouse:test on the FEATURE branch, then open the FEATURE PR to main with Auto-fix.
+When the integration worktree's suite is green on 3.9 and 3.14, commit the merge as the owner, push FEATURE, then run pipeline checks, pipeline suite, pipeline integration-plan and pipeline integration-ready, and lighthouse:test when the plan says lighthouse run.
 
-Needs: D3, R1.
+Needs: D4, R1.
 
 ## Decisions in force
 
