@@ -278,11 +278,13 @@ FLAG_SPECS = {
     },
     "--suite-command": {
         "metavar": "TEMPLATE",
-        "help": "the project's full test suite, run in the gate's checkout once for each "
-        "mutant that every acceptance test of a property survives, with the run's --timeout; "
+        "help": "the project's full test suite, run in the gate's checkout once with no mutant "
+        "and then once for each mutant that every acceptance test of a property survives, with "
+        "the run's --timeout; "
         "placeholders %s, where {report} is a fresh path for an optional JUnit XML report; "
-        "exit 1 kills the mutant and makes the property covered-elsewhere when every survivor "
-        "is killed; any other exit keeps the property weak" % PLACEHOLDER_HELP["suite"],
+        "exit 1 kills the mutant only when the run with no mutant passed, and makes the property "
+        "covered-elsewhere when every survivor is killed; any other exit, or a run with no mutant "
+        "that fails, keeps the property weak" % PLACEHOLDER_HELP["suite"],
     },
     "--gate-classes": {
         "metavar": "PATH",
@@ -412,14 +414,17 @@ FLAG_SPECS = {
         "action": "store_true",
         "help": "run every Worker under sandbox-exec with a profile that refuses file writes "
         "outside its clone, a private temp folder passed as TMPDIR, its Claude Code transcript "
-        "folder, /dev/null, /dev/tty, /dev/fd and each --worker-write path; a host without "
-        "sandbox-exec refuses the run before any Worker starts",
+        "folder, /dev/null, /dev/tty, /dev/fd and each --worker-write path, and run the gate's "
+        "setup, acceptance, mutant and suite runs and the lock stage's checks under sandbox-exec "
+        "too, writing only their checkout, a private temp folder and each --worker-write path; "
+        "a host without sandbox-exec refuses the run before any Worker starts",
     },
     "--worker-write": {
         "metavar": "PATH",
         "action": "append",
         "default": [],
-        "help": "one more path a sandboxed Worker may write under; repeatable",
+        "help": "one more path a sandboxed Worker, gate run or lock-stage check may write "
+        "under, such as one a --gate-setup needs; repeatable",
     },
     "--version": {"action": "version", "version": core.__version__},
     "--help": {"action": "help", "help": "show this message and exit"},

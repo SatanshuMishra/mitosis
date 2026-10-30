@@ -52,9 +52,9 @@ quotes or newlines lands as one argument and is never reinterpreted by a shell.
 | `--pr-type` `--pr-scope` `--pr-subject` `--pr-why` `--pr-door` `--pr-blast-radius` | nothing; they write every title and body | none |
 | `--decompose-command` | the structure pass that turns a document into unbriefed Steps | prompt, model, document |
 | `--brief-command` | one Worker per unbriefed Step, writing its task | prompt, model, step, document |
-| `--worker-sandbox` | every Worker under sandbox-exec, writing only its clone, temp, transcript and `--worker-write` paths; exit 3 without sandbox-exec | none |
-| `--worker-write` | nothing; one more path a sandboxed Worker may write, repeatable | none |
-| `--suite-command` | the full suite per mutant a property survives; exit 1 kills it | worktree, report |
+| `--worker-sandbox` | each Worker, gate and lock-stage run under sandbox-exec, writing only its clone or checkout, temp, transcript and `--worker-write` paths; exit 3 without it | none |
+| `--worker-write` | nothing; one more path a sandboxed run, such as `--gate-setup`, may write; repeatable | none |
+| `--suite-command` | the full suite unmutated, then per surviving mutant; exit 1 kills only after an unmutated pass, else `weak` | worktree, report |
 | `--gate-classes` | nothing; a JSON `{test, class, reason}` list classing properties | none |
 
 A Worker spawned from this skill, with the Lane brief as its whole prompt
@@ -288,10 +288,9 @@ also gets one outcome entry per acceptance test after every gate.
 
 Mutants come only from added lines the with-work run executed. Each
 property's mutation is killed, `weak`, `not-applicable` (the test loads none
-of the Step's files) or covered-elsewhere (`--suite-command` failed on every
-survivor; `killers` names the tests); its `coverage` is `traced` or
-`untraced` (no trace, as for JavaScript or shell; every added line is
-sampled). `--gate-classes` classes a property `<file>::<name>`
+of the Step's files) or covered-elsewhere (`--suite-command` passed unmutated,
+then failed on each survivor; `killers` names the tests); `coverage` is
+`untraced` unless its mutants came from the trace. `--gate-classes` classes a property `<file>::<name>`
 `not-applicable`, covered-elsewhere or `removed` with a reason, judged
 without a run and kept out of the plan id, so `--resume` rebuilds nothing; an
 entry naming no property is refused.
@@ -313,7 +312,7 @@ a `- Locked:` line that is empty, absolute or contains `..`.
 
 Every gate, mutant and acceptance run uses a clean checkout of the commit,
 not a git repository, reset to raw blobs before each run; files the commit
-lacks never reach it and are listed in `ignored`.
+lacks never reach it; `ignored` lists them.
 
 Dependencies are the root's node_modules and venvs, or `--gate-setup`, run
 once per gate with `{worktree}`; its output survives only at top-level names

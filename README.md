@@ -119,9 +119,9 @@ gate judges a property:
 
 | Flag | What it does |
 |---|---|
-| `--worker-sandbox` | runs every Worker under sandbox-exec, refusing file writes outside its clone, a private temp folder, its session transcript folder, /dev/null, /dev/tty, /dev/fd and each `--worker-write` path; a host without sandbox-exec refuses the run with exit 3 before any Worker starts |
-| `--worker-write PATH` | one more path a sandboxed Worker may write under; repeatable |
-| `--suite-command TEMPLATE` | the project's full suite, run on each mutant every acceptance test of a property survives; exit 1 kills that mutant, and a property whose every survivor is killed is covered-elsewhere instead of `weak` |
+| `--worker-sandbox` | runs every Worker under sandbox-exec, refusing file writes outside its clone, a private temp folder, its session transcript folder, /dev/null, /dev/tty, /dev/fd and each `--worker-write` path; it also runs the gate's setup, acceptance, mutant and suite runs and the lock stage's checks under sandbox-exec, refusing writes outside their clean checkout, a private temp folder and each `--worker-write` path, so a `--gate-setup` that needs another writable path names it with `--worker-write`; a host without sandbox-exec refuses the run with exit 3 before any Worker starts |
+| `--worker-write PATH` | one more path a sandboxed Worker, gate run or lock-stage check may write under; repeatable |
+| `--suite-command TEMPLATE` | the project's full suite, run once with no mutant and then on each mutant every acceptance test of a property survives; exit 1 kills that mutant only when the run with no mutant passed, else the property stays `weak` with that reason, and a property whose every survivor is killed is covered-elsewhere instead of `weak` |
 | `--gate-classes PATH` | a JSON list of `{test, class, reason}` objects classing a property `not-applicable`, covered-elsewhere or `removed`, judged without a run and kept out of the plan id |
 
 ## Workers build in their own clones
@@ -142,7 +142,20 @@ does not see a sibling's uncommitted writes.
 
 Without `--worker-sandbox` the clone keeps git state apart, but a Worker can
 still write any path the caller's account can; with it, the JSON result's
-`sandbox` reads sandbox-exec instead of `off`. Every git call mitosis makes
+`sandbox` reads sandbox-exec instead of `off`. The sandbox also wraps every
+later command that runs Worker-written code: the gate's `--gate-setup`,
+acceptance, mutant and `--suite-command` runs, and the lock stage's checks.
+Each may write only the clean checkout it runs in, `gate/msp-<n>/checkout-*`
+or `lock/checkout-*` under the run directory, a private temp folder beside
+its log folder, `gate/msp-<n>.tmp` or `lock.tmp`, passed as TMPDIR and
+holding the line traces and suite reports, and each `--worker-write` path; a
+`--gate-setup` that writes anywhere else names that path with
+`--worker-write`. mitosis's own logs and state stay outside every write
+grant, and no sandboxed command may rename, remove or replace the clone,
+checkout, temp or transcript folder it writes into, only fill it, so a
+symbolic link it leaves never redirects a later write by mitosis. A
+`--worker-write` path that holds the run directory hands those logs back to
+sandboxed code. Every git call mitosis makes
 drops the environment variables that shape a diff, widen a pathspec, locate
 another repository or point at other objects.
 
@@ -226,10 +239,12 @@ assignments an executed function reads. Each property in the JSON result
 carries two fields. mutation is killed when a mutant failed it, `weak`
 when none did, `not-applicable` when the test loads none of the Step's
 Python files or the Step added no code file for a mutant to change, and
-covered-elsewhere when `--suite-command` failed on every mutant the
-property survived, its `killers` naming the failing tests. `coverage` is
-`traced`, or `untraced` when the run wrote no trace, as for JavaScript,
-TypeScript and shell, and the gate then samples every added line. A test that
+covered-elsewhere when `--suite-command` passed with no mutant and then
+failed on every mutant the property survived, its `killers` naming the
+failing tests. `coverage` is `traced` only when the sampled lines came from
+the trace, and `untraced` whenever they did not: when the run wrote no trace,
+when only JavaScript, TypeScript or shell lines were sampled, or when the gate
+fell back to every added line. A test that
 loads the Step's files but executes no candidate line also falls back to
 every added line, so an import-only test cannot pass unseen.
 

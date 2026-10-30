@@ -20,9 +20,17 @@ the build, and mutants come only from the lines an acceptance test runs.
 - `--worker-sandbox` runs every Worker under sandbox-exec with a profile that
   refuses file writes outside its clone, a private temp folder, its session
   transcript folder, /dev/null, /dev/tty, /dev/fd and each `--worker-write`
-  path. A host without sandbox-exec refuses the run with exit 3 before any
-  Worker starts, and the JSON result's `sandbox` names sandbox-exec or
-  `off`.
+  path. It also runs the gate's `--gate-setup`, acceptance, mutant and
+  `--suite-command` runs and the lock stage's checks under sandbox-exec,
+  writing only their clean checkout (`gate/msp-<n>/checkout-*` or
+  `lock/checkout-*` under the run directory), a private temp folder
+  (`gate/msp-<n>.tmp` or `lock.tmp`, passed as TMPDIR and holding the line
+  traces and suite reports) and each `--worker-write` path, so a gate setup
+  that needs another writable path names it with `--worker-write`. mitosis's
+  logs and state stay outside every write grant, and no sandboxed command may
+  rename, remove or replace a folder it writes into. A host without
+  sandbox-exec refuses the run with exit 3 before any Worker starts, and the
+  JSON result's `sandbox` names sandbox-exec or `off`.
 - Every git call drops the environment variables that shape a diff, widen a
   pathspec, locate another repository or point at other objects, so nothing
   the caller's shell sets changes what mitosis reads.
@@ -37,12 +45,16 @@ the build, and mutants come only from the lines an acceptance test runs.
   run executed, traced by a standard-library tracer. Each property's
   mutation is killed, `weak`, `not-applicable` when the test loads none
   of the Step's files or the Step added no code file for a mutant to change, or
-  covered-elsewhere, and its `coverage` is `traced` or `untraced` when no
-  trace was written, as for JavaScript, TypeScript and shell.
-- `--suite-command` runs the project's full suite on each mutant every
-  acceptance test of a property survives; when the suite fails on each one,
-  the property is covered-elsewhere and names the failing tests in
-  `killers` instead of `weak`.
+  covered-elsewhere, and its `coverage` is `traced` only when the sampled
+  lines came from the trace and `untraced` whenever they did not, as when no
+  trace was written, only JavaScript, TypeScript or shell lines were sampled,
+  or the gate fell back to every added line.
+- `--suite-command` runs the project's full suite once with no mutant and
+  then on each mutant every acceptance test of a property survives; when the
+  run with no mutant passed and the suite fails on each mutant, the property
+  is covered-elsewhere and names the failing tests in `killers` instead of
+  `weak`. A suite that fails or times out with no mutant kills nothing, and
+  the property stays `weak` with that reason.
 - `--gate-classes` names a JSON list of `{test, class, reason}` objects
   classing a property `not-applicable`, covered-elsewhere or `removed`. The
   classes stay out of the plan id, so `--resume` keeps every built Lane and
