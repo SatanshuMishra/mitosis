@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T04:31:54.000Z
+Updated: 2026-10-30T04:38:13.142Z
 Next ids: c8 D2 R3 S2
 
 ## Goal
@@ -19,7 +19,7 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override: hand-dispatched check-author), pushed. Build 1 ran all six Lanes ok on mitosis/isolation (head f6cae57, worktree ~/.mitosis/runs/mitosis/hr-mitosis-isolation/trees/isolation); mitosis 0.8.0's gate passed 26 of 29 properties and judged 3 weak (exit 24, committed, not pushed), all classed sampler-only or criterion-equivalent by coverage proof in weak-proof-classes.md. Review round 1 is under way: diff, 67 obligations, standards (1 LOW) and 29 with-work proofs are written; the round suite fails on 3.9 and 3.14 only on U1 (test_installed_vendor_tree worker-exclude case) and U2 (test_docs version_is_0_8_0), both passing at base. Reviewers returned: conformance all eleven criteria MET; 13 findings in review/round-1/isolation.findings.json (readable in isolation.md), led by S1 CRITICAL security (gate runs execute Worker code unsandboxed under --worker-sandbox) and HIGH C1/C2 matching U2/U1; 11 candidates, and the validator is running. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md (overrides for the final report). Three Lane assumptions are in review/isolation.assumptions.txt.
+FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override: hand-dispatched check-author), pushed. Build 1 ran all six Lanes ok on mitosis/isolation (head f6cae57, worktree ~/.mitosis/runs/mitosis/hr-mitosis-isolation/trees/isolation); mitosis 0.8.0's gate passed 26 of 29 properties and judged 3 weak (exit 24, committed, not pushed), all classed sampler-only or criterion-equivalent by coverage proof in weak-proof-classes.md. Review round 1 verdict is diagnose (review/round-1/isolation.verdict.json; conformance all eleven criteria MET): blockers S1 CRITICAL sandbox escape at gate, C3 unverified suite baseline, C4 mixed step sampling skipped, S2 case folded git folder, U1 and U2 failing test (vendor-tree exclude case, test_docs 0.8.0); advisories C5, C6, C7. Five diagnosis agents (Opus) are running, writing review/round-1/isolation.<kind slug>.diagnosis.agent.json. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md (overrides for the final report). Three Lane assumptions are in review/isolation.assumptions.txt.
 
 ## Next step
 
