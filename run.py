@@ -4088,14 +4088,20 @@ def lock_record(state, reason, commit=None, session_id=None, **fields):
     return {"state": state, "reason": reason, "commit": commit, "session_id": session_id, **fields}
 
 
+def _blob_paths(repo, commit, paths):
+    args = ["--literal-pathspecs", "ls-tree", "-z", commit, "--", *paths]
+    listed = git_run(args, repo, raw=True, env=PINNED_GIT)
+    if listed.returncode != 0:
+        return frozenset()
+    rows = (os.fsdecode(entry).split("\t", 1) for entry in listed.stdout.split(b"\0") if entry)
+    return frozenset(path for header, path in rows if header.split(" ")[1] == "blob")
+
+
 def missing_paths(repo, commit, paths):
-    return tuple(
-        path
-        for path in paths
-        if git_run(["cat-file", "-t", "%s:%s" % (commit, path)], repo, env=PINNED_GIT)
-        .stdout.strip()
-        != "blob"
-    )
+    if not paths:
+        return ()
+    present = _blob_paths(repo, commit, tuple(_norm(path) for path in paths))
+    return tuple(path for path in paths if _norm(path) not in present)
 
 
 def _lock_values(plan, folders, feature_branch, models, run_dir, session_id):
@@ -4155,15 +4161,29 @@ def _dispatch_check_author(plan, settings, command, models, sandbox, base):
 
 
 def _stored_entries(repo, entries):
-    return {
-        _norm(path): (
-            mode,
-            _checked_run(["hash-object", "-w", "--stdin"], repo, data, PINNED_GIT)
-            .decode("ascii")
-            .strip(),
+    ordered = sorted(entries.items())
+    if not ordered:
+        return {}
+    folder = tempfile.mkdtemp(prefix="mitosis-lock-blobs-")
+    try:
+        staged = tuple(os.path.join(folder, str(position)) for position in range(len(ordered)))
+        for staged_path, (_, (_, data)) in zip(staged, ordered):
+            with open(staged_path, "wb") as handle:
+                handle.write(data)
+        listing = "".join(staged_path + "\n" for staged_path in staged).encode("utf-8")
+        output = _checked_run(
+            ["hash-object", "-w", "--no-filters", "--stdin-paths"], repo, listing, PINNED_GIT
         )
-        for path, (mode, data) in sorted(entries.items())
-    }
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    oids = output.decode("ascii").split()
+    if len(oids) != len(ordered):
+        raise GitError(
+            ["hash-object", "--stdin-paths"],
+            1,
+            "git stored %d of the %d locked files" % (len(oids), len(ordered)),
+        )
+    return {_norm(path): (mode, oid) for (path, (mode, _)), oid in zip(ordered, oids)}
 
 
 def _locked_checks(plan):
@@ -4246,12 +4266,11 @@ def _lock_commit(settings, base, stored):
     indexed = {"GIT_INDEX_FILE": index}
     try:
         git(["read-tree", base], repo, env=indexed)
-        for path, (mode, oid) in sorted(stored.items()):
-            git(
-                ["update-index", "--add", "--cacheinfo", "%s,%s,%s" % (mode, oid, path)],
-                repo,
-                env=indexed,
-            )
+        rows = b"".join(
+            b"%s %s\t%s\0" % (mode.encode("ascii"), oid.encode("ascii"), os.fsencode(path))
+            for path, (mode, oid) in sorted(stored.items())
+        )
+        _checked_run(["update-index", "-z", "--add", "--index-info"], repo, rows, indexed)
         tree = git(["write-tree"], repo, env=indexed)
     finally:
         _removed(index)
