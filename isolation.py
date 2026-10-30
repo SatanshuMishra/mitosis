@@ -45,7 +45,9 @@ PID_SLACK = 256
 
 SETTLE_ROUNDS = 50
 
+SANDBOX_ALLOWED = 0
 DENIED = 1
+SANDBOX_CHECK_FAILED = -1
 
 
 def lane_folders(run_dir, lane):
@@ -284,14 +286,14 @@ def _every_pid(listing):
     return tuple(pid for pid in room[:found] if pid > 0)
 
 
-def _denied(check, pid, path):
+def _sandbox_verdict(check, pid, path):
     return check(pid, MARKED_OPERATION, PATH_FILTER | UNREPORTED_CHECK, os.fsencode(path))
 
 
 def _inside(check, pid, confinement):
     return (
-        _denied(check, pid, confinement["mark"]) == DENIED
-        and _denied(check, pid, confinement["profile"]) == 0
+        _sandbox_verdict(check, pid, confinement["mark"]) == DENIED
+        and _sandbox_verdict(check, pid, confinement["profile"]) == SANDBOX_ALLOWED
     )
 
 
@@ -300,7 +302,9 @@ def _sandboxed_pids(confinement):
         return ()
     check, listing = _system_calls()
     own = os.getpid()
-    if not os.path.isfile(confinement["mark"]) or _denied(check, own, confinement["mark"]) != 0:
+    if not os.path.isfile(confinement["mark"]):
+        return None
+    if _sandbox_verdict(check, own, confinement["mark"]) != SANDBOX_ALLOWED:
         return None
     checked = frozenset((own,))
     for _ in range(SETTLE_ROUNDS):
