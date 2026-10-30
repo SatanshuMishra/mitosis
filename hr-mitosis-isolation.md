@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: parked
-Updated: 2026-10-30T19:29:57.225Z
+Updated: 2026-10-30T19:48:27.718Z
 Next ids: c8 D6 R3 S3
 
 ## Goal
@@ -19,13 +19,13 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-FEATURE is pushed at 6fbaffa, the merge of origin/main per D4 at 0.10.0, suite 803 OK on 3.9 and 3.14. It carries the caller-classed Testing rows (receipt a_caller_classed_property_is_never_reported_proven), git errors that keep a refused multi-line Step commit's hook reason (receipt a_committed_referee_write_never_lands_when_the_landing_commit_fails), and, with the owner's approval, the locked test_worker_isolation landing subject "chore: add". pipeline checks passes 29 of 29 at 6fbaffa after D5, integration-plan says lighthouse skip and integration-ready is true. pipeline suite is running in the integration worktree into the run home's integration.suite.json. The FEATURE pull request's title and body are rendered in the run home's feature-pr.json, since on a lighthouse skip nothing else opens it (pipeline defect P11). Stages run by hand, not through pipeline drive.
+FEATURE is pushed at 6fbaffa, the merge of origin/main per D4 at 0.10.0, suite 803 OK on 3.9 and 3.14. It carries the caller-classed Testing rows (receipt a_caller_classed_property_is_never_reported_proven), git errors that keep a refused multi-line Step commit's hook reason (receipt a_committed_referee_write_never_lands_when_the_landing_commit_fails), and, with the owner's approval, the locked test_worker_isolation landing subject "chore: add". pipeline checks passes 29 of 29 at 6fbaffa after D5, integration-plan says lighthouse skip (no live run, no lighthouse spend), integration-ready is true and pipeline suite passes on 3.9 and 3.14 with no findings. The FEATURE pull request SatanshuMishra/mitosis#30 is open, ready, assigned to SatanshuMishra, bound with Auto-fix, mergeable, its CI pending; it was opened by hand from pull-request render because a lighthouse skip opens nothing (pipeline defect P11). Stages run by hand, not through pipeline drive.
 
 ## Next step
 
-When integration.suite.json is green, open the FEATURE pull request feat/hr-mitosis-isolation into main through the GitHub MCP create_pull_request tool with feature-pr.json's title and body unchanged, ready, assigned to SatanshuMishra, bind it with Auto-fix, then park the thread for Clean-up.
+The owner merges SatanshuMishra/mitosis#30 and says the FEATURE pull request merged; that starts Clean-up: resume_thread, read CHARTER.md, Sync, pipeline clean, then the C14 and F1 install check of 0.10.0 against main.
 
-Needs: D4, D5, R1.
+Needs: R1.
 
 ## Decisions in force
 
