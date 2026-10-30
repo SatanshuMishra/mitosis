@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: parked
-Updated: 2026-10-30T09:01:58.275Z
+Updated: 2026-10-30T09:01:59.784Z
 Next ids: c8 D4 R3 S3
 
 ## Goal
@@ -23,9 +23,9 @@ FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override), p
 
 ## Next step
 
-When the round 4 slow checks pass, record a ship boundary superseding D2, re-ship with --proven-head isolation=<head> so #29 updates, refresh its review comment, and report to the driver.
+Run SHIP=1 ~/.mitosis/mitosis/hr-mitosis-isolation/run.zsh --resume --proven-head isolation=2892811b21a934cd6defed09e73bd85cb08bc9bb, confirm origin mitosis/isolation is at 2892811, update #29's body from mitosis's result if it changed, refresh the review comment, and report to the driver.
 
-Needs: D2, R1.
+Needs: D3, R1.
 
 ## Decisions in force
 
