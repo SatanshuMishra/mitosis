@@ -1308,14 +1308,61 @@ class GateReuse(RepoCase):
             sh(["git", "ls-tree", "--name-only", record["gate"]["commit"]], tree).splitlines(),
         )
 
-    def a_reused_gate_appends_no_outcome_entry(self):
+    def a_reused_gate_appends_one_outcome_entry_per_property_without_a_run(self):
         self.add_remote()
         store = os.path.join(self.tmp, "store", "trajectories.jsonl")
         plan = core.plan([gated_step()])
         self.execute(plan, no_push=True, trajectory=store)
         self.assertEqual(len(read(store).splitlines()), 1)
+        gate_runs = len(self.gate_runs())
         self.execute(plan, resume=True, trajectory=store)
-        self.assertEqual(len(read(store).splitlines()), 1)
+        self.assertEqual(len(self.gate_runs()), gate_runs)
+        self.assertEqual(len(read(store).splitlines()), 2)
+
+    def a_blocked_gate_resumed_with_the_same_command_reuses_its_verdict_without_a_run(self):
+        self.add_remote()
+        plan = core.plan([gated_step()])
+        held = self.execute(plan, accept="inert", no_push=True)
+        self.assertEqual(held["msps"]["0"]["gate"]["outcome"], "inert")
+        gate_runs = len(self.gate_runs())
+        resumed = self.execute(plan, accept="inert", no_push=True, resume=True)
+        self.assertEqual(len(self.gate_runs()), gate_runs)
+        self.assertEqual(resumed["msps"]["0"]["state"], "gate-failed")
+        self.assertEqual(resumed["msps"]["0"]["gate"], held["msps"]["0"]["gate"])
+
+    def a_covered_elsewhere_class_passes_the_property_without_a_run(self):
+        self.add_remote()
+        plan = core.plan([gated_step()])
+        held = self.execute(plan, accept="inert", no_push=True)
+        gate_runs = len(self.gate_runs())
+        classes = (
+            {"test": "tests/t_impl.txt::property", "class": "covered-elsewhere", "reason": "the suite"},
+        )
+        resumed = self.execute(
+            plan,
+            accept="inert",
+            no_push=True,
+            resume=True,
+            gate_classes=classes,
+            gate_classes_sha256="0" * 64,
+        )
+        record = resumed["msps"]["0"]
+        self.assertEqual(len(self.gate_runs()), gate_runs)
+        self.assertEqual(record["state"], run.MSP_COMMITTED)
+        self.assertEqual(record["gate"]["outcome"], "pass")
+        self.assertEqual(record["gate"]["commit"], held["msps"]["0"]["gate"]["commit"])
+        [judged] = record["gate"]["properties"]
+        self.assertEqual(judged["mutation"], "covered-elsewhere")
+        self.assertEqual(judged["reason"], "covered elsewhere: the suite")
+        self.assertEqual(resumed["gate_classes"], list(classes))
+        self.assertEqual(resumed["gate_classes_sha256"], "0" * 64)
+        body = run.pull_request_body(
+            HEADER, plan, 0, record["gate"], None, record["reconcile"], None, []
+        )
+        self.assertIn(
+            "tests/t_impl.txt::property (impl) is classed covered-elsewhere, so no run judged it",
+            body,
+        )
 
     def an_unwritable_trajectory_records_its_error_and_carries_on(self):
         self.add_remote()

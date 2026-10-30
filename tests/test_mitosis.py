@@ -4,6 +4,7 @@ import itertools
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1939,6 +1940,82 @@ class SessionReport(unittest.TestCase):
             self.assertEqual([lane["state"] for lane in resumed["lanes"]], ["ok"])
 
 
+class GateClassRefusals(unittest.TestCase):
+    PLAN = {
+        "items": [
+            {
+                "name": "calc",
+                "acceptance": [
+                    {"file": "tests/test_calc.py", "test": "Calc.adds"},
+                    {"file": "tests/test_calc.py", "test": "Calc.exists"},
+                ],
+            }
+        ]
+    }
+
+    def setUp(self):
+        self.folder = tempfile.mkdtemp(prefix="mitosis-classes-")
+        self.addCleanup(shutil.rmtree, self.folder, True)
+
+    def _classes(self, payload):
+        path = os.path.join(self.folder, "classes.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(payload if isinstance(payload, str) else json.dumps(payload))
+        return path
+
+    def _refusal(self, payload):
+        with self.assertRaises(mitosis.Refusal) as caught:
+            mitosis.gate_classes(self._classes(payload), self.PLAN)
+        return str(caught.exception)
+
+    def an_accepted_file_returns_its_entries_and_digest(self):
+        entry = {"test": "tests/test_calc.py::Calc.exists", "class": "removed", "reason": "duplicate"}
+        path = self._classes([entry])
+        classes, digest = mitosis.gate_classes(path, self.PLAN)
+        self.assertEqual(classes, (entry,))
+        self.assertEqual(digest, run.sha256_file(path))
+
+    def no_file_means_no_classes(self):
+        self.assertEqual(mitosis.gate_classes(None, self.PLAN), (None, None))
+
+    def each_malformed_entry_is_refused_by_its_name(self):
+        exists = "tests/test_calc.py::Calc.exists"
+        cases = (
+            (
+                [{"test": exists, "class": "skipped", "reason": "r"}],
+                'entry 1 ("%s") has class "skipped", which is none of' % exists,
+            ),
+            ([{"test": exists, "class": "removed", "reason": "  "}], "has no reason"),
+            (
+                [{"test": exists, "class": "removed", "reason": "one\ntwo"}],
+                "has a reason of more than one line",
+            ),
+            (
+                [{"test": exists, "class": "removed", "reason": "r" * 501}],
+                "has a reason longer than 500 characters",
+            ),
+            (
+                [
+                    {"test": exists, "class": "removed", "reason": "r"},
+                    {"test": exists, "class": "not-applicable", "reason": "r"},
+                ],
+                'entry 2 ("%s") names a property an earlier entry already classes' % exists,
+            ),
+            (
+                [{"test": exists, "class": "removed"}],
+                "is not an object holding exactly the keys class, reason, test",
+            ),
+            (["text"], "entry 1 is not an object"),
+        )
+        for payload, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertIn(expected, self._refusal(payload))
+
+    def a_file_that_is_not_a_list_is_refused(self):
+        self.assertIn("does not hold a JSON list", self._refusal({"test": "x"}))
+        self.assertIn("is not UTF-8 JSON", self._refusal("[{"))
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -1973,6 +2050,7 @@ def load_tests(loader, tests, pattern):
         PushOnly,
         ProvenHead,
         SessionReport,
+        GateClassRefusals,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite

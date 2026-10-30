@@ -2194,6 +2194,64 @@ def _remove_gate_folders(log_dir):
         shutil.rmtree(path, ignore_errors=True)
 
 
+GATE_CLASSES = ("not-applicable", "covered-elsewhere", "removed")
+
+CLASS_REASONS = {
+    "not-applicable": "not applicable to the gate: %s",
+    "covered-elsewhere": "covered elsewhere: %s",
+    "removed": "removed from the gate: %s",
+}
+
+
+def property_key(file, test):
+    return "%s::%s" % (file, test)
+
+
+def class_verdict(entry, gate_class):
+    name = gate_class["class"]
+    if name not in CLASS_REASONS:
+        raise ConfigError(
+            "gate class %r is none of %s" % (name, ", ".join(GATE_CLASSES))
+        )
+    judged = {**entry, "reason": CLASS_REASONS[name] % gate_class["reason"], "class": name, "seconds": 0}
+    if name == "covered-elsewhere":
+        return {**judged, "outcome": "pass", "mutation": "covered-elsewhere"}
+    return {**judged, "outcome": "not-applicable"}
+
+
+def _classed(properties, classes):
+    by_test = {gate_class["test"]: gate_class for gate_class in classes or ()}
+    return tuple(
+        class_verdict(entry, by_test[property_key(entry["file"], entry["test"])])
+        if entry["file"] is not None and property_key(entry["file"], entry["test"]) in by_test
+        else entry
+        for entry in properties
+    )
+
+
+def _verdict_key(entry):
+    return (entry.get("step"), entry.get("file"), entry.get("test"))
+
+
+def reusable_verdicts(recorded_gate):
+    if not isinstance(recorded_gate, dict) or recorded_gate.get("referee"):
+        return {}
+    return {
+        _verdict_key(entry): entry
+        for entry in recorded_gate.get("properties") or ()
+        if isinstance(entry, dict) and "with_work" in entry and "class" not in entry
+    }
+
+
+def _reused(properties, verdicts):
+    return tuple(
+        {**entry, **verdicts[_verdict_key(entry)]}
+        if entry["outcome"] is None and _verdict_key(entry) in verdicts
+        else entry
+        for entry in properties
+    )
+
+
 def gate(
     plan,
     msp,
@@ -2208,14 +2266,23 @@ def gate(
     head=None,
     replayed=None,
     suite=None,
+    classes=None,
+    recorded_gate=None,
 ):
     commit = commit_before_gate(plan, msp, tree) if head is None else head
-    properties = msp_properties(
-        plan, msp, steps_without_implementation_change(plan, msp, tree, base, commit)
+    properties = _reused(
+        _classed(
+            msp_properties(
+                plan, msp, steps_without_implementation_change(plan, msp, tree, base, commit)
+            ),
+            classes,
+        ),
+        reusable_verdicts(recorded_gate),
     )
     implementation = implementation_paths(plan, msp)
     if not any(entry["outcome"] is None for entry in properties):
-        return {**_gate_result(properties, implementation, commit, ()), "referee": []}
+        reverted = implementation if any("with_work" in entry for entry in properties) else ()
+        return {**_gate_result(properties, implementation, commit, reverted), "referee": []}
     os.makedirs(log_dir, exist_ok=True)
     _remove_gate_folders(log_dir)
     folder = tempfile.mkdtemp(prefix=GATE_FOLDER_PREFIX, dir=log_dir)
@@ -3134,7 +3201,9 @@ def _capped(values, overflow, closing=()):
     return values[: room - 1] + (overflow % (len(values) - room + 1),) + closing
 
 
-def _unproven(outcome):
+def _unproven(outcome, gate_class=None):
+    if gate_class is not None:
+        return "is classed %s, so no run judged it" % gate_class
     return "is %s" % outcome if outcome in core.GATE_OUTCOMES else "was not judged"
 
 
@@ -3155,21 +3224,26 @@ def _verification(plan, msp, gate_result, gate_error, proven_head=None):
     properties = tuple(
         (
             "%s::%s (%s)" % (entry.get("file"), entry.get("test"), name),
-            (judged.get((name, entry.get("file"), entry.get("test"))) or {}).get("outcome"),
+            found.get("outcome"),
+            found.get("class"),
         )
         for name in names
         for entry in steps[name].get("acceptance") or []
+        for found in (judged.get((name, entry.get("file"), entry.get("test"))) or {},)
     )
     verified = tuple(
         _stated("%s %s" % (where, PROVEN), "an acceptance test %s" % PROVEN)
-        for where, outcome in properties
-        if outcome == "pass"
+        for where, outcome, gate_class in properties
+        if outcome == "pass" and gate_class is None
     )
     unproven = (
         tuple(
-            _stated("%s %s" % (where, _unproven(outcome)), "an acceptance test %s" % _unproven(outcome))
-            for where, outcome in properties
-            if outcome != "pass"
+            _stated(
+                "%s %s" % (where, _unproven(outcome, gate_class)),
+                "an acceptance test %s" % _unproven(outcome, gate_class),
+            )
+            for where, outcome, gate_class in properties
+            if outcome != "pass" or gate_class is not None
         )
         + tuple(
             _stated("the %s Step has no acceptance test" % name, "a Step has no acceptance test")
@@ -3492,7 +3566,7 @@ def _producer_block(plan, msp, state, producers):
     return None
 
 
-def _gate_stage(plan, msp, tree, settings, head, replayed):
+def _gate_stage(plan, msp, tree, settings, head, replayed, recorded_gate=None):
     try:
         result = gate(
             plan,
@@ -3508,17 +3582,23 @@ def _gate_stage(plan, msp, tree, settings, head, replayed):
             head,
             replayed,
             settings.get("suite_command"),
+            settings.get("gate_classes"),
+            recorded_gate,
         )
     except (OSError, GitError, GateSetupError, TraceError, subprocess.SubprocessError) as error:
         return {"gate": None, "gate_error": str(error)}
     return {"gate": result, "gate_error": None}
 
 
-def _passing_gate(prior):
-    recorded = prior.get("gate")
-    if not isinstance(recorded, dict) or recorded.get("blocks") is not False:
-        return None
-    return recorded
+def gate_inputs(settings, replayed):
+    named = {
+        "acceptance_command": settings["acceptance_command"],
+        "suite_command": settings.get("suite_command"),
+        "gate_setup": settings.get("gate_setup"),
+        "timeout": settings["timeout"],
+        "replayed": replayed,
+    }
+    return hashlib.sha256(json.dumps(named, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def _committed_head(plan, msp, tree):
@@ -3528,9 +3608,11 @@ def _committed_head(plan, msp, tree):
         return None, str(error)
 
 
-def _reusable_gate(prior, head):
-    recorded = _passing_gate(prior)
-    if recorded is None or head is None or head != recorded.get("commit"):
+def _reusable_gate(prior, head, inputs):
+    recorded = prior.get("gate")
+    if not isinstance(recorded, dict) or head is None or head != recorded.get("commit"):
+        return None
+    if prior.get("gate_inputs") != inputs:
         return None
     return recorded
 
@@ -3847,15 +3929,17 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     if held is not None:
         return write_state(run_dir, _msp_record(state, msp, **held))
     proven_head = _proven_head(prior, head, settings["proven_heads"].get(msp))
-    reused = prior.get("gate") if proven_head is not None else _reusable_gate(prior, head)
-    judged_now = commit_error is not None or (proven_head is None and reused is None)
+    inputs = gate_inputs(settings, replayed)
+    proven_gate = prior.get("gate") if proven_head is not None else None
+    recorded_gate = None if proven_head is not None else _reusable_gate(prior, head, inputs)
+    judged_now = commit_error is not None or proven_head is None
     gate_started = now()
     gated = (
         {"gate": None, "gate_error": commit_error}
         if commit_error is not None
-        else _gate_stage(plan, msp, tree, settings, head, replayed)
+        else _gate_stage(plan, msp, tree, settings, head, replayed, recorded_gate)
         if judged_now
-        else {"gate": reused, "gate_error": None}
+        else {"gate": proven_gate, "gate_error": None}
     )
     notify(
         settings.get("observer"),
@@ -3863,13 +3947,17 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
         {
             "msp": msp,
             "gate": gated["gate"],
-            "reused": reused is not None,
+            "reused": proven_gate is not None or recorded_gate is not None,
             "seconds": seconds_between(gate_started, now()),
         },
     )
     proof = {} if proven_head is None else {"proven_head": proven_head}
     logged = _trajectory_stage(plan, msp, gated, settings) if judged_now else {}
-    state = write_state(run_dir, _msp_record(state, msp, **gated, **proof, **logged))
+    recorded_inputs = inputs if judged_now else prior.get("gate_inputs")
+    state = write_state(
+        run_dir,
+        _msp_record(state, msp, **gated, **proof, **logged, gate_inputs=recorded_inputs),
+    )
     if commit_error is not None:
         return write_state(
             run_dir,
@@ -4278,6 +4366,8 @@ def execute(
     worker_sandbox=False,
     worker_writes=(),
     suite_command=None,
+    gate_classes=None,
+    gate_classes_sha256=None,
 ):
     prior = prior_state(run_dir, plan, resume)
     header = carried_header(header, prior)
@@ -4327,6 +4417,7 @@ def execute(
         "trajectory": trajectory,
         "gate_setup": gate_setup,
         "suite_command": suite_command,
+        "gate_classes": tuple(gate_classes or ()),
     }
     os.makedirs(run_dir, exist_ok=True)
     write_json(os.path.join(run_dir, PLAN_FILE), plan)
@@ -4345,6 +4436,11 @@ def execute(
             "stacking_exceptions": list((prior or {}).get("stacking_exceptions") or []),
             "merge_danger": merge_danger_pair(header),
             "sandbox": isolation.sandbox_name(program),
+            **(
+                {"gate_classes": list(gate_classes), "gate_classes_sha256": gate_classes_sha256}
+                if gate_classes is not None
+                else {}
+            ),
             **(
                 {"lock": (prior or {}).get("lock"), "referee": (prior or {}).get("referee")}
                 if plan.get("check_author")

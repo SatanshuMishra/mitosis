@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import itertools
 import json
 import os
@@ -154,7 +155,12 @@ STAGE_FLAG_NAMES = (
     "--worker-sandbox",
     "--worker-write",
     "--suite-command",
+    "--gate-classes",
 )
+
+GATE_CLASS_KEYS = ("class", "reason", "test")
+
+GATE_CLASS_REASON_LIMIT = 500
 
 PROVEN_HEAD = re.compile(r"^(.+)=([0-9a-f]{7,40})$")
 
@@ -277,6 +283,14 @@ FLAG_SPECS = {
         "placeholders %s, where {report} is a fresh path for an optional JUnit XML report; "
         "exit 1 kills the mutant and makes the property covered-elsewhere when every survivor "
         "is killed; any other exit keeps the property weak" % PLACEHOLDER_HELP["suite"],
+    },
+    "--gate-classes": {
+        "metavar": "PATH",
+        "help": "a JSON list of {test, class, reason} objects, test naming one acceptance "
+        "property as <file>::<name>, class one of %s and reason one non-empty line of at most "
+        "%d characters; a classed property is judged by its class without a run, the plan id "
+        "stays unchanged, and with --resume every other property keeps the verdict recorded at "
+        "the MSP's unchanged commit" % (", ".join(run.GATE_CLASSES), GATE_CLASS_REASON_LIMIT),
     },
     "--pr-command": {
         "metavar": "TEMPLATE",
@@ -993,6 +1007,73 @@ def proven_heads(values, plan):
             "--proven-head names MSP %s, which the plan does not hold" % unknown
         )
     return {labels[label]: commit for label, commit in pairs}
+
+
+def _class_label(position, entry):
+    test = entry.get("test") if isinstance(entry, dict) else None
+    if isinstance(test, str):
+        return "entry %d (%s)" % (position, json.dumps(test[:200]))
+    return "entry %d" % position
+
+
+def plan_properties(plan):
+    return frozenset(
+        run.property_key(entry["file"], entry["test"])
+        for item in plan.get("items") or []
+        for entry in item.get("acceptance") or []
+    )
+
+
+def _class_fault(entry, properties, seen):
+    if not isinstance(entry, dict) or sorted(entry) != sorted(GATE_CLASS_KEYS):
+        return "is not an object holding exactly the keys %s" % ", ".join(GATE_CLASS_KEYS)
+    test, name, reason = entry["test"], entry["class"], entry["reason"]
+    if not isinstance(test, str) or test not in properties:
+        return "names no acceptance property of the plan"
+    if test in seen:
+        return "names a property an earlier entry already classes"
+    if name not in run.GATE_CLASSES:
+        return "has class %s, which is none of %s" % (
+            json.dumps(name)[:80],
+            ", ".join(run.GATE_CLASSES),
+        )
+    if not isinstance(reason, str) or not reason.strip():
+        return "has no reason"
+    if len(reason.splitlines()) != 1:
+        return "has a reason of more than one line"
+    if len(reason) > GATE_CLASS_REASON_LIMIT:
+        return "has a reason longer than %d characters" % GATE_CLASS_REASON_LIMIT
+    return None
+
+
+def gate_classes(path, plan):
+    if path is None:
+        return None, None
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError as error:
+        raise Refusal("--gate-classes %s could not be read: %s" % (path, error.strerror))
+    try:
+        loaded = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise Refusal("--gate-classes %s is not UTF-8 JSON" % path)
+    if not isinstance(loaded, list):
+        raise Refusal("--gate-classes %s does not hold a JSON list" % path)
+    properties = plan_properties(plan)
+    seen = frozenset()
+    for position, entry in enumerate(loaded, 1):
+        fault = _class_fault(entry, properties, seen)
+        if fault is not None:
+            raise Refusal(
+                "--gate-classes %s: %s %s" % (path, _class_label(position, entry), fault)
+            )
+        seen = seen | {entry["test"]}
+    classes = tuple(
+        {"test": entry["test"], "class": entry["class"], "reason": entry["reason"]}
+        for entry in loaded
+    )
+    return classes, hashlib.sha256(raw).hexdigest()
 
 
 def refuse_run(args, plan, models, run_dir, repo):
@@ -1998,6 +2079,10 @@ def report(plan, state, decomposed, root, run_dir, code, from_items, decisions=N
     return lines
 
 
+def loaded_gate_classes(args):
+    return getattr(args, "loaded_gate_classes", (None, None))
+
+
 def execute(args, plan, models, run_dir, repo, root, base=None):
     try:
         return run.execute(
@@ -2025,6 +2110,8 @@ def execute(args, plan, models, run_dir, repo, root, base=None):
             base_commit=base,
             worker_sandbox=args.worker_sandbox,
             worker_writes=tuple(args.worker_write),
+            gate_classes=loaded_gate_classes(args)[0],
+            gate_classes_sha256=loaded_gate_classes(args)[1],
         ), None
     except (run.ConfigError, run.ResumeError) as error:
         raise Refusal(str(error))
@@ -2098,6 +2185,9 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     recorder.planned(plan, lane_width(plan), len(empty_manifests(plan.get("items") or [])))
     proven_heads(args.proven_head, plan)
     refuse_unfit_titles(pull_request_header(args), plan)
+    args = argparse.Namespace(
+        **{**vars(args), "loaded_gate_classes": gate_classes(args.gate_classes, plan)}
+    )
     if args.plan_only:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
         run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
