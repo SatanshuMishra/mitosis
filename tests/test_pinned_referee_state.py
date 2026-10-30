@@ -172,16 +172,12 @@ class PinnedRefereeRun(unittest.TestCase):
         self._worker(self._tamper_then(["git", "tag", "feature", "HEAD"]))
         self._assert_locked_test_reverted(self._calc_run())
 
-    def a_detached_head_is_judged_by_the_commit_the_gate_certifies(self):
+    def a_detached_head_in_the_clone_still_reverts_the_locked_write(self):
         self._calc_scratch()
         self._worker([["git", "checkout", "-q", "--detach"], *self._tamper_then()])
-        completed = self._calc_run()
-        self.assertEqual(completed.returncode, 9, "mitosis exit code" + lock_fixtures.tail(completed))
-        msp = self._summary(completed)["msps"][0]
-        self.assertIs(msp["reconcile"]["fatal"], True)
-        self.assertEqual(msp["reconcile"]["referee"], [])
+        self._assert_locked_test_reverted(self._calc_run())
         self.assertEqual(
-            self.scratch.checked("rev-parse", "refs/heads/" + BRANCH).strip(), self.feature_before
+            self.scratch.checked("rev-parse", "refs/heads/feature").strip(), self.feature_before
         )
 
     def a_resume_keeps_the_base_pinned_at_the_first_start(self):
@@ -198,7 +194,7 @@ class PinnedRefereeRun(unittest.TestCase):
         )
         first = self._calc_run()
         self.assertEqual(first.returncode, 13, "first run exit code" + lock_fixtures.tail(first))
-        self.assertNotEqual(
+        self.assertEqual(
             self.scratch.checked("rev-parse", "refs/heads/feature").strip(), self.feature_before
         )
         self._worker(
@@ -233,16 +229,22 @@ class PinnedRefereeRun(unittest.TestCase):
             declared=("calc.py", "dep"),
         )
         completed = self._run(files=("calc.py", "dep"))
-        self.assertEqual(completed.returncode, 9, "mitosis exit code" + lock_fixtures.tail(completed))
-        msp = self._summary(completed)["msps"][0]
-        self.assertEqual(msp["state"], "referee-reverted")
-        self.assertEqual(msp["reconcile"]["referee"], ["dep/conftest.py"])
+        self.assertEqual(completed.returncode, 10, "mitosis exit code" + lock_fixtures.tail(completed))
+        lane = self._summary(completed)["lanes"][0]
+        self.assertEqual(lane["state"], "failed")
+        self.assertIn("dep is a folder", lane["reason"])
+        self.assertEqual(
+            scratch.checked("rev-parse", "refs/heads/feature").strip(), self.feature_before
+        )
         self.assertEqual(
             scratch.checked("ls-tree", "refs/heads/" + BRANCH, "dep"),
             scratch.checked("ls-tree", self.feature_before, "dep"),
         )
+        self.assertNotEqual(
+            scratch.git("cat-file", "-e", "refs/heads/%s:dep/conftest.py" % BRANCH).returncode, 0
+        )
 
-    def _conftest_run(self, actions, hook=None):
+    def _conftest_run(self, actions, reason, hook=None):
         scratch = self._scratch({"tests/test_calc.py": clean_fixtures.CALC_TEST})
         if hook is not None:
             path = os.path.join(scratch.repo, ".git", "hooks", hook[0])
@@ -250,16 +252,18 @@ class PinnedRefereeRun(unittest.TestCase):
             os.chmod(path, 0o755)
         self._worker(actions)
         completed = self._run()
-        self.assertEqual(completed.returncode, 9, "mitosis exit code" + lock_fixtures.tail(completed))
-        msp = self._summary(completed)["msps"][0]
-        self.assertEqual(msp["state"], "referee-reverted")
-        self.assertEqual(msp["reconcile"]["referee"], ["tests/conftest.py"])
-        self.assertIs(msp["reconcile"]["fatal"], True)
+        self.assertEqual(completed.returncode, 10, "mitosis exit code" + lock_fixtures.tail(completed))
+        summary = self._summary(completed)
+        self.assertEqual(summary["lanes"][0]["state"], "failed")
+        self.assertIn(reason, summary["lanes"][0]["reason"])
+        self.assertEqual(summary["msps"][0]["state"], "blocked")
         self.assertNotEqual(
             scratch.git("cat-file", "-e", "refs/heads/%s:tests/conftest.py" % BRANCH).returncode, 0
         )
+        checkout = os.path.join(scratch.run_dir, "trees", "demo")
+        self.assertFalse(os.path.lexists(os.path.join(checkout, "tests", "conftest.py")))
 
-    def a_refused_lane_landing_commit_still_reverts_the_committed_conftest(self):
+    def a_refused_lane_landing_commit_lands_no_committed_conftest(self):
         self._conftest_run(
             [
                 ["write", "tests/conftest.py", clean_fixtures.HIDDEN_CONFTEST],
@@ -267,10 +271,11 @@ class PinnedRefereeRun(unittest.TestCase):
                 ["git", "commit", "-q", "-m", "feat: conftest"],
                 ["write", "calc.py", clean_fixtures.CALC],
             ],
+            run.LANE_COMMIT_FAILED,
             hook=("commit-msg", clean_fixtures.REFUSING_COMMIT_MSG_HOOK),
         )
 
-    def a_worker_failing_after_committing_still_reverts_the_committed_conftest(self):
+    def a_worker_failing_after_committing_lands_no_committed_conftest(self):
         self._conftest_run(
             [
                 ["write", "calc.py", clean_fixtures.CALC],
@@ -278,14 +283,15 @@ class PinnedRefereeRun(unittest.TestCase):
                 ["git", "add", "calc.py", "tests/conftest.py"],
                 ["git", "commit", "-q", "-m", "feat: add"],
                 ["exit", 1],
-            ]
+            ],
+            "exit 1",
         )
 
     def a_replace_object_placed_by_the_worker_changes_no_referee_verdict(self):
         self._calc_scratch()
         self._worker(
             self._tamper_then(
-                ["sh", "git replace refs/heads/feature \"$(git commit-tree 'HEAD^{tree}' -p refs/heads/feature^ -m shadow)\""]
+                ["sh", "git replace HEAD^ \"$(git commit-tree 'HEAD^{tree}' -p HEAD^^ -m shadow)\""]
             )
         )
         msp = self._assert_locked_test_reverted(self._calc_run())
@@ -450,11 +456,11 @@ def load_tests(loader, standard, pattern):
             (
                 "a_feature_branch_moved_by_the_worker_still_reverts_the_locked_write",
                 "a_tag_shadowing_the_feature_branch_still_reverts_the_locked_write",
-                "a_detached_head_is_judged_by_the_commit_the_gate_certifies",
+                "a_detached_head_in_the_clone_still_reverts_the_locked_write",
                 "a_resume_keeps_the_base_pinned_at_the_first_start",
                 "a_moved_base_never_hides_a_conftest_committed_in_a_submodule",
-                "a_refused_lane_landing_commit_still_reverts_the_committed_conftest",
-                "a_worker_failing_after_committing_still_reverts_the_committed_conftest",
+                "a_refused_lane_landing_commit_lands_no_committed_conftest",
+                "a_worker_failing_after_committing_lands_no_committed_conftest",
                 "a_replace_object_placed_by_the_worker_changes_no_referee_verdict",
                 "an_info_grafts_line_placed_by_the_worker_changes_no_referee_verdict",
             ),

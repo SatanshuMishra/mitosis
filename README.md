@@ -42,10 +42,10 @@ claude plugin marketplace add SatanshuMishra/mitosis
 claude plugin install mitosis@mitosis
 ```
 
-The plugin carries the skill and the twelve modules it runs — `core.py`,
-`shape.py`, `decompose.py`, `briefs.py`, `run.py`, `mitosis.py`, `metrics.py`,
-`spend.py`, `metrics_writer.py`, `referee.py`, `mutants.py`, `outcomes.py` —
-and the two data files they read,
+The plugin carries the skill and the thirteen modules it runs — `core.py`,
+`shape.py`, `decompose.py`, `briefs.py`, `run.py`, `isolation.py`, `mitosis.py`,
+`metrics.py`, `spend.py`, `metrics_writer.py`, `referee.py`, `mutants.py`,
+`outcomes.py` — and the two data files they read,
 `prices.json` and `catalogue.json`, which need Python 3.9 or later and nothing
 else.
 
@@ -61,7 +61,7 @@ release changes it; `CHANGELOG.md` lists them. The version is part of each
 plan's id, so finish a run before updating: it cannot be resumed on another
 release.
 
-Without Claude Code, copy the twelve modules into one directory and invoke
+Without Claude Code, copy the thirteen modules into one directory and invoke
 `mitosis.py` by path. They import one another, so they must stay side by
 side.
 

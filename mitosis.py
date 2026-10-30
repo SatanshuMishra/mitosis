@@ -9,6 +9,7 @@ from datetime import datetime
 import briefs
 import core
 import decompose
+import isolation
 import metrics
 import run
 import shape
@@ -148,6 +149,8 @@ STAGE_FLAG_NAMES = (
     "--pick",
     "--revise",
     "--proven-head",
+    "--worker-sandbox",
+    "--worker-write",
 )
 
 PROVEN_HEAD = re.compile(r"^(.+)=([0-9a-f]{7,40})$")
@@ -379,6 +382,19 @@ FLAG_SPECS = {
         "metavar": "PATH",
         "help": "a JSONL file of prior outcomes; a recorded regression on a surface raises "
         "its tier and never lowers one",
+    },
+    "--worker-sandbox": {
+        "action": "store_true",
+        "help": "run every Worker under sandbox-exec with a profile that refuses file writes "
+        "outside its clone, a private temp folder passed as TMPDIR, its Claude Code transcript "
+        "folder, /dev/null, /dev/tty, /dev/fd and each --worker-write path; a host without "
+        "sandbox-exec refuses the run before any Worker starts",
+    },
+    "--worker-write": {
+        "metavar": "PATH",
+        "action": "append",
+        "default": [],
+        "help": "one more path a sandboxed Worker may write under; repeatable",
     },
     "--version": {"action": "version", "version": core.__version__},
     "--help": {"action": "help", "help": "show this message and exit"},
@@ -1567,6 +1583,7 @@ def outcome_lines(plan, state, run_dir, code):
                 else "the plan was written and nothing was spawned",
             ),
         )
+    lines = lines + ("sandbox: %s" % sandbox_of(state),)
     lane_records = state.get("lanes") or {}
     for index in range(len(plan.get("lanes") or [])):
         record = lane_records.get(str(index)) or {}
@@ -1749,6 +1766,10 @@ def _coupling_attention(coupling):
     ]
 
 
+def sandbox_of(state):
+    return (state or {}).get("sandbox") or isolation.SANDBOX_OFF
+
+
 def summary(plan, state, run_dir, code, referee=None, troubles=()):
     lanes = _lane_summary(plan or {}, state)
     msps = _msp_summary(plan or {}, state)
@@ -1764,6 +1785,7 @@ def summary(plan, state, run_dir, code, referee=None, troubles=()):
         "coupling": coupling,
         "referee": referee,
         "findings": findings(state, plan or {}),
+        "sandbox": sandbox_of(state),
         "attention": _attention(plan or {}, lanes, msps)
         + list(troubles)
         + list(oversized_lines(plan or {}))
@@ -1863,6 +1885,8 @@ def execute(args, plan, models, run_dir, repo, root, base=None):
             trajectory=args.trajectory,
             gate_setup=args.gate_setup,
             base_commit=base,
+            worker_sandbox=args.worker_sandbox,
+            worker_writes=tuple(args.worker_write),
         ), None
     except (run.ConfigError, run.ResumeError) as error:
         raise Refusal(str(error))

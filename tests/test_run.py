@@ -15,6 +15,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import core
+import isolation
 import run
 
 ISOLATED_GIT_ENV = {
@@ -639,13 +640,20 @@ class Dispatch(RepoCase):
     def a_lane_recorded_held_is_landed_on_resume_without_running_its_worker_again(self):
         plan = core.plan([step("a", ["a.txt"])])
         trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
-        write(os.path.join(trees[0]["path"], "a.txt"), "work left by a Worker before the run died\n")
-        prior = {0: {"lane": 0, "msp": 0, "state": run.LANE_HELD, "commit": None}}
+        folders = isolation.lane_folders(self.run_dir, 0)
+        start = isolation.cut_clone(trees[0], folders)
+        write(os.path.join(folders["clone"], "a.txt"), "work left by a Worker before the run died\n")
+        prior = {0: {"lane": 0, "msp": 0, "state": run.LANE_HELD, "commit": None, "start": start}}
         records = self.dispatch(plan, trees, prior=prior)
         self.assertEqual(records[0]["state"], "ok")
         self.assertIsNotNone(records[0]["commit"])
         self.assertIsNone(self.marker(0))
         self.assertIn("a.txt", sh(["git", "show", "--name-only", "--format=", records[0]["commit"]], self.repo))
+        self.assertEqual(
+            sh(["git", "show", records[0]["commit"] + ":a.txt"], self.repo),
+            "work left by a Worker before the run died",
+        )
+        self.assertFalse(os.path.lexists(folders["clone"]))
 
     def a_held_lane_whose_work_is_gone_is_run_again_not_recorded_ok(self):
         plan = core.plan([step("a", ["a.txt"])])
@@ -2747,7 +2755,9 @@ class Sessions(RepoCase):
         tree = trees[0]["path"]
         subjects = sh(["git", "log", "--format=%s", "main.." + trees[0]["branch"]], tree)
         self.assertNotIn("keep changes", subjects)
-        self.assertIn("impl.txt", sh(["git", "status", "--porcelain"], tree))
+        self.assertNotIn("impl.txt", sh(["git", "status", "--porcelain"], tree))
+        failed_clone = isolation.lane_folders(self.run_dir, 1)["clone"]
+        self.assertIn("work by lane 1", read(os.path.join(failed_clone, "impl.txt")))
         self.assertEqual(run.msp_foreign_writes(plan, 0, {str(k): v for k, v in records.items()}), [])
 
     def a_resume_after_every_session_landed_builds_nothing_again(self):
@@ -2757,6 +2767,72 @@ class Sessions(RepoCase):
         self.assertEqual([self.marker(i).count("ran") for i in range(3)], [1, 1, 1])
         self.assertEqual(second["lanes"], first["lanes"])
         self.assertEqual(self._landings(second), self._landings(first))
+
+
+class Clones(RepoCase):
+    def outside_writes_replay_only_regular_files_and_start_tree_deletions(self):
+        write(os.path.join(self.repo, ".gitignore"), "*.log\n")
+        write(os.path.join(self.repo, "kept.txt"), "kept\n")
+        write(os.path.join(self.repo, "gone.txt"), "gone\n")
+        sh(["git", "add", "-A"], self.repo)
+        sh(["git", "commit", "-q", "-m", "seed the start tree"], self.repo)
+        outside = os.path.join(self.tmp, "outside")
+        os.makedirs(outside)
+        plan = core.plan([step("a", ["a.txt"])])
+        tree = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)[0]
+        folders = isolation.lane_folders(self.run_dir, 0)
+        start = isolation.cut_clone(tree, folders)
+        clone = folders["clone"]
+        write(os.path.join(clone, "a.txt"), "declared\n")
+        write(os.path.join(clone, "kept.txt"), "changed\n")
+        os.remove(os.path.join(clone, "gone.txt"))
+        write(os.path.join(clone, "new.txt"), "new\n")
+        write(os.path.join(clone, "debug.log"), "ignored\n")
+        os.symlink("kept.txt", os.path.join(clone, "link.txt"))
+        write(os.path.join(clone, "sub", ".git", "config"), "[core]\n")
+        os.symlink(outside, os.path.join(clone, "out"))
+        found = isolation.outside_writes(
+            clone, tree["path"], run._committed_entries(tree["path"], start), ["a.txt"]
+        )
+        self.assertEqual(
+            found["writes"],
+            {"kept.txt": (run.REGULAR_MODE, b"changed\n"), "new.txt": (run.REGULAR_MODE, b"new\n")},
+        )
+        self.assertEqual(found["deletes"], ("gone.txt",))
+        self.assertEqual(found["unreplayed"], ["link.txt", "out", "sub/.git"])
+        self.assertEqual(found["ignored"], ["debug.log"])
+
+    def a_replayed_path_is_released_when_its_owning_lane_lands(self):
+        items = [step("a", ["a.txt"], msp="m"), step("i", ["iface.txt"], msp="m", after=["a"])]
+        plan = core.plan(items, session_tokens=one_step_sessions(items))
+        self.assertEqual([lane["steps"] for lane in plan["lanes"]], [["a"], ["i"]])
+        first = lane_named(plan, "a")
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        records = self.dispatch(plan, trees, mode="sneak-%d" % first, concurrency=1)
+        self.assertEqual({record["state"] for record in records.values()}, {"ok"})
+        self.assertEqual(records[first]["replayed"], {})
+        lane_records = {str(index): record for index, record in records.items()}
+        self.assertEqual(isolation.msp_replayed(plan, 0, lane_records), {})
+        self.assertEqual(
+            sh(["git", "show", trees[0]["branch"] + ":iface.txt"], self.repo),
+            "work by lane %d" % lane_named(plan, "i"),
+        )
+
+    def the_sandbox_profile_quotes_each_path_and_refuses_a_newline(self):
+        profile = isolation.sandbox_profile(('/runs/a "b"\\c',))
+        self.assertEqual(
+            profile.splitlines(),
+            [
+                "(version 1)",
+                "(allow default)",
+                "(deny file-write*)",
+                '(allow file-write* (subpath "/runs/a \\"b\\"\\\\c") (literal "/dev/null") '
+                '(literal "/dev/tty") (regex #"^/dev/fd/"))',
+            ],
+        )
+        with self.assertRaises(run.ConfigError) as refused:
+            isolation.refuse_unquotable(("/runs/a\nb",))
+        self.assertIn("newline", str(refused.exception))
 
 
 def load_tests(loader, tests, pattern):
@@ -2783,6 +2859,7 @@ def load_tests(loader, tests, pattern):
         HouseFormatRoundThree,
         HouseFormatRoundFour,
         Sessions,
+        Clones,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite

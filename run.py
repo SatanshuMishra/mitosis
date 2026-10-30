@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 
 import core
+import isolation
 import mutants
 import outcomes
 import referee
@@ -713,27 +714,36 @@ def check_identity(repo):
             )
 
 
-def _still_written(plan, lane, tree):
+def _land(plan, lane, tree, record, run_dir):
     write_set = plan["briefs"][lane]["write_set"]
-    return bool(write_set) and bool(
-        git_run(["status", "--porcelain", "--", *write_set], tree["path"]).stdout.strip()
-    )
-
-
-def _land(plan, lane, tree):
+    clone = isolation.lane_folders(run_dir, lane)["clone"]
     try:
+        landing = isolation.read_lane(clone, tree["path"], record["start"], write_set)
+    except (GitError, OSError) as error:
+        return None, "mitosis could not land the Lane from its clone %s: %s" % (clone, error), None
+    try:
+        isolation.place_entries(tree["path"], landing["entries"])
         commit = commit_paths(
-            tree["path"],
-            plan["briefs"][lane]["write_set"],
-            _landing_message(plan, lane, tree),
-            tree["branch"],
+            tree["path"], write_set, _landing_message(plan, lane, tree), tree["branch"]
         )
     except GitError as error:
-        write_set = plan["briefs"][lane]["write_set"]
         if write_set:
             git_run(["reset", "-q", "--", *write_set], tree["path"])
-        return None, "%s: %s" % (LANE_COMMIT_FAILED, error)
-    return commit, None
+        return None, "%s: %s" % (LANE_COMMIT_FAILED, error), None
+    except OSError as error:
+        return None, "%s: %s" % (LANE_COMMIT_FAILED, error), None
+    try:
+        replayed = isolation.replay(tree["path"], landing, commit)
+    except (GitError, OSError) as error:
+        return None, "mitosis landed %s but could not replay the Lane's other writes: %s" % (
+            commit,
+            error,
+        ), None
+    return commit, None, {
+        "replayed": replayed,
+        "unreplayed": landing["unreplayed"],
+        "ignored": landing["ignored"],
+    }
 
 
 def _verdict(lane, tree, started, merged, out, err, code, timed_out, session_id):
@@ -828,11 +838,28 @@ def _suspects(batch, held, path):
     return claimants or list(batch)
 
 
-def _landed(plan, lane, tree, record):
-    commit, reason = _land(plan, lane, tree)
+def _landed(plan, lane, tree, record, run_dir):
+    commit, reason, outside = _land(plan, lane, tree, record, run_dir)
     if reason is not None:
         return {**record, "state": "failed", "reason": reason}
-    return {**record, "commit": commit}
+    isolation.remove_lane_folders(isolation.lane_folders(run_dir, lane))
+    return {**record, **outside, "commit": commit}
+
+
+def _land_batch(plan, msp, tree, batch, held, records, run_dir, settle):
+    lanes = plan["lanes"]
+    landed = {}
+    for lane in sorted(batch):
+        done = _landed(plan, lane, tree, held[lane], run_dir)
+        if done["state"] == "ok":
+            claimed = plan["briefs"][lane]["write_set"]
+            landed = {key: isolation.released(value, claimed) for key, value in landed.items()}
+            for index, record in sorted(records.items()):
+                kept = isolation.released(record, claimed)
+                if lanes[index]["msp"] == msp and kept is not record:
+                    records = settle(records, index, kept)
+        landed = {**landed, lane: done}
+    return landed, records
 
 
 def dispatch(
@@ -848,6 +875,7 @@ def dispatch(
     on_lane=None,
     observer=None,
     env=None,
+    sandbox=None,
 ):
     if timeout is None:
         raise ConfigError("a per-Lane timeout is required; mitosis has no default")
@@ -867,7 +895,7 @@ def dispatch(
         for index, record in (prior or {}).items()
         if isinstance(record, dict)
         and record.get("state") == LANE_HELD
-        and _still_written(plan, int(index), tree_of[lanes[int(index)]["msp"]])
+        and isolation.clone_ready(isolation.lane_folders(run_dir, int(index)), record)
     }
     ordered = [int(i) for i in plan.get("lane_order") or range(len(lanes))]
     every = ordered + [i for i in range(len(lanes)) if i not in ordered]
@@ -887,7 +915,9 @@ def dispatch(
             busy = {lanes[entry[0]]["msp"] for entry in running.values()}
             for msp in sorted({lanes[lane]["msp"] for lane in held} - busy):
                 batch = [lane for lane in held if lanes[lane]["msp"] == msp]
-                landed = {lane: _landed(plan, lane, tree_of[msp], held[lane]) for lane in batch}
+                landed, records = _land_batch(
+                    plan, msp, tree_of[msp], batch, held, records, run_dir, settle
+                )
                 foreign = _foreign_writes(plan, msp, tree_of[msp], batch, records)
                 for lane in batch:
                     records = settle(
@@ -974,12 +1004,39 @@ def dispatch(
                 out = os.path.join(lane_dir, "%d.out" % lane)
                 err = os.path.join(lane_dir, "%d.err" % lane)
                 session = core.new_session_id()
+                folders = isolation.lane_folders(run_dir, lane)
                 argv = build_argv(
-                    command, _worker_values(plan, lane, tree, models, run_dir, session)
+                    command,
+                    _worker_values(
+                        plan, lane, {**tree, "path": folders["clone"]}, models, run_dir, session
+                    ),
                 )
                 carried = core.carried_session(argv, session)
-                future = pool.submit(run_command, argv, tree["path"], timeout, out, err, env)
-                running = {**running, future: (lane, now(), merged, out, err, carried)}
+                try:
+                    start = isolation.cut_clone(tree, folders)
+                    launched, launch_env = isolation.worker_launch(argv, folders, sandbox, env)
+                except (GitError, OSError) as error:
+                    records = settle(
+                        records,
+                        lane,
+                        lane_record(
+                            lane,
+                            msp,
+                            "failed",
+                            reason="mitosis could not prepare the Lane's clone %s: %s"
+                            % (folders["clone"], error),
+                            merged=merged,
+                        ),
+                    )
+                    progressed = True
+                    continue
+                future = pool.submit(
+                    run_command, launched, folders["clone"], timeout, out, err, launch_env
+                )
+                running = {
+                    **running,
+                    future: (lane, now(), merged, out, err, carried, folders["clone"], start),
+                }
                 notify(
                     observer,
                     "lane-dispatched",
@@ -990,13 +1047,15 @@ def dispatch(
             if running:
                 done, _ = wait(list(running), return_when=FIRST_COMPLETED)
                 for future in done:
-                    lane, started, merged, out, err, session = running[future]
+                    lane, started, merged, out, err, session, clone, start = running[future]
                     running = {f: v for f, v in running.items() if f is not future}
                     code, timed_out = future.result()
                     tree = tree_of[lanes[lane]["msp"]]
-                    judged = _verdict(
-                        lane, tree, started, merged, out, err, code, timed_out, session
-                    )
+                    judged = {
+                        **_verdict(lane, tree, started, merged, out, err, code, timed_out, session),
+                        "clone": clone,
+                        "start": start,
+                    }
                     if judged["state"] == "ok":
                         held = {**held, lane: judged}
                         if on_lane is not None:
@@ -1786,7 +1845,18 @@ def _remove_gate_folders(log_dir):
 
 
 def gate(
-    plan, msp, tree, base, command, log_dir, timeout=None, env=None, repo=None, setup=None, head=None
+    plan,
+    msp,
+    tree,
+    base,
+    command,
+    log_dir,
+    timeout=None,
+    env=None,
+    repo=None,
+    setup=None,
+    head=None,
+    replayed=None,
 ):
     commit = commit_before_gate(plan, msp, tree) if head is None else head
     properties = msp_properties(
@@ -1800,7 +1870,20 @@ def gate(
     folder = tempfile.mkdtemp(prefix=GATE_FOLDER_PREFIX, dir=log_dir)
     try:
         result, written = _gate_runs(
-            plan, msp, tree, base, command, log_dir, timeout, env, commit, properties, folder, repo, setup
+            plan,
+            msp,
+            tree,
+            base,
+            command,
+            log_dir,
+            timeout,
+            env,
+            commit,
+            properties,
+            folder,
+            repo,
+            setup,
+            replayed or {},
         )
     finally:
         shutil.rmtree(folder, ignore_errors=True)
@@ -1823,12 +1906,25 @@ def _setup_unrun(properties, written):
 
 
 def _gate_runs(
-    plan, msp, tree, base, command, log_dir, timeout, env, commit, properties, folder, repo, setup
+    plan,
+    msp,
+    tree,
+    base,
+    command,
+    log_dir,
+    timeout,
+    env,
+    commit,
+    properties,
+    folder,
+    repo,
+    setup,
+    replayed,
 ):
     locked = tuple(plan.get("locked") or ())
     implementation = implementation_paths(plan, msp)
     runnable = [index for index, entry in enumerate(properties) if entry["outcome"] is None]
-    with_work_tree = _expanded(tree, commit, base)
+    with_work_tree = isolation.held_tree(_expanded(tree, commit, base), replayed)
     without_work_tree = _without_work(with_work_tree, _expanded(tree, base, base), implementation)
     reset_gate_folder(tree, folder, with_work_tree, (), locked)
     top = frozenset(_parts(path)[0] for path in with_work_tree)
@@ -3029,7 +3125,7 @@ def _producer_block(plan, msp, state, producers):
     return None
 
 
-def _gate_stage(plan, msp, tree, settings, head):
+def _gate_stage(plan, msp, tree, settings, head, replayed):
     try:
         result = gate(
             plan,
@@ -3043,6 +3139,7 @@ def _gate_stage(plan, msp, tree, settings, head):
             settings.get("repo"),
             settings.get("gate_setup"),
             head,
+            replayed,
         )
     except (OSError, GitError, GateSetupError, subprocess.SubprocessError) as error:
         return {"gate": None, "gate_error": str(error)}
@@ -3095,7 +3192,24 @@ def _producer_heads(tree, producers, trees):
     return tuple(commit for commit in found if commit is not None)
 
 
-def _reconcile_stage(plan, msp, tree, producers, trees, settings, head=None):
+def _with_unreplayed(plan, findings, unreplayed):
+    if not unreplayed:
+        return findings
+    marked = _referee_marked(unreplayed, tuple(plan.get("locked") or ()))
+    reported = (
+        {"undeclared": sorted(set(findings["undeclared"]) | set(unreplayed))}
+        if "undeclared" in findings
+        else {}
+    )
+    return {
+        **findings,
+        **reported,
+        "referee": sorted(set(findings["referee"]) | marked),
+        "fatal": bool(findings["fatal"] or marked),
+    }
+
+
+def _reconcile_stage(plan, msp, tree, producers, trees, settings, head=None, unreplayed=()):
     try:
         findings = reconcile(
             plan,
@@ -3112,10 +3226,10 @@ def _reconcile_stage(plan, msp, tree, producers, trees, settings, head=None):
             "reason": "mitosis could not judge the referee paths in the commits of %s, so the gate "
             "did not run and the MSP is held back: %s" % (tree["branch"], error),
         }
-    return {"reconcile": findings}
+    return {"reconcile": _with_unreplayed(plan, findings, unreplayed)}
 
 
-def _committed_reconcile(plan, tree, settings, uncommitted, head=None):
+def _committed_reconcile(plan, tree, settings, uncommitted, head=None, unreplayed=()):
     try:
         written = referee_writes(
             plan, tree["path"], _judged_head(tree, head), settings["base_commit"]
@@ -3128,14 +3242,20 @@ def _committed_reconcile(plan, tree, settings, uncommitted, head=None):
             "referee paths they hold, so the gate did not run and the MSP is held back: %s"
             % (tree["branch"], uncommitted, error),
         }
-    return {"reconcile": {"referee": written, "fatal": bool(written)}}
+    return {
+        "reconcile": _with_unreplayed(
+            plan, {"referee": written, "fatal": bool(written)}, unreplayed
+        )
+    }
 
 
-def _referee_stage(plan, msp, tree, producers, trees, settings, uncommitted=None, head=None):
+def _referee_stage(
+    plan, msp, tree, producers, trees, settings, uncommitted=None, head=None, unreplayed=()
+):
     reconciled = (
-        _reconcile_stage(plan, msp, tree, producers, trees, settings, head)
+        _reconcile_stage(plan, msp, tree, producers, trees, settings, head, unreplayed)
         if uncommitted is None
-        else _committed_reconcile(plan, tree, settings, uncommitted, head)
+        else _committed_reconcile(plan, tree, settings, uncommitted, head, unreplayed)
     )
     if reconciled.get("state") == MSP_GATE_FAILED:
         return {**reconciled, "gate": None, "gate_error": reconciled["reason"]}
@@ -3156,15 +3276,17 @@ def _referee_stage(plan, msp, tree, producers, trees, settings, uncommitted=None
         if uncommitted is None
         else "; the rest of the work stays uncommitted, because %s" % uncommitted
     )
+    landed = [path for path in written if path not in unreplayed]
     try:
-        revert_implementation(
-            tree["path"],
-            tree["branch"],
-            _judged_head(tree, head),
-            settings["base_commit"],
-            written,
-            "revert(%s): restore the referee paths a Worker wrote" % _label(plan, msp),
-        )
+        if landed:
+            revert_implementation(
+                tree["path"],
+                tree["branch"],
+                _judged_head(tree, head),
+                settings["base_commit"],
+                landed,
+                "revert(%s): restore the referee paths a Worker wrote" % _label(plan, msp),
+            )
     except (GitError, OSError) as error:
         return {
             **reconciled,
@@ -3333,11 +3455,19 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
         ],
     }
     block = _lane_block(plan, msp, state) or _producer_block(plan, msp, state, producers)
+    replayed = isolation.msp_replayed(plan, msp, state["lanes"])
+    unreplayed = isolation.msp_unreplayed(plan, msp, state["lanes"])
+    state = write_state(run_dir, _msp_record(state, msp, replayed=replayed))
     head, commit_error = (None, None) if block is not None else _committed_head(plan, msp, tree)
     if block is None:
-        state = write_state(run_dir, _msp_record(state, msp, ignored=ignored_paths(tree["path"])))
+        ignored = set(ignored_paths(tree["path"])) | set(
+            isolation.msp_ignored(plan, msp, state["lanes"])
+        )
+        state = write_state(run_dir, _msp_record(state, msp, ignored=sorted(ignored)))
     uncommitted = _uncommitted_reason(block, commit_error)
-    held = _referee_stage(plan, msp, tree, producers, trees, settings, uncommitted, head)
+    held = _referee_stage(
+        plan, msp, tree, producers, trees, settings, uncommitted, head, unreplayed
+    )
     if held is not None:
         notify(
             settings.get("observer"),
@@ -3355,7 +3485,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     gated = (
         {"gate": None, "gate_error": commit_error}
         if commit_error is not None
-        else _gate_stage(plan, msp, tree, settings, head)
+        else _gate_stage(plan, msp, tree, settings, head, replayed)
         if judged_now
         else {"gate": reused, "gate_error": None}
     )
@@ -3387,7 +3517,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
         )
     tampered = _gate_referee_writes(gated) if judged_now else []
     reconciled = _with_gate_referee(
-        _reconcile_stage(plan, msp, tree, producers, trees, settings, head), tampered
+        _reconcile_stage(plan, msp, tree, producers, trees, settings, head, unreplayed), tampered
     )
     notify(
         settings.get("observer"),
@@ -3465,6 +3595,8 @@ def execute(
     trajectory=None,
     gate_setup=None,
     base_commit=None,
+    worker_sandbox=False,
+    worker_writes=(),
 ):
     prior = prior_state(run_dir, plan, resume)
     header = carried_header(header, prior)
@@ -3482,6 +3614,12 @@ def execute(
     check_models(plan, worker_command, models)
     if timeout is None:
         raise ConfigError("a per-Lane timeout is required; mitosis has no default")
+    program = isolation.sandbox_program(worker_sandbox)
+    if program is not None:
+        isolation.refuse_unquotable(
+            (os.path.abspath(run_dir), isolation.worker_home(env)) + tuple(worker_writes)
+        )
+    sandbox = None if program is None else {"program": program, "writes": tuple(worker_writes)}
     recorded = (prior or {}).get("lanes") or {}
     if any(
         (recorded.get(str(index)) or {}).get("state") != "ok"
@@ -3522,6 +3660,7 @@ def execute(
             "msps": dict((prior or {}).get("msps") or {}),
             "stacking_exceptions": list((prior or {}).get("stacking_exceptions") or []),
             "merge_danger": merge_danger_pair(header),
+            "sandbox": isolation.sandbox_name(program),
         },
     )
     trees = prepare_worktrees(
@@ -3549,6 +3688,7 @@ def execute(
         on_lane=on_lane,
         observer=observer,
         env=env,
+        sandbox=sandbox,
     )
     notify(
         observer,
