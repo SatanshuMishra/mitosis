@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: parked
-Updated: 2026-10-30T09:02:53.971Z
+Updated: 2026-10-30T09:03:07.786Z
 Next ids: c8 D4 R3 S3
 
 ## Goal
@@ -23,7 +23,7 @@ FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override), p
 
 ## Next step
 
-Run SHIP=1 ~/.mitosis/mitosis/hr-mitosis-isolation/run.zsh --resume --proven-head isolation=2892811b21a934cd6defed09e73bd85cb08bc9bb, confirm origin mitosis/isolation is at 2892811, update #29's body from mitosis's result if it changed, refresh the review comment, and report to the driver.
+The owner merges SatanshuMishra/mitosis#29 (head 2892811, CI green) into feat/hr-mitosis-isolation and says the MSP pull requests merged; that starts Integration: resume_thread, read CHARTER.md, Sync, lighthouse:test on the FEATURE branch, then open the FEATURE PR to main with Auto-fix.
 
 Needs: D3, R1.
 
