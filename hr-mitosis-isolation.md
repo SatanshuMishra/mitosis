@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T00:55:22.268Z
+Updated: 2026-10-30T00:55:31.318Z
 Next ids: c8 D1 R1 S1
 
 ## Goal
@@ -19,7 +19,7 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-Not started.
+Stage 1 starting: main synced at 58f258c, lighthouse readiness ready with nothing open, receipts.config.json already committed so receipts init is skipped.
 
 ## Next step
 
