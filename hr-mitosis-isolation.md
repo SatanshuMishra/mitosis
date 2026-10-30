@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T04:38:13.142Z
+Updated: 2026-10-30T04:38:15.424Z
 Next ids: c8 D2 R3 S2
 
 ## Goal
@@ -23,7 +23,7 @@ FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override: ha
 
 ## Next step
 
-When the validator ends, save its array as review/round-1/isolation.verdicts.json, run pipeline record, verdict and outcome, then diagnose each kind the verdict lists.
+When the diagnoses end, save each last JSON object as review/round-1/isolation.<kind slug>.diagnosis.json, record each with pipeline diagnosis, rerun pipeline verdict, then dispatch a fresh fix agent for the fixable kinds and the advisories (O5), or amend the spec for a requirement-wrong kind.
 
 Needs: D1, R1.
 
