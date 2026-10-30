@@ -107,6 +107,28 @@ EXECUTABLE_MODE = "100755"
 
 REGULAR_MODE = "100644"
 
+UNPINNED_GIT_VARIABLES = frozenset(
+    {
+        "GIT_DIFF_OPTS",
+        "GIT_EXTERNAL_DIFF",
+        "GIT_DIFF_PATH_COUNTER",
+        "GIT_DIFF_PATH_TOTAL",
+        "GIT_LITERAL_PATHSPECS",
+        "GIT_GLOB_PATHSPECS",
+        "GIT_NOGLOB_PATHSPECS",
+        "GIT_ICASE_PATHSPECS",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_ATTR_SOURCE",
+    }
+)
+
 RAW_OBJECTS = {"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": os.devnull}
 
 PINNED_GIT = {
@@ -220,6 +242,13 @@ def _decoded(data):
     return data.decode("utf-8", "surrogateescape")
 
 
+def git_environ(env=None):
+    kept = {
+        name: value for name, value in os.environ.items() if name not in UNPINNED_GIT_VARIABLES
+    }
+    return {**kept, **(env or {})}
+
+
 def _git_once(args, cwd, timeout, raw=False, data=None, env=None):
     index_lock = _index_lock(cwd, args)
     locked_before = index_lock is not None and os.path.exists(index_lock)
@@ -227,7 +256,7 @@ def _git_once(args, cwd, timeout, raw=False, data=None, env=None):
     proc = subprocess.Popen(
         argv,
         cwd=cwd,
-        env=None if env is None else {**os.environ, **env},
+        env=git_environ(env),
         stdin=subprocess.DEVNULL if data is None else subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

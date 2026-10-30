@@ -9,6 +9,7 @@ import signal
 import subprocess
 
 import core
+import run
 import shape
 
 RETURN_KEYS = ("items", "assumptions", "constraints")
@@ -413,6 +414,7 @@ def _tracked(base):
     try:
         completed = subprocess.run(
             ["git", "-C", base, "ls-files", "-z"],
+            env=run.git_environ(),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=GIT_TIMEOUT,
