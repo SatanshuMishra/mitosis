@@ -43,6 +43,8 @@ UNREPORTED_CHECK = 0x40000000
 
 PID_SLACK = 256
 
+SETTLE_ROUNDS = 50
+
 DENIED = 1
 
 
@@ -277,7 +279,7 @@ def _every_pid(listing):
         return None
     room = (ctypes.c_int * (count + PID_SLACK))()
     found = listing(room, ctypes.sizeof(room))
-    if found <= 0:
+    if found <= 0 or found >= len(room):
         return None
     return tuple(pid for pid in room[:found] if pid > 0)
 
@@ -300,10 +302,19 @@ def _sandboxed_pids(confinement):
     own = os.getpid()
     if not os.path.isfile(confinement["mark"]) or _denied(check, own, confinement["mark"]) != 0:
         return None
-    every = _every_pid(listing)
-    if every is None:
-        return None
-    return tuple(pid for pid in every if pid != own and _inside(check, pid, confinement))
+    checked = frozenset((own,))
+    for _ in range(SETTLE_ROUNDS):
+        listed = _every_pid(listing)
+        if listed is None:
+            return None
+        born = tuple(pid for pid in listed if pid not in checked)
+        if not born:
+            return ()
+        found = tuple(pid for pid in born if _inside(check, pid, confinement))
+        if found:
+            return found
+        checked = checked | frozenset(born)
+    return None
 
 
 def _group_left(group):
