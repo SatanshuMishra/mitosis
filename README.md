@@ -3,8 +3,9 @@
 mitosis takes work that one agent would grind through serially, splits it so
 several agents run on it at once, and produces pull requests a human can
 merge without discovering that the parallelism broke something. It validates
-the input, schedules the split, prepares an isolated worktree and branch per
-piece, dispatches a Worker into each, gates the result, reconciles what was
+the input, schedules the split, prepares a worktree and branch per piece,
+builds each Lane in its own clone of that branch, lands only the Lane's
+write-set, gates the result, reconciles what was
 actually written against the git log, and opens one pull request per
 piece, stacked on its predecessor where one exists, or pushes each piece's
 branch and hands back its pull request's title and body for the caller to
@@ -113,7 +114,52 @@ python3 mitosis.py \
 ```
 
 Run `python3 mitosis.py --help` for every flag; this is one path through it,
-not the full surface.
+not the full surface. These flags shape how Workers are confined and how the
+gate judges a property:
+
+| Flag | What it does |
+|---|---|
+| `--worker-sandbox` | runs every Worker under sandbox-exec, refusing file writes outside its clone, a private temp folder, its session transcript folder, /dev/null, /dev/tty, /dev/fd and each `--worker-write` path; a host without sandbox-exec refuses the run with exit 3 before any Worker starts |
+| `--worker-write PATH` | one more path a sandboxed Worker may write under; repeatable |
+| `--suite-command TEMPLATE` | the project's full suite, run on each mutant every acceptance test of a property survives; exit 1 kills that mutant, and a property whose every survivor is killed is covered-elsewhere instead of `weak` |
+| `--gate-classes PATH` | a JSON list of `{test, class, reason}` objects classing a property `not-applicable`, covered-elsewhere or `removed`, judged without a run and kept out of the plan id |
+
+## Workers build in their own clones
+
+Each Lane's Worker builds in its own clone of its MSP branch, under the run
+directory's `clones` folder, with its own git directory and object store and
+no remote. The MSP worktree is mitosis's own checkout, where no Worker runs,
+so no Worker can reach the refs, settings or objects mitosis reads. When the
+Worker exits, mitosis reads the Lane's write-set from the clone's files,
+without running git in the clone, writes those paths into its checkout and
+commits them as the Lane's landing; a write-set path behind a symbolic-link
+folder fails the Lane. A file changed outside the write-set is replayed into
+mitosis's checkout as an uncommitted change and judged by reconcile alone:
+an undeclared write is kept and exits 6, and a referee write is reverted and
+exits 9. The gate and every acceptance run see such a path as it stood when
+the Lane started, so an uncommitted helper never makes a test pass. A Lane
+does not see a sibling's uncommitted writes.
+
+Without `--worker-sandbox` the clone keeps git state apart, but a Worker can
+still write any path the caller's account can; with it, the JSON result's
+`sandbox` reads sandbox-exec instead of `off`. Every git call mitosis makes
+drops the environment variables that shape a diff, widen a pathspec, locate
+another repository or point at other objects.
+
+## The check-author lock stage
+
+A Step with `"role": "check-author"` writes the locked acceptance checks and
+builds nothing. It never becomes a Lane, an MSP or a pull request, and its
+name leaves every other Step's `after` list. When the feature branch lacks a
+`- Locked:` path, the check-author runs before every Lane, in its own clone;
+mitosis lands only the locked paths, requires each other Step's acceptance
+test to exit 1 at that tree, then commits the locked files on the feature
+branch as `test: lock the acceptance checks` and builds every MSP from that
+commit. The commit never touches a checkout that has the feature branch
+checked out. Its record is the JSON result's `lock` object, apart from the
+numbered Lanes; a check-author that fails blocks every Lane. A feature branch
+that already holds every locked path runs no check-author, so checks locked
+by hand keep working.
 
 ## Holding and resuming a run
 
@@ -133,7 +179,7 @@ differs, or an MSP with no recorded gate result, is gated as before; a
 malformed value or a label the plan does not hold exits 2 before anything is
 built.
 
-A gate that is interrupted leaves the Worker's worktree as it was, because
+A gate that is interrupted leaves the MSP's worktree as it was, because
 the gate never runs there; the next gate removes the gate folder left behind.
 
 ## The referee and the gate
@@ -173,8 +219,31 @@ whose gate is `weak`, `inert` or `inconclusive` ends `gate-failed`: its work
 is committed on its branch and never pushed, so no pull request opens on an
 unproven property.
 
+The with-work run of each property records, through a standard-library
+tracer first on `PYTHONPATH`, the lines it executed, and the gate samples its
+mutants only from added lines executed inside a function and added
+assignments an executed function reads. Each property in the JSON result
+carries two fields. mutation is killed when a mutant failed it, `weak`
+when none did, `not-applicable` when the test loads none of the Step's
+Python files or the Step added no code file for a mutant to change, and
+covered-elsewhere when `--suite-command` failed on every mutant the
+property survived, its `killers` naming the failing tests. `coverage` is
+`traced`, or `untraced` when the run wrote no trace, as for JavaScript,
+TypeScript and shell, and the gate then samples every added line. A test that
+loads the Step's files but executes no candidate line also falls back to
+every added line, so an import-only test cannot pass unseen.
+
+`--gate-classes PATH` excuses a property without editing the Steps: each
+`{test, class, reason}` entry names a property as `<file>::<name>` and
+classes it `not-applicable`, covered-elsewhere or `removed`, with a
+one-line reason. A classed property is judged by its class without a run.
+The classes stay out of the plan id and are stored in the run state with
+their SHA-256, so `--resume` keeps every built Lane and each unclassed
+property reuses the verdict recorded at the MSP's unchanged commit. An entry
+naming no property of the plan is refused.
+
 The gate, every mutant run and every acceptance run execute in a clean
-checkout of the MSP's committed tree, a folder outside the Worker's worktree
+checkout of the MSP's committed tree, a folder outside the MSP's worktree
 written from git's tree objects and passed as `{worktree}`. The folder is
 reset to its target tree before every run and removed after the gate. It is
 not a git repository and holds the commit's raw blob bytes. Files the commit

@@ -3,6 +3,51 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.9.0 - 2026-10-29
+
+Each Worker builds in its own clone, the acceptance checks are locked before
+the build, and mutants come only from the lines an acceptance test runs.
+
+- Each Lane's Worker builds in its own clone of its MSP branch under the run
+  directory's `clones` folder, with its own git directory and object store
+  and no remote. The MSP worktree is mitosis's own checkout, where no Worker
+  runs. When the Worker exits, mitosis reads the Lane's write-set from the
+  clone's files without running git there and lands only those paths in one
+  commit. A write outside the write-set is replayed into mitosis's checkout
+  for reconcile alone, so an undeclared write still exits 6 and a referee
+  write is still reverted with exit 9, and the gate sees each such path as it
+  stood when the Lane started.
+- `--worker-sandbox` runs every Worker under sandbox-exec with a profile that
+  refuses file writes outside its clone, a private temp folder, its session
+  transcript folder, /dev/null, /dev/tty, /dev/fd and each `--worker-write`
+  path. A host without sandbox-exec refuses the run with exit 3 before any
+  Worker starts, and the JSON result's `sandbox` names sandbox-exec or
+  `off`.
+- Every git call drops the environment variables that shape a diff, widen a
+  pathspec, locate another repository or point at other objects, so nothing
+  the caller's shell sets changes what mitosis reads.
+- A Step with role check-author is the lock stage. It never becomes a Lane,
+  an MSP or a pull request; when the feature branch lacks a locked path, it
+  runs first in its own clone, each other Step's acceptance test must exit 1
+  at the tree it wrote, and mitosis commits the locked paths on the feature
+  branch as `test: lock the acceptance checks` before any Lane is built. Its
+  record is the JSON result's `lock` object. A feature branch that already
+  holds every locked path runs no check-author.
+- The gate samples its mutants only from added lines the with-work acceptance
+  run executed, traced by a standard-library tracer. Each property's
+  mutation is killed, `weak`, `not-applicable` when the test loads none
+  of the Step's files or the Step added no code file for a mutant to change, or
+  covered-elsewhere, and its `coverage` is `traced` or `untraced` when no
+  trace was written, as for JavaScript, TypeScript and shell.
+- `--suite-command` runs the project's full suite on each mutant every
+  acceptance test of a property survives; when the suite fails on each one,
+  the property is covered-elsewhere and names the failing tests in
+  `killers` instead of `weak`.
+- `--gate-classes` names a JSON list of `{test, class, reason}` objects
+  classing a property `not-applicable`, covered-elsewhere or `removed`. The
+  classes stay out of the plan id, so `--resume` keeps every built Lane and
+  each unclassed property reuses its verdict recorded at the same commit.
+
 ## 0.8.0 - 2026-10-28
 
 The files that judge the work are a locked referee no Worker may write, and
