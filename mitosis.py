@@ -610,9 +610,9 @@ def check_templates(args):
         check_template(name, template)
 
 
-def check_worker_writes(args, run_dir):
+def check_worker_writes(args, run_dir, repo):
     try:
-        isolation.refuse_overlapping_writes(run_dir, args.worker_write)
+        isolation.refuse_overlapping_writes(run_dir, args.worker_write, repo)
     except run.ConfigError as error:
         raise Refusal(str(error))
 
@@ -2161,7 +2161,7 @@ def run_pipeline(args):
     charter = check_charter(args.charter)
     graph = load_graph(args.graph, root)
     run_dir = input_run_dir(args, root)
-    check_worker_writes(args, run_dir)
+    check_worker_writes(args, run_dir, repo)
     recorder = metrics.opened(args, repo, cwd, run_dir, models, achieved_parallelism)
     recorded = argparse.Namespace(**{**vars(args), "recorder": recorder})
     try:

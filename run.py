@@ -4470,7 +4470,7 @@ def execute(
         check_template("gate-setup", gate_setup)
     if suite_command is not None:
         check_template("suite", suite_command)
-    checked_writes = isolation.refuse_overlapping_writes(run_dir, worker_writes)
+    checked_writes = isolation.refuse_overlapping_writes(run_dir, worker_writes, repo, trees_root)
     if not no_push and header is None:
         raise ConfigError(
             "a run allowed to push needs a pull-request header holding its type, subject and "

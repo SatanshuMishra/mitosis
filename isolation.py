@@ -168,18 +168,59 @@ def _identity_parts(path):
     return found
 
 
-def _overlapping(first, second):
-    shorter = min(len(first), len(second))
-    return first[:shorter] == second[:shorter]
+def _git_directory(repo):
+    return os.path.realpath(os.path.join(repo, run.git(["rev-parse", "--git-common-dir"], repo)))
 
 
-def refuse_overlapping_writes(run_dir, writes):
-    folder = _identity_parts(run_dir)
+def protected_roots(run_dir, repo=None, trees_root=None):
+    return (
+        (("the run folder", run_dir, "mitosis's own state, logs or gate folders"),)
+        + (
+            ()
+            if repo is None
+            else (
+                ("the repository", repo, "the working tree mitosis runs git in"),
+                (
+                    "the repository's git directory",
+                    _git_directory(repo),
+                    "the repository's refs, objects, hooks or config",
+                ),
+            )
+        )
+        + (
+            ()
+            if trees_root is None
+            else (
+                (
+                    "the mitosis checkout folder",
+                    os.path.abspath(trees_root),
+                    "the MSP worktrees mitosis lands and gates",
+                ),
+            )
+        )
+    )
+
+
+def _overlapped_root(roots, path):
+    parts = _identity_parts(path)
+    holding = sorted(
+        (root for root in roots if parts[: len(root[0])] == root[0]), key=lambda root: -len(root[0])
+    )
+    held = tuple(root for root in roots if root[0][: len(parts)] == parts)
+    return (tuple(holding) + held + (None,))[0]
+
+
+def refuse_overlapping_writes(run_dir, writes, repo=None, trees_root=None):
+    roots = tuple(
+        (_identity_parts(path), name, path, reason)
+        for name, path, reason in protected_roots(run_dir, repo, trees_root)
+    )
     for path in writes:
-        if _overlapping(folder, _identity_parts(path)):
+        overlapped = _overlapped_root(roots, path)
+        if overlapped is not None:
             raise run.OverlappingWrite(
-                "--worker-write %s overlaps the run folder %s; sandboxed code may never write "
-                "mitosis's own state, logs or gate folders, so no Worker was started" % (path, run_dir)
+                "--worker-write %s overlaps %s %s; sandboxed code may never write %s, so no "
+                "Worker was started" % ((path,) + overlapped[1:])
             )
     return tuple(os.path.realpath(path) for path in writes)
 
