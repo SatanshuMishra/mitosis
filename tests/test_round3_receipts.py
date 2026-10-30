@@ -134,6 +134,8 @@ class Receipts(unittest.TestCase):
         self.assertEqual(writes, (real,))
         os.remove(link)
         os.symlink(self.scratch.run_dir, link)
+        os.rename(real, real + "-moved")
+        os.symlink(self.scratch.run_dir, real)
         checkout = os.path.join(self.scratch.tmp, "checkout")
         os.makedirs(checkout)
         confinement = isolation.gate_confinement(
