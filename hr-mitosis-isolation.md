@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T06:26:06.894Z
+Updated: 2026-10-30T06:44:01.635Z
 Next ids: c8 D2 R3 S2
 
 ## Goal
@@ -19,7 +19,7 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override: hand-dispatched check-author), pushed. MSP branch mitosis/isolation (worktree ~/.mitosis/runs/mitosis/hr-mitosis-isolation/trees/isolation) is committed, not pushed; mitosis 0.8.0's gate judged 3 properties weak, all classed in weak-proof-classes.md, so ship passes --proven-head. Review round 2 (fix diff f6cae57..b8254af) is green (review/round-2/isolation.verdict.json): round 1 blockers fixed, advisories C1 docs and S1 write through symlink (reproduced sandbox escape, capped at advisory: defect P8) confirmed; their fixes are on mitosis/isolation at head cacce46 (fix-check clean, locked files unchanged), with the suite and a security-reviewer on b8254af..cacce46 running in review/advisory/. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md (overrides for the final report). Five assumptions are in review/isolation.assumptions.txt.
+FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override: hand-dispatched check-author), pushed. MSP branch mitosis/isolation (worktree ~/.mitosis/runs/mitosis/hr-mitosis-isolation/trees/isolation) is committed, not pushed; mitosis 0.8.0's gate judged 3 properties weak, all classed in weak-proof-classes.md, so ship passes --proven-head. Review round 2 (fix diff f6cae57..b8254af) is green (review/round-2/isolation.verdict.json): round 1 blockers fixed, advisories C1 docs and S1 write through symlink (reproduced sandbox escape, capped at advisory: defect P8) confirmed; their fixes are on mitosis/isolation at head cacce46 (fix-check clean, locked files unchanged), with the suite and a security-reviewer on b8254af..cacce46 running in review/advisory/. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md (overrides for the final report). Four assumptions are in review/isolation.assumptions.txt.
 
 ## Next step
 
