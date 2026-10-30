@@ -7,6 +7,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
+import isolation
 import run
 from test_mutant_coverage import ADDS, CORRECT_ADD, TEST_FILE, Scratch, step, summary_of, tail
 from test_round1_receipts import EXACT_TEST
@@ -123,6 +124,28 @@ class Receipts(unittest.TestCase):
                 self.assertEqual(str(raised.exception), refusal(given, self.scratch.run_dir))
                 self.assertEqual(self.scratch.dispatched(), [])
 
+    def a_retargeted_link_never_widens_a_checked_worker_write(self):
+        real = os.path.join(self.scratch.tmp, "granted", "real")
+        os.makedirs(real)
+        link = os.path.join(self.scratch.tmp, "granted", "link")
+        os.symlink(real, link)
+        os.makedirs(self.scratch.run_dir)
+        writes = isolation.refuse_overlapping_writes(self.scratch.run_dir, (link,))
+        self.assertEqual(writes, (real,))
+        os.remove(link)
+        os.symlink(self.scratch.run_dir, link)
+        checkout = os.path.join(self.scratch.tmp, "checkout")
+        os.makedirs(checkout)
+        confinement = isolation.gate_confinement(
+            {"program": isolation.SANDBOX_PROGRAM, "writes": writes},
+            os.path.join(self.scratch.tmp, "gate-log"),
+            checkout,
+        )
+        with open(confinement["profile"], encoding="utf-8") as handle:
+            profile = handle.read()
+        self.assertIn('(subpath "%s")' % real, profile)
+        self.assertNotIn('(subpath "%s")' % self.scratch.run_dir, profile)
+
     def _disjoint(self):
         sibling = self.scratch.run_dir + "-sibling"
         os.makedirs(sibling)
@@ -158,6 +181,7 @@ def load_tests(loader, standard, pattern):
                 "a_fresh_run_refuses_a_worker_write_that_overlaps_the_run_folder",
                 "a_resumed_run_refuses_a_worker_write_that_overlaps_the_run_folder",
                 "the_resumed_plan_refuses_a_stored_worker_write_that_overlaps_the_run_folder",
+                "a_retargeted_link_never_widens_a_checked_worker_write",
                 "a_fresh_run_accepts_a_disjoint_worker_write",
                 "a_resumed_run_accepts_a_disjoint_worker_write",
             ),
