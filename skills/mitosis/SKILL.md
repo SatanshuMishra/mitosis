@@ -52,8 +52,8 @@ quotes or newlines lands as one argument and is never reinterpreted by a shell.
 | `--pr-type` `--pr-scope` `--pr-subject` `--pr-why` `--pr-door` `--pr-blast-radius` | nothing; they write every title and body | none |
 | `--decompose-command` | the structure pass that turns a document into unbriefed Steps | prompt, model, document |
 | `--brief-command` | one Worker per unbriefed Step, writing its task | prompt, model, step, document |
-| `--worker-sandbox` | each Worker, gate and lock-stage run under sandbox-exec, writing only its clone or checkout, temp, transcript and `--worker-write` paths; exit 3 without it; exit 14 if a leftover process will not end | none |
-| `--worker-write` | nothing; one more path a sandboxed run may write; repeatable; exit 3 if it overlaps the run directory | none |
+| `--worker-sandbox` | each Worker, gate and lock-stage run under sandbox-exec, writing only its clone or checkout, temp, transcript and `--worker-write` paths; exit 3 without it; exit 14 if a leftover process lingers | none |
+| `--worker-write` | nothing; one more sandbox-writable path; repeatable; exit 3 if it overlaps the run directory, repository or its git directory | none |
 | `--suite-command` | the full suite unmutated, then per surviving mutant; exit 1 kills only after an unmutated pass, else `weak` | worktree, report |
 | `--gate-classes` | nothing; a JSON `{test, class, reason}` list classing properties | none |
 
@@ -121,7 +121,7 @@ tell them apart. Pass one, never both.
 ### Items: hand-written Steps
 
 `--items` takes a JSON array. Each Step is one entry with the five required
-fields and any of the optional ones; --help lists them.
+fields and any optional ones; --help lists them.
 Two Steps that build a validator and then its command-line flag:
 
 ```json
@@ -197,7 +197,7 @@ can read its split before any brief is bought.
 two fields that join its distant parts, `after` and `contract_group`, cannot
 be seen from one section. The stage needs `--decompose-command`, and its
 prompt is large, so let it arrive on stdin. No Step returned here carries a
-`task`; nothing is briefed yet:
+`task` yet:
 
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --spec docs/specs/search.md --plan-only \

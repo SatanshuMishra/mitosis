@@ -428,7 +428,9 @@ FLAG_SPECS = {
         "action": "append",
         "default": [],
         "help": "one more path a sandboxed Worker, gate run or lock-stage check may write "
-        "under, such as one a --gate-setup needs; repeatable",
+        "under, such as one a --gate-setup needs; repeatable; a path that is, holds or lies "
+        "inside the run directory, the repository or its git directory refuses the run with "
+        "exit 3",
     },
     "--version": {"action": "version", "version": core.__version__},
     "--help": {"action": "help", "help": "show this message and exit"},

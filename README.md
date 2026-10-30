@@ -120,7 +120,7 @@ gate judges a property:
 | Flag | What it does |
 |---|---|
 | `--worker-sandbox` | runs every Worker under sandbox-exec, refusing file writes outside its clone, a private temp folder, its session transcript folder, /dev/null, /dev/tty, /dev/fd and each `--worker-write` path; it also runs the gate's setup, acceptance, mutant and suite runs and the lock stage's checks under sandbox-exec, refusing writes outside their clean checkout, a private temp folder and each `--worker-write` path, so a `--gate-setup` that needs another writable path names it with `--worker-write`; a host without sandbox-exec refuses the run with exit 3 before any Worker starts |
-| `--worker-write PATH` | one more path a sandboxed Worker, gate run or lock-stage check may write under; repeatable |
+| `--worker-write PATH` | one more path a sandboxed Worker, gate run or lock-stage check may write under; repeatable; a path that is, holds or lies inside the run directory, the repository or its git directory refuses the run with exit 3 |
 | `--suite-command TEMPLATE` | the project's full suite, run once with no mutant and then on each mutant every acceptance test of a property survives; exit 1 kills that mutant only when the run with no mutant passed, else the property stays `weak` with that reason, and a property whose every survivor is killed is covered-elsewhere instead of `weak` |
 | `--gate-classes PATH` | a JSON list of `{test, class, reason}` objects classing a property `not-applicable`, covered-elsewhere or `removed`, judged without a run and kept out of the plan id |
 
@@ -154,9 +154,12 @@ holding the line traces and suite reports, and each `--worker-write` path; a
 grant, and no sandboxed command may rename, remove or replace the clone,
 checkout, temp or transcript folder it writes into, only fill it, so a
 symbolic link it leaves never redirects a later write by mitosis. A
-`--worker-write` path that is, holds or lies inside the run directory,
-compared by resolved real path, refuses the run with exit 3 before any Worker
-or model call. When a Worker, gate or lock-stage command exits, mitosis ends
+`--worker-write` path that is, holds or lies inside the run directory, the
+repository's working tree, its git directory as `git rev-parse
+--git-common-dir` reports it (the main checkout's, for a linked worktree), or
+a folder mitosis places MSP worktrees in, compared by resolved real path,
+refuses the run with exit 3 before any Worker or model call, naming the one it
+overlaps. When a Worker, gate or lock-stage command exits, mitosis ends
 its process group and, under `--worker-sandbox`, every process left in that
 run's sandbox before reading anything the run could change; a process it
 cannot end within 10 seconds stops the run with exit 14. Every git call mitosis makes

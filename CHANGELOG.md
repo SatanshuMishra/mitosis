@@ -29,8 +29,11 @@ the build, and mutants come only from the lines an acceptance test runs.
   that needs another writable path names it with `--worker-write`. mitosis's
   logs and state stay outside every write grant, and no sandboxed command may
   rename, remove or replace a folder it writes into. A `--worker-write` path
-  that is, holds or lies inside the run directory, compared by resolved real
-  path, refuses the run with exit 3 before any Worker starts. A host without
+  that is, holds or lies inside the run directory, the repository's working
+  tree, its git directory (`git rev-parse --git-common-dir`, so a linked
+  worktree's shared one) or a folder mitosis places MSP worktrees in, compared
+  by resolved real path, refuses the run with exit 3 before any Worker starts,
+  naming the one it overlaps. A host without
   sandbox-exec refuses the run with exit 3 before any Worker starts, and the
   JSON result's `sandbox` names sandbox-exec or `off`. When a Worker, gate or
   lock-stage command exits, mitosis ends its process group and every process
