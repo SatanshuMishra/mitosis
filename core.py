@@ -9,7 +9,7 @@ import uuid
 
 import referee
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 PLAN_KEYS = (
     "version",
@@ -946,18 +946,8 @@ def estimate_tokens(items, steps, sizes, packs, cap=CONTEXT_CAP, shared=(), earl
     )
 
 
-def session_batches(lane, estimate, limit):
-    batches = ()
-    current = ()
-    for index in lane:
-        grown = current + (index,)
-        earlier = tuple(i for batch in batches for i in batch)
-        if current and estimate(grown, earlier=earlier) > limit:
-            batches = batches + (current,)
-            current = (index,)
-        else:
-            current = grown
-    return batches + (current,) if current else batches
+def session_batches(lane):
+    return tuple((index,) for index in lane)
 
 
 def _session_spans(groups):
@@ -1255,8 +1245,8 @@ def brief_text(brief):
     session = brief.get("session")
     if session:
         header.append(
-            "Session %d of %d: these Steps are part of one Lane too large for one Worker "
-            "session, so fresh sessions build it in a row on one branch"
+            "Session %d of %d: each Step of this Lane is built in its own Worker session, "
+            "in a row on one branch, and lands as its own commit"
             % (session["index"], session["count"])
         )
         if session.get("built"):
@@ -1466,7 +1456,7 @@ def plan(
     estimate = functools.partial(
         estimate_tokens, items, sizes=measured, packs=packs, cap=cap, shared=shared
     )
-    groups = tuple(session_batches(lane, estimate, session_tokens) for lane in whole)
+    groups = tuple(session_batches(lane) for lane in whole)
     lanes = tuple(batch for group in groups for batch in group)
     places = _session_places(groups)
     group_tiers = tuple(

@@ -10,6 +10,7 @@ import briefs
 import core
 import decompose
 import metrics
+import pr_facts
 import run
 import shape
 
@@ -134,13 +135,6 @@ PLACEHOLDER_HELP = {
     "pull-request": "{branch} {base} {title} {body} {worktree} {msp} {remote}",
 }
 
-COMPOSED_HELP = (
-    "refused when it holds $, a backslash, <, @, ~, *, an _ outside a word, # or GH- before a "
-    "digit, links or github.com/, two backticks in a row or an odd number of backticks, "
-    "character references, emoji shortcodes or a run of 40 hexadecimal digits such as a full "
-    "commit hash"
-)
-
 STAGE_FLAG_NAMES = (
     "--brief-command",
     "--decisions",
@@ -148,6 +142,8 @@ STAGE_FLAG_NAMES = (
     "--pick",
     "--revise",
     "--proven-head",
+    "--pr-impact",
+    "--render-command",
 )
 
 PROVEN_HEAD = re.compile(r"^(.+)=([0-9a-f]{7,40})$")
@@ -266,46 +262,60 @@ FLAG_SPECS = {
     },
     "--pr-command": {
         "metavar": "TEMPLATE",
-        "help": "opens one pull request with the house title and body; placeholders %s; "
-        "its last stdout line is recorded; without it, a run allowed to push pushes each branch, "
-        "ends its MSP pushed and records the title and body for the caller"
-        % PLACEHOLDER_HELP["pull-request"],
+        "help": "opens one pull request with the title and body pull-request render --fields "
+        "printed; placeholders %s; its last stdout line is recorded; without it, a run allowed to "
+        "push pushes each branch, ends its MSP pushed and records the title and body for the "
+        "caller" % PLACEHOLDER_HELP["pull-request"],
+    },
+    "--render-command": {
+        "metavar": "COMMAND",
+        "default": "pull-request",
+        "help": "the pull-request command whose render --fields turns each MSP's facts file into "
+        "its title and body; needs pull-request 0.3.0 or later and is probed on every MSP before "
+        "any Worker runs when --pr-type and --pr-subject are given (default: pull-request)",
     },
     "--pr-type": {
         "metavar": "TYPE",
-        "help": "the type that opens every pull-request title, one of %s; required for a run "
-        "allowed to push" % ", ".join(run.PR_TYPES),
+        "help": "the type of every pull-request title, one of %s, handed to pull-request render "
+        "--fields as a fact; required for a run allowed to push" % ", ".join(run.PR_TYPES),
     },
     "--pr-scope": {
         "metavar": "SCOPE",
-        "help": "the optional scope in parentheses after the type: a lowercase letter or digit, "
-        "then up to 15 lowercase letters, digits or hyphens",
+        "help": "the optional scope of every pull-request title, handed to pull-request render "
+        "--fields as a fact",
     },
     "--pr-subject": {
         "metavar": "TEXT",
-        "help": "the title's summary: a lowercase first letter, printable ASCII, no trailing full "
-        "stop; %s; a plan of several MSPs appends each MSP label in parentheses; required for a "
-        "run allowed to push" % COMPOSED_HELP,
+        "help": "the summary of every pull-request title, handed to pull-request render --fields "
+        "as a fact; a plan of several MSPs appends each MSP label in parentheses; required for a "
+        "run allowed to push",
     },
     "--pr-why": {
         "metavar": "SENTENCE",
         "action": "append",
         "default": [],
-        "help": "one line of every body's Why section in printable ASCII, beginning with an "
-        "uppercase letter and ending with . ? or !; %s; give it 1 to %d times; required for a run "
-        "allowed to push" % (COMPOSED_HELP, run.SECTION_LIMIT),
+        "help": "one line of the problem every pull request solves, handed to pull-request render "
+        "--fields as a fact; more than four lines are joined into one paragraph; give it 1 to %d "
+        "times; required for a run allowed to push" % run.SECTION_LIMIT,
     },
     "--pr-door": {
         "metavar": "DOOR",
-        "help": "the merge-danger call that opens every body's Risk section, one of %s: a "
-        "two-way door is cheap to roll back, a one-way door is destructive or hard to reverse; "
-        "given together with --pr-blast-radius or not at all" % ", ".join(run.PR_DOORS),
+        "help": "one of %s, accepted so existing callers keep working; it no longer reaches the "
+        "pull-request body; given together with --pr-blast-radius or not at all"
+        % ", ".join(run.PR_DOORS),
     },
     "--pr-blast-radius": {
         "metavar": "SENTENCE",
-        "help": "what a bad merge would reach, the Risk line after the door call, in printable "
-        "ASCII, beginning with an uppercase letter and ending with . ? or !; %s; given together "
-        "with --pr-door or not at all" % COMPOSED_HELP,
+        "help": "what callers or users notice, handed to pull-request render --fields as the "
+        "impact when no --pr-impact is given; given together with --pr-door or not at all",
+    },
+    "--pr-impact": {
+        "metavar": "SENTENCE",
+        "action": "append",
+        "default": [],
+        "help": "one line of what callers or users notice, handed to pull-request render --fields "
+        "as a fact; repeatable; a run given --pr-type and --pr-subject needs it or "
+        "--pr-blast-radius",
     },
     "--no-push": {
         "action": "store_true",
@@ -324,7 +334,8 @@ FLAG_SPECS = {
     "--timeout": {
         "metavar": "SECONDS",
         "type": float,
-        "help": "per Worker, per acceptance run and per pull-request command; required for a run",
+        "help": "per Worker, per acceptance run, per render probe and per pull-request command; "
+        "required for a run, and for a --plan-only run that names --pr-type and --pr-subject",
     },
     "--concurrency": {
         "metavar": "N",
@@ -350,9 +361,9 @@ FLAG_SPECS = {
         "metavar": "N",
         "type": int,
         "default": core.SESSION_TOKENS,
-        "help": "the estimated tokens one Worker session may hold; a Lane estimated above it is "
-        "built as several Lanes in its Step order, one fresh session each, in a row on its MSP's "
-        "branch (default: %d)" % core.SESSION_TOKENS,
+        "help": "the estimated tokens one Worker session should hold; every Step of a Lane is its "
+        "own Worker session, built in Step order in a row on its MSP's branch, and a Step "
+        "estimated above this is named for attention (default: %d)" % core.SESSION_TOKENS,
     },
     "--graph": {
         "metavar": "PATH",
@@ -403,8 +414,9 @@ def build_parser():
         prog="mitosis",
         add_help=False,
         description="Split a document or an items file into MSPs, build each on its own "
-        "branch, gate the work, and push each branch with a pull-request title and body in "
-        "the house format, opening one pull request per MSP when --pr-command is given. "
+        "branch with every Step of a Lane its own Worker session, gate the work, hand each MSP's "
+        "facts to pull-request render --fields, and push each branch with the title and body "
+        "render printed, opening one pull request per MSP when --pr-command is given. "
         "mitosis never merges.",
     )
     for name in flag_names():
@@ -862,61 +874,17 @@ def refuse_unbuildable(args, repo):
         raise Refusal("--feature-branch %s is not a branch of %s" % (args.feature_branch, repo))
 
 
-def subject_fault(subject):
-    if not "a" <= subject[:1] <= "z":
-        return "does not begin with a lowercase ASCII letter"
-    if not all(" " <= character <= "~" for character in subject):
-        return "holds a character outside printable ASCII"
-    if subject.endswith((".", " ")):
-        return "ends with a full stop or a space"
-    return run.composed_fault(subject)
-
-
-def why_fault(why):
-    fault = run.composed_fault(why)
-    if fault is not None:
-        return fault
-    if not run.receipt_token(why) and not run.sentence_shaped(why):
-        return "does not begin with an uppercase letter and end with . ? or !"
-    return None
-
-
-def blast_radius_fault(blast_radius):
-    fault = run.composed_fault(blast_radius)
-    if fault is not None:
-        return fault
-    if not run.sentence_shaped(blast_radius):
-        return "does not begin with an uppercase letter and end with . ? or !"
-    return None
-
-
 def check_pull_request_flags(args):
     if args.pr_type is not None and args.pr_type not in run.PR_TYPES:
         raise Refusal(
             "--pr-type %r is not one of %s" % (args.pr_type, ", ".join(run.PR_TYPES))
         )
-    if args.pr_scope is not None and run.SCOPE_PATTERN.fullmatch(args.pr_scope) is None:
-        raise Refusal(
-            "--pr-scope %r does not match ^[a-z0-9][a-z0-9-]{0,15}$" % args.pr_scope
-        )
-    if args.pr_scope is not None:
-        fault = run.composed_fault(args.pr_scope)
-        if fault is not None:
-            raise Refusal("--pr-scope %r %s" % (args.pr_scope, fault))
-    if args.pr_subject is not None:
-        fault = subject_fault(args.pr_subject)
-        if fault is not None:
-            raise Refusal("--pr-subject %r %s" % (args.pr_subject, fault))
     whys = args.pr_why or ()
     if len(whys) > run.SECTION_LIMIT:
         raise Refusal(
-            "--pr-why is given %d times; a pull request's Why section holds at most %d lines"
+            "--pr-why is given %d times; a pull request's problem takes at most %d lines"
             % (len(whys), run.SECTION_LIMIT)
         )
-    for index, why in enumerate(whys, 1):
-        fault = why_fault(why)
-        if fault is not None:
-            raise Refusal("--pr-why number %d %s" % (index, fault))
     if (args.pr_door is None) != (args.pr_blast_radius is None):
         raise Refusal(
             "--pr-door and --pr-blast-radius go together or not at all; a door call without its "
@@ -925,10 +893,6 @@ def check_pull_request_flags(args):
         )
     if args.pr_door is not None and args.pr_door not in run.PR_DOORS:
         raise Refusal("--pr-door %r is not one of %s" % (args.pr_door, ", ".join(run.PR_DOORS)))
-    if args.pr_blast_radius is not None:
-        fault = blast_radius_fault(args.pr_blast_radius)
-        if fault is not None:
-            raise Refusal("--pr-blast-radius %r %s" % (args.pr_blast_radius, fault))
 
 
 def pull_request_header(args):
@@ -941,20 +905,41 @@ def pull_request_header(args):
         "why": tuple(args.pr_why or ()),
         "door": args.pr_door,
         "blast_radius": args.pr_blast_radius,
+        "impact": tuple(args.pr_impact or ()),
     }
 
 
-def refuse_unfit_titles(header, plan):
+def run_header(args, plan, run_dir):
+    try:
+        return run.carried_header(
+            pull_request_header(args), run.prior_state(run_dir, plan, args.resume)
+        )
+    except run.ResumeError as error:
+        raise Refusal(str(error))
+
+
+def refuse_unrenderable(args, plan, run_dir):
+    header = run_header(args, plan, run_dir)
     if header is None:
         return
+    if not header["impact"] and header["blast_radius"] is None:
+        raise Refusal(
+            "a run that opens pull requests needs --pr-impact, what callers or users notice, "
+            "or --pr-blast-radius for render's impact"
+        )
+    if args.timeout is None:
+        raise Refusal("the render probe needs --timeout; mitosis has no default")
     for index in range(len(plan.get("msps") or [])):
-        title = run.pull_request_title(header, plan, index)
-        fault = run.title_fault(title)
-        if fault is not None:
-            raise Refusal(
-                "MSP %s would be titled %r, which %s; shorten --pr-subject or relabel the MSP"
-                % (_label(plan, index), title, fault)
+        try:
+            pr_facts.render(
+                args.render_command,
+                pr_facts.probe_facts(header, plan, index),
+                os.path.join(run_dir, "probe-%d.json" % index),
+                args.timeout,
+                recorder_of(args).env,
             )
+        except pr_facts.RenderError as error:
+            raise Refusal("MSP %s: %s" % (_label(plan, index), error))
 
 
 def proven_heads(values, plan):
@@ -1202,11 +1187,11 @@ def session_lines(plan):
     if not runs:
         if oversized_sessions(plan):
             return oversized_lines(plan)
-        return ("every Lane fits one Worker session of %d estimated tokens" % limit,)
+        return ("every Lane holds one Step and runs as one Worker session",)
     return tuple(
-        "Lanes %d to %d are one Lane of MSP %s estimated above %d tokens, built as %d fresh "
-        "Worker sessions in a row on its branch, each continuing from the work committed before it"
-        % (start, start + count - 1, _label(plan, plan["lanes"][start]["msp"]), limit, count)
+        "Lanes %d to %d are the Steps of one Lane of MSP %s, each built in its own Worker session "
+        "in a row on its branch and landing its own commit"
+        % (start, start + count - 1, _label(plan, plan["lanes"][start]["msp"]))
         for start, count in runs
     ) + oversized_lines(plan)
 
@@ -1857,6 +1842,8 @@ def execute(args, plan, models, run_dir, repo, root, base=None):
             remote=REMOTE,
             no_push=args.no_push,
             header=pull_request_header(args),
+            render_command=args.render_command,
+            landing={"type": args.pr_type, "scope": args.pr_scope},
             proven_heads=proven_heads(args.proven_head, plan),
             observer=recorder_of(args).observe,
             env=recorder_of(args).env,
@@ -1935,7 +1922,7 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     plan = build_plan(args, items, root, charter, graph, run_dir)
     recorder.planned(plan, lane_width(plan), len(empty_manifests(plan.get("items") or [])))
     proven_heads(args.proven_head, plan)
-    refuse_unfit_titles(pull_request_header(args), plan)
+    refuse_unrenderable(args, plan, run_dir)
     if args.plan_only:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
         run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
