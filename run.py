@@ -4459,7 +4459,7 @@ def execute(
         check_template("gate-setup", gate_setup)
     if suite_command is not None:
         check_template("suite", suite_command)
-    isolation.refuse_overlapping_writes(run_dir, worker_writes)
+    checked_writes = isolation.refuse_overlapping_writes(run_dir, worker_writes)
     if not no_push and header is None:
         raise ConfigError(
             "a run allowed to push needs a pull-request header holding its type, subject and "
@@ -4471,9 +4471,9 @@ def execute(
     program = isolation.sandbox_program(worker_sandbox)
     if program is not None:
         isolation.refuse_unquotable(
-            (os.path.abspath(run_dir), isolation.worker_home(env)) + tuple(worker_writes)
+            (os.path.abspath(run_dir), isolation.worker_home(env)) + checked_writes
         )
-    sandbox = None if program is None else {"program": program, "writes": tuple(worker_writes)}
+    sandbox = None if program is None else {"program": program, "writes": checked_writes}
     recorded = (prior or {}).get("lanes") or {}
     if any(
         (recorded.get(str(index)) or {}).get("state") != "ok"

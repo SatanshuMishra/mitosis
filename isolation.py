@@ -156,6 +156,7 @@ def refuse_overlapping_writes(run_dir, writes):
                 "--worker-write %s overlaps the run folder %s; sandboxed code may never write "
                 "mitosis's own state, logs or gate folders, so no Worker was started" % (path, run_dir)
             )
+    return tuple(os.path.realpath(path) for path in writes)
 
 
 def transcript_folder(home, clone):
@@ -181,7 +182,7 @@ def sandbox_profile(allowed, pinned=()):
 
 def _confinement(sandbox, profile, temporary, writable):
     pinned = tuple(os.path.realpath(path) for path in (temporary,) + tuple(writable))
-    allowed = pinned + tuple(os.path.realpath(path) for path in sandbox["writes"])
+    allowed = pinned + tuple(sandbox["writes"])
     with open(profile, "w", encoding="utf-8") as handle:
         handle.write(sandbox_profile(allowed, pinned))
     return {"program": sandbox["program"], "profile": profile, "tmp": pinned[0]}
