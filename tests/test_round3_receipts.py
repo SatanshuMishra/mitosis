@@ -1,5 +1,7 @@
 import os
+import shutil
 import signal
+import subprocess
 import sys
 import unittest
 
@@ -23,6 +25,7 @@ BROKEN_ADD = "def add(a, b):\n    return a - b\n"
 LINGER_DELAY = "1"
 LINGER_LIFE = "60"
 REAP_SECONDS = 10
+CALL_SECONDS = 60
 SLOW_LANE = "import time\ntime.sleep(5)\n"
 STUB_LEFTOVERS = (
     "worker.pid",
@@ -39,8 +42,9 @@ import sys
 import time
 
 target, content, pid_file, log_file, parent, delay, life = sys.argv[1:8]
-with open(pid_file, "w", encoding="utf-8") as handle:
+with open(pid_file + ".partial", "w", encoding="utf-8") as handle:
     handle.write(str(os.getpid()))
+os.replace(pid_file + ".partial", pid_file)
 deadline = time.monotonic() + float(life)
 while os.getppid() == int(parent) and time.monotonic() < deadline:
     time.sleep(0.01)
@@ -57,6 +61,12 @@ while time.monotonic() < deadline:
         pass
     time.sleep(0.05)
 '''
+
+ANNOUNCED = (
+    "_announced = __import__('time').monotonic() + 30\n"
+    "while not os.path.exists(os.path.join(here, %r)) and __import__('time').monotonic() < _announced:\n"
+    "    __import__('time').sleep(0.01)\n"
+)
 
 LINGERING_ACCEPT = r'''
 import os
@@ -88,9 +98,10 @@ else:
         stderr=subprocess.DEVNULL,
         start_new_session=mode == "setsid",
     )
+%s
 sys.argv[0] = os.path.join(here, "accept.py")
 runpy.run_path(sys.argv[0], run_name="__main__")
-''' % (BROKEN_ADD, LINGER_DELAY, LINGER_LIFE)
+''' % (BROKEN_ADD, LINGER_DELAY, LINGER_LIFE, ANNOUNCED % "gate.pid")
 
 SHIELD = r'''
 import os
@@ -134,7 +145,7 @@ def lingering(content, mode):
         "os.path.join(here, 'worker.log'), str(os.getpid()), %r, %r], "
         "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
         "start_new_session=%r)\n" % (content, LINGER_DELAY, LINGER_LIFE, mode == "setsid")
-    )
+    ) + ANNOUNCED % "worker.pid"
 
 
 def lingering_refusal(folder):
@@ -463,6 +474,38 @@ class Outlived(unittest.TestCase):
                 )
                 self.assertEqual(self.scratch.dispatched(), ["add"], tail(completed))
 
+    def _sleeper(self, argv):
+        proc = subprocess.Popen(
+            argv + [sys.executable, "-c", "import time\ntime.sleep(%s)" % LINGER_LIFE],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        self.addCleanup(proc.wait, CALL_SECONDS)
+        self.addCleanup(proc.kill)
+        return proc
+
+    def a_sandbox_mark_names_its_own_processes_and_a_missing_mark_names_none(self):
+        if sys.platform != "darwin":
+            self.skipTest("sandbox-exec exists only on macOS")
+        checkout = os.path.join(self.scratch.tmp, "checkout")
+        os.makedirs(checkout)
+        log_dir = os.path.join(self.scratch.tmp, "gate-log")
+        confinement = isolation.gate_confinement(
+            {"program": shutil.which(isolation.SANDBOX_PROGRAM), "writes": ()}, log_dir, checkout
+        )
+        inside = self._sleeper([confinement["program"], "-f", confinement["profile"]])
+        outside = self._sleeper([])
+        found = ()
+        for _ in range(500):
+            found = isolation._sandboxed_pids(confinement)
+            if found:
+                break
+        self.assertEqual(found, (inside.pid,))
+        self.assertNotIn(outside.pid, found)
+        os.remove(confinement["mark"])
+        self.assertIsNone(isolation._sandboxed_pids(confinement))
+
 
 def load_tests(loader, standard, pattern):
     suite = unittest.TestSuite()
@@ -484,6 +527,7 @@ def load_tests(loader, standard, pattern):
                 "a_worker_process_left_behind_never_changes_what_mitosis_lands",
                 "a_gate_process_left_behind_never_writes_the_checkout_after_its_run",
                 "a_process_mitosis_cannot_end_stops_the_run_before_it_reads_the_clone",
+                "a_sandbox_mark_names_its_own_processes_and_a_missing_mark_names_none",
             ),
         ),
     ):

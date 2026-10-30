@@ -1,7 +1,11 @@
+import ctypes
+import functools
 import os
 import re
 import shutil
+import signal
 import stat
+import time
 import unicodedata
 
 import run
@@ -25,6 +29,22 @@ HFS_IGNORABLE = re.compile("[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]")
 
 LOCK_CLONE = "lock"
 
+REAP_LIMIT = 10
+
+REAP_PAUSE = 0.02
+
+SYSTEM_LIBRARY = "/usr/lib/libSystem.B.dylib"
+
+MARKED_OPERATION = b"file-read-data"
+
+PATH_FILTER = 1
+
+UNREPORTED_CHECK = 0x40000000
+
+PID_SLACK = 256
+
+DENIED = 1
+
 
 def lane_folders(run_dir, lane):
     return stage_folders(run_dir, "lane-%d" % lane)
@@ -40,6 +60,7 @@ def stage_folders(run_dir, name):
         "clone": os.path.join(root, name),
         "tmp": os.path.join(root, name + ".tmp"),
         "profile": os.path.join(root, name + ".sb"),
+        "mark": os.path.join(root, name + ".mark"),
     }
 
 
@@ -63,7 +84,7 @@ def _remove_left(path):
 
 
 def remove_lane_folders(folders):
-    for key in ("clone", "tmp", "profile"):
+    for key in ("clone", "tmp", "profile", "mark"):
         _remove_left(folders[key])
 
 
@@ -163,7 +184,7 @@ def transcript_folder(home, clone):
     return os.path.join(home, ".claude", "projects", TRANSCRIPT_KEY.sub("-", os.path.realpath(clone)))
 
 
-def sandbox_profile(allowed, pinned=()):
+def sandbox_profile(allowed, pinned=(), mark=None):
     rules = (
         tuple("(subpath %s)" % _profile_string(path) for path in allowed)
         + tuple("(literal %s)" % _profile_string(device) for device in WRITABLE_DEVICES)
@@ -174,18 +195,27 @@ def sandbox_profile(allowed, pinned=()):
         if pinned
         else ""
     )
-    return "(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write* %s)\n%s" % (
+    marked = (
+        "(deny %s (literal %s))\n" % (MARKED_OPERATION.decode("ascii"), _profile_string(mark))
+        if mark
+        else ""
+    )
+    return "(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write* %s)\n%s%s" % (
         " ".join(rules),
         pins,
+        marked,
     )
 
 
-def _confinement(sandbox, profile, temporary, writable):
+def _confinement(sandbox, folders, temporary, writable):
     pinned = tuple(os.path.realpath(path) for path in (temporary,) + tuple(writable))
     allowed = pinned + tuple(sandbox["writes"])
+    with open(folders["mark"], "w", encoding="utf-8"):
+        pass
+    profile, mark = os.path.realpath(folders["profile"]), os.path.realpath(folders["mark"])
     with open(profile, "w", encoding="utf-8") as handle:
-        handle.write(sandbox_profile(allowed, pinned))
-    return {"program": sandbox["program"], "profile": profile, "tmp": pinned[0]}
+        handle.write(sandbox_profile(allowed, pinned, mark))
+    return {"program": sandbox["program"], "profile": profile, "mark": mark, "tmp": pinned[0]}
 
 
 def confined(argv, env, confinement):
@@ -197,21 +227,18 @@ def confined(argv, env, confinement):
     )
 
 
-def worker_launch(argv, folders, sandbox, env):
+def worker_confinement(folders, sandbox, env):
     if sandbox is None:
-        return list(argv), env
+        return None
     os.makedirs(folders["tmp"])
     transcript = transcript_folder(worker_home(env), folders["clone"])
     os.makedirs(transcript, exist_ok=True)
-    confinement = _confinement(
-        sandbox, folders["profile"], folders["tmp"], (folders["clone"], transcript)
-    )
-    return confined(argv, env, confinement)
+    return _confinement(sandbox, folders, folders["tmp"], (folders["clone"], transcript))
 
 
 def gate_folders(log_dir):
     root = os.path.abspath(log_dir)
-    return {"log": root, "tmp": root + ".tmp", "profile": root + ".sb"}
+    return {"log": root, "tmp": root + ".tmp", "profile": root + ".sb", "mark": root + ".mark"}
 
 
 def gate_confinement(sandbox, log_dir, checkout):
@@ -220,7 +247,7 @@ def gate_confinement(sandbox, log_dir, checkout):
     folders = gate_folders(log_dir)
     release_gate(folders)
     os.makedirs(folders["tmp"])
-    return _confinement(sandbox, folders["profile"], folders["tmp"], (checkout,))
+    return _confinement(sandbox, folders, folders["tmp"], (checkout,))
 
 
 def gate_outputs(log_dir, confinement):
@@ -228,8 +255,92 @@ def gate_outputs(log_dir, confinement):
 
 
 def release_gate(folders):
-    for key in ("tmp", "profile"):
+    for key in ("tmp", "profile", "mark"):
         _remove_left(folders[key])
+
+
+@functools.lru_cache(maxsize=None)
+def _system_calls():
+    library = ctypes.CDLL(SYSTEM_LIBRARY, use_errno=True)
+    check = library.sandbox_check
+    check.restype = ctypes.c_int
+    check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+    listing = library.proc_listallpids
+    listing.restype = ctypes.c_int
+    listing.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    return check, listing
+
+
+def _every_pid(listing):
+    count = listing(None, 0)
+    if count <= 0:
+        return None
+    room = (ctypes.c_int * (count + PID_SLACK))()
+    found = listing(room, ctypes.sizeof(room))
+    if found <= 0:
+        return None
+    return tuple(pid for pid in room[:found] if pid > 0)
+
+
+def _denied(check, pid, path):
+    return check(pid, MARKED_OPERATION, PATH_FILTER | UNREPORTED_CHECK, os.fsencode(path))
+
+
+def _inside(check, pid, confinement):
+    return (
+        _denied(check, pid, confinement["mark"]) == DENIED
+        and _denied(check, pid, confinement["profile"]) == 0
+    )
+
+
+def _sandboxed_pids(confinement):
+    if confinement is None:
+        return ()
+    check, listing = _system_calls()
+    own = os.getpid()
+    if not os.path.isfile(confinement["mark"]) or _denied(check, own, confinement["mark"]) != 0:
+        return None
+    every = _every_pid(listing)
+    if every is None:
+        return None
+    return tuple(pid for pid in every if pid != own and _inside(check, pid, confinement))
+
+
+def _group_left(group):
+    try:
+        os.killpg(group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _signalled(send, target):
+    try:
+        send(target, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+def _end_left(group, confinement, sandboxed):
+    _signalled(os.killpg, group)
+    for pid in sandboxed:
+        if _inside(_system_calls()[0], pid, confinement):
+            _signalled(os.kill, pid)
+
+
+def end_run(proc, confinement, folder):
+    deadline = time.monotonic() + REAP_LIMIT
+    while True:
+        proc.poll()
+        sandboxed = _sandboxed_pids(confinement)
+        if sandboxed == () and not _group_left(proc.pid):
+            return
+        if time.monotonic() >= deadline:
+            raise run.LingeringProcess(folder, REAP_LIMIT)
+        _end_left(proc.pid, confinement, sandboxed or ())
+        time.sleep(REAP_PAUSE)
 
 
 def _clone_entry(clone, path):

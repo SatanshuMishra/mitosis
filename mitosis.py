@@ -31,6 +31,8 @@ EXIT_REFEREE = 9
 
 EXIT_MANIFEST = 23
 
+EXIT_LINGERING = 14
+
 LANE_EXIT = {
     "ok": EXIT_SHIPPED,
     "failed": 10,
@@ -68,6 +70,8 @@ EXIT_MEANING = {
     EXIT_REFEREE: "a Worker wrote a referee path; mitosis restored it and held its MSP back",
     EXIT_MANIFEST: "a branch is pushed or a pull request open with a package manifest that "
     "exports nothing",
+    EXIT_LINGERING: "a run left a process mitosis could not end, so mitosis stopped before reading "
+    "anything that process could change",
     LANE_EXIT["failed"]: "a Lane failed",
     LANE_EXIT["blocked"]: "a Lane or MSP was blocked, by a predecessor or by a write across an "
     "MSP boundary",
@@ -2168,6 +2172,9 @@ def run_pipeline(args):
     except Refusal:
         recorder.ended(EXIT_REFUSED, EXIT_MEANING[EXIT_REFUSED])
         raise
+    except run.LingeringProcess:
+        recorder.ended(EXIT_LINGERING, EXIT_MEANING[EXIT_LINGERING])
+        raise
     except BaseException:
         recorder.ended(None, None)
         raise
@@ -2267,6 +2274,12 @@ def main(argv=None):
     except Refusal as refusal:
         _print(("mitosis: %s" % refusal, "exit %d: %s" % (EXIT_REFUSED, EXIT_MEANING[EXIT_REFUSED])), sys.stderr)
         return EXIT_REFUSED
+    except run.LingeringProcess as lingering:
+        _print(
+            ("mitosis: %s" % lingering, "exit %d: %s" % (EXIT_LINGERING, EXIT_MEANING[EXIT_LINGERING])),
+            sys.stderr,
+        )
+        return EXIT_LINGERING
 
 
 if __name__ == "__main__":

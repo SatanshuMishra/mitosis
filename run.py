@@ -244,6 +244,15 @@ class ShipError(RuntimeError):
     pass
 
 
+class LingeringProcess(RuntimeError):
+    def __init__(self, folder, limit):
+        self.folder = folder
+        super().__init__(
+            "the run in %s left a process mitosis could not end within %d seconds, so mitosis "
+            "read nothing that run could change" % (folder, limit)
+        )
+
+
 def _index_lock(cwd, args=()):
     named = tuple(arg[len("--git-dir="):] for arg in args[:1] if arg.startswith("--git-dir="))
     if named:
@@ -622,13 +631,15 @@ def run_command(argv, cwd, timeout, stdout_path, stderr_path, env=None, sandbox=
             start_new_session=True,
         )
         try:
-            return proc.wait(timeout=timeout), False
+            ended = proc.wait(timeout=timeout), False
         except subprocess.TimeoutExpired:
             kill_tree(proc)
             try:
-                return proc.wait(timeout=KILL_GRACE), True
+                ended = proc.wait(timeout=KILL_GRACE), True
             except subprocess.TimeoutExpired:
-                return -signal.SIGKILL, True
+                ended = -signal.SIGKILL, True
+    isolation.end_run(proc, sandbox, cwd)
+    return ended
 
 
 def merge_target(tree, producer, base):
@@ -1047,7 +1058,7 @@ def dispatch(
                 carried = core.carried_session(argv, session)
                 try:
                     start = isolation.cut_clone(tree, folders)
-                    launched, launch_env = isolation.worker_launch(argv, folders, sandbox, env)
+                    confinement = isolation.worker_confinement(folders, sandbox, env)
                 except (GitError, OSError) as error:
                     records = settle(
                         records,
@@ -1064,7 +1075,7 @@ def dispatch(
                     progressed = True
                     continue
                 future = pool.submit(
-                    run_command, launched, folders["clone"], timeout, out, err, launch_env
+                    run_command, argv, folders["clone"], timeout, out, err, env, confinement
                 )
                 running = {
                     **running,
@@ -4146,7 +4157,7 @@ def _dispatch_check_author(plan, settings, command, models, sandbox, base):
         )
         if start != base:
             git(["reset", "-q", "--hard", base], folders["clone"])
-        launched, launch_env = isolation.worker_launch(argv, folders, sandbox, settings["env"])
+        confinement = isolation.worker_confinement(folders, sandbox, settings["env"])
     except (GitError, OSError) as error:
         return lock_record(
             "failed",
@@ -4154,7 +4165,7 @@ def _dispatch_check_author(plan, settings, command, models, sandbox, base):
             session_id=carried,
         )
     code, timed_out = run_command(
-        launched, folders["clone"], settings["timeout"], out, err, launch_env
+        argv, folders["clone"], settings["timeout"], out, err, settings["env"], confinement
     )
     returned = last_return(out)
     judged, why = lane_verdict(code, returned, timed_out)

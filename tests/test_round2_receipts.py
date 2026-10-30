@@ -221,10 +221,10 @@ class Receipts(unittest.TestCase):
             os.path.join(folders["tmp"], "moved-clone"),
         ]
         env = {**os.environ, "HOME": os.path.join(folder, "home")}
-        launched, launch_env = isolation.worker_launch(argv, folders, sandbox, env)
+        confinement = isolation.worker_confinement(folders, sandbox, env)
         logs = os.path.join(folder, "worker")
         run.run_command(
-            launched, folders["clone"], CALL_LIMIT, logs + ".out", logs + ".err", launch_env
+            argv, folders["clone"], CALL_LIMIT, logs + ".out", logs + ".err", env, confinement
         )
         try:
             isolation.read_lane(folders["clone"], checkout, start, ("a.py",))
