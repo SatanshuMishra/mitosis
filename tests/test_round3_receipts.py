@@ -506,6 +506,43 @@ class Outlived(unittest.TestCase):
         os.remove(confinement["mark"])
         self.assertIsNone(isolation._sandboxed_pids(confinement))
 
+    def _scripted(self, listings, inside, reported=None):
+        mark, profile = self._stub_file("scripted.mark"), self._stub_file("scripted.sb")
+        for path in (mark, profile):
+            put(path, "")
+        confinement = {"mark": mark, "profile": profile}
+        shown = []
+
+        def check(pid, operation, flags, path):
+            return int(pid in inside and path == os.fsencode(mark))
+
+        def listing(room, size):
+            current = listings[min(len(shown), len(listings) - 1)]
+            if room is None:
+                return len(current) if reported is None else reported
+            shown.append(current)
+            filled = current[: len(room)]
+            for position, pid in enumerate(filled):
+                room[position] = pid
+            return len(filled)
+
+        original = isolation._system_calls
+        isolation._system_calls = lambda: (check, listing)
+        self.addCleanup(setattr, isolation, "_system_calls", original)
+        return confinement, shown
+
+    def a_sandboxed_process_born_after_the_listing_is_still_found(self):
+        hopper, child, other = 40001, 40002, 40003
+        confinement, shown = self._scripted(
+            [(other, hopper), (other, child), (other, child)], {child}
+        )
+        self.assertEqual(isolation._sandboxed_pids(confinement), (child,))
+        self.assertEqual(shown, [(other, hopper), (other, child)])
+
+    def a_listing_that_fills_its_buffer_settles_nothing(self):
+        confinement, _ = self._scripted([tuple(range(50001, 50001 + 300))], set(), reported=10)
+        self.assertIsNone(isolation._sandboxed_pids(confinement))
+
 
 def load_tests(loader, standard, pattern):
     suite = unittest.TestSuite()
@@ -528,6 +565,8 @@ def load_tests(loader, standard, pattern):
                 "a_gate_process_left_behind_never_writes_the_checkout_after_its_run",
                 "a_process_mitosis_cannot_end_stops_the_run_before_it_reads_the_clone",
                 "a_sandbox_mark_names_its_own_processes_and_a_missing_mark_names_none",
+                "a_sandboxed_process_born_after_the_listing_is_still_found",
+                "a_listing_that_fills_its_buffer_settles_nothing",
             ),
         ),
     ):
