@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T05:45:25.922Z
+Updated: 2026-10-30T06:00:34.434Z
 Next ids: c8 D2 R3 S2
 
 ## Goal
@@ -19,11 +19,11 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override: hand-dispatched check-author), pushed. Build 1 ran all six Lanes ok on mitosis/isolation (head f6cae57, worktree ~/.mitosis/runs/mitosis/hr-mitosis-isolation/trees/isolation); mitosis 0.8.0's gate passed 26 of 29 properties and judged 3 weak (exit 24, committed, not pushed), all classed sampler-only or criterion-equivalent by coverage proof in weak-proof-classes.md. Review round 1 verdict is loop (review/round-1/isolation.verdict.json; conformance all eleven criteria MET): blockers S1 CRITICAL sandbox escape at gate, C3 unverified suite baseline, C4 mixed step sampling skipped, S2 case folded git folder, U1 and U2 failing test, each kind diagnosed fixable and recorded; advisories C5, C6, C7. Fix attempt 1 of at most 2 per kind is on mitosis/isolation, head b8254af (13 commits: receipts in tests/test_round1_receipts.py, fixes for every blocker kind and advisory); the agent's suite ran 774 OK and pipeline fix-check is clean on all nine fix commits. Review round 2 (fix diff f6cae57..b8254af): suite passes on 3.9 and 3.14 with no findings, standards found one LOW (review/round-2/isolation.standards.json), and code-reviewer and security-reviewer are running. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md (overrides for the final report). Four assumptions are in review/isolation.assumptions.txt.
+FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override: hand-dispatched check-author), pushed. MSP branch mitosis/isolation (worktree ~/.mitosis/runs/mitosis/hr-mitosis-isolation/trees/isolation) is committed, not pushed; mitosis 0.8.0's gate judged 3 properties weak, all classed in weak-proof-classes.md, so ship passes --proven-head. Review round 2 (fix diff f6cae57..b8254af) is green (review/round-2/isolation.verdict.json): round 1 blockers fixed, advisories C1 docs and S1 write through symlink (reproduced sandbox escape, capped at advisory: defect P8) confirmed; their fix agent is running on mitosis/isolation. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md (overrides for the final report). Four assumptions are in review/isolation.assumptions.txt.
 
 ## Next step
 
-When the round 2 reviewers finish, collect their arrays with the standards finding into round 2 candidates, then run the validator, record, verdict and outcome; loop or diagnose with at most 2 fix attempts per kind.
+When the advisory fix agent ends, run fix-check on its commits and the suite at its head, dispatch security-reviewer on the advisory fix diff (owner security rule, override for P8), then rerun-plan and proofs for the slow checks, then Ship.
 
 Needs: D1, R1.
 
@@ -49,4 +49,4 @@ Needs: D1, R1.
 - Program driver session: local_1353e243-8b09-4cc3-a370-2b58b294d057
 - Spec, decisions, record, items: /Users/satanshumishra/Documents/DevLabs/mitosis/docs/specs/hr-mitosis-isolation.* (gitignored)
 - Decision records of this change: docs/adr/0010 to 0014 in the owner's checkout, untracked
-- Pipeline defects found: run home pipeline-0.11.0-defects.md (P1 to P6)
+- Pipeline defects found: run home pipeline-0.11.0-defects.md (P1 to P8)
