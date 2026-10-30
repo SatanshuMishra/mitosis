@@ -32,6 +32,7 @@ PLAN_KEYS = (
     "session_tokens",
     "sizes",
     "briefs",
+    "check_author",
 )
 
 ITEM_FIELDS = (
@@ -48,6 +49,7 @@ ITEM_FIELDS = (
     "msp",
     "spec_ref",
     "assumptions",
+    "role",
 )
 
 REQUIRED_ITEM_FIELDS = (
@@ -61,6 +63,14 @@ REQUIRED_ITEM_FIELDS = (
 STRUCTURE_ITEM_FIELDS = tuple(field for field in REQUIRED_ITEM_FIELDS if field != "task")
 
 ACCEPTANCE_KEYS = ("file", "test")
+
+CHECK_AUTHOR = "check-author"
+
+ROLES = (CHECK_AUTHOR,)
+
+CHECK_AUTHOR_LANE = "check-author"
+
+LOCK_MSP = "lock"
 
 SOURCE_KEYS = ("path", "sha256")
 
@@ -623,6 +633,66 @@ def _counts(items, root):
     }
 
 
+def _is_check_author(item):
+    return item.get("role") == CHECK_AUTHOR
+
+
+def _role_errors(items):
+    unknown = [
+        "%s: role %r is not one of %s" % (_label(item, index), item["role"], ", ".join(ROLES))
+        for index, item in enumerate(items)
+        if "role" in item and item["role"] not in ROLES
+    ]
+    authors = [item for item in items if _is_check_author(item)]
+    several = (
+        [
+            "more than one Step has role %s: %s"
+            % (CHECK_AUTHOR, ", ".join(_label(item, index) for index, item in enumerate(authors)))
+        ]
+        if len(authors) > 1
+        else []
+    )
+    declaring = [
+        "%s: a %s Step writes the locked checks and declares no acceptance entries, but it "
+        "declares %d" % (_label(item, index), CHECK_AUTHOR, len(item.get("acceptance") or ()))
+        for index, item in enumerate(authors)
+        if item.get("acceptance")
+    ]
+    owner = {path: _label(item, index) for index, item in enumerate(authors) for path in _files(item)}
+    shared = [
+        "%s: lists %s in its files, which the %s Step %s owns as a locked check"
+        % (_label(item, index), path, CHECK_AUTHOR, owner[path])
+        for index, item in enumerate(items)
+        if not _is_check_author(item)
+        for path in _files(item)
+        if path in owner
+    ]
+    return unknown + several + declaring + shared
+
+
+def check_author_step(items):
+    found = [item for item in items if _is_check_author(item)]
+    return found[0] if len(found) == 1 else None
+
+
+def without_check_author(items):
+    authors = frozenset(item.get("name") for item in items if _is_check_author(item))
+    kept = [item for item in items if not _is_check_author(item)]
+    if not authors:
+        return kept
+    return [
+        _without_after(item, authors) if any(name in authors for name in _after(item)) else item
+        for item in kept
+    ]
+
+
+def _without_after(item, names):
+    after = [name for name in item["after"] if name not in names]
+    if after:
+        return {**item, "after": after}
+    return {key: value for key, value in item.items() if key != "after"}
+
+
 def validate(items, root=None, required=None):
     if not isinstance(items, list):
         return {
@@ -632,14 +702,15 @@ def validate(items, root=None, required=None):
     errors = _shape_errors(items, REQUIRED_ITEM_FIELDS if required is None else required)
     if errors:
         return {"errors": errors, "counts": dict.fromkeys(COUNT_KEYS, 0)}
-    errors = _duplicate_errors(items)
-    by_name = _by_name(items)
-    errors = errors + _edge_errors(items, by_name)
+    errors = _duplicate_errors(items) + _role_errors(items)
+    built = without_check_author(items)
+    by_name = _by_name(built)
+    errors = errors + _edge_errors(built, by_name)
     errors = errors + [
-        "dependency cycle: " + " -> ".join(members + (members[0],)) for members in cycles(items)
+        "dependency cycle: " + " -> ".join(members + (members[0],)) for members in cycles(built)
     ]
     errors = errors + _source_errors(items)
-    return {"errors": errors, "counts": _counts(items, root)}
+    return {"errors": errors, "counts": _counts(built, root)}
 
 
 GLOB_CHARACTERS = "*?["
@@ -1244,7 +1315,7 @@ def referee_line(locked):
 
 
 def brief_text(brief):
-    header = ["Lane %d of MSP %s" % (brief["lane"], brief["msp_label"])]
+    header = ["Lane %s of MSP %s" % (brief["lane"], brief["msp_label"])]
     if brief.get("charter"):
         header.append("Charter: %s (binding; read it fully before any Step)" % brief["charter"])
     if brief.get("document"):
@@ -1289,8 +1360,11 @@ def brief_text(brief):
     footer = [
         "Write-set for this Lane, the only files you may edit: %s" % ", ".join(brief["write_set"]),
         SHARED_TREE_LINE,
-        referee_line(brief.get("locked") or ()),
-    ]
+    ] + (
+        [referee_line(brief.get("locked") or ())]
+        if brief.get("role") != CHECK_AUTHOR or brief.get("locked")
+        else []
+    )
     if brief.get("read_set"):
         footer.append(
             "Read-set, context only, never edit: %s%s"
@@ -1337,6 +1411,41 @@ def _brief(
         **({"session": session} if session else {}),
     }
     return {**partial, "text": brief_text(partial)}
+
+
+def _check_author_brief(author, packs, charter, source, cap, locked):
+    own = frozenset(referee.normalised(path) for path in _files(author))
+    others = [path for path in locked if referee.normalised(path) not in own]
+    write_set = list(dict.fromkeys(_files(author)))
+    read_set, read_overflow = _lane_read_set([author], (0,), packs, cap, write_set)
+    partial = {
+        "lane": CHECK_AUTHOR_LANE,
+        "msp": LOCK_MSP,
+        "msp_label": LOCK_MSP,
+        "role": CHECK_AUTHOR,
+        "steps": [_step_brief(author)],
+        "write_set": write_set,
+        "read_set": read_set,
+        "read_overflow": read_overflow,
+        "charter": charter,
+        "document": source.get("path") if isinstance(source, dict) else None,
+        "return_contract": RETURN_CONTRACT,
+        "locked": others,
+    }
+    return {
+        "name": author["name"],
+        "files": write_set,
+        "source": author.get("source"),
+        "brief": {**partial, "text": brief_text(partial)},
+    }
+
+
+def _merged_locks(first, second):
+    merged = ()
+    for path in tuple(first) + tuple(second):
+        if referee.normalised(path) not in {referee.normalised(seen) for seen in merged}:
+            merged = merged + (path,)
+    return merged
 
 
 def _present(value):
@@ -1437,11 +1546,13 @@ def plan(
     session_tokens=SESSION_TOKENS,
     sizes=None,
 ):
-    locked, lock_errors = charter_locks(charter, root)
+    charter_locked, lock_errors = charter_locks(charter, root)
     checked = validate(items, root=root)
     if checked["errors"] or lock_errors:
         raise ValidationError(tuple(checked["errors"]) + lock_errors)
-    items = without_locked_acceptance(items, locked)
+    author = check_author_step(items)
+    locked = _merged_locks(charter_locked, _files(author) if author else ())
+    items = without_locked_acceptance(without_check_author(items), locked)
     refused = referee_errors(items, locked)
     if refused:
         raise ValidationError(refused)
@@ -1534,10 +1645,25 @@ def plan(
             )
             for index, lane in enumerate(lanes)
         ],
+        "check_author": (
+            _check_author_brief(
+                author, context_packs([author], graph, hops, cap), charter, source, cap, locked
+            )
+            if author
+            else None
+        ),
     }
     kept = {key: body[key] for key in PLAN_KEYS if key in body and _present(body[key])}
     identified = {**kept, "plan_id": plan_id_for(kept)}
     return {key: identified[key] for key in PLAN_KEYS if key in identified}
+
+
+LOCK_TIER = "top"
+
+
+def plan_tiers(plan):
+    used = {lane.get("tier") for lane in plan.get("lanes") or ()}
+    return tuple(sorted(used | ({LOCK_TIER} if plan.get("check_author") else set()), key=str))
 
 
 def new_session_id():

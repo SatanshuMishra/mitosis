@@ -480,8 +480,7 @@ def check_template(name, template):
 def check_models(plan, template, models):
     if "{model}" not in template:
         return
-    tiers = sorted({lane.get("tier") for lane in plan.get("lanes", ())})
-    missing = [tier for tier in tiers if tier not in (models or {})]
+    missing = [tier for tier in core.plan_tiers(plan) if tier not in (models or {})]
     if missing:
         raise ConfigError(
             "the dispatch command uses {model} but no model is mapped for tier %s"
@@ -3561,6 +3560,318 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     return write_state(run_dir, _msp_record(state, msp, **shipped))
 
 
+LOCK_MESSAGE = "test: lock the acceptance checks"
+
+LOCK_DIR = "lock"
+
+LOCK_INDEX = "index"
+
+ALREADY_LOCKED = (
+    "the locked checks are already on the feature branch at %s, so no check-author ran"
+)
+
+LOCKED_BY_AUTHOR = (
+    "the check-author wrote %s, each locked test fails on the feature branch without the "
+    "build, and %s locks them"
+)
+
+
+def lock_record(state, reason, commit=None, session_id=None, **fields):
+    return {"state": state, "reason": reason, "commit": commit, "session_id": session_id, **fields}
+
+
+def missing_paths(repo, commit, paths):
+    return tuple(
+        path
+        for path in paths
+        if git_run(["cat-file", "-t", "%s:%s" % (commit, path)], repo, env=PINNED_GIT)
+        .stdout.strip()
+        != "blob"
+    )
+
+
+def _lock_values(plan, folders, feature_branch, models, run_dir, session_id):
+    brief = plan["check_author"]["brief"]
+    return {
+        "task": brief["text"],
+        "model": (models or {}).get(core.LOCK_TIER, ""),
+        "tier": core.LOCK_TIER,
+        "worktree": folders["clone"],
+        "branch": feature_branch,
+        "lane": core.CHECK_AUTHOR_LANE,
+        "msp": core.LOCK_MSP,
+        "charter": brief.get("charter"),
+        "document": brief.get("document"),
+        "run_dir": run_dir,
+        "session_id": session_id,
+    }
+
+
+def _dispatch_check_author(plan, settings, command, models, sandbox, base):
+    run_dir = settings["run_dir"]
+    folders = isolation.lock_folders(run_dir)
+    lane_dir = os.path.join(run_dir, "lanes")
+    os.makedirs(lane_dir, exist_ok=True)
+    out = os.path.join(lane_dir, "%s.out" % LOCK_DIR)
+    err = os.path.join(lane_dir, "%s.err" % LOCK_DIR)
+    session = core.new_session_id()
+    argv = build_argv(
+        command, _lock_values(plan, folders, settings["feature_branch"], models, run_dir, session)
+    )
+    carried = core.carried_session(argv, session)
+    try:
+        start = isolation.cut_clone(
+            {"path": settings["repo"], "branch": settings["feature_branch"]}, folders
+        )
+        if start != base:
+            git(["reset", "-q", "--hard", base], folders["clone"])
+        launched, launch_env = isolation.worker_launch(argv, folders, sandbox, settings["env"])
+    except (GitError, OSError) as error:
+        return lock_record(
+            "failed",
+            "mitosis could not prepare the check-author's clone %s: %s" % (folders["clone"], error),
+            session_id=carried,
+        )
+    code, timed_out = run_command(
+        launched, folders["clone"], settings["timeout"], out, err, launch_env
+    )
+    returned = last_return(out)
+    judged, why = lane_verdict(code, returned, timed_out)
+    ran = {"stdout": out, "stderr": err, "returned": returned, "clone": folders["clone"]}
+    if judged == "ok":
+        return lock_record("ok", None, session_id=carried, **ran)
+    limit = None if timed_out else usage_limit_line(out, err)
+    if limit is not None:
+        return lock_record(LANE_PARKED, "usage limit: %s" % limit, session_id=carried, **ran)
+    return lock_record("failed", "the check-author failed: %s" % why, session_id=carried, **ran)
+
+
+def _stored_entries(repo, entries):
+    return {
+        _norm(path): (
+            mode,
+            _checked_run(["hash-object", "-w", "--stdin"], repo, data, PINNED_GIT)
+            .decode("ascii")
+            .strip(),
+        )
+        for path, (mode, data) in sorted(entries.items())
+    }
+
+
+def _locked_checks(plan):
+    locked = frozenset(referee.normalised(path) for path in plan.get("locked") or ())
+    found = ()
+    for item in plan.get("items") or ():
+        for entry in item.get("acceptance") or ():
+            check = {"file": entry["file"], "test": entry["test"]}
+            if referee.normalised(check["file"]) in locked and check not in found:
+                found = found + (check,)
+    return found
+
+
+def _lock_fault(check, code, timed_out):
+    named = "%s::%s" % (check["file"], check["test"])
+    if timed_out:
+        return "%s timed out at the locked tree, so it could not run" % named
+    if code == ACCEPTANCE_FAILURE_EXIT:
+        return None
+    if code == 0:
+        return (
+            "%s passes on the feature branch without the build, so it cannot tell the work "
+            "from its absence" % named
+        )
+    return "%s could not run at the locked tree: exit %d" % (named, code)
+
+
+def _locked_tree_faults(plan, settings, base, stored):
+    repo = settings["repo"]
+    locked = tuple(plan.get("locked") or ())
+    timeout, env = settings["timeout"], settings["env"]
+    target = {
+        **_expanded(repo, base, base),
+        **{path: (mode, oid, None) for path, (mode, oid) in stored.items()},
+    }
+    log_dir = os.path.join(settings["run_dir"], LOCK_DIR)
+    os.makedirs(log_dir, exist_ok=True)
+    _remove_gate_folders(log_dir)
+    folder = tempfile.mkdtemp(prefix=GATE_FOLDER_PREFIX, dir=log_dir)
+    try:
+        reset_gate_folder(repo, folder, target, (), locked)
+        top = frozenset(_parts(path)[0] for path in target)
+        setup = settings["gate_setup"]
+        kept = (
+            _link_dependencies(repo, folder, top)
+            if setup is None
+            else _gate_setup(setup, folder, top, log_dir, timeout, env)
+        )
+        faults = ()
+        for position, check in enumerate(_locked_checks(plan)):
+            reset_gate_folder(repo, folder, target, kept, locked)
+            code, timed_out = run_acceptance(
+                settings["acceptance_command"],
+                folder,
+                check,
+                os.path.join(log_dir, "%d-locked.log" % position),
+                timeout,
+                env,
+            )
+            fault = _lock_fault(check, code, timed_out)
+            faults = faults if fault is None else faults + (fault,)
+        return faults
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def _removed(path):
+    if os.path.lexists(path):
+        os.remove(path)
+
+
+def _lock_commit(settings, base, stored):
+    repo, branch = settings["repo"], settings["feature_branch"]
+    index = os.path.join(settings["run_dir"], LOCK_DIR, LOCK_INDEX)
+    os.makedirs(os.path.dirname(index), exist_ok=True)
+    _removed(index)
+    indexed = {"GIT_INDEX_FILE": index}
+    try:
+        git(["read-tree", base], repo, env=indexed)
+        for path, (mode, oid) in sorted(stored.items()):
+            git(
+                ["update-index", "--add", "--cacheinfo", "%s,%s,%s" % (mode, oid, path)],
+                repo,
+                env=indexed,
+            )
+        tree = git(["write-tree"], repo, env=indexed)
+    finally:
+        _removed(index)
+    commit = git(["commit-tree", tree, "-p", base, "-m", LOCK_MESSAGE], repo)
+    git(["update-ref", "refs/heads/" + branch, commit, base], repo)
+    return commit
+
+
+def _pushed_lock(settings, base, commit):
+    if not settings["push"]:
+        return None
+    branch = settings["feature_branch"]
+    ref = "refs/heads/" + branch
+    pushed = git_run(["push", "-q", settings["remote"], "%s:%s" % (ref, ref)], settings["repo"])
+    if pushed.returncode == 0:
+        return None
+    git_run(["update-ref", ref, base, commit], settings["repo"])
+    detail = (pushed.stderr.strip() or pushed.stdout.strip()).splitlines()
+    return "pushing %s to %s failed, so mitosis moved it back to %s: %s" % (
+        branch,
+        settings["remote"],
+        base[:12],
+        detail[0] if detail else "exit %d" % pushed.returncode,
+    )
+
+
+def _failed_lock(record, reason):
+    return {**record, "state": "failed", "reason": reason}
+
+
+def _landed_lock(plan, settings, record, base):
+    repo, branch = settings["repo"], settings["feature_branch"]
+    locked = tuple(plan.get("locked") or ())
+    clone = record["clone"]
+    try:
+        entries = isolation.write_set_entries(clone, locked)
+        outside = isolation.outside_writes(clone, repo, _committed_entries(repo, base), locked)
+    except (GitError, OSError) as error:
+        return _failed_lock(
+            record, "mitosis could not read the check-author's clone %s: %s" % (clone, error)
+        )
+    noted = {
+        **record,
+        "undeclared": sorted(
+            set(outside["writes"]) | set(outside["deletes"]) | set(outside["unreplayed"])
+        ),
+        "ignored": list(outside["ignored"]),
+    }
+    unwritten = [path for path, entry in sorted(entries.items()) if entry is None]
+    if unwritten:
+        return _failed_lock(noted, "the check-author left %s unwritten" % ", ".join(unwritten))
+    try:
+        stored = _stored_entries(repo, entries)
+        faults = _locked_tree_faults(plan, settings, base, stored)
+    except GateSetupError as error:
+        return _failed_lock(noted, str(error))
+    except (GitError, OSError) as error:
+        return _failed_lock(noted, "mitosis could not run the locked checks: %s" % error)
+    if faults:
+        return _failed_lock(noted, "; ".join(faults))
+    checked_out = sorted(
+        path for path, held in registered_worktrees(repo).items() if held == branch
+    )
+    try:
+        commit = _lock_commit(settings, base, stored)
+    except (GitError, OSError) as error:
+        return _failed_lock(
+            noted, "mitosis could not commit the locked checks on %s: %s" % (branch, error)
+        )
+    unpushed = _pushed_lock(settings, base, commit)
+    if unpushed is not None:
+        return _failed_lock(noted, unpushed)
+    return {
+        **noted,
+        "state": "ok",
+        "reason": LOCKED_BY_AUTHOR % (", ".join(locked), commit[:12]),
+        "commit": commit,
+        "checked_out": checked_out,
+    }
+
+
+def lock_stage(plan, state, settings, command, models, sandbox):
+    prior = state.get("lock")
+    if isinstance(prior, dict) and prior.get("state") == "ok" and state.get("referee"):
+        return state
+    repo, branch, base = settings["repo"], settings["feature_branch"], state["base_commit"]
+    locked = tuple(plan.get("locked") or ())
+    if not missing_paths(repo, base, locked):
+        return {
+            **state,
+            "lock": lock_record("ok", ALREADY_LOCKED % base[:12], commit=base),
+            "referee": locked_record(repo, branch, base, locked),
+        }
+    record = _dispatch_check_author(plan, settings, command, models, sandbox, base)
+    if record["state"] != "ok":
+        return {**state, "lock": record, "referee": None}
+    landed = _landed_lock(plan, settings, record, base)
+    if landed["state"] != "ok":
+        return {**state, "lock": landed, "referee": None}
+    isolation.remove_lane_folders(isolation.lock_folders(settings["run_dir"]))
+    return {
+        **state,
+        "lock": landed,
+        "base_commit": landed["commit"],
+        "referee": locked_record(repo, branch, landed["commit"], locked),
+    }
+
+
+def lock_blocked(plan, state):
+    parked = state["lock"]["state"] == LANE_PARKED
+    reason = "the %s Step %s did not lock the checks (%s): %s" % (
+        core.CHECK_AUTHOR,
+        plan["check_author"]["name"],
+        state["lock"]["state"],
+        state["lock"]["reason"],
+    )
+    lanes = {
+        str(index): lane_record(index, lane["msp"], LANE_PARKED if parked else "blocked", reason=reason)
+        for index, lane in enumerate(plan.get("lanes") or [])
+    }
+    msps = {
+        str(index): {
+            **(state["msps"].get(str(index)) or {}),
+            "state": MSP_PARKED if parked else MSP_BLOCKED,
+            "reason": reason,
+        }
+        for index in range(len(plan.get("msps") or []))
+    }
+    return {**state, "lanes": lanes, "msps": msps}
+
+
 def _settled(state, msp, producers, finished):
     current = (state["msps"].get(str(msp)) or {}).get("state")
     if current in ("shipped", MSP_PUSHED):
@@ -3661,8 +3972,21 @@ def execute(
             "stacking_exceptions": list((prior or {}).get("stacking_exceptions") or []),
             "merge_danger": merge_danger_pair(header),
             "sandbox": isolation.sandbox_name(program),
+            **(
+                {"lock": (prior or {}).get("lock"), "referee": (prior or {}).get("referee")}
+                if plan.get("check_author")
+                else {}
+            ),
         },
     )
+    if plan.get("check_author"):
+        state = write_state(
+            run_dir, lock_stage(plan, state, settings, worker_command, models, sandbox)
+        )
+        if state["lock"]["state"] != "ok":
+            return write_state(run_dir, lock_blocked(plan, state))
+        base = state["base_commit"]
+        settings = {**settings, "base_commit": base}
     trees = prepare_worktrees(
         plan["msps"], base, trees_root or os.path.join(run_dir, "trees"), repo, prefix
     )

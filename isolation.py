@@ -20,9 +20,19 @@ WRITABLE_DEVICE_PATTERN = "^/dev/fd/"
 CLONE_GIT = ".git"
 
 
+LOCK_CLONE = "lock"
+
+
 def lane_folders(run_dir, lane):
+    return stage_folders(run_dir, "lane-%d" % lane)
+
+
+def lock_folders(run_dir):
+    return stage_folders(run_dir, LOCK_CLONE)
+
+
+def stage_folders(run_dir, name):
     root = os.path.join(os.path.abspath(run_dir), CLONE_FOLDER)
-    name = "lane-%d" % lane
     return {
         "clone": os.path.join(root, name),
         "tmp": os.path.join(root, name + ".tmp"),

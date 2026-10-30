@@ -11,6 +11,7 @@ import core
 import decompose
 import isolation
 import metrics
+import referee
 import run
 import shape
 
@@ -451,8 +452,7 @@ def tier_models(pairs):
 def unmapped_tiers(plan, template, models):
     if not template or "{model}" not in template:
         return ()
-    used = sorted({lane.get("tier") for lane in plan.get("lanes") or ()}, key=str)
-    return tuple(tier for tier in used if tier not in (models or {}))
+    return tuple(tier for tier in core.plan_tiers(plan) if tier not in (models or {}))
 
 
 def refuse_unmapped(plan, template, models):
@@ -1227,6 +1227,17 @@ def session_lines(plan):
     ) + oversized_lines(plan)
 
 
+def lock_stage_lines(plan):
+    author = plan.get("check_author")
+    if not author:
+        return ()
+    return (
+        "lock stage: the %s Step %s writes and locks %s before every Lane, and every Lane "
+        "builds with them read-only"
+        % (core.CHECK_AUTHOR, author["name"], ", ".join(plan.get("locked") or ())),
+    )
+
+
 def split_lines(plan, state):
     if plan is None:
         return (NO_PLAN,)
@@ -1241,7 +1252,7 @@ def split_lines(plan, state):
         "%d of %s declare no acceptance property; %s do not exist yet"
         % (counts.get("no_acceptance", 0), _n(total, "Step"), _n(counts.get("missing_paths", 0), "write-set path")),
     )
-    lines = lines + session_lines(plan)
+    lines = lines + session_lines(plan) + lock_stage_lines(plan)
     lines = lines + tuple(
         "Lane %d (MSP %s, %s): %s, cost %s, about %s tokens%s: %s"
         % (
@@ -1533,6 +1544,39 @@ def _msp_findings(plan, index, record, lane_records):
     )
 
 
+def lock_of(state):
+    lock = (state or {}).get("lock")
+    return lock if isinstance(lock, dict) else None
+
+
+def lock_stopped(state):
+    lock = lock_of(state)
+    return lock is not None and lock.get("state") != "ok"
+
+
+def _lock_findings(state):
+    lock = lock_of(state)
+    if lock is None:
+        return []
+    stated = (
+        []
+        if lock.get("state") == "ok"
+        else [
+            _finding(
+                core.LOCK_MSP,
+                None,
+                lock.get("state") or "incomplete",
+                LANE_EXIT.get(lock.get("state"), EXIT_INCOMPLETE),
+                lock.get("reason") or "",
+            )
+        ]
+    )
+    return stated + [
+        _finding(core.LOCK_MSP, None, "undeclared", EXIT_RECONCILE, path)
+        for path in lock.get("undeclared") or []
+    ]
+
+
 def findings(state, plan):
     manifests = [
         _finding(None, None, "manifest", EXIT_MANIFEST, line)
@@ -1547,11 +1591,11 @@ def findings(state, plan):
         for index in range(len(plan.get("msps") or []))
         for entry in _msp_findings(plan, index, msp_records.get(str(index)), lane_records)
     ]
-    return _lane_findings(plan, lane_records) + msps + manifests
+    return _lock_findings(state) + _lane_findings(plan, lane_records) + msps + manifests
 
 
 def exit_code(state, plan):
-    if not plan.get("msps") or not (state or {}).get("worktrees"):
+    if not plan.get("msps") or not ((state or {}).get("worktrees") or lock_stopped(state)):
         return EXIT_NO_BRANCHES
     carried = {entry["exit"] for entry in findings(state, plan)}
     worst = next((code for code in EXIT_SEVERITY if code in carried), None)
@@ -1584,6 +1628,12 @@ def outcome_lines(plan, state, run_dir, code):
             ),
         )
     lines = lines + ("sandbox: %s" % sandbox_of(state),)
+    lock = lock_of(state)
+    if lock is not None:
+        reason = _one_line(lock.get("reason"))
+        lines = lines + (
+            "lock stage: %s%s" % (lock.get("state"), " (%s)" % reason if reason else ""),
+        )
     lane_records = state.get("lanes") or {}
     for index in range(len(plan.get("lanes") or [])):
         record = lane_records.get(str(index)) or {}
@@ -1688,6 +1738,37 @@ def _msp_summary(plan, state):
     return summaries
 
 
+def _lock_summary(state):
+    lock = lock_of(state)
+    if lock is None:
+        return None
+    return {key: lock.get(key) for key in ("state", "reason", "commit", "session_id")}
+
+
+def _lock_attention(state):
+    lock = lock_of(state) or {}
+    stopped = (
+        ["the lock stage ended %s: %s" % (lock.get("state"), _one_line(lock.get("reason")))]
+        if lock and lock.get("state") != "ok"
+        else []
+    )
+    undeclared = (
+        [
+            "the check-author wrote outside the locked paths, and mitosis landed none of it: %s"
+            % ", ".join(lock["undeclared"])
+        ]
+        if lock.get("undeclared")
+        else []
+    )
+    checked_out = [
+        "%s has the feature branch checked out; mitosis moved the branch to the lock commit "
+        "%s and left that checkout's files untouched, so update it before working there"
+        % (path, lock.get("commit"))
+        for path in lock.get("checked_out") or []
+    ]
+    return stopped + undeclared + checked_out
+
+
 def _attention(plan, lanes, msps):
     lines = [
         "Lane %d (%s) is %s: %s"
@@ -1784,9 +1865,11 @@ def summary(plan, state, run_dir, code, referee=None, troubles=()):
         "msps": msps,
         "coupling": coupling,
         "referee": referee,
+        "lock": _lock_summary(state),
         "findings": findings(state, plan or {}),
         "sandbox": sandbox_of(state),
-        "attention": _attention(plan or {}, lanes, msps)
+        "attention": _lock_attention(state)
+        + _attention(plan or {}, lanes, msps)
         + list(troubles)
         + list(oversized_lines(plan or {}))
         + list(manifest_lines((plan or {}).get("items") or []))
@@ -1812,6 +1895,22 @@ def referee_record(args, plan, repo, base):
     return run.locked_record(repo, args.feature_branch, base, locked)
 
 
+def lock_stage_referee(args, plan, repo, base):
+    author = plan.get("check_author")
+    if not author or base is None:
+        return referee_record(args, plan, repo, base)
+    missing = run.missing_paths(repo, base, plan.get("locked") or ())
+    owned = frozenset(referee.normalised(path) for path in author.get("files") or ())
+    unowned = [path for path in missing if referee.normalised(path) not in owned]
+    if unowned:
+        raise run.ConfigError(
+            "--charter locks %s, which %s does not hold and the %s Step %s does not write; "
+            "commit the locked checks on it before the build"
+            % (unowned[0], args.feature_branch, core.CHECK_AUTHOR, author["name"])
+        )
+    return None if missing else referee_record(args, plan, repo, base)
+
+
 def planned_referee(args, plan, repo):
     try:
         base = (
@@ -1819,7 +1918,7 @@ def planned_referee(args, plan, repo):
             if args.feature_branch and repo is not None
             else None
         )
-        return referee_record(args, plan, repo, base), ()
+        return lock_stage_referee(args, plan, repo, base), ()
     except (run.ConfigError, run.GitError) as error:
         return None, (str(error),)
 
@@ -1834,7 +1933,7 @@ def pinned_base(args, plan, run_dir, repo):
 
 def locked_referee(args, plan, repo, base):
     try:
-        return referee_record(args, plan, repo, base)
+        return lock_stage_referee(args, plan, repo, base)
     except (run.ConfigError, run.GitError) as error:
         raise Refusal(str(error))
 
@@ -1977,6 +2076,8 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     else:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
         state, failure = {}, None
+    if plan.get("check_author"):
+        locked = (state or {}).get("referee")
     code = exit_code(state, plan)
     if failure is not None and code == EXIT_SHIPPED:
         code = EXIT_INCOMPLETE
