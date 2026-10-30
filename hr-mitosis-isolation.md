@@ -1,7 +1,7 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T00:55:34.771Z
-Next ids: c8 D1 R2 S1
+Updated: 2026-10-30T01:33:39.021Z
+Next ids: c8 D2 R2 S1
 
 ## Goal
 
@@ -26,6 +26,8 @@ Stage 1 starting: main synced at 58f258c, lighthouse readiness ready with nothin
 Invoke interphase:feature with the run 7 request and Work autonomously., answering every question as an Assumption citing I1 to I6 (O1).
 
 ## Decisions in force
+
+- D1 Interphase hand-off: spec hr-mitosis-isolation handed off for build: Handed off. Next: pipeline feature-branch, then a fresh check-author agent writes and locks the seven test files on FEATURE (O2 override), then plan-only and build.
 
 ## Open risks
 
