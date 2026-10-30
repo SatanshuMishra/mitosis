@@ -1,7 +1,7 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: parked
-Updated: 2026-10-30T09:03:07.786Z
-Next ids: c8 D4 R3 S3
+Updated: 2026-10-30T18:45:57.280Z
+Next ids: c8 D5 R3 S3
 
 ## Goal
 
@@ -31,6 +31,7 @@ Needs: D3, R1.
 
 - D1 Interphase hand-off: spec hr-mitosis-isolation handed off for build: Handed off. Next: pipeline feature-branch, then a fresh check-author agent writes and locks the seven test files on FEATURE (O2 override), then plan-only and build.
 - D3 Ship boundary: MSP isolation re-ships at proven head 2892811: Re-ship with SHIP=1 run.zsh --resume --proven-head isolation=2892811b21a934cd6defed09e73bd85cb08bc9bb, update #29's body only if mitosis's rendered body changed, refresh its review comment, and report round 3 green to the driver.
+- D4 FEATURE takes main and releases as 0.10.0: Merge origin/main into FEATURE with no rebase, keep both sides (clone landing threads the render header; caller-classed properties read Not run in Testing), bump to 0.10.0 including the locked test_referee_docs.py version, run the suite on 3.9 and 3.14, then push FEATURE and continue Integration.
 
 ## Open risks
 
