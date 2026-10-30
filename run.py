@@ -1937,13 +1937,15 @@ def property_sample(plan, msp, tree, base, commit, entry, trace=None):
     python = tuple(sorted(path for path in code if _is_python(path)))
     if trace is None or not python:
         return every_line, SAMPLED_CODE
+    others = {path: lines for path, lines in code.items() if path not in python}
     if not any(path in trace["loaded"] for path in python):
-        return (), SAMPLED_UNLOADED
+        if not others:
+            return (), SAMPLED_UNLOADED
+        return _sampled(mutants.compute(others, read) or mutants.fallback(others, read)), SAMPLED_CODE
     candidates = {path: _candidate_lines(path, code[path], read, trace) for path in python}
     executed = {path: lines for path, lines in candidates.items() if lines}
     if not executed:
         return every_line, SAMPLED_CODE
-    others = {path: lines for path, lines in code.items() if path not in candidates}
     found = mutants.compute({**executed, **others}, read) or mutants.fallback(added, read)
     return _sampled(found), SAMPLED_CODE
 
