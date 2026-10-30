@@ -11,7 +11,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import unicodedata
 import xml.etree.ElementTree as ElementTree
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
@@ -21,8 +20,8 @@ import core
 import isolation
 import mutants
 import outcomes
+import pr_facts
 import referee
-import shape
 
 BRANCH_PREFIX = "mitosis"
 
@@ -204,7 +203,8 @@ class GitError(RuntimeError):
         self.code = code
         self.stderr = stderr
         super().__init__(
-            "git %s exited %d: %s" % (" ".join(args), code, stderr.strip() or "<no stderr>")
+            "git %s exited %d: %s"
+            % (" ".join(" ".join(str(arg).split()) for arg in args), code, stderr.strip() or "<no stderr>")
         )
 
 
@@ -740,11 +740,18 @@ def _worker_values(plan, lane, tree, models, run_dir, session_id):
     }
 
 
-def _landing_message(plan, lane, tree):
-    return "chore(%s): land Lane %d (%s)" % (
-        tree.get("label") or tree["msp"],
-        lane,
-        ", ".join(plan["lanes"][lane]["steps"]),
+def _landing_message(plan, lane, header):
+    steps = plan["lanes"][lane]["steps"]
+    tasks = {item.get("name"): item.get("task") for item in plan.get("items") or []}
+    subject = "%s: %s" % (
+        pr_facts.conventional_prefix(
+            (header or {}).get("type") or "chore", (header or {}).get("scope")
+        ),
+        ", ".join(steps),
+    )
+    return "%s\n\n%s" % (
+        subject,
+        "\n".join(pr_facts.first_sentence(tasks.get(name)) for name in steps),
     )
 
 
@@ -758,7 +765,7 @@ def check_identity(repo):
             )
 
 
-def _land(plan, lane, tree, record, run_dir):
+def _land(plan, lane, tree, record, run_dir, header):
     write_set = plan["briefs"][lane]["write_set"]
     clone = isolation.lane_folders(run_dir, lane)["clone"]
     try:
@@ -768,7 +775,7 @@ def _land(plan, lane, tree, record, run_dir):
     try:
         isolation.place_entries(tree["path"], landing["entries"])
         commit = commit_paths(
-            tree["path"], write_set, _landing_message(plan, lane, tree), tree["branch"]
+            tree["path"], write_set, _landing_message(plan, lane, header), tree["branch"]
         )
     except GitError as error:
         if write_set:
@@ -882,19 +889,19 @@ def _suspects(batch, held, path):
     return claimants or list(batch)
 
 
-def _landed(plan, lane, tree, record, run_dir):
-    commit, reason, outside = _land(plan, lane, tree, record, run_dir)
+def _landed(plan, lane, tree, record, run_dir, header):
+    commit, reason, outside = _land(plan, lane, tree, record, run_dir, header)
     if reason is not None:
         return {**record, "state": "failed", "reason": reason}
     isolation.remove_lane_folders(isolation.lane_folders(run_dir, lane))
     return {**record, **outside, "commit": commit}
 
 
-def _land_batch(plan, msp, tree, batch, held, records, run_dir, settle):
+def _land_batch(plan, msp, tree, batch, held, records, run_dir, settle, header):
     lanes = plan["lanes"]
     landed = {}
     for lane in sorted(batch):
-        done = _landed(plan, lane, tree, held[lane], run_dir)
+        done = _landed(plan, lane, tree, held[lane], run_dir, header)
         if done["state"] == "ok":
             claimed = plan["briefs"][lane]["write_set"]
             landed = {key: isolation.released(value, claimed) for key, value in landed.items()}
@@ -920,6 +927,7 @@ def dispatch(
     observer=None,
     env=None,
     sandbox=None,
+    header=None,
 ):
     if timeout is None:
         raise ConfigError("a per-Lane timeout is required; mitosis has no default")
@@ -960,7 +968,7 @@ def dispatch(
             for msp in sorted({lanes[lane]["msp"] for lane in held} - busy):
                 batch = [lane for lane in held if lanes[lane]["msp"] == msp]
                 landed, records = _land_batch(
-                    plan, msp, tree_of[msp], batch, held, records, run_dir, settle
+                    plan, msp, tree_of[msp], batch, held, records, run_dir, settle, header
                 )
                 foreign = _foreign_writes(plan, msp, tree_of[msp], batch, records)
                 for lane in batch:
@@ -2985,454 +2993,11 @@ def pr_base(plan, msp, feature_branch, trees, repo, settled=None):
     return feature_branch, None
 
 
-def _judged(gate_result):
-    return {
-        (entry.get("step"), entry.get("file"), entry.get("test")): entry
-        for entry in (gate_result or {}).get("properties") or []
-    }
-
-
-def _name_of(plan, index):
-    items = plan.get("items") or []
-    return items[index].get("name") if 0 <= index < len(items) else "a Step"
-
-
-def manifest_gaps(plan, msp):
-    owned = set(plan["msps"][msp]["steps"])
-    return [
-        gap
-        for gap in shape.manifest_gaps(plan.get("items") or [])
-        if gap["reached"] == 0 and _name_of(plan, gap["owner"]) in owned
-    ]
-
-
 PR_TYPES = ("feat", "fix", "refactor", "docs", "test", "chore", "perf", "ci")
 
 PR_DOORS = ("one-way", "two-way")
 
-TITLE_PATTERN = re.compile(
-    r"^(?=.{1,72}$)(feat|fix|refactor|docs|test|chore|perf|ci)(\([a-z0-9][a-z0-9-]{0,15}\))?: "
-    r"[a-z][\x20-\x7E]*[\x21-\x2D\x2F-\x7E]$"
-)
-
-SCOPE_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,15}")
-
-TITLE_CAP = 72
-
-VALUE_CAP = 500
-
 SECTION_LIMIT = 8
-
-RECEIPT_TOKENS = ("work-type:", "test-removal:", "receipt:", "receipt-cmd:", "receipt-lock:")
-
-TRIM_SET = "".join(
-    chr(code)
-    for code in (
-        *range(0x09, 0x0E),
-        0x20,
-        0xA0,
-        0x1680,
-        *range(0x2000, 0x200B),
-        0x2028,
-        0x2029,
-        0x202F,
-        0x205F,
-        0x3000,
-        0xFEFF,
-    )
-)
-
-CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
-
-INVISIBLE_CHARACTER = re.compile(
-    r"[\u0080-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202f\u2060-\u206f\ufeff\ufff9-\ufffb]"
-)
-
-TAG_OPENER = re.compile(r"<[!/?A-Za-z]")
-
-CHARACTER_REFERENCE = re.compile(r"&(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);")
-
-OUTSIDE_PRINTABLE_ASCII = re.compile(r"[^\x20-\x7e]")
-
-INLINE_CONSTRUCTS = (
-    ("\\", "holds a backslash"),
-    ("](", "holds ]("),
-    ("![", "holds !["),
-    ("]:", "holds ]:"),
-    ("$", "holds $"),
-)
-
-URL_TEXT = re.compile(r"://|www\.|github\.com/", re.IGNORECASE)
-
-BLANK_SYMBOLS = frozenset(chr(code) for code in (0x2800, 0x16FE4, 0x1D159))
-
-COMPOSED_RULES = (
-    (re.compile(r"<"), "holds <"),
-    (re.compile(r"@"), "holds @"),
-    (re.compile(r"#[0-9]"), "holds # followed by a digit"),
-    (re.compile(r"\*"), "holds *"),
-    (re.compile(r"(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])"), "holds _ outside a word"),
-    (re.compile(r"(?<![A-Za-z0-9])gh-[0-9]", re.IGNORECASE), "holds GH- followed by a digit"),
-    (re.compile(r":[a-z0-9_+-]+:"), "holds an emoji shortcode"),
-    (re.compile(r"[0-9A-Fa-f]{40}"), "holds a run of 40 hexadecimal digits"),
-)
-
-NAMEABLE_CAP = 100
-
-BLOCK_OPENERS = ("`", "~", "#", ">", "|")
-
-SETEXT_UNDERLINE = re.compile(r"[=-]+")
-
-RESERVED_FIELD = re.compile(
-    r"(?:verified|not verified|door|blast radius):", re.IGNORECASE | re.ASCII
-)
-
-RESERVED_STRUCTURE = "Supersedes "
-
-SENTENCE_ENDS = ".?!"
-
-SENTENCE_END = re.compile(r"[.?!](?= |$)")
-
-WHAT_HEADING = "## What changed"
-
-WHY_HEADING = "## Why"
-
-RISK_HEADING = "## Risk"
-
-DOOR_PREFIX = "Door: "
-
-BLAST_RADIUS_PREFIX = "Blast radius: "
-
-VERIFICATION_HEADING = "## Verification"
-
-BULLET = "- "
-
-VERIFIED_PREFIX = "Verified: "
-
-NOT_VERIFIED_PREFIX = "Not verified: "
-
-PROVEN = "fails with the work reverted and passes with it"
-
-WHAT_FALLBACK = "Builds one Step of this change."
-
-
-def code_units(value):
-    return len(value.encode("utf-16-le", "surrogatepass")) // 2
-
-
-def blank_or_overlay(character):
-    category = unicodedata.category(character)
-    return (
-        (category == "Zs" and character != " ")
-        or category == "Me"
-        or unicodedata.combining(character) == 1
-        or character in BLANK_SYMBOLS
-    )
-
-
-def value_fault(value, cap=VALUE_CAP):
-    if not isinstance(value, str):
-        return "is not text"
-    if CONTROL_CHARACTER.search(value):
-        return "holds a control character"
-    if value != value.strip(TRIM_SET):
-        return "has leading or trailing whitespace"
-    if not value:
-        return "is empty"
-    if code_units(value) > cap:
-        return "is %d UTF-16 code units long, over the %d-unit cap" % (code_units(value), cap)
-    if value.startswith("@"):
-        return "begins with @"
-    if INVISIBLE_CHARACTER.search(value):
-        return "holds an invisible or bidirectional character"
-    if TAG_OPENER.search(value):
-        return "holds < followed by !, /, ? or a letter"
-    if CHARACTER_REFERENCE.search(value):
-        return "holds a character reference"
-    inline = next((rule for construct, rule in INLINE_CONSTRUCTS if construct in value), None)
-    if inline is not None:
-        return inline
-    if URL_TEXT.search(value):
-        return "holds ://, www. or github.com/"
-    if "~" in value:
-        return "holds ~"
-    if "``" in value or value.count("`") % 2:
-        return "holds two backticks in a row or an odd number of backticks"
-    if any(blank_or_overlay(character) for character in value):
-        return "holds a space other than the plain space, an enclosing or overlay mark, or a blank-looking symbol"
-    if value.startswith(BLOCK_OPENERS):
-        return "begins with a markdown block opener"
-    if SETEXT_UNDERLINE.fullmatch(value):
-        return "is made only of = and -"
-    if RESERVED_FIELD.match(value):
-        return "begins with verified:, not verified:, door: or blast radius:"
-    if value.startswith(RESERVED_STRUCTURE):
-        return "begins with Supersedes"
-    return None
-
-
-def house_value(value, cap=VALUE_CAP):
-    return value_fault(value, cap) is None
-
-
-def sentence_shaped(value):
-    if not isinstance(value, str) or not value:
-        return False
-    first = value[0]
-    return first.lower() != first and first.upper() == first and value[-1] in SENTENCE_ENDS
-
-
-def receipt_token(value):
-    return isinstance(value, str) and value.startswith(RECEIPT_TOKENS)
-
-
-def composed_fault(value, cap=VALUE_CAP):
-    if not isinstance(value, str):
-        return "is not text"
-    if OUTSIDE_PRINTABLE_ASCII.search(value):
-        return "holds a character outside printable ASCII"
-    fault = value_fault(value, cap)
-    if fault is not None:
-        return fault
-    return next((rule for pattern, rule in COMPOSED_RULES if pattern.search(value)), None)
-
-
-def composed_value(value, cap=VALUE_CAP):
-    return composed_fault(value, cap) is None
-
-
-def title_fault(title):
-    fault = composed_fault(title, TITLE_CAP)
-    if fault is not None:
-        return fault
-    if TITLE_PATTERN.fullmatch(title) is None:
-        return "does not match the house title pattern <type>(<scope>): <subject>"
-    return None
-
-
-def pull_request_title(header, plan, msp):
-    scope = header.get("scope")
-    subject = header["subject"]
-    labelled = (
-        "%s (%s)" % (subject, _label(plan, msp)) if len(plan.get("msps") or []) > 1 else subject
-    )
-    return "%s%s: %s" % (header["type"], "(%s)" % scope if scope else "", labelled)
-
-
-def first_sentence(task):
-    text = " ".join(str(task or "").split())
-    end = SENTENCE_END.search(text)
-    return text[: end.end()] if end else text
-
-
-def _stated(named, anonymous):
-    return named if composed_value(named) else anonymous
-
-
-def _and_list(names):
-    if len(names) < 2:
-        return "".join(names)
-    return "%s and %s" % (", ".join(names[:-1]), names[-1])
-
-
-def _what_entry(name, task):
-    sentence = first_sentence(task)
-    if (
-        composed_value(sentence)
-        and "A" <= sentence[0] <= "Z"
-        and sentence[-1] in SENTENCE_ENDS
-        and not receipt_token(sentence)
-    ):
-        return sentence
-    return _stated("Builds the %s Step." % name, WHAT_FALLBACK)
-
-
-def _what_changed(plan, msp):
-    steps = _steps_by_name(plan)
-    names = tuple(str(name) for name in plan["msps"][msp]["steps"])
-    entries = tuple(_what_entry(name, steps[name].get("task")) for name in names)
-    if len(entries) <= SECTION_LIMIT:
-        return entries
-    rest = names[SECTION_LIMIT - 1 :]
-    return entries[: SECTION_LIMIT - 1] + (
-        _stated(
-            "Builds %d more Steps: %s." % (len(rest), _and_list(rest)),
-            "Builds %d more Steps." % len(rest),
-        ),
-    )
-
-
-def _capped(values, overflow, closing=()):
-    room = SECTION_LIMIT - len(closing)
-    if len(values) <= room:
-        return values + closing
-    return values[: room - 1] + (overflow % (len(values) - room + 1),) + closing
-
-
-def _unproven(outcome, gate_class=None):
-    if gate_class is not None:
-        return "is classed %s, so no run judged it" % gate_class
-    return "is %s" % outcome if outcome in core.GATE_OUTCOMES else "was not judged"
-
-
-def _proof(gate_result, proven_head):
-    gated = (gate_result or {}).get("commit") or ""
-    if proven_head is None or proven_head == gated:
-        return ()
-    return (
-        "mitosis gated commit %s; the caller proved commit %s without a new gate."
-        % (gated[:12], proven_head[:12]),
-    )
-
-
-def _verification(plan, msp, gate_result, gate_error, proven_head=None):
-    steps = _steps_by_name(plan)
-    judged = _judged(gate_result)
-    names = plan["msps"][msp]["steps"]
-    properties = tuple(
-        (
-            "%s::%s (%s)" % (entry.get("file"), entry.get("test"), name),
-            found.get("outcome"),
-            found.get("class"),
-        )
-        for name in names
-        for entry in steps[name].get("acceptance") or []
-        for found in (judged.get((name, entry.get("file"), entry.get("test"))) or {},)
-    )
-    verified = tuple(
-        _stated("%s %s" % (where, PROVEN), "an acceptance test %s" % PROVEN)
-        for where, outcome, gate_class in properties
-        if outcome == "pass" and gate_class is None
-    )
-    unproven = (
-        tuple(
-            _stated(
-                "%s %s" % (where, _unproven(outcome, gate_class)),
-                "an acceptance test %s" % _unproven(outcome, gate_class),
-            )
-            for where, outcome, gate_class in properties
-            if outcome != "pass" or gate_class is not None
-        )
-        + tuple(
-            _stated("the %s Step has no acceptance test" % name, "a Step has no acceptance test")
-            for name in names
-            if not steps[name].get("acceptance")
-        )
-    )
-    closing = (("the gate could not run",) if gate_error else ()) + _proof(gate_result, proven_head)
-    return tuple(
-        VERIFIED_PREFIX + value
-        for value in _capped(
-            verified, "%d more acceptance tests fail with the work reverted and pass with it"
-        )
-    ) + tuple(
-        NOT_VERIFIED_PREFIX + value
-        for value in _capped(unproven, "%d more acceptance checks were not proven", closing)
-    )
-
-
-def _plural(count, singular, plural):
-    return "%d %s" % (count, singular if count == 1 else plural)
-
-
-def _risk_kinds(plan, msp, findings, exception, foreign, gate_error):
-    found = findings or {}
-    undeclared = tuple(dict.fromkeys(found.get("undeclared") or ()))
-    unwritten = tuple(dict.fromkeys(found.get("unwritten") or ()))
-    crossing = tuple(dict.fromkeys(entry.get("path") for entry in found.get("crossing") or ()))
-    foreign_paths = tuple(dict.fromkeys(entry.get("path") for entry in unique_foreign(foreign)))
-    gaps = tuple(dict.fromkeys(gap["manifest"] for gap in manifest_gaps(plan, msp)))
-    producers = len((exception or {}).get("producers") or ())
-    kinds = (
-        (
-            bool(undeclared),
-            "reconcile found %s" % _plural(len(undeclared), "undeclared write", "undeclared writes"),
-            undeclared,
-        ),
-        (
-            bool(unwritten),
-            "reconcile found %s never written"
-            % _plural(len(unwritten), "declared path", "declared paths"),
-            unwritten,
-        ),
-        (
-            bool(crossing),
-            "another MSP also changes %s this branch writes" % _plural(len(crossing), "file", "files"),
-            crossing,
-        ),
-        (
-            bool(foreign_paths),
-            "a Lane changed %s another Lane of this MSP owned and had already committed"
-            % _plural(len(foreign_paths), "file", "files"),
-            foreign_paths,
-        ),
-        (
-            bool(gaps),
-            "the build leaves %s exporting nothing"
-            % _plural(len(gaps), "package manifest", "package manifests"),
-            gaps,
-        ),
-        (
-            exception is not None,
-            "this MSP has %s, so its base is the feature branch"
-            % _plural(producers, "producer", "producers"),
-            (),
-        ),
-        (bool(gate_error), "the gate could not run", ()),
-    )
-    return tuple(
-        (text, tuple(path for path in paths if composed_value(path, NAMEABLE_CAP)), len(paths))
-        for present, text, paths in kinds
-        if present
-    )
-
-
-def _risk_clause(text, nameable, total, limit):
-    named = nameable[:limit]
-    hidden = total - len(named)
-    if not named:
-        return text
-    return "%s (%s)" % (text, _and_list(named + (("%d more" % hidden,) if hidden else ())))
-
-
-def _risk_line(kinds, limit):
-    sentence = "; ".join(
-        _risk_clause(text, nameable, total, limit) for text, nameable, total in kinds
-    )
-    return sentence[0].upper() + sentence[1:] + "."
-
-
-def _risk_fits(kinds, limit):
-    return composed_value(_risk_line(kinds, limit))
-
-
-def _largest_fitting(kinds, low, high):
-    if low >= high:
-        return low
-    middle = (low + high + 1) // 2
-    if _risk_fits(kinds, middle):
-        return _largest_fitting(kinds, middle, high)
-    return _largest_fitting(kinds, low, middle - 1)
-
-
-def _risk_limit(kinds):
-    edges = sorted({0} | {len(nameable) for _, nameable, _ in kinds})
-    spans = tuple(zip(edges, tuple(edge - 1 for edge in edges[1:]) + (edges[-1],)))
-    low, high = next(
-        ((low, high) for low, high in reversed(spans) if _risk_fits(kinds, low)), (0, 0)
-    )
-    return _largest_fitting(kinds, low, high)
-
-
-def _risk(plan, msp, findings, exception, foreign, gate_error):
-    kinds = _risk_kinds(plan, msp, findings, exception, foreign, gate_error)
-    if not kinds:
-        return None
-    return _risk_line(kinds, _risk_limit(kinds))
-
-
-def _block(heading, lines):
-    return "\n".join((heading,) + tuple(lines)) if lines else ""
 
 
 def lane_name(plan, lane):
@@ -3470,37 +3035,6 @@ def msp_foreign_writes(plan, msp, lane_records):
     ]
 
 
-def merge_danger(header):
-    door = header.get("door")
-    blast_radius = header.get("blast_radius")
-    if door is None or blast_radius is None:
-        return ()
-    return (DOOR_PREFIX + door, BLAST_RADIUS_PREFIX + blast_radius)
-
-
-def pull_request_body(
-    header,
-    plan,
-    msp,
-    gate_result=None,
-    gate_error=None,
-    findings=None,
-    exception=None,
-    foreign=(),
-    proven_head=None,
-):
-    risk = _risk(plan, msp, findings, exception, foreign, gate_error)
-    blocks = (
-        _block(WHAT_HEADING, tuple(BULLET + entry for entry in _what_changed(plan, msp))),
-        _block(WHY_HEADING, tuple(header.get("why") or ())),
-        _block(RISK_HEADING, merge_danger(header) + ((risk,) if risk else ())),
-        _block(
-            VERIFICATION_HEADING, _verification(plan, msp, gate_result, gate_error, proven_head)
-        ),
-    )
-    return "\n\n".join(block for block in blocks if block)
-
-
 def ship(
     plan,
     msp,
@@ -3520,6 +3054,7 @@ def ship(
     foreign=(),
     proven_head=None,
     env=None,
+    render_command="pull-request",
 ):
     label = _label(plan, msp)
     head = commit_at(branch, tree, required=True)
@@ -3540,15 +3075,20 @@ def ship(
         return {**held, "unchanged": True}
     if not push:
         return {**held, "unchanged": False}
-    title = pull_request_title(header, plan, msp)
-    body = pull_request_body(
+    os.makedirs(log_dir, exist_ok=True)
+    facts = pr_facts.facts(
         header, plan, msp, gate_result, gate_error, findings, exception, foreign, proven_head
     )
+    try:
+        title, body = pr_facts.render(
+            render_command, facts, os.path.join(log_dir, "fields.json"), timeout, env
+        )
+    except pr_facts.RenderError as error:
+        raise ShipError(str(error))
     git(["push", "-q", "-u", remote, branch], tree)
     pushed = {**held, "pushed": head, "title": title, "body": body, "unchanged": False}
     if pr_command is None:
         return pushed
-    os.makedirs(log_dir, exist_ok=True)
     out = os.path.join(log_dir, "pull-request.out")
     err = os.path.join(log_dir, "pull-request.err")
     argv = build_argv(
@@ -3846,6 +3386,7 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=()):
             foreign=foreign,
             proven_head=record.get("proven_head"),
             env=settings.get("env"),
+            render_command=settings["render_command"],
         )
     except (OSError, GitError, ShipError, subprocess.SubprocessError, ValueError) as error:
         return {"state": "ship-failed", "reason": str(error), "ship": None}
@@ -4451,6 +3992,8 @@ def execute(
     proven_heads=None,
     observer=None,
     env=None,
+    render_command="pull-request",
+    landing=None,
     trajectory=None,
     gate_setup=None,
     base_commit=None,
@@ -4499,6 +4042,7 @@ def execute(
         "run_dir": run_dir,
         "acceptance_command": acceptance_command,
         "pr_command": pr_command,
+        "render_command": render_command,
         "header": header,
         "timeout": timeout,
         "remote": remote,
@@ -4575,6 +4119,7 @@ def execute(
         observer=observer,
         env=env,
         sandbox=sandbox,
+        header=landing or header,
     )
     notify(
         observer,

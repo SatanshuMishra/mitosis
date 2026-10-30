@@ -492,7 +492,7 @@ class WorkerIsolation(unittest.TestCase):
         head = scratch.checked("rev-parse", "mitosis/demo").strip()
         self.assertEqual(
             scratch.checked("log", "-1", "--format=%s", head).strip(),
-            "chore(demo): land Lane 0 (add)",
+            "chore: add",
         )
         self.assertEqual(
             scratch.checked("rev-list", "--parents", "-n", "1", head).split(),

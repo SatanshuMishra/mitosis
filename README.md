@@ -43,12 +43,14 @@ claude plugin marketplace add SatanshuMishra/mitosis
 claude plugin install mitosis@mitosis
 ```
 
-The plugin carries the skill and the thirteen modules it runs — `core.py`,
-`shape.py`, `decompose.py`, `briefs.py`, `run.py`, `isolation.py`, `mitosis.py`,
-`metrics.py`, `spend.py`, `metrics_writer.py`, `referee.py`, `mutants.py`,
-`outcomes.py` — and the two data files they read,
-`prices.json` and `catalogue.json`, which need Python 3.9 or later and nothing
-else.
+The plugin carries the skill and the fourteen modules it runs — `core.py`,
+`shape.py`, `decompose.py`, `briefs.py`, `run.py`, `isolation.py`, `pr_facts.py`,
+`mitosis.py`, `metrics.py`, `spend.py`, `metrics_writer.py`, `referee.py`,
+`mutants.py`, `outcomes.py` — and the two data files they read,
+`prices.json` and `catalogue.json`, which need Python 3.9 or later. A run
+that names `--pr-type` and `--pr-subject` also needs the pull-request
+command, 0.3.0 or later, on PATH or named with `--render-command`, because
+mitosis writes no pull-request text itself.
 
 To update, refresh the marketplace, update the plugin, and restart:
 
@@ -62,7 +64,7 @@ release changes it; `CHANGELOG.md` lists them. The version is part of each
 plan's id, so finish a run before updating: it cannot be resumed on another
 release.
 
-Without Claude Code, copy the thirteen modules into one directory and invoke
+Without Claude Code, copy the fourteen modules into one directory and invoke
 `mitosis.py` by path. They import one another, so they must stay side by
 side.
 
@@ -80,21 +82,41 @@ python3 mitosis.py \
   --pr-scope manifest \
   --pr-subject "validate manifests from the command line" \
   --pr-why "A bad manifest should fail before it ships." \
-  --pr-door two-way \
-  --pr-blast-radius "Manifest validation only; a revert restores the old command." \
+  --pr-impact "A release with a bad manifest now stops at validation." \
   --tier-model top=model-a \
   --tier-model cheap=model-b \
   --timeout 1800
 ```
 
-Every title and body is written in one house format: the title is
-`<type>(<scope>): <subject>`, and the body holds What changed, Why, an
-optional Risk section and Verification. The Risk section opens with a
-`Door:` line and a `Blast radius:` line when `--pr-door` and
-`--pr-blast-radius` are given, which go together or not at all, then holds a
-line naming what reconcile, the gate or stacking found, when they found
-something. Leave out `--pr-command` and mitosis
-pushes each branch, opens nothing, ends each such MSP `pushed`, and records
+mitosis composes no pull-request title or body. At ship it writes each MSP's
+facts to a facts file, runs pull-request render --fields on it, and uses the
+title and body render printed unchanged; when render refuses the facts, that
+MSP ends `ship-failed` with render's problem as its reason, and the facts are
+never reworded and retried. The title is `<type>(<scope>): <subject>` from
+`--pr-type`, `--pr-scope` and `--pr-subject`. Render writes the body from
+mitosis's facts: Problem from the `--pr-why` lines; Change, one entry per
+Step from its task's first sentence; Impact from the `--pr-impact` lines, or
+the `--pr-blast-radius` sentence when none is given; Testing, one row per
+acceptance test saying what the gate proved, with a Not run row and its
+reason for each test left unproven; and Trade-offs and open problems, for
+what reconcile, stacking or the build found. `--pr-door` is still accepted
+and no longer reaches the body.
+
+Every run that names `--pr-type` and `--pr-subject`, `--plan-only` and
+`--no-push` included, needs `--pr-impact` or `--pr-blast-radius` and
+`--timeout`, which bounds the render probe, and runs
+render on each MSP's facts before any Worker is dispatched, so a missing
+pull-request command, one older than 0.3.0 or a refusal stops the run before
+a build is paid for.
+
+Every Step of a Lane is its own Worker session, run in Step order on its
+MSP's branch, and lands its own commit with the subject
+`<type>(<scope>): <step>`, from `--pr-type` and `--pr-scope`, or `chore`
+with no scope when the run names none, and its task's first sentence as the
+body. The branch's history is one commit per Step, and each Change entry
+maps to one of them.
+
+Leave out `--pr-command` and mitosis pushes each branch, opens nothing, ends each such MSP `pushed`, and records
 the title and body in the run's state and in its JSON summary, so the caller
 opens each pull request itself:
 
@@ -108,6 +130,7 @@ python3 mitosis.py \
   --pr-type feat \
   --pr-subject "validate manifests from the command line" \
   --pr-why "A bad manifest should fail before it ships." \
+  --pr-impact "A release with a bad manifest now stops at validation." \
   --tier-model top=model-a \
   --tier-model cheap=model-b \
   --timeout 1800
@@ -193,8 +216,8 @@ play no part, since the gate never reads them.
 A caller that proved a later head itself names it with
 `--proven-head <MSP label>=<commit>`, once per MSP. mitosis ships that head
 without gating again when the MSP's HEAD equals the commit and a passing
-gate result is recorded, and the pull request's
-Verification section names both commits on a Not verified: line. A head that
+gate result is recorded, and the pull request's Testing section gets a
+Proven head row, marked Not run, naming both commits. A head that
 differs, or an MSP with no recorded gate result, is gated as before; a
 malformed value or a label the plan does not hold exits 2 before anything is
 built.

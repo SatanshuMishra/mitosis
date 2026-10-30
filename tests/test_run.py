@@ -1,7 +1,6 @@
 import hashlib
 import json
 import os
-import re
 import shlex
 import shutil
 import signal
@@ -16,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import core
 import isolation
+import pr_facts
 import run
 
 ISOLATED_GIT_ENV = {
@@ -155,6 +155,32 @@ print("https://example.invalid/pull/%d" % len(open(os.path.join(marker_dir, "pr"
 '''
 
 
+RENDER_SCRIPT = r'''
+import json
+import os
+import shutil
+import sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "calls"), "a") as handle:
+    handle.write(json.dumps(sys.argv) + "\n")
+shutil.copyfile(sys.argv[sys.argv.index("--fields") + 1], os.path.join(here, "fields.copy.json"))
+sys.stdout.write('{"title":"feat(ship): fake title","body":"## Problem\\nFake body."}\n')
+'''
+
+
+REFUSING_RENDER_SCRIPT = r'''
+import os
+import sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "calls"), "a") as handle:
+    handle.write("called\n")
+sys.stderr.write("--problem: at least one value is required\n")
+sys.exit(2)
+'''
+
+
 HEADER = {
     "type": "feat",
     "scope": "ship",
@@ -163,6 +189,19 @@ HEADER = {
 }
 
 PR_STUB = object()
+
+SPAWN_UNSET = ("CLAUDE_CODE_SESSION_ID", "PLUGIN_METRICS_PARENT", "SHIP")
+
+
+def spawn_env():
+    return {key: value for key, value in os.environ.items() if key not in SPAWN_UNSET}
+
+
+def fake_render(folder, source):
+    path = os.path.join(folder, "render")
+    write(path, "#!%s\n%s" % (sys.executable, source))
+    os.chmod(path, 0o755)
+    return path
 
 
 def sha256_of(path):
@@ -186,6 +225,7 @@ class RepoCase(unittest.TestCase):
         write(os.path.join(self.repo, "README.md"), "seed\n")
         sh(["git", "add", "-A"], self.repo)
         sh(["git", "commit", "-q", "-m", "seed"], self.repo)
+        self.render_command = fake_render(os.path.join(self.tmp, "render"), RENDER_SCRIPT)
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -250,27 +290,16 @@ class RepoCase(unittest.TestCase):
             timeout,
             2,
             trees_root=self.trees,
-            **{"header": HEADER, **extra},
+            **{
+                "header": HEADER,
+                "render_command": self.render_command,
+                "env": spawn_env(),
+                **extra,
+            },
         )
 
-    def house_text(self, plan, state, msp):
-        record = state["msps"][str(msp)]
-        exception = next(
-            (entry for entry in state["stacking_exceptions"] if entry["msp"] == msp), None
-        )
-        return (
-            run.pull_request_title(HEADER, plan, msp),
-            run.pull_request_body(
-                HEADER,
-                plan,
-                msp,
-                record["gate"],
-                record.get("gate_error"),
-                record["reconcile"],
-                exception,
-                run.msp_foreign_writes(plan, msp, state["lanes"]),
-            ),
-        )
+    def fields(self, msp):
+        return json.loads(read(os.path.join(self.run_dir, "ship", "msp-%d" % msp, "fields.json")))
 
     def state(self):
         return json.loads(read(os.path.join(self.run_dir, run.STATE_FILE)))
@@ -613,7 +642,7 @@ class Dispatch(RepoCase):
 
     def a_commit_msg_hook_that_accepts_the_landing_message_lets_the_run_go(self):
         hook = os.path.join(self.repo, ".git", "hooks", "commit-msg")
-        write(hook, "#!/bin/sh\ngrep -q '^chore(' \"$1\"\n")
+        write(hook, "#!/bin/sh\ngrep -q '^feat(ship): ' \"$1\"\n")
         os.chmod(hook, 0o755)
         plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"])])
         final = self.execute(plan)
@@ -732,7 +761,7 @@ class Dispatch(RepoCase):
         self.assertEqual({r["state"] for r in final["lanes"].values()}, {"ok"})
         branch = final["worktrees"][0]["branch"]
         landed = sh(["git", "log", "--reverse", "--format=%s", "main.." + branch], self.repo).splitlines()
-        self.assertEqual([line.rsplit("(", 1)[1].rstrip(")") for line in landed], ["a", "c", "e"])
+        self.assertEqual(landed, ["feat(ship): a", "feat(ship): c", "feat(ship): e"])
 
     def a_step_waiting_on_a_held_lane_in_its_own_msp_runs_after_it_lands(self):
         plan = core.plan(
@@ -807,11 +836,12 @@ class Dispatch(RepoCase):
         log = sh(["git", "log", "--format=%s", "main.." + branch], self.repo)
         self.assertIn("keep changes to files other Lanes own (iface.txt)", log)
         self.assertIn("shape changed by lane", sh(["git", "show", branch + ":iface.txt"], self.repo))
-        body = self.pull_requests()[0][3]
-        self.assertIn(
-            "\n\n## Risk\nA Lane changed 1 file another Lane of this MSP owned and had already "
-            "committed (iface.txt).\n\n",
-            body,
+        self.assertEqual(
+            self.fields(0)["tradeoffs"],
+            [
+                "A Lane changed 1 file another Lane of this MSP owned and had already "
+                "committed: iface.txt."
+            ],
         )
 
     def an_unclaimed_write_is_put_on_every_lane_that_finished_with_it(self):
@@ -956,8 +986,9 @@ class Resume(RepoCase):
         self.assertEqual(second["msps"], first["msps"])
         for record in second["msps"].values():
             self.assertEqual(record["state"], run.MSP_PUSHED)
-            self.assertTrue(record["ship"]["title"].startswith("feat(ship): "))
-            self.assertTrue(record["ship"]["body"].startswith("## What changed\n"))
+            self.assertEqual(record["ship"]["title"], "feat(ship): fake title")
+            self.assertEqual(record["ship"]["body"], "## Problem\nFake body.")
+        self.assertEqual(len(read(os.path.join(self.tmp, "render", "calls")).splitlines()), 2)
         self.assertEqual(self.pull_requests(), [])
 
     def a_merged_predecessor_satisfies_its_dependents(self):
@@ -1188,6 +1219,8 @@ class Gate(RepoCase):
             2,
             trees_root=self.trees,
             header=HEADER,
+            render_command=self.render_command,
+            env=spawn_env(),
         )
         self.assertEqual(state["msps"]["0"]["state"], "gate-failed")
         self.assertIsNone(state["msps"]["0"]["gate"])
@@ -1246,8 +1279,11 @@ class Gate(RepoCase):
         self.assertEqual(state["msps"]["0"]["state"], "shipped")
         self.assertEqual(state["msps"]["0"]["proven_head"], head)
         self.assertEqual(self.remote_heads(), ["mitosis/impl"])
-        body = self.pull_requests()[0][3]
-        self.assertIn("tests/t_impl.txt::property (impl) is inert", body)
+        self.assertEqual(self.fields(0)["change"], ["do impl"])
+        self.assertEqual(
+            self.fields(0)["testing"],
+            [{"check": "tests/t_impl.txt::property", "result": "passes with and without the work"}],
+        )
 
 
 class GateReuse(RepoCase):
@@ -1356,12 +1392,12 @@ class GateReuse(RepoCase):
         self.assertEqual(judged["reason"], "covered elsewhere: the suite")
         self.assertEqual(resumed["gate_classes"], list(classes))
         self.assertEqual(resumed["gate_classes_sha256"], "0" * 64)
-        body = run.pull_request_body(
-            HEADER, plan, 0, record["gate"], None, record["reconcile"], None, []
-        )
         self.assertIn(
-            "tests/t_impl.txt::property (impl) is classed covered-elsewhere, so no run judged it",
-            body,
+            {
+                "check": "tests/t_impl.txt::property",
+                "result": "Not run: the caller classed it covered-elsewhere, so no run judged it",
+            },
+            pr_facts.facts(HEADER, plan, 0, record["gate"], None, record["reconcile"])["testing"],
         )
 
     def an_unwritable_trajectory_records_its_error_and_carries_on(self):
@@ -1464,10 +1500,12 @@ class Reconcile(RepoCase):
         self.assertEqual(state["msps"]["0"]["state"], "shipped")
         opened = {pr[0]: pr[3] for pr in self.pull_requests()}
         self.assertIn(trees[0]["branch"], opened)
-        self.assertIn(
-            "\n\n## Risk\nReconcile found 1 undeclared write (b.txt); another MSP also changes 1 "
-            "file this branch writes (b.txt).\n\n",
-            opened[trees[0]["branch"]],
+        self.assertEqual(
+            self.fields(0)["tradeoffs"],
+            [
+                "Reconcile found 1 undeclared write: b.txt.",
+                "Another MSP also changes 1 file this branch writes: b.txt.",
+            ],
         )
 
     def reconcile_ignores_the_worker_self_report(self):
@@ -1598,26 +1636,37 @@ class Ship(RepoCase):
         self.assertEqual(sorted(state["lanes"][str(consumer)]["merged"]), sorted(trees[p]["branch"] for p in exception["producers"]))
         self.assertTrue(os.path.isfile(os.path.join(trees[msp]["path"], "a.txt")))
         self.assertTrue(os.path.isfile(os.path.join(trees[msp]["path"], "b.txt")))
-        self.assertIn("producers", opened[trees[msp]["branch"]][3])
+        self.assertIn(
+            "This MSP has 2 producers, so its base is the feature branch.",
+            self.fields(msp)["tradeoffs"],
+        )
 
-    def a_pull_request_command_receives_the_house_title_and_body(self):
+    def a_pull_request_command_receives_the_rendered_title_and_body(self):
         self.add_remote()
         plan = core.plan([gated_step()])
         state = self.execute(plan, pr=self.pr_command())
         record = state["msps"]["0"]
         self.assertEqual(record["state"], "shipped")
         self.assertEqual(record["ship"]["pull_request"], "https://example.invalid/pull/1")
-        title, body = self.house_text(plan, state, 0)
-        self.assertEqual(self.pull_requests(), [[record["ship"]["branch"], "main", title, body]])
-        self.assertEqual(title, "feat(ship): write pull requests in the house format")
-        self.assertIn(
-            "\nVerified: tests/t_impl.txt::property (impl) fails with the work reverted and "
-            "passes with it",
-            body,
+        self.assertEqual(
+            self.pull_requests(),
+            [[record["ship"]["branch"], "main", "feat(ship): fake title", "## Problem\nFake body."]],
         )
-        self.assertNotIn("draft", body.lower())
-        self.assertNotIn(self.acceptance_command("real"), body)
-        self.assertEqual((record["ship"]["title"], record["ship"]["body"]), (title, body))
+        self.assertEqual(
+            self.fields(0),
+            {
+                "title": "feat(ship): write pull requests in the house format",
+                "problem": ["Callers need it."],
+                "change": ["do impl"],
+                "impact": [None],
+                "testing": [
+                    {
+                        "check": "tests/t_impl.txt::property",
+                        "result": "passes with the work and fails without it",
+                    }
+                ],
+            },
+        )
 
     def without_a_pull_request_command_each_msp_is_pushed_and_its_text_recorded(self):
         self.add_remote()
@@ -1635,12 +1684,16 @@ class Ship(RepoCase):
             self.assertEqual(record["ship"]["pull_request"], "")
             self.assertEqual(
                 (record["ship"]["title"], record["ship"]["body"]),
-                self.house_text(plan, state, index[name]),
+                ("feat(ship): fake title", "## Problem\nFake body."),
             )
-        self.assertIn(
-            "\nVerified: tests/t_impl.txt::property (c) fails with the work reverted and passes "
-            "with it",
-            state["msps"][str(index["c"])]["ship"]["body"],
+        self.assertEqual(
+            self.fields(index["c"])["testing"],
+            [
+                {
+                    "check": "tests/t_impl.txt::property",
+                    "result": "passes with the work and fails without it",
+                }
+            ],
         )
         unchanged = state["msps"][str(index["a"])]["ship"]
         self.assertNotIn("title", unchanged)
@@ -1658,9 +1711,10 @@ class Ship(RepoCase):
         self.assertEqual(held["merge_danger"], {"door": "two-way", "blast_radius": "Docs only."})
         shipped = self.execute(plan, pr=None, header=HEADER, resume=True)
         self.assertEqual(shipped["merge_danger"], held["merge_danger"])
-        self.assertEqual(
-            section_of(shipped["msps"]["0"]["ship"]["body"], "## Risk")[:2],
-            ["Door: two-way", "Blast radius: Docs only."],
+        self.assertEqual(self.fields(0)["impact"], ["Docs only."])
+        self.assertNotIn(
+            "two-way",
+            read(os.path.join(self.run_dir, "ship", "msp-0", "fields.json")),
         )
         with self.assertRaises(run.ResumeError):
             self.execute(
@@ -1832,7 +1886,8 @@ class Ship(RepoCase):
         self.assertTrue(run.succeeded(held))
         for record in held["msps"].values():
             log = sh(["git", "log", "--format=%s", "main.." + record["ship"]["branch"]], self.repo)
-            self.assertIn("land Lane", log)
+            self.assertIn("chore: " + record["ship"]["branch"].split("/")[-1], log.splitlines())
+            self.assertNotIn("land Lane", log)
             self.assertNotIn("check that a Lane can land", log)
         shipped = self.execute(plan, resume=True)
         self.assertEqual({m["state"] for m in shipped["msps"].values()}, {"shipped"})
@@ -1865,6 +1920,67 @@ class Ship(RepoCase):
         self.assertEqual(state["msps"]["0"]["state"], "ship-failed")
         self.assertIn("no-such-pr-tool", state["msps"]["0"]["reason"])
 
+    def the_body_is_what_render_printed(self):
+        self.add_remote()
+        shown = os.path.join(self.tmp, "shown")
+        command = fake_render(shown, RENDER_SCRIPT)
+        state = self.execute(
+            core.plan([gated_step()]),
+            pr=self.pr_command(),
+            header={**HEADER, "impact": ("Callers notice nothing.",)},
+            render_command=command,
+        )
+        record = state["msps"]["0"]
+        self.assertEqual(record["state"], "shipped")
+        self.assertEqual(record["ship"]["title"], "feat(ship): fake title")
+        self.assertEqual(record["ship"]["body"], "## Problem\nFake body.")
+        self.assertEqual(
+            self.pull_requests(),
+            [[record["ship"]["branch"], "main", "feat(ship): fake title", "## Problem\nFake body."]],
+        )
+        fields = json.loads(read(os.path.join(self.run_dir, "ship", "msp-0", "fields.json")))
+        self.assertIsInstance(fields, dict)
+        self.assertEqual(fields["problem"], ["Callers need it."])
+        self.assertEqual(fields["impact"], ["Callers notice nothing."])
+        self.assertEqual(len(read(os.path.join(shown, "calls")).splitlines()), 1)
+
+    def a_render_refusal_fails_the_ship_and_pushes_nothing(self):
+        self.add_remote()
+        refusing = os.path.join(self.tmp, "refusing")
+        command = fake_render(refusing, REFUSING_RENDER_SCRIPT)
+        state = self.execute(
+            core.plan([gated_step()]),
+            pr=self.pr_command(),
+            header={**HEADER, "impact": ("Callers notice nothing.",)},
+            render_command=command,
+        )
+        record = state["msps"]["0"]
+        self.assertEqual(record["state"], "ship-failed")
+        self.assertIn("--problem: at least one value is required", record["reason"])
+        self.assertEqual(self.remote_heads(), [])
+        self.assertEqual(len(read(os.path.join(refusing, "calls")).splitlines()), 1)
+        self.assertEqual(self.pull_requests(), [])
+
+    def the_house_composer_is_gone(self):
+        for name in (
+            "pull_request_body",
+            "_what_changed",
+            "_verification",
+            "_risk",
+            "merge_danger",
+            "first_sentence",
+            "manifest_gaps",
+            "_judged",
+            "WHAT_HEADING",
+            "WHY_HEADING",
+            "RISK_HEADING",
+            "VERIFICATION_HEADING",
+            "DOOR_PREFIX",
+            "BLAST_RADIUS_PREFIX",
+            "PROVEN",
+        ):
+            self.assertFalse(hasattr(run, name), name)
+
     def every_terminal_status_maps_to_an_exit_code(self):
         def state_with(msp_state, lane_state="ok", findings=None):
             return {
@@ -1887,824 +2003,6 @@ class Ship(RepoCase):
         self.assertFalse(run.succeeded(state_with("shipped", findings={**clean, "unwritten": ["x"]})))
         self.assertFalse(run.succeeded(state_with("shipped", findings=None)))
         self.assertFalse(run.succeeded({"lanes": {}, "msps": {}}))
-
-
-HOUSE_TITLE = re.compile(
-    r"^(?=.{1,72}$)(feat|fix|refactor|docs|test|chore|perf|ci)(\([a-z0-9][a-z0-9-]{0,15}\))?: "
-    r"[a-z][\x20-\x7E]*[\x21-\x2D\x2F-\x7E]$"
-)
-
-JS_TRIM = frozenset(
-    chr(code)
-    for code in (
-        *range(0x09, 0x0E),
-        0x20,
-        0xA0,
-        0x1680,
-        *range(0x2000, 0x200B),
-        0x2028,
-        0x2029,
-        0x202F,
-        0x205F,
-        0x3000,
-        0xFEFF,
-    )
-)
-
-HIDDEN_RANGES = (
-    (0x80, 0x9F),
-    (0xAD, 0xAD),
-    (0x61C, 0x61C),
-    (0x180E, 0x180E),
-    (0x200B, 0x200F),
-    (0x2028, 0x202F),
-    (0x2060, 0x206F),
-    (0xFEFF, 0xFEFF),
-    (0xFFF9, 0xFFFB),
-)
-
-RECEIPT_LINE_TOKENS = ("work-type:", "test-removal:", "receipt:", "receipt-cmd:", "receipt-lock:")
-
-CLEAN_FINDINGS = {"undeclared": [], "unwritten": [], "crossing": [], "fatal": False}
-
-
-def broken_rule(value, cap=500):
-    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
-        return "control character"
-    if not value:
-        return "empty"
-    if value[0] in JS_TRIM or value[-1] in JS_TRIM:
-        return "edge whitespace"
-    if len(value.encode("utf-16-le")) // 2 > cap:
-        return "over the cap"
-    if value.startswith("@"):
-        return "leading @"
-    if any(low <= ord(c) <= high for c in value for low, high in HIDDEN_RANGES):
-        return "invisible character"
-    if re.search(r"<[!/?A-Za-z]", value):
-        return "tag opener"
-    if re.search(r"&(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);", value):
-        return "character reference"
-    if "\\" in value:
-        return "backslash"
-    if any(construct in value for construct in ("](", "![", "]:", "$")):
-        return "inline construct"
-    if value[0] in "`~#>|":
-        return "block opener"
-    if set(value) <= set("=-"):
-        return "setext underline"
-    if value.lower().startswith(("verified:", "not verified:", "door:", "blast radius:")):
-        return "reserved field prefix"
-    if value.startswith("Supersedes "):
-        return "reserved structure prefix"
-    return None
-
-
-def reads_as_sentence(value):
-    first = value[0]
-    return first.lower() != first and first.upper() == first and value[-1] in ".?!"
-
-
-def body_problems(body):
-    found = ()
-    blocks = body.split("\n\n")
-    headings = [block.split("\n")[0] for block in blocks]
-    if headings not in (
-        ["## What changed", "## Why", "## Verification"],
-        ["## What changed", "## Why", "## Risk", "## Verification"],
-    ):
-        found = found + (("layout", headings),)
-    for block in blocks:
-        heading, *lines = block.split("\n")
-        if heading == "## What changed":
-            values = [line[2:] for line in lines]
-            found = found + tuple(("bullet", line) for line in lines if not line.startswith("- "))
-            found = found + tuple(
-                ("what sentence", value)
-                for value in values
-                if not reads_as_sentence(value) or value.startswith(RECEIPT_LINE_TOKENS)
-            )
-        elif heading == "## Why":
-            values = lines
-            found = found + tuple(
-                ("why sentence", value)
-                for value in values
-                if not value.startswith(RECEIPT_LINE_TOKENS) and not reads_as_sentence(value)
-            )
-        elif heading == "## Risk":
-            called = lines[:1] != [] and lines[0].startswith("Door: ")
-            door, radius = (lines[0], lines[1:2]) if called else (None, [])
-            rest = lines[2:] if called else lines
-            found = found + (
-                (("door call", lines[:2]),)
-                if called
-                and (
-                    door[len("Door: "):] not in ("one-way", "two-way")
-                    or not radius
-                    or not radius[0].startswith("Blast radius: ")
-                )
-                else ()
-            )
-            values = [line[len("Blast radius: "):] for line in radius] + rest
-            found = found + ((("risk lines", lines),) if not lines or len(rest) > 1 else ())
-            found = found + tuple(
-                ("posing merge-danger line", line)
-                for line in rest
-                if re.match(r"(?i)(door|blast radius):", line)
-            )
-            found = found + tuple(
-                ("risk sentence", value) for value in values if not reads_as_sentence(value)
-            )
-        else:
-            verified = [line[len("Verified: "):] for line in lines if line.startswith("Verified: ")]
-            unproven = [
-                line[len("Not verified: "):] for line in lines if line.startswith("Not verified: ")
-            ]
-            ordered = ["Verified: " + v for v in verified] + ["Not verified: " + v for v in unproven]
-            found = found + ((("verification order", lines),) if lines != ordered else ())
-            found = found + (
-                (("verification limit", len(verified), len(unproven)),)
-                if len(verified) > 8 or len(unproven) > 8
-                else ()
-            )
-            values = verified + unproven
-        found = found + ((("limit", heading, len(values)),) if heading != "## Verification" and len(values) > 8 else ())
-        found = found + tuple((broken_rule(value), value) for value in values if broken_rule(value))
-    return found
-
-
-def section_of(body, heading):
-    blocks = [block.split("\n") for block in body.split("\n\n")]
-    found = [lines[1:] for lines in blocks if lines[0] == heading]
-    return found[0] if found else None
-
-
-class HouseFormat(unittest.TestCase):
-    def the_verification_section_ends_with_its_closing_lines_past_the_limit(self):
-        gated_commit = "a" * 40
-        proven_commit = "b" * 40
-        plan = core.plan(
-            [
-                step(
-                    "impl",
-                    ["impl.txt", "tests/impl.py"],
-                    msp="m",
-                    acceptance=[{"file": "tests/impl.py", "test": "case"}],
-                )
-            ]
-            + [step("bare%d" % n, ["bare%d.txt" % n], msp="m") for n in range(8)]
-        )
-        gate = {
-            "commit": gated_commit,
-            "blocks": False,
-            "properties": [
-                {"step": "impl", "file": "tests/impl.py", "test": "case", "outcome": "pass"}
-            ]
-            + [
-                {"step": "bare%d" % n, "file": None, "test": None, "outcome": "not-applicable"}
-                for n in range(8)
-            ],
-        }
-        closings = (
-            (
-                run.pull_request_body(
-                    HEADER, plan, 0, gate, None, CLEAN_FINDINGS, None, (), proven_commit
-                ),
-                "Not verified: mitosis gated commit %s; the caller proved commit %s without a new gate."
-                % (gated_commit[:12], proven_commit[:12]),
-            ),
-            (
-                run.pull_request_body(HEADER, plan, 0, gate, "boom", CLEAN_FINDINGS, None, ()),
-                "Not verified: the gate could not run",
-            ),
-        )
-        for body, closing in closings:
-            lines = section_of(body, "## Verification")
-            unproven = [line for line in lines if line.startswith("Not verified: ")]
-            self.assertEqual(lines[-1], closing)
-            self.assertEqual(len(unproven), 8)
-            self.assertEqual(unproven[-2], "Not verified: 2 more acceptance checks were not proven")
-            self.assertEqual(body_problems(body), ())
-
-    def a_title_carries_the_caller_type_scope_and_subject(self):
-        one = core.plan([step("impl", ["impl.txt"])])
-        two = core.plan([step("a", ["a.txt"], msp="core"), step("b", ["b.txt"], msp="docs")])
-        index = {msp["label"]: position for position, msp in enumerate(two["msps"])}
-        titles = (
-            (run.pull_request_title(HEADER, one, 0), "feat(ship): write pull requests in the house format"),
-            (
-                run.pull_request_title({**HEADER, "scope": None}, one, 0),
-                "feat: write pull requests in the house format",
-            ),
-            (
-                run.pull_request_title(HEADER, two, index["core"]),
-                "feat(ship): write pull requests in the house format (core)",
-            ),
-            (
-                run.pull_request_title(HEADER, two, index["docs"]),
-                "feat(ship): write pull requests in the house format (docs)",
-            ),
-        )
-        for title, expected in titles:
-            self.assertEqual(title, expected)
-            self.assertIsNotNone(HOUSE_TITLE.fullmatch(title), title)
-            self.assertIsNone(broken_rule(title, 72), title)
-
-    def the_body_follows_the_house_layout_byte_for_byte(self):
-        plan = core.plan(
-            [
-                step(
-                    "impl",
-                    ["impl.txt", "tests/t.py"],
-                    task="Add the impl file.",
-                    acceptance=[{"file": "tests/t.py", "test": "case"}],
-                )
-            ]
-        )
-        gate = {"properties": [{"step": "impl", "file": "tests/t.py", "test": "case", "outcome": "pass"}]}
-        header = {"type": "feat", "scope": None, "subject": "add the impl", "why": ("Callers need it.",)}
-        self.assertEqual(
-            run.pull_request_body(header, plan, 0, gate, None, CLEAN_FINDINGS, None, ()),
-            "## What changed\n- Add the impl file.\n\n## Why\nCallers need it.\n\n## Verification\n"
-            "Verified: tests/t.py::case (impl) fails with the work reverted and passes with it",
-        )
-        self.assertEqual(
-            run.pull_request_body(header, plan, 0, gate, None, None, None, ()),
-            run.pull_request_body(header, plan, 0, gate, None, CLEAN_FINDINGS, None, ()),
-        )
-        risky = run.pull_request_body(
-            header, plan, 0, gate, None, {**CLEAN_FINDINGS, "undeclared": ["b.txt"]}, None, ()
-        )
-        self.assertEqual(
-            risky,
-            "## What changed\n- Add the impl file.\n\n## Why\nCallers need it.\n\n## Risk\n"
-            "Reconcile found 1 undeclared write (b.txt).\n\n## Verification\n"
-            "Verified: tests/t.py::case (impl) fails with the work reverted and passes with it",
-        )
-        self.assertEqual(
-            [block.split("\n")[0] for block in risky.split("\n\n")],
-            ["## What changed", "## Why", "## Risk", "## Verification"],
-        )
-        self.assertFalse(risky.endswith("\n"))
-
-    def what_changed_takes_each_task_first_sentence_or_a_fallback(self):
-        plan = core.plan(
-            [
-                step(
-                    "plain",
-                    ["plain.txt"],
-                    msp="m",
-                    task="Change run.py so titles follow the format. Then update the tests.",
-                ),
-                step("backtick", ["backtick.txt"], msp="m", task="`run.py` gets the format."),
-                step("base", ["base.txt"], msp="m", task="Point the pull request at <base> instead."),
-                step("dash", ["dash.txt"], msp="m", task="— a dash opens this task."),
-                step("<img>", ["img.txt"], msp="m", task="`x` comes first."),
-            ]
-        )
-        expected = {
-            "plain": "Change run.py so titles follow the format.",
-            "backtick": "Builds the backtick Step.",
-            "base": "Builds the base Step.",
-            "dash": "Builds the dash Step.",
-            "<img>": "Builds one Step of this change.",
-        }
-        body = run.pull_request_body(HEADER, plan, 0, None, None, None, None, ())
-        self.assertEqual(
-            section_of(body, "## What changed"),
-            ["- " + expected[name] for name in plan["msps"][0]["steps"]],
-        )
-        ten = core.plan(
-            [step("s%d" % n, ["s%d.txt" % n], msp="m", task="Do step %d." % n) for n in range(10)]
-        )
-        names = ten["msps"][0]["steps"]
-        entries = section_of(run.pull_request_body(HEADER, ten, 0, None, None, None, None, ()), "## What changed")
-        self.assertEqual(len(entries), 8)
-        self.assertEqual(entries[:7], ["- Do step %s." % name[1:] for name in names[:7]])
-        self.assertEqual(entries[7], "- Builds 3 more Steps: %s, %s and %s." % tuple(names[7:]))
-
-    def verification_lists_each_property_by_its_gate_outcome(self):
-        def gated(name, outcome=None):
-            return step(
-                name,
-                ["%s.txt" % name, "tests/%s.py" % name],
-                msp="m",
-                acceptance=[{"file": "tests/%s.py" % name, "test": "case"}],
-            )
-
-        plan = core.plan(
-            [
-                gated("q"),
-                gated("p"),
-                gated("r"),
-                gated("s"),
-                gated("u"),
-                step("n", ["n.txt"], msp="m"),
-            ]
-        )
-        outcomes = {"p": "pass", "q": "inert", "r": "inconclusive", "s": "not-applicable"}
-        gate = {
-            "properties": [
-                {"step": name, "file": "tests/%s.py" % name, "test": "case", "outcome": outcome}
-                for name, outcome in outcomes.items()
-            ]
-            + [{"step": "n", "file": None, "test": None, "outcome": "not-applicable"}]
-        }
-        stated = {
-            "q": "Not verified: tests/q.py::case (q) is inert",
-            "r": "Not verified: tests/r.py::case (r) is inconclusive",
-            "s": "Not verified: tests/s.py::case (s) is not-applicable",
-            "u": "Not verified: tests/u.py::case (u) was not judged",
-        }
-        names = plan["msps"][0]["steps"]
-        body = run.pull_request_body(HEADER, plan, 0, gate, "the runner vanished", None, None, ())
-        self.assertEqual(
-            section_of(body, "## Verification"),
-            ["Verified: tests/p.py::case (p) fails with the work reverted and passes with it"]
-            + [stated[name] for name in names if name in stated]
-            + ["Not verified: the n Step has no acceptance test", "Not verified: the gate could not run"],
-        )
-        self.assertNotIn("the runner vanished", body)
-        quiet = run.pull_request_body(HEADER, plan, 0, gate, None, None, None, ())
-        self.assertNotIn("Not verified: the gate could not run", quiet)
-        self.assertNotIn("## Risk", quiet)
-        wide = core.plan(
-            [step("w", ["w.txt"], acceptance=[{"file": "f" * 300, "test": "t" * 300}])]
-        )
-        wide_gate = {"properties": [{"step": "w", "file": "f" * 300, "test": "t" * 300, "outcome": "pass"}]}
-        self.assertEqual(
-            section_of(run.pull_request_body(HEADER, wide, 0, wide_gate, None, None, None, ()), "## Verification"),
-            ["Verified: an acceptance test fails with the work reverted and passes with it"],
-        )
-        many = core.plan(
-            [
-                step(
-                    "x",
-                    ["x.txt"],
-                    acceptance=[{"file": "tests/x%d.py" % n, "test": "case"} for n in range(10)],
-                )
-            ]
-        )
-        for outcome, last in (
-            ("pass", "Verified: 3 more acceptance tests fail with the work reverted and pass with it"),
-            ("inert", "Not verified: 3 more acceptance checks were not proven"),
-        ):
-            many_gate = {
-                "properties": [
-                    {"step": "x", "file": "tests/x%d.py" % n, "test": "case", "outcome": outcome}
-                    for n in range(10)
-                ]
-            }
-            lines = section_of(
-                run.pull_request_body(HEADER, many, 0, many_gate, None, None, None, ()), "## Verification"
-            )
-            self.assertEqual(len(lines), 8)
-            self.assertEqual(lines[7], last)
-            self.assertEqual(lines[0].split("::")[0].split(": ")[1], "tests/x0.py")
-
-    def the_door_call_and_blast_radius_open_the_risk_section(self):
-        plain = core.plan([step("a", ["a.txt"])])
-        guarded = {**HEADER, "door": "two-way", "blast_radius": "Docs only."}
-        quiet = run.pull_request_body(guarded, plain, 0, None, None, CLEAN_FINDINGS, None, ())
-        self.assertEqual(section_of(quiet, "## Risk"), ["Door: two-way", "Blast radius: Docs only."])
-        self.assertEqual(body_problems(quiet), ())
-        risky = run.pull_request_body(
-            guarded, plain, 0, None, None, {**CLEAN_FINDINGS, "undeclared": ["b.txt"]}, None, ()
-        )
-        self.assertEqual(
-            section_of(risky, "## Risk"),
-            ["Door: two-way", "Blast radius: Docs only.", "Reconcile found 1 undeclared write (b.txt)."],
-        )
-        self.assertEqual(body_problems(risky), ())
-        half = run.pull_request_body(
-            {**HEADER, "door": "two-way"}, plain, 0, None, None, CLEAN_FINDINGS, None, ()
-        )
-        self.assertNotIn("## Risk", half)
-
-    def risk_names_every_finding_kind_or_is_absent(self):
-        plain = core.plan([step("a", ["a.txt"])])
-        self.assertNotIn("## Risk", run.pull_request_body(HEADER, plain, 0, None, None, CLEAN_FINDINGS, None, ()))
-        package = core.plan(
-            [
-                step("surface", ["pkg/__init__.py", "pkg/g.py"], msp="m"),
-                step("parse", ["pkg/parse.py"], msp="m", after=["surface"]),
-            ]
-        )
-        findings = {
-            "undeclared": ["stray.txt", "b.txt"],
-            "unwritten": ["pkg/g.py"],
-            "crossing": [{"path": "b.txt", "msp": 1, "label": "beta"}],
-            "fatal": True,
-        }
-        foreign = [{"path": "pkg/parse.py", "owner": 1, "suspects": [0], "lane": 0}]
-        body = run.pull_request_body(
-            HEADER, package, 0, None, "boom", findings, {"producers": [1, 2]}, foreign
-        )
-        self.assertEqual(
-            section_of(body, "## Risk"),
-            [
-                "Reconcile found 2 undeclared writes (stray.txt and b.txt); reconcile found 1 "
-                "declared path never written (pkg/g.py); another MSP also changes 1 file this "
-                "branch writes (b.txt); a Lane changed 1 file another Lane of this MSP owned and "
-                "had already committed (pkg/parse.py); the build leaves 1 package manifest "
-                "exporting nothing; this MSP has 2 producers, so its base is the "
-                "feature branch; the gate could not run."
-            ],
-        )
-        hidden = run.pull_request_body(
-            HEADER, plain, 0, None, None, {**CLEAN_FINDINGS, "undeclared": ["<x"]}, None, ()
-        )
-        self.assertEqual(section_of(hidden, "## Risk"), ["Reconcile found 1 undeclared write."])
-        self.assertNotIn("<x", hidden)
-        crowded = run.pull_request_body(
-            HEADER,
-            plain,
-            0,
-            None,
-            None,
-            {**CLEAN_FINDINGS, "undeclared": ["dir/file-%03d.txt" % n for n in range(200)]},
-            None,
-            (),
-        )
-        risk = section_of(crowded, "## Risk")
-        self.assertEqual(len(risk), 1)
-        self.assertLessEqual(len(risk[0].encode("utf-16-le")) // 2, 500)
-        self.assertTrue(risk[0].startswith("Reconcile found 200 undeclared writes (dir/file-000.txt, "))
-        cut = re.search(r" and (\d+) more\)\.$", risk[0])
-        self.assertIsNotNone(cut, risk[0])
-        self.assertEqual(int(cut.group(1)) + risk[0].count("dir/file-"), 200)
-        self.assertEqual(body_problems(crowded), ())
-
-    def hostile_inputs_never_break_the_value_rules(self):
-        self.assertNotEqual(
-            body_problems("## What changed\n- lower\n\n## Why\nok\n\n## Verification\nVerified: <b"), ()
-        )
-        header = {**HEADER, "why": ("Callers need it.", "receipt: kept as written")}
-        for text in (
-            "<script>alert(1)</script>",
-            "# A heading",
-            "\u202eReversed text.",
-            "Verified: x",
-            "Builds a long task " + "x" * 600 + ".",
-            "First line.\n\tSecond line\twith tabs.",
-            "case<img src=x>",
-            "Ship it \U0001F680 now.",
-            "<img>",
-        ):
-            with self.subTest(text=text):
-                plan = core.plan(
-                    [
-                        step("alpha", ["alpha.txt"], msp="m", task=text),
-                        step(
-                            text,
-                            ["hostile.txt", "tests/hostile.py"],
-                            msp="m",
-                            task=text,
-                            acceptance=[
-                                {"file": text, "test": text},
-                                {"file": "tests/hostile.py", "test": text},
-                            ],
-                        ),
-                        step(
-                            "gamma",
-                            ["gamma.txt"],
-                            msp="m",
-                            task=text,
-                            acceptance=[{"file": "tests/g.py", "test": text}],
-                        ),
-                    ]
-                )
-                gate = {
-                    "properties": [
-                        {"step": text, "file": text, "test": text, "outcome": "pass"},
-                        {"step": text, "file": "tests/hostile.py", "test": text, "outcome": "inert"},
-                        {"step": "gamma", "file": "tests/g.py", "test": text, "outcome": "inconclusive"},
-                    ]
-                }
-                findings = {
-                    "undeclared": [text, "stray.txt"],
-                    "unwritten": [text],
-                    "crossing": [{"path": text, "msp": 1, "label": text}],
-                    "fatal": True,
-                }
-                foreign = [{"path": text, "owner": 1, "suspects": [0], "lane": 0}]
-                body = run.pull_request_body(
-                    header, plan, 0, gate, text, findings, {"producers": [1, 2]}, foreign
-                )
-                self.assertEqual(body_problems(body), ())
-                self.assertIsNotNone(section_of(body, "## Risk"))
-
-
-class HouseFormatRoundTwo(unittest.TestCase):
-    def composed_values_refuse_hidden_text_mentions_references_and_links(self):
-        import run
-
-        carriers = (
-            "Add the file <?x hidden?> safely.",
-            "Add the file <b>now</b>.",
-            "Ping @SatanshuMishra about this.",
-            "Ping the team@example about this.",
-            "Closes #1 by adding the file.",
-            "This fixes SatanshuMishra/mitosis#2 too.",
-            "Add [the setup guide](https://example.invalid/x) to the docs.",
-            "Add ![status](https://example.invalid/b.png) to the docs.",
-            "See https://example.invalid/login for details.",
-            "See www.example.invalid for details.",
-            "Add the file&#xE0061; now.",
-            "Add the&ZeroWidthSpace;file now.",
-        )
-        for carrier in carriers:
-            self.assertFalse(run.composed_value(carrier), carrier)
-            self.assertEqual(run._what_entry("impl", carrier), "Builds the impl Step.", carrier)
-        self.assertTrue(run.composed_value("Add the impl file to issue tracker 1."))
-        self.assertTrue(run.composed_value("tests/test_run.py::Ship.case (impl) is inert"))
-        self.assertTrue(run.composed_value("Add the file & its test."))
-
-    def _limited(self, call, *args):
-        def expired(signum, frame):
-            self.fail("%s ran past its 5-second limit" % call.__name__)
-
-        previous = signal.signal(signal.SIGALRM, expired)
-        signal.alarm(5)
-        try:
-            return call(*args)
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, previous)
-
-    def risk_line_is_built_in_linear_time(self):
-        plan = core.plan([step("a", ["a.txt"])])
-        paths = ["dir/f-%05d.txt" % n for n in range(20000)]
-        findings = {**CLEAN_FINDINGS, "undeclared": paths}
-        for _ in range(3):
-            body = self._limited(
-                run.pull_request_body, HEADER, plan, 0, None, None, findings, None, ()
-            )
-            risk = section_of(body, "## Risk")
-            self.assertEqual(len(risk), 1)
-            line = risk[0]
-            self.assertLessEqual(len(line.encode("utf-16-le")) // 2, 500)
-            self.assertTrue(line.startswith("Reconcile found 20000 undeclared writes ("), line)
-            cut = re.search(r" and (\d+) more\)\.$", line)
-            self.assertIsNotNone(cut, line)
-            named = re.findall(r"dir/f-\d{5}\.txt", line)
-            self.assertEqual(len(named), 20000 - int(cut.group(1)))
-            self.assertEqual(named, paths[: len(named)])
-
-    def risk_line_skips_an_unnameable_path_and_counts_it(self):
-        plan = core.plan([step("a", ["a.txt"])])
-
-        def risk_of(**found):
-            body = run.pull_request_body(
-                HEADER, plan, 0, None, None, {**CLEAN_FINDINGS, **found}, None, ()
-            )
-            return section_of(body, "## Risk")
-
-        self.assertEqual(
-            risk_of(undeclared=["d/" + "x" * 470 + ".txt", "b.txt"]),
-            ["Reconcile found 2 undeclared writes (b.txt and 1 more)."],
-        )
-        undeclared = ["dir/u-%03d.txt" % n for n in range(200)]
-        unwritten = ["dir/w-%03d.txt" % n for n in range(200)]
-        risk = risk_of(undeclared=undeclared, unwritten=unwritten)
-        self.assertEqual(len(risk), 1)
-        line = risk[0]
-        units = len(line.encode("utf-16-le")) // 2
-        self.assertLessEqual(units, 500)
-        first, second = line.split("; ")
-        named_undeclared = re.findall(r"dir/u-\d{3}\.txt", first)
-        named_unwritten = re.findall(r"dir/w-\d{3}\.txt", second)
-        self.assertGreater(len(named_undeclared), 0)
-        self.assertEqual(len(named_undeclared), len(named_unwritten))
-        self.assertEqual(named_undeclared, undeclared[: len(named_undeclared)])
-        self.assertEqual(named_unwritten, unwritten[: len(named_unwritten)])
-        self.assertTrue(first.startswith("Reconcile found 200 undeclared writes ("), first)
-        self.assertTrue(first.endswith(" and %d more)" % (200 - len(named_undeclared))), first)
-        self.assertTrue(
-            second.startswith("reconcile found 200 declared paths never written ("), second
-        )
-        self.assertTrue(second.endswith(" and %d more)." % (200 - len(named_unwritten))), second)
-        self.assertGreater(units + 2 * len(", dir/u-000.txt"), 500)
-
-    def Unchanged_composed_values_stay_printable_ascii(self):
-        self.assertEqual(run._what_entry("impl", "Ship it \U0001F680 now."), "Builds the impl Step.")
-        self.assertEqual(
-            run._what_entry("caf\u00e9", "`code` first."), "Builds one Step of this change."
-        )
-        plan = core.plan(
-            [
-                step("impl", ["impl.txt"], msp="m", task="Ship it \U0001F680 now."),
-                step("caf\u00e9", ["cafe.txt"], msp="m", task="`code` first."),
-            ]
-        )
-        expected = {
-            "impl": "- Builds the impl Step.",
-            "caf\u00e9": "- Builds one Step of this change.",
-        }
-        body = run.pull_request_body(HEADER, plan, 0, None, None, None, None, ())
-        self.assertEqual(
-            section_of(body, "## What changed"),
-            [expected[name] for name in plan["msps"][0]["steps"]],
-        )
-
-    def rule_sources_hold_no_raw_invisible_character(self):
-        hidden = frozenset(
-            chr(code) for low, high in HIDDEN_RANGES for code in range(low, high + 1)
-        )
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        for name in ("run.py", os.path.join("tests", "test_run.py")):
-            found = [
-                (number, "U+%04X" % ord(character))
-                for number, line in enumerate(read(os.path.join(root, name)).split("\n"), 1)
-                for character in line
-                if character in hidden
-            ]
-            self.assertEqual(found, [], name)
-        for character in ("\u00ad", "\u202e", "\ufeff"):
-            self.assertIsNotNone(
-                run.INVISIBLE_CHARACTER.search("a%sb" % character), ascii(character)
-            )
-        self.assertEqual(
-            [code for code in range(0x10000) if run.INVISIBLE_CHARACTER.fullmatch(chr(code))],
-            [code for code in range(0x10000) if chr(code) in hidden],
-        )
-
-    def title_fault_applies_the_composed_rules(self):
-        for title, rule in (
-            ("feat: add <?x?> parser", "holds < followed by !, /, ? or a letter"),
-            ("fix: fix &amp; cleanup", "holds a character reference"),
-            ("feat: ping @team", "holds @"),
-            ("fix: close #12", "holds # followed by a digit"),
-            ("feat(ship): write the parser (a&lt;b)", "holds a character reference"),
-        ):
-            self.assertEqual(run.title_fault(title), rule, title)
-        self.assertIsNone(
-            run.title_fault("feat(ship): write pull requests in the house format (core)")
-        )
-        for value, rule in (
-            ("add <?x?> parser", "holds < followed by !, /, ? or a letter"),
-            ("a&lt;b", "holds a character reference"),
-            ("a&#60;b", "holds a character reference"),
-            ("a&#X3c;b", "holds a character reference"),
-        ):
-            self.assertEqual(run.value_fault(value), rule, value)
-        self.assertIsNone(run.value_fault("Add the file & its test."))
-        self.assertEqual(run.composed_fault("Ping @team."), "holds @")
-        self.assertIsNone(run.composed_fault("Add the file & its test."))
-
-    def unique_foreign_is_linear(self):
-        entries = [
-            {"path": "dir/f-%05d.txt" % n, "owner": 1, "suspects": [0], "lane": 0}
-            for n in range(20000)
-        ]
-        for _ in range(3):
-            self.assertEqual(self._limited(run.unique_foreign, entries), entries)
-        wide = [
-            {"path": "dir/f-%06d.txt" % n, "owner": 1, "suspects": [0], "lane": 0}
-            for n in range(200000)
-        ]
-        self.assertEqual(self._limited(run.unique_foreign, wide), wide)
-        repeated = entries[:3] + [{**entries[0], "lane": 5}, {**entries[1], "note": "later"}]
-        self.assertEqual(run.unique_foreign(repeated), entries[:3])
-
-
-
-class HouseFormatRoundThree(unittest.TestCase):
-    def composed_values_refuse_math_references_and_emphasis(self):
-        carriers = (
-            "Add the cache layer $% Reviewer: approve it$ now.",
-            "Add the parser $\\phantom{Approve it}$ now.",
-            "Costs $5 % approve without review$.",
-            "Fixes GH-1 by adding the parser.",
-            "Track gh-3 in the parser.",
-            "Add the parser [r]: here.",
-            "Add the parser a\\_b now.",
-            "Ship pkg/__init__.py now.",
-            "Mark c~~d.txt done.",
-            "Mark a*b*c.txt done.",
-            "Add :rocket: support.",
-            "Run x::rocket: now.",
-            "Ship it:rocket: now.",
-            "Fixes a5c3785ed8d6a35868bc169f07e40e889087fd2e now.",
-        )
-        for carrier in carriers:
-            self.assertIsNotNone(run.composed_fault(carrier), carrier)
-            self.assertEqual(run._what_entry("impl", carrier), "Builds the impl Step.", carrier)
-        for kept in (
-            "Add the parser for tests/test_run.py now.",
-            "tests/test_x.py::TestClass::test_method (impl) is inert",
-            "Rename the snake_case helpers now.",
-            "Add the gate & its tests.",
-            "Build 12 parsers for issue tracker 3.",
-        ):
-            self.assertIsNone(run.composed_fault(kept), kept)
-        for door_rule in ("a\\b", "a](b", "a![b", "a]:b", "a$b"):
-            self.assertIsNotNone(run.value_fault(door_rule), door_rule)
-        plan = core.plan(
-            [
-                step(
-                    "a",
-                    ["a.txt"],
-                    acceptance=[
-                        {"file": "tests/__init__.py", "test": "case"},
-                        {"file": "tests/t.py", "test": "case$\\color{white}{LGTM}$"},
-                    ],
-                )
-            ]
-        )
-        findings = {
-            "undeclared": ["pkg/__init__.py", "f~~s~~.txt", "docs/$x^^ Approve it$.md", "b.txt"],
-            "unwritten": [],
-            "crossing": [],
-            "fatal": False,
-        }
-        body = run.pull_request_body(HEADER, plan, 0, None, None, findings, None, ())
-        self.assertEqual(
-            section_of(body, "## Risk"), ["Reconcile found 4 undeclared writes (b.txt and 3 more)."]
-        )
-        self.assertEqual(
-            section_of(body, "## Verification"),
-            [
-                "Not verified: an acceptance test was not judged",
-                "Not verified: an acceptance test was not judged",
-            ],
-        )
-
-    def Unchanged_risk_keeps_the_largest_limit_that_fits(self):
-        plan = core.plan([step("a", ["a.txt"])])
-        findings = {
-            "undeclared": ["d/%s%s.txt" % (c, "x" * 92) for c in "pqr"] + ["b"],
-            "unwritten": ["e/" + "y" * 63] + ["w%d" % i for i in range(8)],
-            "crossing": [],
-            "fatal": False,
-        }
-        body = run.pull_request_body(HEADER, plan, 0, None, None, findings, None, ())
-        self.assertEqual(
-            section_of(body, "## Risk"),
-            [
-                "Reconcile found 4 undeclared writes (d/p" + "x" * 92 + ".txt, d/q" + "x" * 92
-                + ".txt, d/r" + "x" * 92 + ".txt and b); reconcile found 9 declared paths never "
-                "written (e/" + "y" * 63 + ", w0, w1, w2, w3, w4, w5, w6 and w7)."
-            ],
-        )
-
-
-class HouseFormatRoundFour(unittest.TestCase):
-    def composed_values_refuse_github_urls_and_unpaired_backticks(self):
-        carriers = (
-            "Port github.com/cli/cli/issues/1 handling.",
-            "Closes GitHub.com/OWNER/REPO/pull/1 now.",
-            "Use api.github.com/repos/x/y for it.",
-            "Add the `parse flag.",
-            "Add the ``parse`` flag.",
-        )
-        for carrier in carriers:
-            self.assertIsNotNone(run.composed_fault(carrier), carrier)
-            self.assertEqual(run._what_entry("impl", carrier), "Builds the impl Step.", carrier)
-        self.assertIsNone(run.composed_fault("Add the `parse` and `scan` flags."))
-        door_rules = (
-            "a://b",
-            "see www.a",
-            "github.com/a",
-            "a~b",
-            "a``b",
-            "a`b",
-            "a" + chr(0xA0) + "b",
-            "a" + chr(0x20DD),
-            "a" + chr(0x336),
-            "a" + chr(0x2800),
-        )
-        for door_rule in door_rules:
-            self.assertIsNotNone(run.value_fault(door_rule), ascii(door_rule))
-        plan = core.plan(
-            [
-                step(
-                    "a",
-                    ["a.txt"],
-                    acceptance=[
-                        {"file": "tests/github.com/x.py", "test": "case"},
-                        {"file": "tests/t.py", "test": "case`x"},
-                    ],
-                )
-            ]
-        )
-        findings = {
-            "undeclared": ["vendor/github.com/cli/cli/issues/1", "b.txt"],
-            "unwritten": [],
-            "crossing": [],
-            "fatal": False,
-        }
-        body = run.pull_request_body(HEADER, plan, 0, None, None, findings, None, ())
-        self.assertEqual(
-            section_of(body, "## Risk"), ["Reconcile found 2 undeclared writes (b.txt and 1 more)."]
-        )
-        self.assertEqual(
-            section_of(body, "## Verification"),
-            [
-                "Not verified: an acceptance test was not judged",
-                "Not verified: an acceptance test was not judged",
-            ],
-        )
 
 
 def session_items():
@@ -2739,16 +2037,29 @@ class Sessions(RepoCase):
         branch = state["worktrees"][0]["branch"]
         return sh(["git", "log", "--reverse", "--format=%s", "main.." + branch], self.repo).splitlines()
 
+    def each_step_lands_as_its_own_conventional_commit(self):
+        plan = core.plan(session_items())
+        state = self.execute(plan, accept="real", pr=None, no_push=True)
+        branch = state["worktrees"][0]["branch"]
+        subjects = sh(["git", "log", "--reverse", "--format=%s", "main.." + branch], self.repo)
+        bodies = sh(["git", "log", "--reverse", "--format=%b", "main.." + branch], self.repo)
+        self.assertEqual(subjects.splitlines(), ["feat(ship): s0", "feat(ship): s1", "feat(ship): s2"])
+        self.assertEqual([line for line in bodies.splitlines() if line], ["do s0", "do s1", "do s2"])
+
+    def a_run_without_a_header_lands_chore_commits(self):
+        plan = core.plan(session_items())
+        state = self.execute(plan, accept="real", pr=None, no_push=True, header=None)
+        branch = state["worktrees"][0]["branch"]
+        subjects = sh(["git", "log", "--reverse", "--format=%s", "main.." + branch], self.repo)
+        self.assertEqual(subjects.splitlines(), ["chore: s0", "chore: s1", "chore: s2"])
+
     def an_oversized_lane_builds_as_fresh_sessions_in_a_row_on_one_branch(self):
         plan = self._plan()
         state = self.execute(plan, accept="real", pr=None, no_push=True)
         lanes = state["lanes"]
         self.assertEqual([lanes[str(i)]["state"] for i in range(3)], ["ok", "ok", "ok"])
         self.assertEqual([self.marker(i).count("ran") for i in range(3)], [1, 1, 1])
-        self.assertEqual(
-            self._landings(state),
-            ["chore(s0): land Lane %d (s%d)" % (i, i) for i in range(3)],
-        )
+        self.assertEqual(self._landings(state), ["feat(ship): s0", "feat(ship): s1", "feat(ship): s2"])
         tree = state["worktrees"][0]["path"]
         for earlier, later in ((0, 1), (1, 2)):
             self.assertLessEqual(lanes[str(earlier)]["finished"], lanes[str(later)]["started"])
@@ -2778,10 +2089,7 @@ class Sessions(RepoCase):
         self.assertEqual(second["lanes"]["0"], first["lanes"]["0"])
         self.assertEqual([self.marker(i).count("ran") for i in range(3)], [1, 2, 1])
         self.assertEqual([second["lanes"][str(i)]["state"] for i in range(3)], ["ok", "ok", "ok"])
-        self.assertEqual(
-            self._landings(second),
-            ["chore(s0): land Lane %d (s%d)" % (i, i) for i in range(3)],
-        )
+        self.assertEqual(self._landings(second), ["feat(ship): s0", "feat(ship): s1", "feat(ship): s2"])
         self.assertEqual(second["msps"]["0"]["state"], run.MSP_COMMITTED)
         self.assertEqual(second["msps"]["0"]["gate"]["outcome"], "pass")
         self.assertTrue(run.succeeded(second))
@@ -2901,10 +2209,6 @@ def load_tests(loader, tests, pattern):
         GateReuse,
         Reconcile,
         Ship,
-        HouseFormat,
-        HouseFormatRoundTwo,
-        HouseFormatRoundThree,
-        HouseFormatRoundFour,
         Sessions,
         Clones,
     ):

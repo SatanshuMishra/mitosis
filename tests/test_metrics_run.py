@@ -174,6 +174,15 @@ print(sys.argv[1], file=sys.stderr)
 sys.exit(1)
 """
 
+RENDER = """
+import json
+import sys
+
+with open(sys.argv[3], encoding="utf-8") as handle:
+    facts = json.load(handle)
+print(json.dumps({"title": facts["title"], "body": "## Problem\\n" + " ".join(facts["problem"])}))
+"""
+
 
 def write(root, relative, content):
     path = os.path.join(root, relative)
@@ -196,6 +205,12 @@ def read_lines(path):
 def command(root, script_name, script, *placeholders):
     path = write(root, os.path.join("worker", script_name), script)
     return " ".join((shlex.quote(sys.executable), shlex.quote(path)) + placeholders)
+
+
+def renderer(elsewhere):
+    path = write(elsewhere, os.path.join("worker", "render.py"), "#!%s\n%s" % (sys.executable, RENDER))
+    os.chmod(path, 0o755)
+    return path
 
 
 def worker(elsewhere, config=None, *placeholders):
@@ -500,7 +515,7 @@ class PlanOnly(unittest.TestCase):
         self.assertEqual([line["event"] for line in lines], ["run.start", "plan", "run.end"])
         self.assertEqual(summary["mode"], "plan-only")
         self.assertEqual(summary["steps"], 3)
-        self.assertEqual(summary["lanes"], 2)
+        self.assertEqual(summary["lanes"], 3)
         self.assertEqual(summary["msps"], 2)
         self.assertEqual(summary["lane_width"], 2)
 
@@ -949,6 +964,10 @@ class NoWorkContent(unittest.TestCase):
                 "record the run",
                 "--pr-why",
                 "Callers need " + MARKER + ".",
+                "--pr-impact",
+                "Callers see " + MARKER + ".",
+                "--render-command",
+                renderer(elsewhere),
             )
             self.assertEqual(code, 22, out + err)
             self.assertIn(MARKER, out)

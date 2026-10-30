@@ -24,7 +24,7 @@ TERMS = (
     "24",
 )
 REMOVED = "never withholds a pull request"
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 
 
 def text_of(relative):
@@ -41,7 +41,7 @@ class RefereeDocs(unittest.TestCase):
                 self.assertEqual(missing, [], "%s does not mention %s" % (relative, missing))
                 self.assertNotIn(REMOVED, text)
 
-    def version_is_0_9_0(self):
+    def version_is_0_10_0(self):
         self.assertEqual(core.__version__, VERSION)
         with open(os.path.join(ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as handle:
             self.assertEqual(json.load(handle)["version"], VERSION)
@@ -58,7 +58,7 @@ def load_tests(loader, standard, pattern):
             RefereeDocs,
             (
                 "docs_describe_the_referee_and_the_new_exit_codes",
-                "version_is_0_9_0",
+                "version_is_0_10_0",
             ),
         ),
     ):

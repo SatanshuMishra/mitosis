@@ -58,7 +58,7 @@ def load_tests(loader, standard, pattern):
 
 REFUSING_COMMIT_MSG_HOOK = """#!/bin/sh
 case "$(head -n 1 "$1")" in
-  "chore("*) echo "refused: chore commits" >&2; exit 1 ;;
+  "chore"*) echo "refused: chore commits" >&2; exit 1 ;;
 esac
 exit 0
 """

@@ -90,6 +90,11 @@ with open(os.path.join(os.path.dirname(here), "pr.log"), "a", encoding="utf-8") 
 print("https://example.invalid/pull/1")
 '''
 
+RENDER = r'''
+import json
+print(json.dumps({"title": "feat: add the calculator", "body": "## Problem\nCallers need it."}))
+'''
+
 PR_FLAGS = (
     "--pr-type",
     "feat",
@@ -97,6 +102,8 @@ PR_FLAGS = (
     "add the calculator",
     "--pr-why",
     "Callers need it.",
+    "--pr-impact",
+    "Callers can add.",
 )
 
 
@@ -161,6 +168,8 @@ class Scratch:
         put(os.path.join(self.stubs, "worker.py"), WORKER)
         put(os.path.join(self.stubs, "accept.py"), ACCEPT)
         put(os.path.join(self.stubs, "pr.py"), PULL_REQUEST)
+        self.render = put(os.path.join(self.stubs, "render.py"), "#!%s\n%s" % (sys.executable, RENDER))
+        os.chmod(self.render, 0o755)
 
     def close(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -207,7 +216,11 @@ class Scratch:
         )
 
     def build(self, items, *extra, acceptance="unittest", push=False):
-        shipping = (*PR_FLAGS, "--pr-command", self.stub("pr.py", "{branch}")) if push else ("--no-push",)
+        shipping = (
+            (*PR_FLAGS, "--pr-command", self.stub("pr.py", "{branch}"), "--render-command", self.render)
+            if push
+            else ("--no-push",)
+        )
         return self.mitosis(
             "--items",
             items,
