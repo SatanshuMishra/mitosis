@@ -156,7 +156,10 @@ checkout, temp or transcript folder it writes into, only fill it, so a
 symbolic link it leaves never redirects a later write by mitosis. A
 `--worker-write` path that is, holds or lies inside the run directory,
 compared by resolved real path, refuses the run with exit 3 before any Worker
-or model call. Every git call mitosis makes
+or model call. When a Worker, gate or lock-stage command exits, mitosis ends
+its process group and, under `--worker-sandbox`, every process left in that
+run's sandbox before reading anything the run could change; a process it
+cannot end within 10 seconds stops the run with exit 14. Every git call mitosis makes
 drops the environment variables that shape a diff, widen a pathspec, locate
 another repository or point at other objects.
 

@@ -52,7 +52,7 @@ quotes or newlines lands as one argument and is never reinterpreted by a shell.
 | `--pr-type` `--pr-scope` `--pr-subject` `--pr-why` `--pr-door` `--pr-blast-radius` | nothing; they write every title and body | none |
 | `--decompose-command` | the structure pass that turns a document into unbriefed Steps | prompt, model, document |
 | `--brief-command` | one Worker per unbriefed Step, writing its task | prompt, model, step, document |
-| `--worker-sandbox` | each Worker, gate and lock-stage run under sandbox-exec, writing only its clone or checkout, temp, transcript and `--worker-write` paths; exit 3 without it | none |
+| `--worker-sandbox` | each Worker, gate and lock-stage run under sandbox-exec, writing only its clone or checkout, temp, transcript and `--worker-write` paths; exit 3 without it; exit 14 if a leftover process will not end | none |
 | `--worker-write` | nothing; one more path a sandboxed run may write; repeatable; exit 3 if it overlaps the run directory | none |
 | `--suite-command` | the full suite unmutated, then per surviving mutant; exit 1 kills only after an unmutated pass, else `weak` | worktree, report |
 | `--gate-classes` | nothing; a JSON `{test, class, reason}` list classing properties | none |
@@ -257,8 +257,8 @@ finished Lane's write-set from the clone's files, never running git there,
 and lands only those paths as one commit. A finished Lane is `held` until no
 Worker runs in its MSP, and a resume lands it without paying again. A write
 outside the write-set is judged by reconcile only, exit 6, or reverted as a
-referee write, exit 9; the gate never sees it. `--worker-sandbox` confines
-writes too; the JSON `sandbox` says sandbox-exec or `off`. Every git call
+referee write, exit 9; the gate never sees it. JSON `sandbox` says
+sandbox-exec or `off`. Every git call
 drops the diff, pathspec, repository and object variables. Producer merges run no hooks; a git command meeting
 another process's lock is retried, and every git call times out after 600
 seconds with a named error. A later change to a file whose Lane already

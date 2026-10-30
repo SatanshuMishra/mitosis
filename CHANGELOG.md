@@ -32,7 +32,10 @@ the build, and mutants come only from the lines an acceptance test runs.
   that is, holds or lies inside the run directory, compared by resolved real
   path, refuses the run with exit 3 before any Worker starts. A host without
   sandbox-exec refuses the run with exit 3 before any Worker starts, and the
-  JSON result's `sandbox` names sandbox-exec or `off`.
+  JSON result's `sandbox` names sandbox-exec or `off`. When a Worker, gate or
+  lock-stage command exits, mitosis ends its process group and every process
+  left in that run's sandbox before reading its output; a process it cannot
+  end within 10 seconds stops the run with exit 14.
 - Every git call drops the environment variables that shape a diff, widen a
   pathspec, locate another repository or point at other objects, so nothing
   the caller's shell sets changes what mitosis reads.
