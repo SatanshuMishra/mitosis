@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T05:45:22.912Z
+Updated: 2026-10-30T05:45:25.922Z
 Next ids: c8 D2 R3 S2
 
 ## Goal
@@ -23,7 +23,7 @@ FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override: ha
 
 ## Next step
 
-When the round 2 suite ends, render briefs with render-briefs.zsh 2 b7d8b44d1129306fac1020f49ac84dc76bfbf895 b8254af191eb645db4e8f46e54d3549d809ca1d3 f6cae57a66412b2ae33f561b5876595e3f36775b review/round-1/isolation.md and the five round 1 diagnosis files, and dispatch code-reviewer and security-reviewer only (no carried NOT MET criterion).
+When the round 2 reviewers finish, collect their arrays with the standards finding into round 2 candidates, then run the validator, record, verdict and outcome; loop or diagnose with at most 2 fix attempts per kind.
 
 Needs: D1, R1.
 
