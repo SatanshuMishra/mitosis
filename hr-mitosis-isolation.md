@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: parked
-Updated: 2026-10-30T18:46:20.286Z
+Updated: 2026-10-30T18:46:49.114Z
 Next ids: c8 D5 R3 S3
 
 ## Goal
@@ -19,7 +19,7 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-Integration is under way. SatanshuMishra/mitosis#29 merged into FEATURE (b37201d) and SatanshuMishra/mitosis#26 into main (1ca0ee5, 0.9.0). The integration worktree ~/.mitosis/runs/mitosis/hr-mitosis-isolation/integration holds an uncommitted merge of origin/main into FEATURE per D4, all conflicts resolved, with the receipt tests/test_pr_facts.py a_caller_classed_property_is_never_reported_proven red before and green after; its full suite is running on 3.9 and 3.14. Stages run by hand, not through pipeline drive.
+Integration is under way. SatanshuMishra/mitosis#29 merged into FEATURE (b37201d) and SatanshuMishra/mitosis#26 into main (1ca0ee5, 0.9.0). The integration worktree ~/.mitosis/runs/mitosis/hr-mitosis-isolation/integration holds an uncommitted merge of origin/main into FEATURE per D4, all conflicts resolved, with the receipt tests/test_pr_facts.py a_caller_classed_property_is_never_reported_proven red before and green after; its full suite is running on 3.9 and 3.14 in the background, results in the session scratchpad as int-suite-3.9.txt and int-suite-3.14.txt. Stages run by hand, not through pipeline drive.
 
 ## Next step
 
