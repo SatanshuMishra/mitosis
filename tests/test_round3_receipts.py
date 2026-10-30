@@ -85,7 +85,12 @@ class Receipts(unittest.TestCase):
     def a_fresh_run_refuses_a_worker_write_that_overlaps_the_run_folder(self):
         for label, spelling, given in self._cases(self.scratch.repo):
             with self.subTest(relation=label, spelling=spelling):
-                self._assert_refused(self._build(given), given)
+                completed = self._build(given)
+                self._assert_refused(completed, given)
+                self.assertFalse(
+                    os.path.exists(self.scratch.run_dir),
+                    "mitosis wrote the run folder before refusing" + tail(completed),
+                )
 
     def a_resumed_run_refuses_a_worker_write_that_overlaps_the_run_folder(self):
         self._plan_only()
