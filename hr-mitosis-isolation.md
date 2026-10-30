@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T01:41:29.109Z
+Updated: 2026-10-30T02:01:05.332Z
 Next ids: c8 D2 R3 S2
 
 ## Goal
@@ -19,7 +19,7 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-Stage 2 setup done: FEATURE feat/hr-mitosis-isolation at 58f258c; run home holds worker-rules.txt (with prevent standards), CHARTER.md (19 Locked lines), dispatch.zsh, run.zsh, items.json (check-author removed) and graph.json. A check-author agent is writing the seven locked tests (29 acceptance lines) in the lock-tree worktree under the run home (O2 override). Base suite at 58f258c passes 718 of 718 in a clean worktree; the owner's checkout fails 2 only because of R1's files.
+Stage 2 setup done: FEATURE feat/hr-mitosis-isolation at 58f258c; run home holds worker-rules.txt (with prevent standards), CHARTER.md (19 Locked lines), dispatch.zsh, run.zsh, items.json (check-author removed) and graph.json. The seven locked tests (29 acceptance lines) are written, uncommitted, in the lock-tree worktree under the run home (O2 override); all 29 lines exit 1 at base (lock-verify.txt), and a full-suite run there (lock-suite.txt) is pending before the lock commit. Base suite at 58f258c passes 718 of 718 in a clean worktree; the owner's checkout fails 2 only because of R1's files.
 
 ## Next step
 
