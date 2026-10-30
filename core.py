@@ -1296,11 +1296,12 @@ def _lane_read_set(items, lane, packs, cap=CONTEXT_CAP, owned=()):
     return list(read[:limit]), dropped + len(read) - len(read[:limit])
 
 
-SHARED_TREE_LINE = (
-    "Other Workers may be editing other files in this same worktree right now. Change only "
-    "the files in your write-set, and run no command that changes the repository's index or "
-    "history: no add, commit, stash, reset, checkout, restore, clean, merge or rebase. mitosis "
-    "commits your work when you return."
+CLONE_LINE = (
+    "You build in a clone of your own that no other Worker shares. Change only the files in your "
+    "write-set: when you return, mitosis copies them from the clone's working tree and commits "
+    "them, and it never reads the clone's commits, branches or other refs, so do not rely on "
+    "them. Run no command that changes the repository's index or history: no add, commit, "
+    "stash, reset, checkout, restore, clean, merge or rebase."
 )
 
 
@@ -1359,7 +1360,7 @@ def brief_text(brief):
             body.append("   Assumption: %s" % assumption)
     footer = [
         "Write-set for this Lane, the only files you may edit: %s" % ", ".join(brief["write_set"]),
-        SHARED_TREE_LINE,
+        CLONE_LINE,
     ] + (
         [referee_line(brief.get("locked") or ())]
         if brief.get("role") != CHECK_AUTHOR or brief.get("locked")

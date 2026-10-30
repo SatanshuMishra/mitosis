@@ -781,12 +781,13 @@ class ReadSetCap(unittest.TestCase):
         self.assertEqual((len(brief["read_set"]), brief["read_overflow"]), (5, 7))
 
 
-class SharedTree(unittest.TestCase):
-    def every_lane_brief_says_the_worktree_is_shared(self):
+class OwnClone(unittest.TestCase):
+    def every_lane_brief_says_the_worker_builds_in_its_own_clone(self):
         plan = core.plan([step("a", ["a.py"]), step("b", ["b.py"], msp="m"), step("c", ["c.py"], msp="m")])
         for brief in plan["briefs"]:
-            self.assertIn(core.SHARED_TREE_LINE, brief["text"])
+            self.assertIn(core.CLONE_LINE, brief["text"])
             self.assertIn("changes the repository's index or history", brief["text"])
+            self.assertNotIn("same worktree", brief["text"])
 
 
 class GraphInput(unittest.TestCase):
@@ -1266,7 +1267,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, SharedTree, ReadSetCap, Sessions, Referee, CheckAuthor):
+    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, OwnClone, ReadSetCap, Sessions, Referee, CheckAuthor):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 
