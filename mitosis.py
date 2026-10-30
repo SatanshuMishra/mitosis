@@ -133,6 +133,7 @@ PLACEHOLDER_HELP = {
     "brief": " ".join("{%s}" % key for key in BRIEF_PLACEHOLDERS),
     "acceptance": "{file} {test} {worktree}",
     "gate-setup": "{worktree}",
+    "suite": "{worktree} {report}",
     "pull-request": "{branch} {base} {title} {body} {worktree} {msp} {remote}",
 }
 
@@ -152,6 +153,7 @@ STAGE_FLAG_NAMES = (
     "--proven-head",
     "--worker-sandbox",
     "--worker-write",
+    "--suite-command",
 )
 
 PROVEN_HEAD = re.compile(r"^(.+)=([0-9a-f]{7,40})$")
@@ -267,6 +269,14 @@ FLAG_SPECS = {
         "folder from the repository root; only what it writes at new top-level names survives "
         "each run's reset; a non-zero exit or a timeout holds the MSP back "
         "gate-failed" % PLACEHOLDER_HELP["gate-setup"],
+    },
+    "--suite-command": {
+        "metavar": "TEMPLATE",
+        "help": "the project's full test suite, run in the gate's checkout once for each "
+        "mutant that every acceptance test of a property survives, with the run's --timeout; "
+        "placeholders %s, where {report} is a fresh path for an optional JUnit XML report; "
+        "exit 1 kills the mutant and makes the property covered-elsewhere when every survivor "
+        "is killed; any other exit keeps the property weak" % PLACEHOLDER_HELP["suite"],
     },
     "--pr-command": {
         "metavar": "TEMPLATE",
@@ -569,6 +579,7 @@ def check_templates(args):
         ("brief", args.brief_command),
         ("acceptance", args.acceptance_command),
         ("gate-setup", args.gate_setup),
+        ("suite", args.suite_command),
         ("pull-request", args.pr_command),
     ):
         if template is None:
@@ -1293,11 +1304,19 @@ def _tally(counts):
     return ", ".join("%d %s" % (counts.get(key, 0), key) for key in core.GATE_OUTCOMES)
 
 
-def _mutant_line(record):
+def _mutant_line(record, mutation=None, killers=()):
     if not isinstance(record, dict):
         return None
     killed = record.get("killed")
     tried = _n(record.get("tried") or 0, "mutant") + " tried"
+    if mutation == "not-applicable" and not record.get("tried"):
+        return "no mutant tried: the test loaded none of the Step's Python files"
+    if mutation == "not-applicable":
+        return tried + ", none killed it; the Step added no code, so mutation does not apply"
+    if mutation == "covered-elsewhere":
+        return tried + ", none killed it; the suite killed each, failing %s" % (
+            ", ".join(killers) or "tests it did not name"
+        )
     if not isinstance(killed, dict):
         return tried + ", none killed it"
     return tried + ", killed by %s:%s changed by %s" % (
@@ -1327,7 +1346,9 @@ def gate_lines(plan, state):
         totals = {key: totals[key] + counts.get(key, 0) for key in totals}
         lines = lines + ("MSP %s: %s (%s)" % (_label(plan, index), gate.get("outcome"), _tally(counts)),)
         for entry in gate.get("properties") or []:
-            tried = _mutant_line(entry.get("mutants"))
+            tried = _mutant_line(
+                entry.get("mutants"), entry.get("mutation"), tuple(entry.get("killers") or ())
+            )
             if entry.get("outcome") == "pass" and tried is None:
                 continue
             where = "%s::%s" % (entry.get("file"), entry.get("test")) if entry.get("file") else entry.get("step")
@@ -1712,8 +1733,15 @@ def _msp_summary(plan, state):
                     "commit": gate.get("commit"),
                     "properties": [
                         {
-                            key: entry.get(key)
-                            for key in ("file", "test", "step", "outcome", "reason", "mutants")
+                            **{
+                                key: entry.get(key)
+                                for key in ("file", "test", "step", "outcome", "reason", "mutants")
+                            },
+                            **{
+                                key: entry[key]
+                                for key in ("mutation", "coverage", "killers")
+                                if key in entry
+                            },
                         }
                         for entry in gate.get("properties") or []
                     ],
@@ -1801,7 +1829,17 @@ def _attention(plan, lanes, msps):
             "MSP %s: %s::%s passed on red and green alone; its Step added no line to mutate"
             % (msp["msp"], entry["file"], entry["test"])
             for entry in msp["gate"]["properties"]
-            if entry["outcome"] == "pass" and (entry["mutants"] or {}).get("tried") == 0
+            if entry["outcome"] == "pass"
+            and (entry["mutants"] or {}).get("tried") == 0
+            and entry.get("mutation") != "not-applicable"
+        )
+        lines.extend(
+            "MSP %s: %s::%s passed without a mutant; its test loaded none of the Step's Python "
+            "files" % (msp["msp"], entry["file"], entry["test"])
+            for entry in msp["gate"]["properties"]
+            if entry["outcome"] == "pass"
+            and (entry["mutants"] or {}).get("tried") == 0
+            and entry.get("mutation") == "not-applicable"
         )
         if msp["crossing"]:
             lines.append(
@@ -1983,6 +2021,7 @@ def execute(args, plan, models, run_dir, repo, root, base=None):
             env=recorder_of(args).env,
             trajectory=args.trajectory,
             gate_setup=args.gate_setup,
+            suite_command=args.suite_command,
             base_commit=base,
             worker_sandbox=args.worker_sandbox,
             worker_writes=tuple(args.worker_write),
