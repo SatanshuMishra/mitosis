@@ -1,6 +1,10 @@
 import os
+import re
 import shlex
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -8,9 +12,12 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
+import isolation
+import run
 import test_mutant_coverage as coverage
 from test_mutant_coverage import (
     ADDS,
+    GIT_IDENTITY,
     CALL_ONLY_TEST,
     CORRECT_ADD,
     OTHER_TEST,
@@ -77,6 +84,8 @@ MIXED_HOOKS = (
     ),
     ("hook.sh", "#!/bin/sh\n[ \"$#\" -gt 3 ]\n", "-gt 3 ]", "number +1"),
 )
+
+FOLDED_GIT = (".GIT", ".Git", ".gIT")
 
 
 def escaping(targets):
@@ -247,6 +256,68 @@ class Receipts(unittest.TestCase):
                 scratch.close()
                 self.scratch = None
 
+    def _folded_clone(self):
+        folder = os.path.realpath(tempfile.mkdtemp(prefix="mitosis-folded-"))
+        self.addCleanup(shutil.rmtree, folder, True)
+        checkout = os.path.join(folder, "checkout")
+        clone = os.path.join(folder, "clone")
+        env = {**os.environ, **GIT_IDENTITY}
+        for args in (
+            ["init", "-q", "-b", "main", checkout],
+            ["-C", checkout, "commit", "-q", "--allow-empty", "-m", "seed"],
+            ["clone", "-q", "--no-local", checkout, clone],
+        ):
+            subprocess.run(["git", *args], env=env, check=True, capture_output=True, timeout=60)
+        put(os.path.join(clone, "a.py"), "A = 1\n")
+        return checkout, clone
+
+    def _outside(self, checkout, clone):
+        head = run.branch_commit(checkout, "main", required=True)
+        return isolation.outside_writes(
+            clone, checkout, run._committed_entries(checkout, head), ("a.py",)
+        )
+
+    def a_case_folded_nested_git_folder_is_never_replayed(self):
+        for name in FOLDED_GIT:
+            with self.subTest(folder=name):
+                checkout, clone = self._folded_clone()
+                put(os.path.join(clone, "sub", name, "HEAD"), "ref: refs/heads/main\n")
+                outside = self._outside(checkout, clone)
+                self.assertEqual(outside["writes"], {})
+                self.assertEqual(outside["unreplayed"], ["sub/" + name])
+
+    def a_case_folded_top_level_git_folder_is_never_replayed(self):
+        for name in FOLDED_GIT:
+            with self.subTest(folder=name):
+                checkout, clone = self._folded_clone()
+                os.rename(os.path.join(clone, ".git"), os.path.join(clone, name))
+                outside = self._outside(checkout, clone)
+                self.assertEqual(outside["writes"], {})
+                self.assertEqual(outside["unreplayed"], [name])
+
+    def a_worker_written_nested_git_folder_is_reported_undeclared(self):
+        scratch = self._scratch()
+        items = scratch.items([step("first", ["a.py"], "demo")])
+        scratch.jobs(
+            {
+                "first": {
+                    "writes": {"a.py": "A = 1\n", "sub/.GIT/HEAD": "ref: refs/heads/main\n"},
+                    "declared": ["a.py"],
+                }
+            }
+        )
+        completed = scratch.build(items)
+        findings = [
+            finding
+            for finding in summary_of(completed).get("findings") or []
+            if finding.get("kind") == "undeclared"
+            and re.search(r"(?<![\w/.-])sub/\.GIT(?![\w.-])", finding.get("detail") or "")
+        ]
+        self.assertEqual(len(findings), 1, "undeclared findings naming sub/.GIT" + tail(completed))
+        self.assertEqual(scratch.checked("ls-tree", "mitosis/demo", "sub"), "")
+        self.assertFalse(os.path.lexists(os.path.join(scratch.run_dir, "trees", "demo", "sub")))
+        self.assertEqual(completed.returncode, 6, "mitosis exit code" + tail(completed))
+
 
 def load_tests(loader, standard, pattern):
     suite = unittest.TestSuite()
@@ -261,6 +332,9 @@ def load_tests(loader, standard, pattern):
                 "a_suite_red_before_any_mutant_keeps_the_property_weak",
                 "a_suite_that_cannot_import_keeps_the_property_weak",
                 "a_hook_beside_an_unloaded_python_file_is_still_sampled",
+                "a_case_folded_nested_git_folder_is_never_replayed",
+                "a_case_folded_top_level_git_folder_is_never_replayed",
+                "a_worker_written_nested_git_folder_is_reported_undeclared",
             ),
         ),
     ):
