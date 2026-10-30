@@ -603,12 +603,13 @@ def kill_tree(proc):
         proc.kill()
 
 
-def run_command(argv, cwd, timeout, stdout_path, stderr_path, env=None):
+def run_command(argv, cwd, timeout, stdout_path, stderr_path, env=None, sandbox=None):
+    launched, launch_env = isolation.confined(argv, env, sandbox)
     with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
         proc = subprocess.Popen(
-            argv,
+            launched,
             cwd=cwd,
-            env=env,
+            env=launch_env,
             stdout=out,
             stderr=err,
             stdin=subprocess.DEVNULL,
@@ -1564,9 +1565,9 @@ def revert_implementation(tree, branch, head, base, paths, message=RESTORE_MESSA
     return list(targets)
 
 
-def run_acceptance(command, tree, entry, log_path, timeout, env=None):
+def run_acceptance(command, tree, entry, log_path, timeout, env=None, sandbox=None):
     argv = build_argv(command, {"file": entry["file"], "test": entry["test"], "worktree": tree})
-    return run_command(argv, tree, timeout, log_path, log_path + ".err", env)
+    return run_command(argv, tree, timeout, log_path, log_path + ".err", env, sandbox)
 
 
 def probe_outcome(with_work, reverted):
@@ -1949,7 +1950,7 @@ def property_mutants(plan, msp, tree, base, commit, entry, trace=None):
     return property_sample(plan, msp, tree, base, commit, entry, trace)[0]
 
 
-def _run_mutant(command, folder, entry, mutant, log_path, timeout, env, reset):
+def _run_mutant(command, folder, entry, mutant, log_path, timeout, env, reset, sandbox=None):
     written = reset()
     path = mutant["file"]
     mutated = mutants.apply(_read_text(folder, path), mutant)
@@ -1957,7 +1958,7 @@ def _run_mutant(command, folder, entry, mutant, log_path, timeout, env, reset):
         return None, written
     clear_caches_beside(folder, (path,))
     _write_text(folder, path, mutated)
-    return run_acceptance(command, folder, entry, log_path, timeout, env), written
+    return run_acceptance(command, folder, entry, log_path, timeout, env, sandbox), written
 
 
 def _mutant_place(mutant):
@@ -2016,7 +2017,7 @@ def suite_killers(report, log_path):
     return tuple(sorted(set(_logged_failures(text))))
 
 
-def _run_suite_mutant(suite, folder, mutant, report, log_path, timeout, env, reset):
+def _run_suite_mutant(suite, folder, mutant, report, log_path, timeout, env, reset, sandbox=None):
     written = reset()
     path = mutant["file"]
     mutated = mutants.apply(_read_text(folder, path), mutant)
@@ -2026,10 +2027,12 @@ def _run_suite_mutant(suite, folder, mutant, report, log_path, timeout, env, res
     _write_text(folder, path, mutated)
     _removed(report)
     argv = build_argv(suite, {"worktree": folder, "report": report})
-    return run_command(argv, folder, timeout, log_path, log_path + ".err", env), written
+    return run_command(argv, folder, timeout, log_path, log_path + ".err", env, sandbox), written
 
 
-def _suite_verdicts(suite, survivors, index, log_dir, timeout, env, folder, reset, seen):
+def _suite_verdicts(
+    suite, survivors, index, log_dir, timeout, env, folder, reset, seen, sandbox=None
+):
     written = ()
     seconds = 0
     verdicts = ()
@@ -2040,7 +2043,7 @@ def _suite_verdicts(suite, survivors, index, log_dir, timeout, env, folder, rese
             log_path = os.path.join(log_dir, "%d-suite-%d.log" % (index, position))
             (ran, left), spent = _timed(
                 lambda mutant=mutant, report=report, log_path=log_path: _run_suite_mutant(
-                    suite, folder, mutant, report, log_path, timeout, env, reset
+                    suite, folder, mutant, report, log_path, timeout, env, reset, sandbox
                 )
             )
             seconds = seconds + spent
@@ -2083,6 +2086,7 @@ def mutant_verdict(
     trace=None,
     suite=None,
     seen=None,
+    sandbox=None,
 ):
     tried = ()
     written = ()
@@ -2125,6 +2129,7 @@ def mutant_verdict(
                 timeout,
                 env,
                 reset,
+                sandbox,
             )
         )
         seconds = seconds + spent
@@ -2162,7 +2167,7 @@ def mutant_verdict(
     if suite is None:
         return _weak(entry, tried[0], record, coverage, seconds), written, seen
     verdicts, left, spent, seen = _suite_verdicts(
-        suite, tried, index, log_dir, timeout, env, folder, reset, seen
+        suite, tried, index, log_dir, timeout, env, folder, reset, seen, sandbox
     )
     written = written + left
     seconds = seconds + spent
@@ -2268,6 +2273,7 @@ def gate(
     suite=None,
     classes=None,
     recorded_gate=None,
+    sandbox=None,
 ):
     commit = commit_before_gate(plan, msp, tree) if head is None else head
     properties = _reused(
@@ -2287,6 +2293,7 @@ def gate(
     _remove_gate_folders(log_dir)
     folder = tempfile.mkdtemp(prefix=GATE_FOLDER_PREFIX, dir=log_dir)
     try:
+        confinement = isolation.gate_confinement(sandbox, log_dir)
         result, written = _gate_runs(
             plan,
             msp,
@@ -2303,9 +2310,11 @@ def gate(
             setup,
             replayed or {},
             suite,
+            confinement,
         )
     finally:
         shutil.rmtree(folder, ignore_errors=True)
+        isolation.release_gate(isolation.gate_folders(log_dir))
     referee_written = sorted(set(written))
     return {
         **result,
@@ -2340,6 +2349,7 @@ def _gate_runs(
     setup,
     replayed,
     suite=None,
+    sandbox=None,
 ):
     locked = tuple(plan.get("locked") or ())
     implementation = implementation_paths(plan, msp)
@@ -2351,7 +2361,7 @@ def _gate_runs(
     kept = (
         _link_dependencies(repo, folder, top)
         if setup is None
-        else _gate_setup(setup, folder, top, log_dir, timeout, env)
+        else _gate_setup(setup, folder, top, log_dir, timeout, env, sandbox)
     )
     setup_written = (
         ()
@@ -2375,6 +2385,7 @@ def _gate_runs(
                 os.path.join(log_dir, "%d-%s.log" % (index, name)),
                 timeout,
                 run_env,
+                sandbox,
             )
         )
 
@@ -2435,6 +2446,7 @@ def _gate_runs(
             traces[index],
             suite,
             seen,
+            sandbox,
         )
         verdicts = verdicts + ((toothed, left),)
     toothed = tuple(entry for entry, _ in verdicts)
@@ -2772,11 +2784,17 @@ def _link_dependencies(repo, folder, top):
     return names
 
 
-def _gate_setup(setup, folder, top, log_dir, timeout, env):
+def _gate_setup(setup, folder, top, log_dir, timeout, env, sandbox=None):
     out = os.path.join(log_dir, "gate-setup.log")
     try:
         code, timed_out = run_command(
-            build_argv(setup, {"worktree": folder}), folder, timeout, out, out + ".err", env
+            build_argv(setup, {"worktree": folder}),
+            folder,
+            timeout,
+            out,
+            out + ".err",
+            env,
+            sandbox,
         )
     except OSError as error:
         raise GateSetupError("the --gate-setup command could not start in %s: %s" % (folder, error))
@@ -3584,6 +3602,7 @@ def _gate_stage(plan, msp, tree, settings, head, replayed, recorded_gate=None):
             settings.get("suite_command"),
             settings.get("gate_classes"),
             recorded_gate,
+            settings.get("sandbox"),
         )
     except (OSError, GitError, GateSetupError, TraceError, subprocess.SubprocessError) as error:
         return {"gate": None, "gate_error": str(error)}
@@ -4153,13 +4172,14 @@ def _locked_tree_faults(plan, settings, base, stored):
     _remove_gate_folders(log_dir)
     folder = tempfile.mkdtemp(prefix=GATE_FOLDER_PREFIX, dir=log_dir)
     try:
+        confinement = isolation.gate_confinement(settings.get("sandbox"), log_dir)
         reset_gate_folder(repo, folder, target, (), locked)
         top = frozenset(_parts(path)[0] for path in target)
         setup = settings["gate_setup"]
         kept = (
             _link_dependencies(repo, folder, top)
             if setup is None
-            else _gate_setup(setup, folder, top, log_dir, timeout, env)
+            else _gate_setup(setup, folder, top, log_dir, timeout, env, confinement)
         )
         faults = ()
         for position, check in enumerate(_locked_checks(plan)):
@@ -4171,12 +4191,14 @@ def _locked_tree_faults(plan, settings, base, stored):
                 os.path.join(log_dir, "%d-locked.log" % position),
                 timeout,
                 env,
+                confinement,
             )
             fault = _lock_fault(check, code, timed_out)
             faults = faults if fault is None else faults + (fault,)
         return faults
     finally:
         shutil.rmtree(folder, ignore_errors=True)
+        isolation.release_gate(isolation.gate_folders(log_dir))
 
 
 def _removed(path):
@@ -4418,6 +4440,7 @@ def execute(
         "gate_setup": gate_setup,
         "suite_command": suite_command,
         "gate_classes": tuple(gate_classes or ()),
+        "sandbox": sandbox,
     }
     os.makedirs(run_dir, exist_ok=True)
     write_json(os.path.join(run_dir, PLAN_FILE), plan)

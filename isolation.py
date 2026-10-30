@@ -139,23 +139,53 @@ def sandbox_profile(allowed):
     )
 
 
+def _confinement(sandbox, profile, temporary, writable):
+    allowed = tuple(os.path.realpath(path) for path in writable) + tuple(
+        os.path.realpath(path) for path in sandbox["writes"]
+    )
+    with open(profile, "w", encoding="utf-8") as handle:
+        handle.write(sandbox_profile((os.path.realpath(temporary),) + allowed))
+    return {"program": sandbox["program"], "profile": profile, "tmp": os.path.realpath(temporary)}
+
+
+def confined(argv, env, confinement):
+    if confinement is None:
+        return list(argv), env
+    return (
+        [confinement["program"], "-f", confinement["profile"], *argv],
+        {**(env if env is not None else os.environ), "TMPDIR": confinement["tmp"]},
+    )
+
+
 def worker_launch(argv, folders, sandbox, env):
     if sandbox is None:
         return list(argv), env
     os.makedirs(folders["tmp"])
     transcript = transcript_folder(worker_home(env), folders["clone"])
     os.makedirs(transcript, exist_ok=True)
-    temporary = os.path.realpath(folders["tmp"])
-    allowed = (
-        os.path.realpath(folders["clone"]),
-        temporary,
-        os.path.realpath(transcript),
-    ) + tuple(os.path.realpath(path) for path in sandbox["writes"])
-    profile = sandbox_profile(allowed)
-    with open(folders["profile"], "w", encoding="utf-8") as handle:
-        handle.write(profile)
-    launched = [sandbox["program"], "-f", folders["profile"], *argv]
-    return launched, {**(env if env is not None else os.environ), "TMPDIR": temporary}
+    confinement = _confinement(
+        sandbox, folders["profile"], folders["tmp"], (folders["clone"], transcript)
+    )
+    return confined(argv, env, confinement)
+
+
+def gate_folders(log_dir):
+    root = os.path.abspath(log_dir)
+    return {"log": root, "tmp": root + ".tmp", "profile": root + ".sb"}
+
+
+def gate_confinement(sandbox, log_dir):
+    if sandbox is None:
+        return None
+    folders = gate_folders(log_dir)
+    release_gate(folders)
+    os.makedirs(folders["tmp"])
+    return _confinement(sandbox, folders["profile"], folders["tmp"], (folders["log"],))
+
+
+def release_gate(folders):
+    for key in ("tmp", "profile"):
+        _remove_left(folders[key])
 
 
 def _clone_entry(clone, path):
