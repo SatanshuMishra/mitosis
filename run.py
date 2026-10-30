@@ -1922,7 +1922,7 @@ def _sampled(found):
 def property_sample(plan, msp, tree, base, commit, entry, trace=None):
     paths = tuple(step_implementation_paths(plan, msp, entry["step"]))
     if not paths:
-        return (), SAMPLED_CODE
+        return (), SAMPLED_CODE, False
     pairs, texts = _step_added(tree, base, commit, paths)
     added = dict(pairs)
     held = dict(texts)
@@ -1932,22 +1932,23 @@ def property_sample(plan, msp, tree, base, commit, entry, trace=None):
 
     code = {path: lines for path, lines in added.items() if mutants.is_mutable(path)}
     if not code:
-        return _sampled(mutants.fallback(added, read)), SAMPLED_DATA
+        return _sampled(mutants.fallback(added, read)), SAMPLED_DATA, False
     every_line = _sampled(mutants.compute(added, read) or mutants.fallback(added, read))
     python = tuple(sorted(path for path in code if _is_python(path)))
     if trace is None or not python:
-        return every_line, SAMPLED_CODE
+        return every_line, SAMPLED_CODE, False
     others = {path: lines for path, lines in code.items() if path not in python}
     if not any(path in trace["loaded"] for path in python):
         if not others:
-            return (), SAMPLED_UNLOADED
-        return _sampled(mutants.compute(others, read) or mutants.fallback(others, read)), SAMPLED_CODE
+            return (), SAMPLED_UNLOADED, True
+        found = mutants.compute(others, read) or mutants.fallback(others, read)
+        return _sampled(found), SAMPLED_CODE, False
     candidates = {path: _candidate_lines(path, code[path], read, trace) for path in python}
     executed = {path: lines for path, lines in candidates.items() if lines}
     if not executed:
-        return every_line, SAMPLED_CODE
+        return every_line, SAMPLED_CODE, False
     found = mutants.compute({**executed, **others}, read) or mutants.fallback(added, read)
-    return _sampled(found), SAMPLED_CODE
+    return _sampled(found), SAMPLED_CODE, True
 
 
 def property_mutants(plan, msp, tree, base, commit, entry, trace=None):
@@ -2135,7 +2136,8 @@ def mutant_verdict(
             written,
             seen,
         )
-    sampled, kind = property_sample(plan, msp, tree, base, commit, entry, trace)
+    sampled, kind, traced = property_sample(plan, msp, tree, base, commit, entry, trace)
+    coverage = "traced" if traced else "untraced"
     if kind == SAMPLED_UNLOADED:
         return (
             {

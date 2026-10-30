@@ -318,6 +318,32 @@ class Receipts(unittest.TestCase):
         self.assertFalse(os.path.lexists(os.path.join(scratch.run_dir, "trees", "demo", "sub")))
         self.assertEqual(completed.returncode, 6, "mitosis exit code" + tail(completed))
 
+    def a_step_with_no_traced_python_is_marked_untraced(self):
+        hook, text, needle, op = MIXED_HOOKS[0]
+        for files in ((hook,), (hook, "helper.py")):
+            with self.subTest(files=files):
+                scratch = self._scratch({READS["file"]: HOOK_TEST % (hook, needle)})
+                items = scratch.items([step("hooks", list(files), "demo", acceptance=[READS])])
+                writes = {hook: text, "helper.py": HELPER}
+                scratch.jobs({"hooks": {"writes": {path: writes[path] for path in files}}})
+                completed = scratch.build(items, acceptance="keep")
+                self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
+                first = self._first_property(completed)
+                self.assertEqual(first.get("mutation"), "killed")
+                self.assertEqual(first.get("coverage"), "untraced")
+                scratch.close()
+                self.scratch = None
+
+    def a_step_whose_python_ran_is_marked_traced(self):
+        scratch = self._scratch({TEST_FILE: EXACT_TEST})
+        items = scratch.items([step("add", ["calc.py"], "demo", acceptance=[ADDS])])
+        scratch.jobs({"add": {"writes": {"calc.py": CORRECT_ADD}}})
+        completed = scratch.build(items, acceptance="keep")
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
+        first = self._first_property(completed)
+        self.assertEqual(first.get("mutation"), "killed")
+        self.assertEqual(first.get("coverage"), "traced")
+
 
 def load_tests(loader, standard, pattern):
     suite = unittest.TestSuite()
@@ -335,6 +361,8 @@ def load_tests(loader, standard, pattern):
                 "a_case_folded_nested_git_folder_is_never_replayed",
                 "a_case_folded_top_level_git_folder_is_never_replayed",
                 "a_worker_written_nested_git_folder_is_reported_undeclared",
+                "a_step_with_no_traced_python_is_marked_untraced",
+                "a_step_whose_python_ran_is_marked_traced",
             ),
         ),
     ):
