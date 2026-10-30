@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: parked
-Updated: 2026-10-30T06:48:03.436Z
+Updated: 2026-10-30T06:52:00.460Z
 Next ids: c8 D3 R3 S2
 
 ## Goal
@@ -19,7 +19,7 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override), pushed. MSP branch mitosis/isolation is pushed at bb7adda as SatanshuMishra/mitosis#29 (ready, assigned, bound, Auto-fix on); the driver has told the owner to hold its merge until round 3 is green. Round 3: the driver escalated two gaps the round 2 fix left documented, W1 (a --worker-write path overlapping the run folder) and W2 (a confined process outliving its run); fix agents run one after the other in the MSP worktree (briefs in review/round-3/). Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md. Four assumptions are in review/isolation.assumptions.txt.
+FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override), pushed. MSP branch mitosis/isolation is pushed at bb7adda as SatanshuMishra/mitosis#29 (ready, assigned, bound, Auto-fix on); the driver has told the owner to hold its merge until round 3 is green. Round 3: the driver escalated two gaps the round 2 fix left documented, W1 (a --worker-write path overlapping the run folder) and W2 (a confined process outliving its run); fix agents run one after the other in the MSP worktree (briefs in review/round-3/). CI on #29 is red on 3.9 and 3.14: the docs identifier lint fails on ADRs 0011 and 0012; a docs fix agent is rewording them (defect P9). Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md. Four assumptions are in review/isolation.assumptions.txt.
 
 ## Next step
 
