@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T01:33:44.000Z
+Updated: 2026-10-30T01:38:36.587Z
 Next ids: c8 D2 R3 S1
 
 ## Goal
@@ -19,11 +19,11 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-Stage 1 starting: main synced at 58f258c, lighthouse readiness ready with nothing open, receipts.config.json already committed so receipts init is skipped.
+Stage 2 setup done: FEATURE feat/hr-mitosis-isolation at 58f258c; run home holds worker-rules.txt (with prevent standards), CHARTER.md (19 Locked lines), dispatch.zsh, run.zsh, items.json (check-author removed) and graph.json. A check-author agent is writing the seven locked tests in the lock-tree worktree under the run home (O2 override); a base-suite rerun there is naming the 2 failures main already has (718 tests).
 
 ## Next step
 
-Run pipeline feature-branch --type feat, write worker-rules.txt, prevent, CHARTER.md, dispatch.zsh and run.zsh in ~/.mitosis/mitosis/hr-mitosis-isolation/, then dispatch a fresh check-author agent to write and lock the seven test files on FEATURE (O2 override), then plan-only and build.
+When the check-author returns, confirm every acceptance line exits 1 at base and run 2's locked tests still pass, commit the seven files on FEATURE as "test: lock the acceptance checks" in lock-tree, push, remove lock-tree, then run run.zsh --plan-only.
 
 Needs: D1, R1.
 
