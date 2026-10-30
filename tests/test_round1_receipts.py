@@ -34,6 +34,21 @@ EXACT_TEST = (
 )
 
 
+RED_TEST = (
+    "import unittest\n"
+    "\n"
+    "\n"
+    "class Broken(unittest.TestCase):\n"
+    "    def test_unrelated(self):\n"
+    "        self.fail(\"red before any mutant\")\n"
+)
+UNIMPORTABLE_TEST = "import module_that_is_not_installed\n"
+RED_SUITE_REASON = (
+    "no mutant of the work fails it: it still passes when calc.py:2 changes by return -> None, "
+    "and the suite fails before any mutant is applied (exit 1)"
+)
+
+
 def escaping(targets):
     return (
         "for _path in %r:\n"
@@ -158,6 +173,30 @@ class Receipts(unittest.TestCase):
         self.assertEqual((summary_of(completed).get("lock") or {}).get("state"), "ok")
         self._assert_confined(completed)
 
+    def _red_suite_run(self, red):
+        scratch = self._scratch(
+            {TEST_FILE: CALL_ONLY_TEST, "tests/test_other.py": OTHER_TEST, "tests/test_red.py": red}
+        )
+        items = scratch.items([step("add", ["calc.py"], "demo", acceptance=[ADDS])])
+        scratch.jobs({"add": {"writes": {"calc.py": CORRECT_ADD}}})
+        return scratch.build(
+            items, "--suite-command", scratch.stub("suite.py", "{worktree}"), acceptance="keep"
+        )
+
+    def _assert_weak_on_a_red_suite(self, completed):
+        self.assertEqual(completed.returncode, 24, "mitosis exit code" + tail(completed))
+        first = self._first_property(completed)
+        self.assertEqual(first["outcome"], "weak")
+        self.assertEqual(first.get("mutation"), "weak")
+        self.assertEqual(first["reason"], RED_SUITE_REASON)
+        self.assertNotIn("killers", first)
+
+    def a_suite_red_before_any_mutant_keeps_the_property_weak(self):
+        self._assert_weak_on_a_red_suite(self._red_suite_run(RED_TEST))
+
+    def a_suite_that_cannot_import_keeps_the_property_weak(self):
+        self._assert_weak_on_a_red_suite(self._red_suite_run(UNIMPORTABLE_TEST))
+
 
 def load_tests(loader, standard, pattern):
     suite = unittest.TestSuite()
@@ -169,6 +208,8 @@ def load_tests(loader, standard, pattern):
                 "sandboxed_worker_code_cannot_write_outside_at_the_suite_runs",
                 "sandboxed_worker_code_cannot_write_outside_at_the_gate_setup",
                 "sandboxed_check_author_code_cannot_write_outside_at_the_lock_stage",
+                "a_suite_red_before_any_mutant_keeps_the_property_weak",
+                "a_suite_that_cannot_import_keeps_the_property_weak",
             ),
         ),
     ):
