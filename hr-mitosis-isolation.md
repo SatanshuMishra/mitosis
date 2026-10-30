@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: parked
-Updated: 2026-10-30T07:46:24.506Z
+Updated: 2026-10-30T08:09:34.385Z
 Next ids: c8 D3 R3 S2
 
 ## Goal
@@ -19,11 +19,11 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 
 ## Where things stand
 
-FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override), pushed. MSP branch mitosis/isolation is pushed at bb7adda as SatanshuMishra/mitosis#29 (ready, assigned, bound, Auto-fix on); the driver has told the owner to hold its merge until round 3 is green. Round 3 (driver escalation of W1, a --worker-write path overlapping the run folder, and W2, a confined process outliving its run): both fixes and the ADR lint fix that turned #29's CI red are on mitosis/isolation at head 27f92e7, not pushed (fix-check clean, locked files unchanged; fix notes in review/round-3/fix-*.out.txt); round 3 review of bb7adda..27f92e7 is running in review/round-3/. Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md. Four assumptions are in review/isolation.assumptions.txt.
+FEATURE feat/hr-mitosis-isolation holds the lock commit b7d8b44 (O2 override), pushed. MSP branch mitosis/isolation is pushed at bb7adda as SatanshuMishra/mitosis#29 (ready, assigned, bound, Auto-fix on); the driver has told the owner to hold its merge until round 3 is green. Round 3 (driver escalation of W1, a --worker-write path overlapping the run folder, and W2, a confined process outliving its run): both fixes and the ADR lint fix that turned #29's CI red are on mitosis/isolation at head 27f92e7, not pushed (fix-check clean, locked files unchanged; fix notes in review/round-3/fix-*.out.txt); round 3 review of bb7adda..27f92e7: suite 790 OK on 3.9 and 3.14, no blocker, validator judging 5 LOW candidates in review/round-3/isolation.candidates.md (S1 is W1's class for the repository and its git directory). Stages run by hand, not through pipeline drive, and reviewers get the run-local do-not-flag.md. Four assumptions are in review/isolation.assumptions.txt.
 
 ## Next step
 
-When the round 3 reviewers end, build round 3 findings and run candidates, validator, record, verdict and outcome; on green record a new ship boundary superseding D2 and re-ship with --proven-head isolation=<head> to push mitosis/isolation so #29 updates, refresh its review comment, and report to the driver with where W4's sampling lives (run.py and linetrace/sitecustomize.py; mutants.py unchanged, write-set wider than needed).
+When the round 3 validator ends, save its array as review/round-3/isolation.verdicts.json and run record, verdict and outcome; send a confirmed S1 to a fix agent as W1's second attempt (a rejected S1 goes to the driver); on green record a new ship boundary superseding D2 and re-ship with --proven-head isolation=<head> to push mitosis/isolation so #29 updates, refresh its review comment, and report to the driver with where W4's sampling lives (run.py and linetrace/sitecustomize.py; mutants.py unchanged, write-set wider than needed).
 
 Needs: R1.
 
