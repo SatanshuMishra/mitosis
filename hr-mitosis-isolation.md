@@ -1,7 +1,7 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T00:55:31.318Z
-Next ids: c8 D1 R1 S1
+Updated: 2026-10-30T00:55:32.790Z
+Next ids: c8 D1 R2 S1
 
 ## Goal
 
@@ -28,6 +28,8 @@ Invoke interphase:feature with the run 7 request and Work autonomously., answeri
 ## Decisions in force
 
 ## Open risks
+
+- R1 The checkout holds the owner's uncommitted GLOSSARY.md Pull requests section and untracked docs/adr/0004 and 0005 from a paused run; never touch, commit or delete them; build from the committed state.
 
 ## Settled, do not reopen
 
