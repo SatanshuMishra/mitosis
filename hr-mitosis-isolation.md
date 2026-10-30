@@ -1,7 +1,7 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T06:44:01.635Z
-Next ids: c8 D2 R3 S2
+Updated: 2026-10-30T06:44:01.759Z
+Next ids: c8 D3 R3 S2
 
 ## Goal
 
@@ -30,6 +30,7 @@ Needs: D1, R1.
 ## Decisions in force
 
 - D1 Interphase hand-off: spec hr-mitosis-isolation handed off for build: Handed off. Next: pipeline feature-branch, then a fresh check-author agent writes and locks the seven test files on FEATURE (O2 override), then plan-only and build.
+- D2 Ship boundary: MSP isolation ships at proven head bb7adda: Ship with --proven-head isolation=bb7addad14457aa7bf72f5f4818f695f43d5db6e via SHIP=1 run.zsh --resume, then open the PR ready, assigned, bound with Auto-fix.
 
 ## Open risks
 
