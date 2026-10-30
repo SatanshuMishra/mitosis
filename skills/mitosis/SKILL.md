@@ -53,7 +53,7 @@ quotes or newlines lands as one argument and is never reinterpreted by a shell.
 | `--decompose-command` | the structure pass that turns a document into unbriefed Steps | prompt, model, document |
 | `--brief-command` | one Worker per unbriefed Step, writing its task | prompt, model, step, document |
 | `--worker-sandbox` | each Worker, gate and lock-stage run under sandbox-exec, writing only its clone or checkout, temp, transcript and `--worker-write` paths; exit 3 without it | none |
-| `--worker-write` | nothing; one more path a sandboxed run, such as `--gate-setup`, may write; repeatable | none |
+| `--worker-write` | nothing; one more path a sandboxed run may write; repeatable; exit 3 if it overlaps the run directory | none |
 | `--suite-command` | the full suite unmutated, then per surviving mutant; exit 1 kills only after an unmutated pass, else `weak` | worktree, report |
 | `--gate-classes` | nothing; a JSON `{test, class, reason}` list classing properties | none |
 
@@ -65,8 +65,8 @@ claude -p {task} --model {model} --session-id {session_id} --permission-mode byp
 ```
 
 The brief carries the charter and document paths, the Steps in order,
-write-set, read-set and return contract. The last line of its output that
-parses as a JSON object is its return.
+write-set, read-set and return contract. Its last output line that parses
+as a JSON object is its return.
 
 Tiers are labels, not models. When the dispatch template uses the model
 placeholder, every tier the plan assigns must be mapped, or mitosis refuses
@@ -77,8 +77,8 @@ to start:
 ```
 
 The acceptance template must exit 0 when the property passes, 1 when it
-fails, and anything else when it could not run. That third code is what lets
-the gate tell a broken build from a failing test:
+fails, and anything else when it could not run. The third code lets the gate
+tell a broken build from a failing test:
 
 ```
 --acceptance-command "python3 -m pytest {file} -k {test} -q"

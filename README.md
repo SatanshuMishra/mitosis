@@ -154,8 +154,9 @@ holding the line traces and suite reports, and each `--worker-write` path; a
 grant, and no sandboxed command may rename, remove or replace the clone,
 checkout, temp or transcript folder it writes into, only fill it, so a
 symbolic link it leaves never redirects a later write by mitosis. A
-`--worker-write` path that holds the run directory hands those logs back to
-sandboxed code. Every git call mitosis makes
+`--worker-write` path that is, holds or lies inside the run directory,
+compared by resolved real path, refuses the run with exit 3 before any Worker
+or model call. Every git call mitosis makes
 drops the environment variables that shape a diff, widen a pathspec, locate
 another repository or point at other objects.
 

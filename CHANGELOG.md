@@ -28,7 +28,9 @@ the build, and mutants come only from the lines an acceptance test runs.
   traces and suite reports) and each `--worker-write` path, so a gate setup
   that needs another writable path names it with `--worker-write`. mitosis's
   logs and state stay outside every write grant, and no sandboxed command may
-  rename, remove or replace a folder it writes into. A host without
+  rename, remove or replace a folder it writes into. A `--worker-write` path
+  that is, holds or lies inside the run directory, compared by resolved real
+  path, refuses the run with exit 3 before any Worker starts. A host without
   sandbox-exec refuses the run with exit 3 before any Worker starts, and the
   JSON result's `sandbox` names sandbox-exec or `off`.
 - Every git call drops the environment variables that shape a diff, widen a
