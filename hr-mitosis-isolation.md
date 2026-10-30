@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: active
-Updated: 2026-10-30T01:38:36.587Z
+Updated: 2026-10-30T01:38:39.767Z
 Next ids: c8 D2 R3 S1
 
 ## Goal
@@ -45,3 +45,6 @@ Needs: D1, R1.
 - Worked examples: /Users/satanshumishra/.mitosis/harness-redesign/examples/hr-mitosis-referee/ and examples/hr-pipeline-conductor/ (weak-proof-classes.md, r1-gate-evidence.md)
 - Run home: /Users/satanshumishra/.mitosis/mitosis/hr-mitosis-isolation/
 - Program driver session: local_1353e243-8b09-4cc3-a370-2b58b294d057
+- Spec, decisions, record, items: /Users/satanshumishra/Documents/DevLabs/mitosis/docs/specs/hr-mitosis-isolation.* (gitignored)
+- Decision records of this change: docs/adr/0010 to 0014 in the owner's checkout, untracked
+- Pipeline defects found: run home pipeline-0.11.0-defects.md (P1 to P4)
