@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
 Status: parked
-Updated: 2026-10-30T19:48:29.415Z
+Updated: 2026-10-31T03:03:16.653Z
 Next ids: c8 D6 R3 S3
 
 ## Goal
@@ -15,7 +15,7 @@ Build W1 to W5 of ~/.mitosis/harness-redesign/PROGRAM.md (section Run 7 mitosis,
 - [x] c4 W4: mutants are sampled only from lines the acceptance test executes on the work; a property reading no Worker code is not-applicable; a survivor the full suite kills is covered-elsewhere naming the killing tests evidence: tests/test_mutant_coverage.py's five acceptance tests pass alone at cacce46; round 1 C3 and C4 fixes confirmed by the round 2 validator
 - [x] c5 W5: a gate classification change is recorded per property outside the plan id, so --resume keeps every built Lane and re-gates only the changed properties evidence: tests/test_gate_classes.py's two acceptance tests pass alone at cacce46
 - [x] c6 MSP pull requests open, ready, assigned, bound with Auto-fix, review green; M1 to M6 locked tests from run 2 still locked and passing evidence: SatanshuMishra/mitosis#29 open, ready, assigned to SatanshuMishra, review comment posted, bound with Auto-fix; round 2 verdict green; run 2's locked tests unchanged since 58f258c except the permitted version_is_0_9_0 re-lock, suite 778 OK on 3.9 and 3.14
-- [ ] c7 C14 and F1: mitosis version bumped in the FEATURE pull request; at Clean-up the merged version is installed and matches main file by file; later commands run from the installed cache path
+- [x] c7 C14 and F1: mitosis version bumped in the FEATURE pull request; at Clean-up the merged version is installed and matches main file by file; later commands run from the installed cache path evidence: SatanshuMishra/mitosis#30 merged as ce68f1a carrying 0.10.0 in core.py, plugin.json and CHANGELOG; claude plugin update moved mitosis@mitosis from 0.8.0 to 0.10.0; pipeline installed --ref origin/main reports stale false with no differing file, and the control against 58f258c reports 24 differing files with exit 1; pipeline clean ran from the installed pipeline 0.11.0 cache, the run changing mitosis only
 
 ## Where things stand
 
@@ -23,9 +23,7 @@ FEATURE is pushed at 6fbaffa, the merge of origin/main per D4 at 0.10.0, suite 8
 
 ## Next step
 
-The owner merges SatanshuMishra/mitosis#30 and says the FEATURE pull request merged; that starts Clean-up: resume_thread, read CHARTER.md, Sync, pipeline clean, then the C14 and F1 install check of 0.10.0 against main.
-
-Needs: R1.
+None: Run 7 is complete; close the thread.
 
 ## Decisions in force
 
@@ -35,7 +33,6 @@ Needs: R1.
 
 ## Open risks
 
-- R1 The checkout holds the owner's uncommitted GLOSSARY.md and untracked docs/adr/0004 and 0005, now byte-identical to origin/main, so it cannot fast-forward; never touch, commit or delete them; build from the committed state.
 
 ## Settled, do not reopen
 
