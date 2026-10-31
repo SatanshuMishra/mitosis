@@ -1,6 +1,6 @@
 # hr-mitosis-isolation: Run 7 of the harness-redesign program: mitosis Worker isolation, pinned diff environment, check-author lane, mutant applicability and resumable gate classes
-Status: parked
-Updated: 2026-10-31T03:03:16.653Z
+Status: done
+Updated: 2026-10-31T03:03:22.372Z
 Next ids: c8 D6 R3 S3
 
 ## Goal
