@@ -1,6 +1,6 @@
 # fix-resumed-ship-proven-head: A resumed ship pushes a proven head that moved past the pushed head
-Status: active
-Updated: 2026-11-01T11:53:57.727Z
+Status: done
+Updated: 2026-11-01T11:54:02.476Z
 Next ids: c5 D1 R1 S1
 
 ## Goal
