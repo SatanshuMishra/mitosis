@@ -3,6 +3,24 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.10.1 - 2026-11-01
+
+A resumed ship pushes a proven head that moved past what mitosis had pushed.
+
+- A resume that pushes now ships an MSP already `pushed` or `shipped` again
+  when `--proven-head` names a commit other than the one mitosis pushed.
+  Earlier releases treated both states as final on a resume, so review
+  commits made after the push stayed off the remote and the returned body
+  still named the old proven commit. mitosis now pushes the branch to the new
+  head as a fast-forward and renders the title and body again for it. An MSP
+  whose pull request mitosis opened keeps that pull request and its address,
+  and the pull-request command is not run again.
+- A proven head equal to the pushed commit leaves the MSP and the remote as
+  they were.
+- A head that does not descend from the pushed commit is refused and never
+  force-pushed: the MSP ends `ship-failed`, with exit 22, and its record keeps
+  the earlier push.
+
 ## 0.10.0 - 2026-10-30
 
 Each Worker builds in its own clone, the acceptance checks are locked before

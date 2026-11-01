@@ -222,6 +222,15 @@ differs, or an MSP with no recorded gate result, is gated as before; a
 malformed value or a label the plan does not hold exits 2 before anything is
 built.
 
+An MSP already `pushed` or `shipped` stays as it is on a resume, unless a
+resume that pushes names a `--proven-head` other than the commit mitosis
+pushed. Then mitosis ships that MSP again: it pushes the branch to the new
+head as a fast-forward and renders the title and body again for it, and an
+MSP whose pull request mitosis opened keeps that pull request, with the
+pull-request command not run again, so the caller applies the new body. A
+head that does not descend from the pushed commit is never force-pushed: the
+MSP ends `ship-failed`, with exit 22, and its record keeps the earlier push.
+
 A gate that is interrupted leaves the MSP's worktree as it was, because
 the gate never runs there; the next gate removes the gate folder left behind.
 
