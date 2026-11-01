@@ -1,6 +1,6 @@
 # fix-resumed-ship-proven-head: A resumed ship pushes a proven head that moved past the pushed head
 Status: active
-Updated: 2026-11-01T10:34:01.842Z
+Updated: 2026-11-01T10:34:02.633Z
 Next ids: c5 D1 R1 S1
 
 ## Goal
@@ -32,3 +32,4 @@ When the suite passes, commit, push, render the body from the scratchpad pr-fiel
 
 - Defects log: ~/.mitosis/harness-redesign/examples/hr-mitosis-isolation/pipeline-0.11.0-defects.md (P10)
 - Root cause: run.py _settled treats shipped and pushed as terminal on resume
+- Receipts: tests/test_mitosis.py class ProvenHead
