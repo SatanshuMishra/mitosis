@@ -1143,6 +1143,30 @@ def git_out(cwd, *args):
     ).stdout.strip()
 
 
+VERIFYING_RENDER = r'''
+import json
+import os
+import sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "calls"), "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(sys.argv) + "\n")
+with open(sys.argv[sys.argv.index("--fields") + 1], encoding="utf-8") as handle:
+    verified = json.load(handle)["testing"][-1]["result"]
+print(json.dumps({"title": "feat(ship): fake title", "body": "## Verification\n" + verified}))
+'''
+
+OPENING_PR = r'''
+import os
+import sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "opened"), "a", encoding="utf-8") as handle:
+    handle.write(sys.argv[1] + "\n")
+print("https://example.invalid/pull/1")
+'''
+
+
 class ProvenHead(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp()
@@ -1194,7 +1218,7 @@ class ProvenHead(unittest.TestCase):
                     "30",
                     *PR_FLAGS,
                     "--render-command",
-                    fake_render(self.elsewhere),
+                    executable(self.elsewhere, "pull-request", VERIFYING_RENDER),
                     *extra,
                 ],
             )
@@ -1216,6 +1240,91 @@ class ProvenHead(unittest.TestCase):
         write(tree, "alpha.py", "work\nmore work\n")
         git_out(tree, "commit", "-q", "-a", "-m", "more work")
         return git_out(tree, "rev-parse", "HEAD")
+
+    def _lines(self, name):
+        path = os.path.join(self.elsewhere, name)
+        if not os.path.exists(path):
+            return []
+        with open(path, encoding="utf-8") as handle:
+            return handle.read().splitlines()
+
+    def _pushed(self, *extra):
+        code, out, err = self._invoke(*extra)
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        tree = read_json(os.path.join(self.run_dir, run.STATE_FILE))["worktrees"][0]["path"]
+        return tree, git_out(tree, "rev-parse", "HEAD")
+
+    def _origin(self):
+        return git_out(self.root, "ls-remote", "origin", "refs/heads/mitosis/alpha").split("\t")[0]
+
+    def _opener(self):
+        return ("--pr-command", command(self.elsewhere, "opener.py", OPENING_PR, "{branch}"))
+
+    def test_a_later_proven_head_is_pushed_and_its_body_rendered_again(self):
+        tree, pushed = self._pushed()
+        self.assertEqual(self._origin(), pushed)
+        calls = self._calls()
+        new_head = self._new_commit(tree)
+        code, out, err = self._invoke("--resume", "--proven-head", "alpha=" + new_head)
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        self.assertEqual(self._origin(), new_head)
+        self.assertEqual(self._calls(), calls)
+        found = json.loads(out.splitlines()[-1])["msps"][0]
+        self.assertEqual(found["state"], run.MSP_PUSHED)
+        self.assertEqual(
+            found["body"],
+            "## Verification\nNot run: the caller proved %s after mitosis gated %s"
+            % (new_head[:12], pushed[:12]),
+        )
+
+    def test_a_later_proven_head_keeps_the_open_pull_request(self):
+        tree, pushed = self._pushed(*self._opener())
+        self.assertEqual(self._lines("worker/opened"), ["mitosis/alpha"])
+        new_head = self._new_commit(tree)
+        code, out, err = self._invoke(
+            "--resume", "--proven-head", "alpha=" + new_head, *self._opener()
+        )
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        self.assertEqual(self._origin(), new_head)
+        self.assertEqual(self._lines("worker/opened"), ["mitosis/alpha"])
+        found = json.loads(out.splitlines()[-1])["msps"][0]
+        self.assertEqual(found["state"], "shipped")
+        self.assertEqual(found["pull_request"], "https://example.invalid/pull/1")
+        self.assertEqual(
+            found["body"],
+            "## Verification\nNot run: the caller proved %s after mitosis gated %s"
+            % (new_head[:12], pushed[:12]),
+        )
+
+    def test_the_pushed_head_as_proven_head_pushes_nothing(self):
+        tree, pushed = self._pushed()
+        before = read_json(os.path.join(self.run_dir, run.STATE_FILE))["msps"]["0"]
+        self._new_commit(tree)
+        code, out, err = self._invoke("--resume", "--proven-head", "alpha=" + pushed[:12])
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
+        self.assertEqual(self._origin(), pushed)
+        self.assertEqual(read_json(os.path.join(self.run_dir, run.STATE_FILE))["msps"]["0"], before)
+
+    def test_a_proven_head_off_the_pushed_line_is_refused(self):
+        tree, pushed = self._pushed()
+        git_out(tree, "reset", "-q", "--hard", "HEAD~1")
+        write(tree, "alpha.py", "other work\n")
+        write(tree, "alpha_check.txt", "other check\n")
+        git_out(tree, "add", "alpha.py", "alpha_check.txt")
+        git_out(tree, "commit", "-q", "-m", "other work")
+        sibling = git_out(tree, "rev-parse", "HEAD")
+        code, out, err = self._invoke("--resume", "--proven-head", "alpha=" + sibling)
+        self.assertEqual(code, mitosis.MSP_EXIT["ship-failed"], out + err)
+        self.assertEqual(self._origin(), pushed)
+        found = json.loads(out.splitlines()[-1])["msps"][0]
+        self.assertEqual(found["state"], "ship-failed")
+        self.assertEqual(
+            found["reason"],
+            "mitosis/alpha is at %s, which does not descend from %s that mitosis pushed; "
+            "mitosis never force-pushes, so it refused to push it" % (sibling[:12], pushed[:12]),
+        )
+        record = read_json(os.path.join(self.run_dir, run.STATE_FILE))["msps"]["0"]
+        self.assertEqual(record["ship"]["pushed"], pushed)
 
     def _no_build(self):
         branches = git_out(self.root, "for-each-ref", "--format=%(refname)", "refs/heads/mitosis/")

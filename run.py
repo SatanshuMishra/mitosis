@@ -3055,6 +3055,7 @@ def ship(
     proven_head=None,
     env=None,
     render_command="pull-request",
+    pushed_before=None,
 ):
     label = _label(plan, msp)
     head = commit_at(branch, tree, required=True)
@@ -3075,6 +3076,12 @@ def ship(
         return {**held, "unchanged": True}
     if not push:
         return {**held, "unchanged": False}
+    earlier = (pushed_before or {}).get("pushed")
+    if earlier is not None and not git_ok(["merge-base", "--is-ancestor", earlier, head], tree):
+        raise ShipError(
+            "%s is at %s, which does not descend from %s that mitosis pushed; mitosis never "
+            "force-pushes, so it refused to push it" % (branch, head[:12], earlier[:12])
+        )
     os.makedirs(log_dir, exist_ok=True)
     facts = pr_facts.facts(
         header, plan, msp, gate_result, gate_error, findings, exception, foreign, proven_head
@@ -3089,6 +3096,8 @@ def ship(
     pushed = {**held, "pushed": head, "title": title, "body": body, "unchanged": False}
     if pr_command is None:
         return pushed
+    if (pushed_before or {}).get("pull_request"):
+        return {**pushed, "pull_request": pushed_before["pull_request"]}
     out = os.path.join(log_dir, "pull-request.out")
     err = os.path.join(log_dir, "pull-request.err")
     argv = build_argv(
@@ -3365,7 +3374,7 @@ def _referee_stage(
     }
 
 
-def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=()):
+def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=(), pushed_before=None):
     try:
         shipped = ship(
             plan,
@@ -3387,9 +3396,10 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=()):
             proven_head=record.get("proven_head"),
             env=settings.get("env"),
             render_command=settings["render_command"],
+            pushed_before=pushed_before,
         )
     except (OSError, GitError, ShipError, subprocess.SubprocessError, ValueError) as error:
-        return {"state": "ship-failed", "reason": str(error), "ship": None}
+        return {"state": "ship-failed", "reason": str(error), "ship": pushed_before}
     if shipped["unchanged"]:
         return {
             "state": MSP_UNCHANGED,
@@ -3501,6 +3511,11 @@ def _blocked_record(block, held):
         "reconcile": held.get("reconcile"),
         "reason": "%s; %s" % (block["reason"], held["reason"]),
     }
+
+
+def _pushed_ship(record):
+    shipped = record.get("ship") or {}
+    return shipped if shipped.get("pushed") else None
 
 
 def _finish_msp(plan, msp, trees, producers, state, settings):
@@ -3623,6 +3638,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
         state["msps"][str(msp)],
         settings,
         msp_foreign_writes(plan, msp, state["lanes"]),
+        _pushed_ship(prior),
     )
     return write_state(run_dir, _msp_record(state, msp, **shipped))
 
@@ -3961,10 +3977,12 @@ def lock_blocked(plan, state):
     return {**state, "lanes": lanes, "msps": msps}
 
 
-def _settled(state, msp, producers, finished):
-    current = (state["msps"].get(str(msp)) or {}).get("state")
+def _settled(state, msp, producers, finished, proven=None):
+    record = state["msps"].get(str(msp)) or {}
+    current = record.get("state")
     if current in ("shipped", MSP_PUSHED):
-        return True
+        pushed = (_pushed_ship(record) or {}).get("pushed")
+        return proven is None or pushed is None or pushed.startswith(proven)
     return current in finished and all(
         (state["msps"].get(str(producer)) or {}).get("state") in finished
         for producer in producers
@@ -4129,7 +4147,8 @@ def execute(
     producers = msp_producers(plan)
     finished = core.DELIVERED_STATES if no_push else PUBLISHED_STATES
     for msp in msp_order(plan):
-        if _settled(state, msp, producers[msp], finished):
+        proven = settings["proven_heads"].get(msp) if settings["push"] else None
+        if _settled(state, msp, producers[msp], finished, proven):
             continue
         state = _finish_msp(plan, msp, trees, producers[msp], state, settings)
         notify(observer, "msp-finished", {"msp": msp, "record": state["msps"][str(msp)]})
