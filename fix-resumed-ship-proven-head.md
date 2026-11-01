@@ -1,6 +1,6 @@
 # fix-resumed-ship-proven-head: A resumed ship pushes a proven head that moved past the pushed head
 Status: active
-Updated: 2026-11-01T10:34:02.633Z
+Updated: 2026-11-01T10:41:05.824Z
 Next ids: c5 D1 R1 S1
 
 ## Goal
@@ -16,12 +16,11 @@ Defect P10: a resumed ship with --proven-head naming a commit that descends from
 
 ## Where things stand
 
-Fix, receipts, docs and version bump are uncommitted in the worktree; the full suite is running.
+Fix and release are committed on claude/fix-resumed-ship-proven-head-7a721e, not pushed; the full suite is rerunning after the skill file was kept under its 20480-byte cap.
 
 ## Next step
 
-When the suite passes, commit, push, render the body from the scratchpad pr-fields.json with the suite result filled in, and open the pull request.
-
+When the suite passes, push, render the body from the scratchpad pr-fields.json with the suite result filled in, and open the pull request.
 ## Decisions in force
 
 ## Open risks
