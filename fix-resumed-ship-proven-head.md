@@ -1,6 +1,6 @@
 # fix-resumed-ship-proven-head: A resumed ship pushes a proven head that moved past the pushed head
 Status: active
-Updated: 2026-11-01T10:41:28.666Z
+Updated: 2026-11-01T11:53:56.554Z
 Next ids: c5 D1 R1 S1
 
 ## Goal
@@ -10,17 +10,18 @@ Defect P10: a resumed ship with --proven-head naming a commit that descends from
 ## Done when
 
 - [x] c1 A receipt test fails on main and passes after: a later proven head moves the origin branch to it and the returned body is re-rendered; an equal head is a no-op; a non-descendant head is refused evidence: 4 new ProvenHead tests; 3 fail on main (origin left at old head, refusal exits 0), all 10 ProvenHead tests pass after; removing the ancestry check or the kept pull request each fails its test
-- [ ] c2 The full test suite passes
+- [x] c2 The full test suite passes evidence: python3 -m unittest discover tests at f54fb2b under a temporary HOME, 807 tests OK
 - [x] c3 The version is bumped within 0.x.y with a CHANGELOG entry evidence: 0.10.1 in core.py and plugin.json, CHANGELOG heading 0.10.1, version tests renamed version_is_0_10_1
-- [ ] c4 A ready pull request is open, assigned to the owner, bound with Auto-Fix on
+- [~] c4 A ready pull request is open, assigned to the owner, bound with Auto-Fix on struck: SatanshuMishra/mitosis#31 is open, ready, assigned to SatanshuMishra and bound to the session, but the app refuses Auto-Fix for a pull request it did not see this session open, so only the owner can turn it on
 
 ## Where things stand
 
-Fix and release are pushed to origin fix/resumed-ship-proven-head at f54fb2b (neutral name, since the worktree branch names the tool); the full suite is rerunning after the skill file was kept under its 20480-byte cap.
+SatanshuMishra/mitosis#31 is open for review from fix/resumed-ship-proven-head at f54fb2b; Auto-Fix is off until the owner turns it on.
 
 ## Next step
 
-When the suite passes, render the body from the scratchpad pr-fields.json with the suite result filled in, and open the pull request.
+The owner reviews and merges SatanshuMishra/mitosis#31 and turns on Auto-Fix if wanted.
+
 ## Decisions in force
 
 ## Open risks
