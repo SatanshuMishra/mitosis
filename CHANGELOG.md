@@ -13,10 +13,10 @@ declares.
   untracked into every Lane clone and the check-author's clone by
   copy-on-write only, so a Worker can run the project's tests without
   re-installing or rebuilding its caches.
-- A Python virtual environment, a secret-looking name and a copy holding a
-  symbolic link that leaves the clone are refused, even inside a listed
-  folder, whose other contents are then copied one by one, and a path that
-  cannot be copied leaves the Lane cold. Seeded paths never land and never reach the
+- A Python virtual environment and a secret-looking name are refused, even
+  inside a listed folder, whose other contents are then copied one by one;
+  a copy holding a symbolic link that leaves the clone is refused whole, and
+  a path that cannot be copied leaves the Lane cold. Seeded paths never land and never reach the
   gate's clean checkout.
 - Each Lane record and the lock record list `seeded`, seed_skipped and
   seed_seconds. With no `.worktreeinclude`, nothing changes.

@@ -59,6 +59,9 @@ SEED_TIMEOUT = 600
 CLONE_NOFOLLOW = 0x0001
 
 VIRTUAL_ENVIRONMENT_MARK = "pyvenv.cfg"
+VIRTUAL_ENVIRONMENT_HAZARD = (
+    "whose scripts point back at the checkout, so an install inside a copy would write the checkout"
+)
 
 SECRET_NAMES = (
     ".env",
@@ -673,11 +676,9 @@ def _holds_virtual_environment(repo, folder):
 def _seed_refusal(repo, path):
     name = path.rstrip("/").rsplit("/", 1)[-1]
     if path.endswith("/") and _holds_virtual_environment(repo, path):
-        return (
-            "it is a Python virtual environment, whose scripts point back at the checkout, "
-            "so an install inside a copy would write the checkout"
-        )
-    matched = next((pattern for pattern in SECRET_NAMES if fnmatch.fnmatch(name, pattern)), None)
+        return "it is a Python virtual environment, " + VIRTUAL_ENVIRONMENT_HAZARD
+    folded = name.casefold()
+    matched = next((pattern for pattern in SECRET_NAMES if fnmatch.fnmatchcase(folded, pattern)), None)
     if matched is not None:
         return "its name matches %s, which looks like a secret, so it is never copied" % matched
     return None
@@ -729,8 +730,7 @@ def _seed_listed(repo, path):
         return (), (
             (
                 path,
-                "it lies inside the Python virtual environment %s, whose scripts point back at "
-                "the checkout, so an install inside a copy would write the checkout" % enclosing,
+                "it lies inside the Python virtual environment %s, %s" % (enclosing, VIRTUAL_ENVIRONMENT_HAZARD),
             ),
         )
     return _seed_split(repo, path)
@@ -753,10 +753,7 @@ def seed_plan(repo):
         return {"paths": [], "skipped": []}
     args = ["ls-files", "-z", "--others", "--ignored", "--directory", "--exclude-from=" + listing]
     try:
-        completed = run.git_run(args, repo, raw=True)
-        if completed.returncode != 0:
-            raise run.GitError(args, completed.returncode, completed.stderr)
-        listed = [os.fsdecode(name) for name in completed.stdout.split(b"\0") if name]
+        listed = run.git_paths(args, repo)
         ignored = _ignored(repo, listed)
     except (run.GitError, OSError) as error:
         return _seed_failure(str(error))
@@ -777,8 +774,8 @@ def seed_plan(repo):
 
 
 def _darwin_copy(source, target):
-    found = _clone_call()(os.fsencode(source), os.fsencode(target), CLONE_NOFOLLOW)
-    if found != 0:
+    status = _clone_call()(os.fsencode(source), os.fsencode(target), CLONE_NOFOLLOW)
+    if status != 0:
         code = ctypes.get_errno()
         raise OSError(code, "clonefile refused the copy: %s" % os.strerror(code), target)
 

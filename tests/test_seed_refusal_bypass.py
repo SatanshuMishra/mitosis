@@ -130,6 +130,11 @@ class SeedRefusalBypass(unittest.TestCase):
         )
         self.assertEqual(self.skipped(plan), ["node_modules/left/.npmrc"])
 
+    def test_a_secret_name_in_another_letter_case_is_not_copied(self):
+        plan = self.plan("config/\n", "config/\n", {"config/SERVER.PEM": "secret\n", "config/.Env": "TOKEN=secret\n"})
+        self.assertEqual(plan.get("paths"), [])
+        self.assertEqual(self.skipped(plan), ["config/.Env", "config/SERVER.PEM"])
+
     def test_a_folder_without_secrets_or_environments_stays_one_copy(self):
         plan = self.plan(
             "node_modules/\n",
