@@ -189,6 +189,32 @@ cannot end within 10 seconds stops the run with exit 14. Every git call mitosis 
 drops the environment variables that shape a diff, widen a pathspec, locate
 another repository or point at other objects.
 
+## Warm Worker clones
+
+A Worker's clone holds no gitignored file, so it starts cold: no virtual
+environment, no build cache, no downloaded native library. A project opts in
+by writing a `.worktreeinclude` at its repository root, in gitignore syntax,
+the same file worktrunk and Claude Code read. mitosis copies each listed path
+that the repository ignores and does not track into every Lane clone and the
+check-author's clone, by copy-on-write only (`clonefile` on macOS APFS,
+`cp --reflink=always` on Linux), never a plain copy, a hard link or a symbolic
+link.
+
+```
+.dart_tool/
+third_party/llamadart-native/
+```
+
+A Python virtual environment, a secret-looking name (`.env`, `.env.*`,
+`*.pem`, `*.key`, `*.p12`, `*.pfx`, id_rsa, id_dsa, id_ecdsa,
+id_ed25519, `.npmrc`, `.netrc`, `.pgpass`, `.envrc`, `.git-credentials`,
+`*.jks`, `*.keystore`, `key.properties`) and a copy holding a symbolic link
+that leaves the clone are refused. A path that cannot be copied leaves the
+Lane cold, as without the file; it never stops the Lane. Seeded paths never
+land and never reach the gate's clean checkout. Each Lane record and the lock
+record list `seeded`, seed_skipped and seed_seconds. With no
+`.worktreeinclude`, nothing changes.
+
 ## The check-author lock stage
 
 A Step with `"role": "check-author"` writes the locked acceptance checks and
