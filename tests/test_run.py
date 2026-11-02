@@ -2147,7 +2147,7 @@ class Clones(RepoCase):
         write(os.path.join(clone, "sub", ".git", "config"), "[core]\n")
         os.symlink(outside, os.path.join(clone, "out"))
         found = isolation.outside_writes(
-            clone, tree["path"], run._committed_entries(tree["path"], start), ["a.txt"]
+            clone, tree["path"], run._committed_entries(tree["path"], start), ["a.txt"], ()
         )
         self.assertEqual(
             found["writes"],

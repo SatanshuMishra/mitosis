@@ -460,8 +460,16 @@ def _clone_entry(clone, path):
     return (run.EXECUTABLE_MODE if found.st_mode & stat.S_IXUSR else run.REGULAR_MODE), data
 
 
-def write_set_entries(clone, write_set):
-    return {path: _clone_entry(clone, path) for path in sorted(set(write_set))}
+def _seeded_roots(seeded):
+    return tuple(path.rstrip("/") for path in seeded)
+
+
+def write_set_entries(clone, write_set, seeded):
+    seeded_roots = _seeded_roots(seeded)
+    return {
+        path: None if run._under(path, seeded_roots) else _clone_entry(clone, path)
+        for path in sorted(set(write_set))
+    }
 
 
 def place_entries(tree, entries):
@@ -535,10 +543,10 @@ def _clone_file(clone, path):
     return (run.EXECUTABLE_MODE if executable else run.REGULAR_MODE), data
 
 
-def outside_writes(clone, tree, start_entries, write_set, seeded=()):
+def outside_writes(clone, tree, start_entries, write_set, seeded):
     linked = tuple(path for path, (mode, _) in start_entries.items() if mode == run.GITLINK_MODE)
     held = {path: entry for path, entry in start_entries.items() if entry[0] != run.GITLINK_MODE}
-    seeded_roots = tuple(path.rstrip("/") for path in seeded)
+    seeded_roots = _seeded_roots(seeded)
     found = {
         path: kind
         for path, kind in run._gate_listing(clone, (CLONE_GIT,)).items()
@@ -586,8 +594,8 @@ def outside_writes(clone, tree, start_entries, write_set, seeded=()):
     }
 
 
-def read_lane(clone, tree, start, write_set, seeded=()):
-    entries = write_set_entries(clone, write_set)
+def read_lane(clone, tree, start, write_set, seeded):
+    entries = write_set_entries(clone, write_set, seeded)
     outside = outside_writes(clone, tree, run._committed_entries(tree, start), write_set, seeded)
     return {**outside, "entries": entries}
 

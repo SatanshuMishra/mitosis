@@ -274,7 +274,7 @@ class Receipts(unittest.TestCase):
     def _outside(self, checkout, clone):
         head = run.branch_commit(checkout, "main", required=True)
         return isolation.outside_writes(
-            clone, checkout, run._committed_entries(checkout, head), ("a.py",)
+            clone, checkout, run._committed_entries(checkout, head), ("a.py",), ()
         )
 
     def a_case_folded_nested_git_folder_is_never_replayed(self):

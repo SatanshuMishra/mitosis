@@ -3924,9 +3924,10 @@ def _landed_lock(plan, settings, record, base):
     locked = tuple(plan.get("locked") or ())
     clone = record["clone"]
     try:
-        entries = isolation.write_set_entries(clone, locked)
+        seeded = record.get("seeded") or ()
+        entries = isolation.write_set_entries(clone, locked, seeded)
         outside = isolation.outside_writes(
-            clone, repo, _committed_entries(repo, base), locked, record.get("seeded") or ()
+            clone, repo, _committed_entries(repo, base), locked, seeded
         )
     except (GitError, OSError) as error:
         return _failed_lock(
