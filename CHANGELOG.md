@@ -3,6 +3,24 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.11.0 - 2026-11-01
+
+Worker clones start warm from copy-on-write copies of the caches a project
+declares.
+
+- A project opts in with a `.worktreeinclude` at its repository root, in
+  gitignore syntax. mitosis copies each listed path that is ignored and
+  untracked into every Lane clone and the check-author's clone by
+  copy-on-write only, so a Worker can run the project's tests without
+  re-installing or rebuilding its caches.
+- A Python virtual environment and a secret-looking name are refused, even
+  inside a listed folder, whose other contents are then copied one by one;
+  a copy holding a symbolic link that leaves the clone is refused whole, and
+  a path that cannot be copied leaves the Lane cold. Seeded paths never land and never reach the
+  gate's clean checkout.
+- Each Lane record and the lock record list `seeded`, seed_skipped and
+  seed_seconds. With no `.worktreeinclude`, nothing changes.
+
 ## 0.10.1 - 2026-11-01
 
 A resumed ship pushes a proven head that moved past what mitosis had pushed.

@@ -1,10 +1,14 @@
 import ctypes
+import errno
+import fnmatch
 import functools
 import os
 import re
 import shutil
 import signal
 import stat
+import subprocess
+import sys
 import time
 import unicodedata
 
@@ -47,6 +51,38 @@ SETTLE_ROUNDS = 50
 
 SANDBOX_ALLOWED = 0
 DENIED = 1
+
+SEED_FILE = ".worktreeinclude"
+
+SEED_TIMEOUT = 600
+
+CLONE_NOFOLLOW = 0x0001
+
+VIRTUAL_ENVIRONMENT_MARK = "pyvenv.cfg"
+VIRTUAL_ENVIRONMENT_HAZARD = (
+    "whose scripts point back at the checkout, so an install inside a copy would write the checkout"
+)
+
+SECRET_NAMES = (
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "*.p12",
+    "*.pfx",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    ".npmrc",
+    ".netrc",
+    ".pgpass",
+    ".envrc",
+    ".git-credentials",
+    "*.jks",
+    "*.keystore",
+    "key.properties",
+)
 
 
 def lane_folders(run_dir, lane):
@@ -315,6 +351,15 @@ def _system_calls():
     return check, listing
 
 
+@functools.lru_cache(maxsize=None)
+def _clone_call():
+    library = ctypes.CDLL(SYSTEM_LIBRARY, use_errno=True)
+    clone = library.clonefile
+    clone.restype = ctypes.c_int
+    clone.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32]
+    return clone
+
+
 def _every_pid(listing):
     count = listing(None, 0)
     if count <= 0:
@@ -418,8 +463,16 @@ def _clone_entry(clone, path):
     return (run.EXECUTABLE_MODE if found.st_mode & stat.S_IXUSR else run.REGULAR_MODE), data
 
 
-def write_set_entries(clone, write_set):
-    return {path: _clone_entry(clone, path) for path in sorted(set(write_set))}
+def _seeded_roots(seeded):
+    return tuple(path.rstrip("/") for path in seeded)
+
+
+def write_set_entries(clone, write_set, seeded):
+    seeded_roots = _seeded_roots(seeded)
+    return {
+        path: None if run._under(path, seeded_roots) else _clone_entry(clone, path)
+        for path in sorted(set(write_set))
+    }
 
 
 def place_entries(tree, entries):
@@ -493,10 +546,15 @@ def _clone_file(clone, path):
     return (run.EXECUTABLE_MODE if executable else run.REGULAR_MODE), data
 
 
-def outside_writes(clone, tree, start_entries, write_set):
+def outside_writes(clone, tree, start_entries, write_set, seeded):
     linked = tuple(path for path, (mode, _) in start_entries.items() if mode == run.GITLINK_MODE)
     held = {path: entry for path, entry in start_entries.items() if entry[0] != run.GITLINK_MODE}
-    found = run._gate_listing(clone, (CLONE_GIT,))
+    seeded_roots = _seeded_roots(seeded)
+    found = {
+        path: kind
+        for path, kind in run._gate_listing(clone, (CLONE_GIT,)).items()
+        if not run._under(path, seeded_roots)
+    }
 
     def outside(path):
         return not run._under(path, write_set) and not run._under(path, linked)
@@ -539,9 +597,9 @@ def outside_writes(clone, tree, start_entries, write_set):
     }
 
 
-def read_lane(clone, tree, start, write_set):
-    entries = write_set_entries(clone, write_set)
-    outside = outside_writes(clone, tree, run._committed_entries(tree, start), write_set)
+def read_lane(clone, tree, start, write_set, seeded):
+    entries = write_set_entries(clone, write_set, seeded)
+    outside = outside_writes(clone, tree, run._committed_entries(tree, start), write_set, seeded)
     return {**outside, "entries": entries}
 
 
@@ -600,4 +658,242 @@ def held_tree(entries, replayed):
             for path, entry in sorted(replayed.items())
             if entry is not None
         },
+    }
+
+
+def _seed_lines(data):
+    return tuple(
+        line
+        for line in (raw.strip() for raw in data.splitlines())
+        if line and not line.startswith(b"#")
+    )
+
+
+def _holds_virtual_environment(repo, folder):
+    return os.path.isfile(os.path.join(repo, *run._parts(folder), VIRTUAL_ENVIRONMENT_MARK))
+
+
+def _seed_refusal(repo, path):
+    name = path.rstrip("/").rsplit("/", 1)[-1]
+    if path.endswith("/") and _holds_virtual_environment(repo, path):
+        return "it is a Python virtual environment, " + VIRTUAL_ENVIRONMENT_HAZARD
+    folded = name.casefold()
+    matched = next((pattern for pattern in SECRET_NAMES if fnmatch.fnmatchcase(folded, pattern)), None)
+    if matched is not None:
+        return "its name matches %s, which looks like a secret, so it is never copied" % matched
+    return None
+
+
+def _enclosing_virtual_environment(repo, path):
+    return next(
+        (
+            prefix + "/"
+            for prefix in run._prefixes(path.rstrip("/"))[:-1]
+            if _holds_virtual_environment(repo, prefix + "/")
+        ),
+        None,
+    )
+
+
+def _seed_children(repo, folder):
+    with os.scandir(os.path.join(repo, *run._parts(folder))) as entries:
+        return sorted(
+            folder + entry.name + ("/" if entry.is_dir(follow_symlinks=False) else "")
+            for entry in entries
+        )
+
+
+def _seed_split(repo, path):
+    reason = _seed_refusal(repo, path)
+    if reason is not None:
+        return (), ((path, reason),)
+    if not path.endswith("/"):
+        return (path,), ()
+    try:
+        children = _seed_children(repo, path)
+    except OSError as error:
+        return (), (
+            (path, "mitosis could not list it to check for secrets: %s" % (error.strerror or error)),
+        )
+    splits = tuple(_seed_split(repo, child) for child in children)
+    if not any(refused for _, refused in splits):
+        return (path,), ()
+    return (
+        tuple(kept for planned, _ in splits for kept in planned),
+        tuple(refused for _, skipped in splits for refused in skipped),
+    )
+
+
+def _seed_listed(repo, path):
+    enclosing = _enclosing_virtual_environment(repo, path)
+    if enclosing is not None:
+        return (), (
+            (
+                path,
+                "it lies inside the Python virtual environment %s, %s" % (enclosing, VIRTUAL_ENVIRONMENT_HAZARD),
+            ),
+        )
+    return _seed_split(repo, path)
+
+
+def _seed_failure(reason):
+    return {"paths": [], "skipped": [{"path": SEED_FILE, "reason": reason}]}
+
+
+def seed_plan(repo):
+    listing = os.path.abspath(os.path.join(repo, SEED_FILE))
+    try:
+        with open(listing, "rb") as handle:
+            data = handle.read()
+    except FileNotFoundError:
+        return {"paths": [], "skipped": []}
+    except OSError as error:
+        return _seed_failure("mitosis could not read %s: %s" % (SEED_FILE, error.strerror or error))
+    if not _seed_lines(data):
+        return {"paths": [], "skipped": []}
+    args = ["ls-files", "-z", "--others", "--ignored", "--directory", "--exclude-from=" + listing]
+    try:
+        listed = run.git_paths(args, repo)
+        ignored = _ignored(repo, listed)
+    except (run.GitError, OSError) as error:
+        return _seed_failure(str(error))
+    matched = sorted(path for path in set(listed) if path in ignored)
+    outermost = [
+        path
+        for path in matched
+        if not any(other != path and other.endswith("/") and path.startswith(other) for other in matched)
+    ]
+    splits = tuple((path, _seed_listed(repo, path)) for path in outermost)
+    return {
+        "paths": [path for _, (planned, _) in splits for path in planned],
+        "roots": {path: listed for listed, (planned, _) in splits for path in planned},
+        "skipped": [
+            {"path": path, "reason": reason} for _, (_, skipped) in splits for path, reason in skipped
+        ],
+    }
+
+
+def _darwin_copy(source, target):
+    status = _clone_call()(os.fsencode(source), os.fsencode(target), CLONE_NOFOLLOW)
+    if status != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, "clonefile refused the copy: %s" % os.strerror(code), target)
+
+
+def _linux_copy(source, target):
+    try:
+        completed = subprocess.run(
+            ["cp", "-a", "--reflink=always", "--", source, target],
+            capture_output=True,
+            timeout=SEED_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        raise OSError(
+            errno.ETIMEDOUT, "cp --reflink=always did not finish within %d seconds" % SEED_TIMEOUT, target
+        )
+    if completed.returncode != 0:
+        raise OSError(
+            errno.ENOTSUP,
+            "cp --reflink=always exited %d: %s"
+            % (completed.returncode, os.fsdecode(completed.stderr).strip() or "<no stderr>"),
+            target,
+        )
+
+
+def copy_on_write(source, target):
+    if os.path.lexists(target):
+        raise OSError(errno.EEXIST, "the copy-on-write target already exists", target)
+    platform = sys.platform
+    if platform == "darwin":
+        copier = _darwin_copy
+    elif platform.startswith("linux"):
+        copier = _linux_copy
+    else:
+        raise OSError(errno.ENOTSUP, "%s has no copy-on-write call mitosis uses" % platform, target)
+    try:
+        copier(source, target)
+    except BaseException:
+        _remove_left(target)
+        raise
+
+
+def _seed_target_refusal(repo, clone, parts):
+    if not parts or ".." in parts:
+        return "it is not a path inside the checkout"
+    parent = "/".join(parts[:-1])
+    if parent and (_escapes(repo, parent) or _escapes(clone, parent)):
+        return "its folder resolves outside the checkout or the clone"
+    return None
+
+
+def _walk_failure(error):
+    raise error
+
+
+def _copy_links(copy):
+    tops = (copy,) if os.path.islink(copy) or not os.path.isdir(copy) else ()
+    found = tuple(
+        os.path.join(top, name)
+        for top, folders, files in (
+            () if tops else os.walk(copy, onerror=_walk_failure, followlinks=False)
+        )
+        for name in sorted(folders) + sorted(files)
+        if os.path.islink(os.path.join(top, name))
+    )
+    return tuple(path for path in tops if os.path.islink(path)) + found
+
+
+def _leading_out(clone, copy):
+    root = os.path.realpath(clone)
+    for link in _copy_links(copy):
+        resolved = os.path.realpath(link)
+        if resolved != root and not resolved.startswith(root + os.sep):
+            return os.path.relpath(link, clone)
+    return None
+
+
+def _seeded_copy(repo, clone, path):
+    parts = run._parts(path)
+    refusal = _seed_target_refusal(repo, clone, parts)
+    if refusal is not None:
+        return refusal
+    source = os.path.join(repo, *parts)
+    copy = os.path.join(clone, *parts)
+    try:
+        os.makedirs(os.path.dirname(copy), exist_ok=True)
+        copy_on_write(source, copy)
+    except OSError as error:
+        return "copy-on-write failed: %s" % error
+    try:
+        leading = _leading_out(clone, copy)
+        if leading is None and os.path.isdir(copy) and not os.path.islink(copy):
+            _opened_for_removal(copy)
+    except OSError as error:
+        _remove_left(copy)
+        return "mitosis could not check the copy's symbolic links: %s" % error
+    if leading is not None:
+        _remove_left(copy)
+        return (
+            "the copy holds the symbolic link %s, which leads outside the clone, so a Worker "
+            "writing through it would write outside its clone" % leading
+        )
+    return None
+
+
+def seed_clone(repo, plan, clone):
+    started = time.monotonic()
+    roots = plan.get("roots") or {}
+    seeded = []
+    skipped = [dict(entry) for entry in plan["skipped"]]
+    for path in plan["paths"]:
+        reason = _seeded_copy(repo, clone, path)
+        root = roots.get(path, path)
+        if reason is not None:
+            skipped = skipped + [{"path": path, "reason": reason}]
+        elif root not in seeded:
+            seeded = seeded + [root]
+    return {
+        "seeded": seeded,
+        "skipped": skipped,
+        "seconds": round(time.monotonic() - started, 3),
     }
