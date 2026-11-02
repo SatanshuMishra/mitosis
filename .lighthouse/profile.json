@@ -37,7 +37,8 @@
         "command": null
       },
       "credentials": [],
-      "trials": 1
+      "trials": 1,
+      "reach": "python3 --version"
     },
     {
       "name": "mitosis skill",
@@ -54,7 +55,8 @@
         "command": null
       },
       "credentials": [],
-      "trials": 3
+      "trials": 3,
+      "reach": "claude --version"
     },
     {
       "name": "release check",
@@ -72,7 +74,8 @@
         "command": null
       },
       "credentials": [],
-      "trials": 1
+      "trials": 1,
+      "reach": "python3 --version"
     }
   ],
   "credentials": {
@@ -101,5 +104,29 @@
     "running real model Workers through a dispatch command that calls a model, beyond a --plan-only skill run",
     "writing under ~/.claude, ~/.mitosis or ~/.lighthouse, which live sessions and pipeline runs read",
     "creating release tags"
-  ]
+  ],
+  "measured": {
+    "commit": "7e3a94898b9fd915a2d1579c31d0e71f7edfdb25",
+    "measured_at": "2026-11-02T22:46:07.059Z",
+    "setup_seconds": null,
+    "build_seconds": null,
+    "suite_seconds": 456.178,
+    "suite_exit": 0,
+    "start_seconds": null,
+    "ready": null,
+    "drivers": {
+      "mitosis command": {
+        "seconds": 0.078,
+        "exit": 0
+      },
+      "mitosis skill": {
+        "seconds": 0.073,
+        "exit": 0
+      },
+      "release check": {
+        "seconds": 0.078,
+        "exit": 0
+      }
+    }
+  }
 }
