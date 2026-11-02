@@ -658,11 +658,13 @@ def _seed_lines(data):
     )
 
 
+def _holds_virtual_environment(repo, folder):
+    return os.path.isfile(os.path.join(repo, *run._parts(folder), VIRTUAL_ENVIRONMENT_MARK))
+
+
 def _seed_refusal(repo, path):
     name = path.rstrip("/").rsplit("/", 1)[-1]
-    if path.endswith("/") and os.path.isfile(
-        os.path.join(repo, *run._parts(path), VIRTUAL_ENVIRONMENT_MARK)
-    ):
+    if path.endswith("/") and _holds_virtual_environment(repo, path):
         return (
             "it is a Python virtual environment, whose scripts point back at the checkout, "
             "so an install inside a copy would write the checkout"
@@ -671,6 +673,59 @@ def _seed_refusal(repo, path):
     if matched is not None:
         return "its name matches %s, which looks like a secret, so it is never copied" % matched
     return None
+
+
+def _enclosing_virtual_environment(repo, path):
+    return next(
+        (
+            prefix + "/"
+            for prefix in run._prefixes(path.rstrip("/"))[:-1]
+            if _holds_virtual_environment(repo, prefix + "/")
+        ),
+        None,
+    )
+
+
+def _seed_children(repo, folder):
+    with os.scandir(os.path.join(repo, *run._parts(folder))) as entries:
+        return sorted(
+            folder + entry.name + ("/" if entry.is_dir(follow_symlinks=False) else "")
+            for entry in entries
+        )
+
+
+def _seed_split(repo, path):
+    reason = _seed_refusal(repo, path)
+    if reason is not None:
+        return (), ((path, reason),)
+    if not path.endswith("/"):
+        return (path,), ()
+    try:
+        children = _seed_children(repo, path)
+    except OSError as error:
+        return (), (
+            (path, "mitosis could not list it to check for secrets: %s" % (error.strerror or error)),
+        )
+    splits = tuple(_seed_split(repo, child) for child in children)
+    if not any(refused for _, refused in splits):
+        return (path,), ()
+    return (
+        tuple(kept for planned, _ in splits for kept in planned),
+        tuple(refused for _, skipped in splits for refused in skipped),
+    )
+
+
+def _seed_listed(repo, path):
+    enclosing = _enclosing_virtual_environment(repo, path)
+    if enclosing is not None:
+        return (), (
+            (
+                path,
+                "it lies inside the Python virtual environment %s, whose scripts point back at "
+                "the checkout, so an install inside a copy would write the checkout" % enclosing,
+            ),
+        )
+    return _seed_split(repo, path)
 
 
 def _seed_failure(reason):
@@ -697,11 +752,16 @@ def seed_plan(repo):
         ignored = _ignored(repo, listed)
     except (run.GitError, OSError) as error:
         return _seed_failure(str(error))
-    kept = sorted(path for path in set(listed) if path in ignored)
-    refusals = tuple((path, _seed_refusal(repo, path)) for path in kept)
+    matched = sorted(path for path in set(listed) if path in ignored)
+    outermost = [
+        path
+        for path in matched
+        if not any(other != path and other.endswith("/") and path.startswith(other) for other in matched)
+    ]
+    splits = tuple(_seed_listed(repo, path) for path in outermost)
     return {
-        "paths": [path for path, reason in refusals if reason is None],
-        "skipped": [{"path": path, "reason": reason} for path, reason in refusals if reason is not None],
+        "paths": [path for planned, _ in splits for path in planned],
+        "skipped": [{"path": path, "reason": reason} for _, skipped in splits for path, reason in skipped],
     }
 
 

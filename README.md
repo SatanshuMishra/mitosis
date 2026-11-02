@@ -209,7 +209,10 @@ A Python virtual environment, a secret-looking name (`.env`, `.env.*`,
 `*.pem`, `*.key`, `*.p12`, `*.pfx`, id_rsa, id_dsa, id_ecdsa,
 id_ed25519, `.npmrc`, `.netrc`, `.pgpass`, `.envrc`, `.git-credentials`,
 `*.jks`, `*.keystore`, `key.properties`) and a copy holding a symbolic link
-that leaves the clone are refused. A path that cannot be copied leaves the
+that leaves the clone are refused, and so is any path inside a virtual
+environment. A listed folder that holds a secret-looking name or a virtual
+environment anywhere inside is copied without it, its other contents one by
+one. A path that cannot be copied leaves the
 Lane cold, as without the file; it never stops the Lane. Seeded paths never
 land and never reach the gate's clean checkout. Each Lane record and the lock
 record list `seeded`, seed_skipped and seed_seconds. With no
