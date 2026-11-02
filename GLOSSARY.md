@@ -45,6 +45,16 @@ _Avoid_: preflight check, dry run
 The one commit a Step's Worker session lands on its Lane's branch, with the subject `<type>(<scope>): <step name>`.
 _Avoid_: lane commit, landing commit
 
+## Worker clones
+
+**Seed file**:
+The `.worktreeinclude` at the root of the user's checkout, in gitignore syntax, listing the gitignored paths a project lets every Worker clone start with; without it nothing is seeded.
+_Avoid_: include file, copy list
+
+**Seeded path**:
+A path the seed file matches that the repository ignores and does not track, copied by copy-on-write from the user's checkout into a Lane clone or the check-author's clone before its Worker starts; it never lands and never reaches the gate folder.
+_Avoid_: warm cache, copied folder
+
 ## Referee and gate
 
 **Referee**:
