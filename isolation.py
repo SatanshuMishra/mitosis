@@ -766,10 +766,13 @@ def seed_plan(repo):
         for path in matched
         if not any(other != path and other.endswith("/") and path.startswith(other) for other in matched)
     ]
-    splits = tuple(_seed_listed(repo, path) for path in outermost)
+    splits = tuple((path, _seed_listed(repo, path)) for path in outermost)
     return {
-        "paths": [path for planned, _ in splits for path in planned],
-        "skipped": [{"path": path, "reason": reason} for _, skipped in splits for path, reason in skipped],
+        "paths": [path for _, (planned, _) in splits for path in planned],
+        "roots": {path: listed for listed, (planned, _) in splits for path in planned},
+        "skipped": [
+            {"path": path, "reason": reason} for _, (_, skipped) in splits for path, reason in skipped
+        ],
     }
 
 
@@ -882,14 +885,16 @@ def _seeded_copy(repo, clone, path):
 
 def seed_clone(repo, plan, clone):
     started = time.monotonic()
+    roots = plan.get("roots") or {}
     seeded = []
     skipped = [dict(entry) for entry in plan["skipped"]]
     for path in plan["paths"]:
         reason = _seeded_copy(repo, clone, path)
-        if reason is None:
-            seeded = seeded + [path]
-        else:
+        root = roots.get(path, path)
+        if reason is not None:
             skipped = skipped + [{"path": path, "reason": reason}]
+        elif root not in seeded:
+            seeded = seeded + [root]
     return {
         "seeded": seeded,
         "skipped": skipped,
