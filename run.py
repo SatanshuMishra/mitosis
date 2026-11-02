@@ -116,6 +116,9 @@ LANE_RECORD_KEYS = (
     "started",
     "finished",
     "session_id",
+    "seeded",
+    "seed_skipped",
+    "seed_seconds",
 )
 
 
@@ -765,11 +768,27 @@ def check_identity(repo):
             )
 
 
+def _seeding(seeds, clone):
+    if seeds is None:
+        return {"seeded": [], "skipped": [], "seconds": 0}
+    return isolation.seed_clone(seeds["repo"], seeds["plan"], clone)
+
+
+def _seed_fields(seeding):
+    return {
+        "seeded": list(seeding["seeded"]),
+        "seed_skipped": list(seeding["skipped"]),
+        "seed_seconds": seeding["seconds"],
+    }
+
+
 def _land(plan, lane, tree, record, run_dir, header):
     write_set = plan["briefs"][lane]["write_set"]
     clone = isolation.lane_folders(run_dir, lane)["clone"]
     try:
-        landing = isolation.read_lane(clone, tree["path"], record["start"], write_set)
+        landing = isolation.read_lane(
+            clone, tree["path"], record["start"], write_set, record.get("seeded") or ()
+        )
     except (GitError, OSError) as error:
         return None, "mitosis could not land the Lane from its clone %s: %s" % (clone, error), None
     try:
@@ -928,6 +947,7 @@ def dispatch(
     env=None,
     sandbox=None,
     header=None,
+    seeds=None,
 ):
     if timeout is None:
         raise ConfigError("a per-Lane timeout is required; mitosis has no default")
@@ -1066,6 +1086,7 @@ def dispatch(
                 carried = core.carried_session(argv, session)
                 try:
                     start = isolation.cut_clone(tree, folders)
+                    seeding = _seeding(seeds, folders["clone"])
                     confinement = isolation.worker_confinement(folders, sandbox, env)
                 except (GitError, OSError) as error:
                     records = settle(
@@ -1087,7 +1108,17 @@ def dispatch(
                 )
                 running = {
                     **running,
-                    future: (lane, now(), merged, out, err, carried, folders["clone"], start),
+                    future: (
+                        lane,
+                        now(),
+                        merged,
+                        out,
+                        err,
+                        carried,
+                        folders["clone"],
+                        start,
+                        seeding,
+                    ),
                 }
                 notify(
                     observer,
@@ -1099,7 +1130,9 @@ def dispatch(
             if running:
                 done, _ = wait(list(running), return_when=FIRST_COMPLETED)
                 for future in done:
-                    lane, started, merged, out, err, session, clone, start = running[future]
+                    lane, started, merged, out, err, session, clone, start, seeding = running[
+                        future
+                    ]
                     running = {f: v for f, v in running.items() if f is not future}
                     code, timed_out = future.result()
                     tree = tree_of[lanes[lane]["msp"]]
@@ -1107,6 +1140,7 @@ def dispatch(
                         **_verdict(lane, tree, started, merged, out, err, code, timed_out, session),
                         "clone": clone,
                         "start": start,
+                        **_seed_fields(seeding),
                     }
                     if judged["state"] == "ok":
                         held = {**held, lane: judged}
@@ -3708,25 +3742,34 @@ def _dispatch_check_author(plan, settings, command, models, sandbox, base):
         command, _lock_values(plan, folders, settings["feature_branch"], models, run_dir, session)
     )
     carried = core.carried_session(argv, session)
+    seeded = {}
     try:
         start = isolation.cut_clone(
             {"path": settings["repo"], "branch": settings["feature_branch"]}, folders
         )
         if start != base:
             git(["reset", "-q", "--hard", base], folders["clone"])
+        seeded = _seed_fields(_seeding(settings.get("seeds"), folders["clone"]))
         confinement = isolation.worker_confinement(folders, sandbox, settings["env"])
     except (GitError, OSError) as error:
         return lock_record(
             "failed",
             "mitosis could not prepare the check-author's clone %s: %s" % (folders["clone"], error),
             session_id=carried,
+            **seeded,
         )
     code, timed_out = run_command(
         argv, folders["clone"], settings["timeout"], out, err, settings["env"], confinement
     )
     returned = last_return(out)
     judged, why = lane_verdict(code, returned, timed_out)
-    ran = {"stdout": out, "stderr": err, "returned": returned, "clone": folders["clone"]}
+    ran = {
+        "stdout": out,
+        "stderr": err,
+        "returned": returned,
+        "clone": folders["clone"],
+        **seeded,
+    }
     if judged == "ok":
         return lock_record("ok", None, session_id=carried, **ran)
     limit = None if timed_out else usage_limit_line(out, err)
@@ -3882,7 +3925,9 @@ def _landed_lock(plan, settings, record, base):
     clone = record["clone"]
     try:
         entries = isolation.write_set_entries(clone, locked)
-        outside = isolation.outside_writes(clone, repo, _committed_entries(repo, base), locked)
+        outside = isolation.outside_writes(
+            clone, repo, _committed_entries(repo, base), locked, record.get("seeded") or ()
+        )
     except (GitError, OSError) as error:
         return _failed_lock(
             record, "mitosis could not read the check-author's clone %s: %s" % (clone, error)
@@ -4053,6 +4098,7 @@ def execute(
     ):
         check_identity(repo)
     base = base_commit or pinned_base(repo, feature_branch, prior)
+    seeds = {"repo": repo, "plan": isolation.seed_plan(repo)}
     settings = {
         "repo": repo,
         "feature_branch": feature_branch,
@@ -4073,6 +4119,7 @@ def execute(
         "suite_command": suite_command,
         "gate_classes": tuple(gate_classes or ()),
         "sandbox": sandbox,
+        "seeds": seeds,
     }
     os.makedirs(run_dir, exist_ok=True)
     write_json(os.path.join(run_dir, PLAN_FILE), plan)
@@ -4138,6 +4185,7 @@ def execute(
         env=env,
         sandbox=sandbox,
         header=landing or header,
+        seeds=seeds,
     )
     notify(
         observer,

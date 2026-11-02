@@ -535,10 +535,15 @@ def _clone_file(clone, path):
     return (run.EXECUTABLE_MODE if executable else run.REGULAR_MODE), data
 
 
-def outside_writes(clone, tree, start_entries, write_set):
+def outside_writes(clone, tree, start_entries, write_set, seeded=()):
     linked = tuple(path for path, (mode, _) in start_entries.items() if mode == run.GITLINK_MODE)
     held = {path: entry for path, entry in start_entries.items() if entry[0] != run.GITLINK_MODE}
-    found = run._gate_listing(clone, (CLONE_GIT,))
+    seeded_roots = tuple(path.rstrip("/") for path in seeded)
+    found = {
+        path: kind
+        for path, kind in run._gate_listing(clone, (CLONE_GIT,)).items()
+        if not run._under(path, seeded_roots)
+    }
 
     def outside(path):
         return not run._under(path, write_set) and not run._under(path, linked)
@@ -581,9 +586,9 @@ def outside_writes(clone, tree, start_entries, write_set):
     }
 
 
-def read_lane(clone, tree, start, write_set):
+def read_lane(clone, tree, start, write_set, seeded=()):
     entries = write_set_entries(clone, write_set)
-    outside = outside_writes(clone, tree, run._committed_entries(tree, start), write_set)
+    outside = outside_writes(clone, tree, run._committed_entries(tree, start), write_set, seeded)
     return {**outside, "entries": entries}
 
 
