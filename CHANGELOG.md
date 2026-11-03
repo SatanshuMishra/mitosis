@@ -3,6 +3,30 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.12.0 - 2026-11-03
+
+Each MSP locks its own acceptance tests, and mitosis has no wall-clock limit.
+
+- Each MSP's check-author locks only that MSP's tests, as the first commit of
+  that MSP's branch, judged against the check-author's probe: each locked
+  test must exit 1 at the feature base plus the locked files and exit 0 once
+  the probe is added, and the probe is never committed. A check-author with
+  an `msp` label belongs to that MSP; the one unlabelled check-author is split
+  by acceptance ownership. The feature branch is not moved at lock time.
+- A failed lock blocks only its MSP and the MSPs that merge it, directly or
+  through another; every other MSP is built, gated and finished.
+- The result's `msps[].lock` replaces the top-level `lock`, and each MSP's
+  gate, reconcile and referee judge against its own lock commit.
+- mitosis has no wall-clock limit: no Worker, check-author, acceptance run,
+  gate setup, render probe or git command has a timeout, and the reaper ends
+  a finished Lane's leftover processes until none is left, so exit 14 is
+  gone. `--timeout` is deprecated and ignored: a run given it prints one
+  stderr line saying so, and a run without it starts.
+- Every process mitosis starts runs with no input, the null device or a
+  fixed input written in full, with terminal and pager prompts off, and with
+  git's dead-peer detection on: ssh in batch mode with keep-alives and
+  `http.lowSpeedLimit` and `http.lowSpeedTime` set.
+
 ## 0.11.0 - 2026-11-01
 
 Worker clones start warm from copy-on-write copies of the caches a project
