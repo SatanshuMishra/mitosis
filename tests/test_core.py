@@ -650,7 +650,7 @@ def rich_items():
 class Plan(unittest.TestCase):
     def the_plan_emits_exactly_the_declared_keys(self):
         result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
-        self.assertEqual(set(result), set(core.PLAN_KEYS) - {"coupling_order", "locked", "check_author"})
+        self.assertEqual(set(result), set(core.PLAN_KEYS) - {"coupling_order", "locked", "check_authors"})
         self.assertEqual(list(result), [key for key in core.PLAN_KEYS if key in result])
         self.assertEqual(result["version"], core.__version__)
         self.assertEqual(result["source"], SOURCE)
@@ -730,7 +730,7 @@ class Plan(unittest.TestCase):
         self.assertIsNone(re.search(r"\bgit\b", source))
         with mock.patch.object(builtins, "open", side_effect=AssertionError("plan opened a file")):
             result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
-        self.assertEqual(set(result), set(core.PLAN_KEYS) - {"coupling_order", "locked", "check_author"})
+        self.assertEqual(set(result), set(core.PLAN_KEYS) - {"coupling_order", "locked", "check_authors"})
 
     def plan_refuses_invalid_items_with_messages(self):
         with self.assertRaises(core.ValidationError) as caught:
@@ -1177,7 +1177,7 @@ class Referee(unittest.TestCase):
 
 
 def check_author(name="write-checks", files=("tests/test_calc.py",), **extra):
-    return step(name, files, role="check-author", msp="check-author", **extra)
+    return step(name, files, role="check-author", **extra)
 
 
 def calc_builder(files=("calc.py",), after=("write-checks",)):
@@ -1190,6 +1190,14 @@ def calc_builder(files=("calc.py",), after=("write-checks",)):
     )
 
 
+def chained_plan():
+    return {
+        "msps": [{"files": ["a.py"]}, {"files": ["b.py"]}, {"files": ["c.py"]}, {"files": ["d.py"]}],
+        "lanes": [{"msp": 0}, {"msp": 1}, {"msp": 2}, {"msp": 3}],
+        "lane_after": {"1": [0], "2": [1]},
+    }
+
+
 class CheckAuthor(unittest.TestCase):
     def a_check_author_is_the_lock_stage_and_never_a_lane(self):
         result = core.plan([check_author(), calc_builder()])
@@ -1198,14 +1206,21 @@ class CheckAuthor(unittest.TestCase):
         self.assertEqual([item["name"] for item in result["items"]], ["add"])
         self.assertNotIn("after", result["items"][0])
         self.assertEqual(result["locked"], ["tests/test_calc.py"])
-        self.assertEqual(result["check_author"]["name"], "write-checks")
-        self.assertEqual(result["check_author"]["files"], ["tests/test_calc.py"])
+        self.assertEqual(
+            [
+                (entry["msp"], entry["label"], entry["name"], entry["slice"])
+                for entry in result["check_authors"]
+            ],
+            [(0, "calc", "write-checks", ["tests/test_calc.py"])],
+        )
 
-    def the_check_author_brief_names_its_files_without_the_referee_line(self):
-        text = core.plan([check_author(), calc_builder()])["check_author"]["brief"]["text"]
-        self.assertTrue(text.startswith("Lane check-author of MSP lock\n"))
+    def the_check_author_brief_names_its_files_and_probe_files_without_the_referee_line(self):
+        text = core.plan([check_author(), calc_builder()])["check_authors"][0]["brief"]["text"]
+        self.assertTrue(text.startswith("Lane check-author of MSP calc\n"))
         self.assertIn("Task: do write-checks", text)
         self.assertIn("the only files you may edit: tests/test_calc.py", text)
+        self.assertIn("Probe files, the only files your probe may write: calc.py (and no others).", text)
+        self.assertIn("leave the probe in place in the clone and never commit it", text)
         self.assertNotIn("are read-only", text)
         self.assertNotIn("mitosis reverts such a write", text)
 
@@ -1215,7 +1230,7 @@ class CheckAuthor(unittest.TestCase):
                 handle.write("- Locked: tests/test_old.py\n- Locked: tests/test_calc.py\n")
             result = core.plan([check_author(), calc_builder()], charter="charter.md", root=root)
         self.assertEqual(result["locked"], ["tests/test_old.py", "tests/test_calc.py"])
-        brief = result["check_author"]["brief"]
+        brief = result["check_authors"][0]["brief"]
         self.assertEqual(brief["locked"], ["tests/test_old.py"])
         self.assertIn("The locked checks tests/test_old.py are read-only.", brief["text"])
 
@@ -1232,7 +1247,25 @@ class CheckAuthor(unittest.TestCase):
                     check_author("lock-two", files=("tests/test_two.py",)),
                     calc_builder(after=("lock-one", "lock-two")),
                 ],
-                "more than one Step has role check-author: lock-one, lock-two",
+                "more than one Step has role check-author and no msp: lock-one, lock-two",
+            ),
+            (
+                [
+                    check_author("lock-one", msp="calc"),
+                    check_author("lock-two", files=("tests/test_two.py",), msp="calc"),
+                    calc_builder(after=("lock-one", "lock-two")),
+                ],
+                "lock-one, lock-two: 2 check-author Steps carry msp calc, and one MSP's label "
+                "holds one check-author",
+            ),
+            (
+                [
+                    check_author("lock-one", msp="calc"),
+                    check_author("lock-two", msp="other"),
+                    calc_builder(after=("lock-one", "lock-two")),
+                ],
+                "lock-two: lists tests/test_calc.py in its files, which the check-author Step "
+                "lock-one also writes",
             ),
             (
                 [
@@ -1259,6 +1292,24 @@ class CheckAuthor(unittest.TestCase):
                     core.plan(items)
                 self.assertIn(expected, raised.exception.errors)
 
+    def a_check_author_file_is_refused_when_no_one_msp_can_lock_it(self):
+        cases = (
+            (
+                [check_author(files=("tests/test_calc.py", "tests/test_other.py")), calc_builder()],
+                "write-checks: writes tests/test_other.py, which no Step's acceptance names, so "
+                "no MSP can lock it",
+            ),
+            (
+                [check_author(msp="gone"), calc_builder()],
+                "write-checks: carries msp gone, which names no MSP: no Step carries msp gone",
+            ),
+        )
+        for items, expected in cases:
+            with self.subTest(expected=expected):
+                with self.assertRaises(core.ValidationError) as raised:
+                    core.plan(items)
+                self.assertEqual(raised.exception.errors, (expected,))
+
     def a_builder_may_name_a_check_author_file_as_its_acceptance(self):
         self.assertEqual(core.validate([check_author(), calc_builder()])["errors"], [])
 
@@ -1270,9 +1321,26 @@ class CheckAuthor(unittest.TestCase):
         cheap = core.plan([step("a", ["a.py"], complexity="simple")])
         self.assertEqual(core.plan_tiers(cheap), ("cheap",))
         cheap_locked = core.plan(
-            [check_author(), step("a", ["a.py"], complexity="simple", after=["write-checks"])]
+            [
+                check_author(),
+                step(
+                    "a",
+                    ["a.py"],
+                    complexity="simple",
+                    acceptance=[{"file": "tests/test_calc.py", "test": "Calc.adds"}],
+                    after=["write-checks"],
+                ),
+            ]
         )
         self.assertEqual(core.plan_tiers(cheap_locked), ("cheap", "top"))
+
+    def an_msp_merges_every_producer_directly_or_through_another(self):
+        plan = chained_plan()
+        self.assertEqual(core.msp_producers(plan), {0: (), 1: (0,), 2: (1,), 3: ()})
+        self.assertEqual(core.msp_merges(plan), {0: (), 1: (0,), 2: (0, 1), 3: ()})
+        self.assertEqual(core.msp_mergers(plan), {0: (1, 2), 1: (2,), 2: (), 3: ()})
+        self.assertEqual(core.probe_files(plan, 2), ("c.py", "a.py", "b.py"))
+        self.assertEqual(core.probe_files(plan, 3), ("d.py",))
 
 
 def load_tests(loader, tests, pattern):

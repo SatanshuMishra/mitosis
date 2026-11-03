@@ -290,7 +290,7 @@ def step(name, files, msp, acceptance=(), after=()):
 
 
 def check_author():
-    return {**step("check-author", [CHECK_AUTHOR_TEST_FILE], "check-author"), "role": "check-author"}
+    return {**step("check-author", [CHECK_AUTHOR_TEST_FILE], "calc"), "role": "check-author"}
 
 
 def builder():
@@ -643,7 +643,7 @@ class WarmClones(unittest.TestCase):
         scratch.jobs(
             {
                 "check-author": {
-                    "writes": {CHECK_AUTHOR_TEST_FILE: EXACT_TEST},
+                    "writes": {CHECK_AUTHOR_TEST_FILE: EXACT_TEST, "calc.py": CORRECT_ADD},
                     "msp": "lock",
                     "script": RECORD_SEEDED,
                 },
@@ -652,9 +652,10 @@ class WarmClones(unittest.TestCase):
         )
         completed = scratch.build(items)
         self._warm_record("check-author", completed)
-        lock = scratch.state().get("lock")
-        self.assertIsInstance(lock, dict, "state.json holds no lock record" + tail(completed))
+        lock = ((scratch.state().get("msps") or {}).get("0") or {}).get("lock")
+        self.assertIsInstance(lock, dict, "state.json holds no lock record for MSP calc" + tail(completed))
         self.assertEqual(lock.get("seeded"), ["cache/"])
+        self.assertEqual(lock.get("state"), "ok", tail(completed))
 
     def no_worktreeinclude_seeds_nothing(self):
         scratch = self._scratch(worktreeinclude=None)

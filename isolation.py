@@ -89,8 +89,8 @@ def lane_folders(run_dir, lane):
     return stage_folders(run_dir, "lane-%d" % lane)
 
 
-def lock_folders(run_dir):
-    return stage_folders(run_dir, LOCK_CLONE)
+def lock_folders(run_dir, msp):
+    return stage_folders(run_dir, "%s-%d" % (LOCK_CLONE, msp))
 
 
 def stage_folders(run_dir, name):

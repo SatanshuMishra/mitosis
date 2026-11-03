@@ -24,7 +24,7 @@ from test_mutant_coverage import (
     summary_of,
     tail,
 )
-from test_round1_receipts import EXACT_TEST, check_author
+from test_round1_receipts import EXACT_TEST, check_author, msp_lock
 
 OUTSIDE_BYTES = b"outside the sandbox, never rewritten by mitosis\n"
 KEPT_NAME = "keep.txt"
@@ -159,7 +159,7 @@ class Receipts(unittest.TestCase):
         self._skip_without_sandbox()
         self.scratch = Scratch()
         outside = self._outside_file()
-        link = os.path.join(self.scratch.run_dir, "lock", "1-locked.log")
+        link = os.path.join(self.scratch.run_dir, "lock", "msp-0", "1-without-probe.log")
         items = self.scratch.items(
             [check_author(), step("add", ["calc.py"], "demo", [ADDS, AGAIN], ("check-author",))]
         )
@@ -167,7 +167,7 @@ class Receipts(unittest.TestCase):
             items,
             {
                 "check-author": {
-                    "writes": {TEST_FILE: planting(link, outside) + TWO_CHECKS},
+                    "writes": {TEST_FILE: planting(link, outside) + TWO_CHECKS, "calc.py": CORRECT_ADD},
                     "msp": "lock",
                 },
                 "add": {"writes": {"calc.py": CORRECT_ADD}, "msp": "demo"},
@@ -175,7 +175,7 @@ class Receipts(unittest.TestCase):
         )
         self._assert_unchanged_file(outside, completed)
         self.assertFalse(os.path.islink(link), "sandboxed code planted %s" % link + tail(completed))
-        self.assertEqual((summary_of(completed).get("lock") or {}).get("state"), "ok", tail(completed))
+        self.assertEqual(msp_lock(summary_of(completed), "demo").get("state"), "ok", tail(completed))
         self._assert_shipped_pass(completed)
 
     def a_replaced_gate_checkout_never_redirects_a_mitosis_write(self):

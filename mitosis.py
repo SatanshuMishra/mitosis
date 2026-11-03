@@ -1244,7 +1244,7 @@ def manifest_lines(items):
 
 
 def cluster_depths(plan):
-    producers = run.msp_producers(plan)
+    producers = core.msp_producers(plan)
     depths = _depths(len(plan.get("msps") or []), producers)
     return tuple(
         max((depths[msp] for msp in cluster), default=0) + 1 for cluster in plan.get("clusters") or []
@@ -1323,13 +1323,11 @@ def session_lines(plan):
 
 
 def lock_stage_lines(plan):
-    author = plan.get("check_author")
-    if not author:
-        return ()
-    return (
-        "lock stage: the %s Step %s writes and locks %s before every Lane, and every Lane "
-        "builds with them read-only"
-        % (core.CHECK_AUTHOR, author["name"], ", ".join(plan.get("locked") or ())),
+    return tuple(
+        "lock stage: the %s Step %s writes and locks %s for MSP %s as the first commit of its "
+        "branch before its Lanes, and they build with them read-only"
+        % (core.CHECK_AUTHOR, entry["name"], ", ".join(entry["slice"]), entry["label"])
+        for entry in plan.get("check_authors") or ()
     )
 
 
@@ -1515,7 +1513,7 @@ def stacking_lines(plan, state):
     if plan is None:
         return (NO_PLAN,)
     if state is None:
-        producers = run.msp_producers(plan)
+        producers = core.msp_producers(plan)
         many = tuple((msp, found) for msp, found in sorted(producers.items()) if len(found) > 1)
         if not many:
             return ("none predicted: every MSP has at most one producer",)
@@ -1649,37 +1647,45 @@ def _msp_findings(plan, index, record, lane_records):
     )
 
 
-def lock_of(state):
-    lock = (state or {}).get("lock")
-    return lock if isinstance(lock, dict) else None
+LOCK_EXIT = {"failed": LANE_EXIT["failed"], run.MSP_PARKED: MSP_EXIT[run.MSP_PARKED]}
 
 
-def lock_stopped(state):
-    lock = lock_of(state)
-    return lock is not None and lock.get("state") != "ok"
+def lock_of(state, msp):
+    record = (((state or {}).get("msps") or {}).get(str(msp)) or {}).get("lock")
+    return record if isinstance(record, dict) else None
 
 
-def _lock_findings(state):
-    lock = lock_of(state)
-    if lock is None:
-        return []
-    stated = (
-        []
-        if lock.get("state") == "ok"
-        else [
-            _finding(
-                core.LOCK_MSP,
-                None,
-                lock.get("state") or "incomplete",
-                LANE_EXIT.get(lock.get("state"), EXIT_INCOMPLETE),
-                lock.get("reason") or "",
-            )
-        ]
+def locks(state, plan):
+    return tuple(
+        (msp, lock_of(state, msp))
+        for msp in range(len(plan.get("msps") or []))
+        if lock_of(state, msp) is not None
     )
-    return stated + [
-        _finding(core.LOCK_MSP, None, "undeclared", EXIT_RECONCILE, path)
-        for path in lock.get("undeclared") or []
-    ]
+
+
+def lock_stopped(state, plan):
+    return any(lock.get("state") != "ok" for _, lock in locks(state, plan))
+
+
+def _lock_findings(state, plan):
+    found = []
+    for msp, lock in locks(state, plan):
+        label = _label(plan, msp)
+        if lock.get("state") != "ok":
+            found = found + [
+                _finding(
+                    label,
+                    None,
+                    "lock-" + (lock.get("state") or "incomplete"),
+                    LOCK_EXIT.get(lock.get("state"), EXIT_INCOMPLETE),
+                    lock.get("reason") or "",
+                )
+            ]
+        found = found + [
+            _finding(label, None, "undeclared", EXIT_RECONCILE, path)
+            for path in lock.get("undeclared") or []
+        ]
+    return found
 
 
 def findings(state, plan):
@@ -1696,11 +1702,11 @@ def findings(state, plan):
         for index in range(len(plan.get("msps") or []))
         for entry in _msp_findings(plan, index, msp_records.get(str(index)), lane_records)
     ]
-    return _lock_findings(state) + _lane_findings(plan, lane_records) + msps + manifests
+    return _lock_findings(state, plan) + _lane_findings(plan, lane_records) + msps + manifests
 
 
 def exit_code(state, plan):
-    if not plan.get("msps") or not ((state or {}).get("worktrees") or lock_stopped(state)):
+    if not plan.get("msps") or not ((state or {}).get("worktrees") or lock_stopped(state, plan)):
         return EXIT_NO_BRANCHES
     carried = {entry["exit"] for entry in findings(state, plan)}
     worst = next((code for code in EXIT_SEVERITY if code in carried), None)
@@ -1733,11 +1739,11 @@ def outcome_lines(plan, state, run_dir, code):
             ),
         )
     lines = lines + ("sandbox: %s" % sandbox_of(state),)
-    lock = lock_of(state)
-    if lock is not None:
+    for msp, lock in locks(state, plan):
         reason = _one_line(lock.get("reason"))
         lines = lines + (
-            "lock stage: %s%s" % (lock.get("state"), " (%s)" % reason if reason else ""),
+            "lock stage of MSP %s: %s%s"
+            % (_label(plan, msp), lock.get("state"), " (%s)" % reason if reason else ""),
         )
     lane_records = state.get("lanes") or {}
     for index in range(len(plan.get("lanes") or [])):
@@ -1845,40 +1851,48 @@ def _msp_summary(plan, state):
                 "crossing": [entry.get("path") for entry in findings.get("crossing") or ()],
                 "ignored": list(record.get("ignored") or ()),
                 "trajectory_error": record.get("trajectory_error"),
+                "lock": _lock_summary(record.get("lock")),
+                "referee": _referee_summary(record.get("referee")),
             }
         )
     return summaries
 
 
-def _lock_summary(state):
-    lock = lock_of(state)
-    if lock is None:
+LOCK_SUMMARY_KEYS = ("state", "reason", "commit", "session_id", "probes", "undeclared")
+
+REFEREE_KEYS = ("locked", "receipt_lock", "commit")
+
+
+def _lock_summary(lock):
+    if not isinstance(lock, dict):
         return None
-    return {key: lock.get(key) for key in ("state", "reason", "commit", "session_id")}
+    return {
+        key: list(lock.get(key) or ()) if key in ("probes", "undeclared") else lock.get(key)
+        for key in LOCK_SUMMARY_KEYS
+    }
 
 
-def _lock_attention(state):
-    lock = lock_of(state) or {}
-    stopped = (
-        ["the lock stage ended %s: %s" % (lock.get("state"), _one_line(lock.get("reason")))]
-        if lock and lock.get("state") != "ok"
-        else []
-    )
-    undeclared = (
-        [
-            "the check-author wrote outside the locked paths, and mitosis landed none of it: %s"
-            % ", ".join(lock["undeclared"])
-        ]
-        if lock.get("undeclared")
-        else []
-    )
-    checked_out = [
-        "%s has the feature branch checked out; mitosis moved the branch to the lock commit "
-        "%s and left that checkout's files untouched, so update it before working there"
-        % (path, lock.get("commit"))
-        for path in lock.get("checked_out") or []
-    ]
-    return stopped + undeclared + checked_out
+def _referee_summary(record):
+    if not isinstance(record, dict):
+        return None
+    return {key: record.get(key) for key in REFEREE_KEYS}
+
+
+def _lock_attention(state, plan):
+    lines = []
+    for msp, lock in locks(state, plan):
+        label = _label(plan, msp)
+        if lock.get("state") != "ok":
+            lines = lines + [
+                "the lock of MSP %s ended %s: %s"
+                % (label, lock.get("state"), _one_line(lock.get("reason")))
+            ]
+        if lock.get("undeclared"):
+            lines = lines + [
+                "the check-author of MSP %s wrote outside its locked slice and probe files, and "
+                "mitosis landed none of it: %s" % (label, ", ".join(lock["undeclared"]))
+            ]
+    return lines
 
 
 def _attention(plan, lanes, msps):
@@ -1987,10 +2001,9 @@ def summary(plan, state, run_dir, code, referee=None, troubles=()):
         "msps": msps,
         "coupling": coupling,
         "referee": referee,
-        "lock": _lock_summary(state),
         "findings": findings(state, plan or {}),
         "sandbox": sandbox_of(state),
-        "attention": _lock_attention(state)
+        "attention": _lock_attention(state, plan or {})
         + _attention(plan or {}, lanes, msps)
         + list(troubles)
         + list(oversized_lines(plan or {}))
@@ -2010,27 +2023,34 @@ def _summarised(plan, state, run_dir, code, referee=None, troubles=()):
     return code
 
 
-def referee_record(args, plan, repo, base):
-    locked = plan.get("locked") or ()
-    if not locked or base is None:
+def referee_record(args, plan, repo, base, locked=None):
+    held = plan.get("locked") or () if locked is None else locked
+    if not held or base is None:
         return None
-    return run.locked_record(repo, args.feature_branch, base, locked)
+    return run.locked_record(repo, args.feature_branch, base, list(held))
+
+
+def sliced_paths(plan):
+    return frozenset(
+        referee.normalised(path)
+        for entry in plan.get("check_authors") or ()
+        for path in entry.get("slice") or ()
+    )
 
 
 def lock_stage_referee(args, plan, repo, base):
-    author = plan.get("check_author")
-    if not author or base is None:
+    if not plan.get("check_authors") or base is None:
         return referee_record(args, plan, repo, base)
-    missing = run.missing_paths(repo, base, plan.get("locked") or ())
-    owned = frozenset(referee.normalised(path) for path in author.get("files") or ())
-    unowned = [path for path in missing if referee.normalised(path) not in owned]
-    if unowned:
+    owned = sliced_paths(plan)
+    charter = [path for path in plan.get("locked") or () if referee.normalised(path) not in owned]
+    missing = run.missing_paths(repo, base, charter)
+    if missing:
         raise run.ConfigError(
-            "--charter locks %s, which %s does not hold and the %s Step %s does not write; "
+            "--charter locks %s, which %s does not hold and no %s Step writes; "
             "commit the locked checks on it before the build"
-            % (unowned[0], args.feature_branch, core.CHECK_AUTHOR, author["name"])
+            % (missing[0], args.feature_branch, core.CHECK_AUTHOR)
         )
-    return None if missing else referee_record(args, plan, repo, base)
+    return referee_record(args, plan, repo, base, charter)
 
 
 def planned_referee(args, plan, repo):
@@ -2214,8 +2234,6 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     else:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
         state, failure = {}, None
-    if plan.get("check_author"):
-        locked = (state or {}).get("referee")
     code = exit_code(state, plan)
     if failure is not None and code == EXIT_SHIPPED:
         code = EXIT_INCOMPLETE
