@@ -32,7 +32,7 @@ EXIT_REFEREE = 9
 
 EXIT_MANIFEST = 23
 
-EXIT_LINGERING = 14
+TIMEOUT_NOTICE = "mitosis: --timeout is deprecated and ignored; mitosis has no wall-clock limit"
 
 LANE_EXIT = {
     "ok": EXIT_SHIPPED,
@@ -71,8 +71,6 @@ EXIT_MEANING = {
     EXIT_REFEREE: "a Worker wrote a referee path; mitosis restored it and held its MSP back",
     EXIT_MANIFEST: "a branch is pushed or a pull request open with a package manifest that "
     "exports nothing",
-    EXIT_LINGERING: "a run left a process mitosis could not end, so mitosis stopped before reading "
-    "anything that process could change",
     LANE_EXIT["failed"]: "a Lane failed",
     LANE_EXIT["blocked"]: "a Lane or MSP was blocked, by a predecessor or by a write across an "
     "MSP boundary",
@@ -168,7 +166,6 @@ RUN_FLAGS = (
     ("--feature-branch", "feature_branch"),
     ("--dispatch-command", "dispatch_command"),
     ("--acceptance-command", "acceptance_command"),
-    ("--timeout", "timeout"),
 )
 
 PUSH_FLAGS = (
@@ -270,17 +267,16 @@ FLAG_SPECS = {
     },
     "--gate-setup": {
         "metavar": "TEMPLATE",
-        "help": "prepares the gate's clean checkout once per gate before any acceptance run, "
-        "with the run's --timeout; placeholders %s; when given, the gate links no dependency "
+        "help": "prepares the gate's clean checkout once per gate before any acceptance run; "
+        "placeholders %s; when given, the gate links no dependency "
         "folder from the repository root; only what it writes at new top-level names survives "
-        "each run's reset; a non-zero exit or a timeout holds the MSP back "
+        "each run's reset; a non-zero exit holds the MSP back "
         "gate-failed" % PLACEHOLDER_HELP["gate-setup"],
     },
     "--suite-command": {
         "metavar": "TEMPLATE",
         "help": "the project's full test suite, run in the gate's checkout once with no mutant "
-        "and then once for each mutant that every acceptance test of a property survives, with "
-        "the run's --timeout; "
+        "and then once for each mutant that every acceptance test of a property survives; "
         "placeholders %s, where {report} is a fresh path for an optional JUnit XML report; "
         "exit 1 kills the mutant only when the run with no mutant passed, and makes the property "
         "covered-elsewhere when every survivor is killed; any other exit, or a run with no mutant "
@@ -368,8 +364,8 @@ FLAG_SPECS = {
     "--timeout": {
         "metavar": "SECONDS",
         "type": float,
-        "help": "per Worker, per acceptance run, per render probe and per pull-request command; "
-        "required for a run, and for a --plan-only run that names --pr-type and --pr-subject",
+        "help": "deprecated and ignored; mitosis has no wall-clock limit, and a command's exit "
+        "ends every wait",
     },
     "--concurrency": {
         "metavar": "N",
@@ -712,8 +708,6 @@ def structure_document(args, root, run_dir, models, charter, graph, decisions, p
             "the decompose command uses {model} but no model is mapped for tier %s; "
             "map it with --tier-model %s=<model>" % (DECOMPOSE_TIER, DECOMPOSE_TIER)
         )
-    if args.timeout is None:
-        raise Refusal("--timeout is required to run the structure stage; mitosis has no default")
     path = check_document(args, root)
     recorder = recorder_of(args)
     began = run.now()
@@ -722,14 +716,13 @@ def structure_document(args, root, run_dir, models, charter, graph, decisions, p
         path,
         args.decompose_command,
         root,
-        args.timeout,
         model=model,
         graph=graph,
         charter=charter,
         log=os.path.join(run_dir, DECOMPOSE_LOG),
         decisions=decisions,
         prior=prior,
-        env=recorder.env,
+        env=run.process_environ(recorder.env, root),
         on_sessions=lambda sessions: recorder.stage_ended("structure", began, sessions),
     )
     order = decompose.rank(results)
@@ -790,8 +783,6 @@ def brief_structure(args, items, root, run_dir, models, charter, graph, decision
         _print(brief_lines({"written": [], "reused": [step["name"] for step in items], "errors": []}))
         return items
     refuse_unbriefable(args, pending)
-    if args.timeout is None:
-        raise Refusal("--timeout is required to run the brief stage; mitosis has no default")
     refuse_unmapped_briefs(args.brief_command, pending, models)
     log_dir = os.path.join(run_dir, BRIEFS_DIR)
     os.makedirs(log_dir, exist_ok=True)
@@ -802,7 +793,6 @@ def brief_structure(args, items, root, run_dir, models, charter, graph, decision
             items,
             args.brief_command,
             root,
-            args.timeout,
             models=models,
             concurrency=args.concurrency,
             log_dir=log_dir,
@@ -810,7 +800,7 @@ def brief_structure(args, items, root, run_dir, models, charter, graph, decision
             packs=core.context_packs(items, graph, args.context_hops, args.context_cap),
             charter=charter,
             decisions=decisions,
-            env=recorder.env,
+            env=run.process_environ(recorder.env, root),
             on_sessions=lambda sessions: recorder.stage_ended("brief", began, sessions),
         )
     except (ValueError, OSError) as error:
@@ -977,7 +967,7 @@ def run_header(args, plan, run_dir):
         raise Refusal(str(error))
 
 
-def refuse_unrenderable(args, plan, run_dir):
+def refuse_unrenderable(args, plan, run_dir, repo=None):
     header = run_header(args, plan, run_dir)
     if header is None:
         return
@@ -986,16 +976,14 @@ def refuse_unrenderable(args, plan, run_dir):
             "a run that opens pull requests needs --pr-impact, what callers or users notice, "
             "or --pr-blast-radius for render's impact"
         )
-    if args.timeout is None:
-        raise Refusal("the render probe needs --timeout; mitosis has no default")
+    env = run.process_environ(recorder_of(args).env, repo)
     for index in range(len(plan.get("msps") or [])):
         try:
             pr_facts.render(
                 args.render_command,
                 pr_facts.probe_facts(header, plan, index),
                 os.path.join(run_dir, "probe-%d.json" % index),
-                args.timeout,
-                recorder_of(args).env,
+                env,
             )
         except pr_facts.RenderError as error:
             raise Refusal("MSP %s: %s" % (_label(plan, index), error))
@@ -2116,7 +2104,6 @@ def execute(args, plan, models, run_dir, repo, root, base=None):
             args.dispatch_command,
             args.acceptance_command,
             args.pr_command,
-            args.timeout,
             args.concurrency,
             models=models,
             resume=args.resume,
@@ -2181,9 +2168,6 @@ def run_pipeline(args):
     except Refusal:
         recorder.ended(EXIT_REFUSED, EXIT_MEANING[EXIT_REFUSED])
         raise
-    except run.LingeringProcess:
-        recorder.ended(EXIT_LINGERING, EXIT_MEANING[EXIT_LINGERING])
-        raise
     except BaseException:
         recorder.ended(None, None)
         raise
@@ -2216,7 +2200,7 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     args = argparse.Namespace(
         **{**vars(args), "loaded_gate_classes": gate_classes(args.gate_classes, plan)}
     )
-    refuse_unrenderable(args, plan, run_dir)
+    refuse_unrenderable(args, plan, run_dir, repo)
     if args.plan_only:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
         run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
@@ -2265,6 +2249,8 @@ def main(argv=None):
             "--pick %d names a sample that will not exist; --structure-samples is %d"
             % (args.pick, args.structure_samples)
         )
+    if args.timeout is not None:
+        _print((TIMEOUT_NOTICE,), sys.stderr)
     malformed = next(
         (value for value in args.proven_head if PROVEN_HEAD.fullmatch(value) is None), None
     )
@@ -2281,12 +2267,6 @@ def main(argv=None):
     except Refusal as refusal:
         _print(("mitosis: %s" % refusal, "exit %d: %s" % (EXIT_REFUSED, EXIT_MEANING[EXIT_REFUSED])), sys.stderr)
         return EXIT_REFUSED
-    except run.LingeringProcess as lingering:
-        _print(
-            ("mitosis: %s" % lingering, "exit %d: %s" % (EXIT_LINGERING, EXIT_MEANING[EXIT_LINGERING])),
-            sys.stderr,
-        )
-        return EXIT_LINGERING
 
 
 if __name__ == "__main__":

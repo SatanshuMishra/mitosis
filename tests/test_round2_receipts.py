@@ -223,9 +223,7 @@ class Receipts(unittest.TestCase):
         env = {**os.environ, "HOME": os.path.join(folder, "home")}
         confinement = isolation.worker_confinement(folders, sandbox, env)
         logs = os.path.join(folder, "worker")
-        run.run_command(
-            argv, folders["clone"], CALL_LIMIT, logs + ".out", logs + ".err", env, confinement
-        )
+        run.run_command(argv, folders["clone"], logs + ".out", logs + ".err", env, confinement)
         try:
             isolation.read_lane(folders["clone"], checkout, start, ("a.py",), ())
         except (OSError, run.GitError):

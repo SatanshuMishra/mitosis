@@ -260,7 +260,6 @@ def write(
     items,
     template,
     root,
-    timeout,
     models=None,
     concurrency=1,
     log_dir=None,
@@ -281,7 +280,6 @@ def write(
     ]
     spawned = decompose.spawn_until(
         jobs,
-        timeout,
         concurrency,
         root,
         lambda index, one: not _outcome(todo[index]["name"], one)["errors"],

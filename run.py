@@ -5,7 +5,6 @@ import os
 import re
 import shlex
 import shutil
-import signal
 import stat
 import subprocess
 import sys
@@ -53,9 +52,22 @@ LOCK_PATH = re.compile(r"[\\/]\.git[\\/][^\s'\"]*\.lock\b")
 
 LOCK_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.6, 3.2)
 
-GIT_TIMEOUT = 600
+QUIET_PROMPTS = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "GH_PROMPT_DISABLED": "1",
+    "GIT_PAGER": "cat",
+    "PAGER": "cat",
+}
 
-KILL_GRACE = 30
+SSH_OPTIONS = "-o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+
+DEFAULT_SSH = "ssh"
+
+HTTP_SETTINGS = (("http.lowSpeedLimit", "1"), ("http.lowSpeedTime", "60"))
+
+CONFIG_UNSET = 1
+
+CONFIGURED_SSH_CACHE = 256
 
 MSP_UNCHANGED = "unchanged"
 
@@ -107,7 +119,6 @@ LANE_RECORD_KEYS = (
     "state",
     "reason",
     "exit",
-    "timed_out",
     "returned",
     "stdout",
     "stderr",
@@ -211,18 +222,6 @@ class GitError(RuntimeError):
         )
 
 
-class GitTimeout(GitError):
-    def __init__(self, args, timeout):
-        self.args_run = tuple(args)
-        self.code = None
-        self.stderr = ""
-        RuntimeError.__init__(
-            self,
-            "git %s timed out after %s seconds; a git hook or a lock may be hanging"
-            % (" ".join(args), timeout),
-        )
-
-
 class GateSetupError(RuntimeError):
     pass
 
@@ -247,76 +246,99 @@ class ShipError(RuntimeError):
     pass
 
 
-class LingeringProcess(RuntimeError):
-    def __init__(self, folder, limit):
-        self.folder = folder
-        super().__init__(
-            "the run in %s left a process mitosis could not end within %d seconds, so mitosis "
-            "read nothing that run could change" % (folder, limit)
-        )
-
-
-def _index_lock(cwd, args=()):
-    named = tuple(arg[len("--git-dir="):] for arg in args[:1] if arg.startswith("--git-dir="))
-    if named:
-        return os.path.join(cwd or os.curdir, named[0], "index.lock")
-    dot_git = os.path.join(cwd or os.curdir, ".git")
-    if not os.path.isfile(dot_git):
-        return os.path.join(dot_git, "index.lock")
-    try:
-        with open(dot_git, encoding="utf-8") as handle:
-            pointer = handle.read().strip()
-    except OSError:
-        return None
-    if not pointer.startswith("gitdir:"):
-        return None
-    gitdir = os.path.join(cwd or os.curdir, pointer[len("gitdir:"):].strip())
-    return os.path.join(gitdir, "index.lock")
-
-
-def _left_lock(index_lock, locked_before):
-    if index_lock is None or locked_before or not os.path.exists(index_lock):
-        return
-    try:
-        os.remove(index_lock)
-    except FileNotFoundError:
-        pass
-
-
 def _decoded(data):
     return data.decode("utf-8", "surrogateescape")
 
 
-def git_environ(env=None):
-    kept = {
+def _git_kept_environ():
+    return {
         name: value for name, value in os.environ.items() if name not in UNPINNED_GIT_VARIABLES
     }
-    return {**kept, **(env or {})}
 
 
-def _git_once(args, cwd, timeout, raw=False, data=None, env=None):
-    index_lock = _index_lock(cwd, args)
-    locked_before = index_lock is not None and os.path.exists(index_lock)
+@lru_cache(maxsize=CONFIGURED_SSH_CACHE)
+def configured_ssh(repo):
+    if repo is None:
+        return None
+    argv = ["git", "config", "--get", "core.sshCommand"]
+    completed = subprocess.run(
+        argv,
+        cwd=repo,
+        env={**_git_kept_environ(), **QUIET_PROMPTS},
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+    )
+    if completed.returncode == CONFIG_UNSET:
+        return None
+    if completed.returncode != 0:
+        raise GitError(argv[1:], completed.returncode, _decoded(completed.stderr))
+    found = _decoded(completed.stdout).strip()
+    return found or None
+
+
+def ssh_command(base, repo=None):
+    chosen = (
+        base.get("GIT_SSH_COMMAND")
+        or configured_ssh(repo)
+        or (shlex.quote(base["GIT_SSH"]) if base.get("GIT_SSH") else DEFAULT_SSH)
+    )
+    if chosen.endswith(" " + SSH_OPTIONS):
+        return chosen
+    return chosen + " " + SSH_OPTIONS
+
+
+def _config_count(base):
+    raw = base.get("GIT_CONFIG_COUNT") or "0"
+    if not raw.isdigit():
+        raise ConfigError("GIT_CONFIG_COUNT is %r, not a count of git config entries" % raw)
+    return int(raw)
+
+
+def _config_entries(base):
+    count = _config_count(base)
+    held = tuple(
+        (base.get("GIT_CONFIG_KEY_%d" % position), base.get("GIT_CONFIG_VALUE_%d" % position))
+        for position in range(count)
+    )
+    if count >= len(HTTP_SETTINGS) and held[count - len(HTTP_SETTINGS):] == HTTP_SETTINGS:
+        return {}
+    added = {
+        name: value
+        for offset, (key, setting) in enumerate(HTTP_SETTINGS)
+        for name, value in (
+            ("GIT_CONFIG_KEY_%d" % (count + offset), key),
+            ("GIT_CONFIG_VALUE_%d" % (count + offset), setting),
+        )
+    }
+    return {**added, "GIT_CONFIG_COUNT": str(count + len(HTTP_SETTINGS))}
+
+
+def process_environ(env=None, repo=None):
+    base = dict(os.environ if env is None else env)
+    return {
+        **base,
+        **QUIET_PROMPTS,
+        "GIT_SSH_COMMAND": ssh_command(base, repo),
+        **_config_entries(base),
+    }
+
+
+def git_environ(env=None, cwd=None):
+    return {**process_environ(_git_kept_environ(), cwd), **(env or {})}
+
+
+def _git_once(args, cwd, raw=False, data=None, env=None):
     argv = ["git", *args]
     proc = subprocess.Popen(
         argv,
         cwd=cwd,
-        env=git_environ(env),
+        env=git_environ(env, cwd),
         stdin=subprocess.DEVNULL if data is None else subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         start_new_session=True,
     )
-    try:
-        stdout, stderr = proc.communicate(input=data, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        kill_tree(proc)
-        try:
-            proc.communicate(timeout=KILL_GRACE)
-        except subprocess.TimeoutExpired:
-            pass
-        _left_lock(index_lock, locked_before)
-        raise GitTimeout(args, timeout)
+    stdout, stderr = proc.communicate(input=data)
     return subprocess.CompletedProcess(
         argv, proc.returncode, stdout if raw else _decoded(stdout), _decoded(stderr)
     )
@@ -329,32 +351,32 @@ def _locked(completed):
     )
 
 
-def git_run(args, cwd, timeout=GIT_TIMEOUT, raw=False, data=None, env=None):
-    completed = _git_once(args, cwd, timeout, raw, data, env)
+def git_run(args, cwd, raw=False, data=None, env=None):
+    completed = _git_once(args, cwd, raw, data, env)
     for delay in LOCK_RETRY_DELAYS:
         if not _locked(completed):
             return completed
         time.sleep(delay)
-        completed = _git_once(args, cwd, timeout, raw, data, env)
+        completed = _git_once(args, cwd, raw, data, env)
     return completed
 
 
-def git(args, cwd, check=True, timeout=GIT_TIMEOUT, env=None):
-    completed = git_run(args, cwd, timeout, env=env)
+def git(args, cwd, check=True, env=None):
+    completed = git_run(args, cwd, env=env)
     if check and completed.returncode != 0:
         raise GitError(args, completed.returncode, completed.stderr)
     return completed.stdout.strip()
 
 
-def git_paths(args, cwd, timeout=GIT_TIMEOUT, env=None):
-    completed = git_run(args, cwd, timeout, raw=True, env=env)
+def git_paths(args, cwd, env=None):
+    completed = git_run(args, cwd, raw=True, env=env)
     if completed.returncode != 0:
         raise GitError(args, completed.returncode, completed.stderr)
     return [os.fsdecode(name) for name in completed.stdout.split(b"\0") if name]
 
 
-def git_ok(args, cwd, timeout=GIT_TIMEOUT, env=None):
-    return git_run(args, cwd, timeout, env=env).returncode == 0
+def git_ok(args, cwd, env=None):
+    return git_run(args, cwd, env=env).returncode == 0
 
 
 def commit_at(ref, cwd, required=False, git_dir=None):
@@ -600,9 +622,7 @@ def parse_return(line):
     return {key: bounded[key] for key in core.RETURN_KEYS}
 
 
-def lane_verdict(exit_code, returned, timed_out):
-    if timed_out:
-        return "failed", "timeout"
+def lane_verdict(exit_code, returned):
     status = returned.get("status") if returned else None
     if exit_code == 0 and status == "ok":
         return "ok", None
@@ -615,15 +635,8 @@ def lane_verdict(exit_code, returned, timed_out):
     return "failed", "exit %d and reported %s" % (exit_code, status)
 
 
-def kill_tree(proc):
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except (AttributeError, OSError):
-        proc.kill()
-
-
-def run_command(argv, cwd, timeout, stdout_path, stderr_path, env=None, sandbox=None):
-    launched, launch_env = isolation.confined(argv, env, sandbox)
+def run_command(argv, cwd, stdout_path, stderr_path, env=None, sandbox=None):
+    launched, launch_env = isolation.confined(argv, process_environ(env, cwd), sandbox)
     with open(stdout_path, "wb") as out, open(stderr_path, "wb") as err:
         proc = subprocess.Popen(
             launched,
@@ -635,15 +648,10 @@ def run_command(argv, cwd, timeout, stdout_path, stderr_path, env=None, sandbox=
             start_new_session=True,
         )
         try:
-            ended = proc.wait(timeout=timeout), False
-        except subprocess.TimeoutExpired:
-            kill_tree(proc)
-            try:
-                ended = proc.wait(timeout=KILL_GRACE), True
-            except subprocess.TimeoutExpired:
-                ended = -signal.SIGKILL, True
-    isolation.end_run(proc, sandbox, cwd)
-    return ended
+            code = proc.wait()
+        finally:
+            isolation.end_run(proc, sandbox)
+    return code
 
 
 def merge_target(tree, producer, base):
@@ -817,10 +825,10 @@ def _land(plan, lane, tree, record, run_dir, header):
     }
 
 
-def _verdict(lane, tree, started, merged, out, err, code, timed_out, session_id):
+def _verdict(lane, tree, started, merged, out, err, code, session_id):
     returned = last_return(out)
-    judged, why = lane_verdict(code, returned, timed_out)
-    limit = None if timed_out or judged != "failed" else usage_limit_line(out, err)
+    judged, why = lane_verdict(code, returned)
+    limit = None if judged != "failed" else usage_limit_line(out, err)
     state, reason = (judged, why) if limit is None else (LANE_PARKED, "usage limit: %s" % limit)
     return lane_record(
         lane,
@@ -828,7 +836,6 @@ def _verdict(lane, tree, started, merged, out, err, code, timed_out, session_id)
         state,
         reason=reason,
         exit=code,
-        timed_out=timed_out,
         returned=returned,
         stdout=out,
         stderr=err,
@@ -893,8 +900,6 @@ def _foreign_writes(plan, msp, tree, batch, records):
                 % (tree.get("label") or tree["msp"], ", ".join(touched)),
                 tree["branch"],
             )
-        except GitTimeout:
-            raise
         except GitError:
             pass
     return [{"path": path, "owner": owners[_norm(path)]} for path in touched]
@@ -937,7 +942,6 @@ def dispatch(
     plan,
     trees,
     command,
-    timeout,
     concurrency,
     run_dir,
     base,
@@ -951,8 +955,6 @@ def dispatch(
     seeds=None,
     stopped=None,
 ):
-    if timeout is None:
-        raise ConfigError("a per-Lane timeout is required; mitosis has no default")
     check_models(plan, command, models)
     lanes = plan.get("lanes") or []
     edges = lane_edges(plan)
@@ -1110,7 +1112,7 @@ def dispatch(
                     progressed = True
                     continue
                 future = pool.submit(
-                    run_command, argv, folders["clone"], timeout, out, err, env, confinement
+                    run_command, argv, folders["clone"], out, err, env, confinement
                 )
                 running = {
                     **running,
@@ -1140,10 +1142,10 @@ def dispatch(
                         future
                     ]
                     running = {f: v for f, v in running.items() if f is not future}
-                    code, timed_out = future.result()
+                    code = future.result()
                     tree = tree_of[lanes[lane]["msp"]]
                     judged = {
-                        **_verdict(lane, tree, started, merged, out, err, code, timed_out, session),
+                        **_verdict(lane, tree, started, merged, out, err, code, session),
                         "clone": clone,
                         "start": start,
                         **_seed_fields(seeding),
@@ -1618,26 +1620,22 @@ def revert_implementation(tree, branch, head, base, paths, message=RESTORE_MESSA
     return list(targets)
 
 
-def run_acceptance(command, tree, entry, log_path, timeout, env=None, sandbox=None):
+def run_acceptance(command, tree, entry, log_path, env=None, sandbox=None):
     argv = build_argv(command, {"file": entry["file"], "test": entry["test"], "worktree": tree})
-    return run_command(argv, tree, timeout, log_path, log_path + ".err", env, sandbox)
+    return run_command(argv, tree, log_path, log_path + ".err", env, sandbox)
 
 
 def probe_outcome(with_work, reverted):
-    if with_work[1]:
-        return "inconclusive", "timed out with the work present"
-    if with_work[0] != 0:
-        return "inconclusive", "exit %d with the work present" % with_work[0]
-    if reverted[1]:
-        return "inconclusive", "timed out with the implementation reverted"
-    if reverted[0] == 0:
+    if with_work != 0:
+        return "inconclusive", "exit %d with the work present" % with_work
+    if reverted == 0:
         return "inert", "passes with the implementation reverted"
-    if reverted[0] == ACCEPTANCE_FAILURE_EXIT:
+    if reverted == ACCEPTANCE_FAILURE_EXIT:
         return "pass", None
     return (
         "inconclusive",
         "exit %d with the implementation reverted; a test that never ran is not a test that failed"
-        % reverted[0],
+        % reverted,
     )
 
 
@@ -2006,7 +2004,7 @@ def property_mutants(plan, msp, tree, base, commit, entry, trace=None):
     return property_sample(plan, msp, tree, base, commit, entry, trace)[0]
 
 
-def _run_mutant(command, folder, entry, mutant, log_path, timeout, env, reset, sandbox=None):
+def _run_mutant(command, folder, entry, mutant, log_path, env, reset, sandbox=None):
     written = reset()
     path = mutant["file"]
     mutated = mutants.apply(_read_text(folder, path), mutant)
@@ -2014,7 +2012,7 @@ def _run_mutant(command, folder, entry, mutant, log_path, timeout, env, reset, s
         return None, written
     clear_caches_beside(folder, (path,))
     _write_text(folder, path, mutated)
-    return run_acceptance(command, folder, entry, log_path, timeout, env, sandbox), written
+    return run_acceptance(command, folder, entry, log_path, env, sandbox), written
 
 
 def _mutant_place(mutant):
@@ -2073,7 +2071,7 @@ def suite_killers(report, log_path):
     return tuple(sorted(set(_logged_failures(text))))
 
 
-def _run_suite_mutant(suite, folder, mutant, report, log_path, timeout, env, reset, sandbox=None):
+def _run_suite_mutant(suite, folder, mutant, report, log_path, env, reset, sandbox=None):
     written = reset()
     path = mutant["file"]
     mutated = mutants.apply(_read_text(folder, path), mutant)
@@ -2083,36 +2081,34 @@ def _run_suite_mutant(suite, folder, mutant, report, log_path, timeout, env, res
     _write_text(folder, path, mutated)
     _removed(report)
     argv = build_argv(suite, {"worktree": folder, "report": report})
-    return run_command(argv, folder, timeout, log_path, log_path + ".err", env, sandbox), written
+    return run_command(argv, folder, log_path, log_path + ".err", env, sandbox), written
 
 
-def _run_suite_unmutated(suite, folder, log_dir, timeout, env, reset, sandbox=None):
+def _run_suite_unmutated(suite, folder, log_dir, env, reset, sandbox=None):
     written = reset()
     report = os.path.join(isolation.gate_outputs(log_dir, sandbox), "suite-unmutated.xml")
     log_path = os.path.join(log_dir, "suite-unmutated.log")
     _removed(report)
     argv = build_argv(suite, {"worktree": folder, "report": report})
-    return run_command(argv, folder, timeout, log_path, log_path + ".err", env, sandbox), written
+    return run_command(argv, folder, log_path, log_path + ".err", env, sandbox), written
 
 
 def suite_baseline_fault(seen):
     ran = seen.get(SUITE_BASELINE)
-    if ran is None or ran == (0, False):
+    if ran is None or ran == 0:
         return None
-    if ran[1]:
-        return "the suite times out before any mutant is applied"
-    return "the suite fails before any mutant is applied (exit %d)" % ran[0]
+    return "the suite fails before any mutant is applied (exit %d)" % ran
 
 
 def _suite_verdicts(
-    suite, survivors, index, log_dir, timeout, env, folder, reset, seen, sandbox=None
+    suite, survivors, index, log_dir, env, folder, reset, seen, sandbox=None
 ):
     written = ()
     seconds = 0
     verdicts = ()
     if SUITE_BASELINE not in seen:
         (ran, written), seconds = _timed(
-            lambda: _run_suite_unmutated(suite, folder, log_dir, timeout, env, reset, sandbox)
+            lambda: _run_suite_unmutated(suite, folder, log_dir, env, reset, sandbox)
         )
         seen = {**seen, SUITE_BASELINE: ran}
     if suite_baseline_fault(seen) is not None:
@@ -2126,12 +2122,12 @@ def _suite_verdicts(
             log_path = os.path.join(log_dir, "%d-suite-%d.log" % (index, position))
             (ran, left), spent = _timed(
                 lambda mutant=mutant, report=report, log_path=log_path: _run_suite_mutant(
-                    suite, folder, mutant, report, log_path, timeout, env, reset, sandbox
+                    suite, folder, mutant, report, log_path, env, reset, sandbox
                 )
             )
             seconds = seconds + spent
             written = written + left
-            killed = ran is not None and not ran[1] and ran[0] == SUITE_FAILURE_EXIT
+            killed = ran == SUITE_FAILURE_EXIT
             seen = {**seen, key: (killed, suite_killers(report, log_path) if killed else ())}
         verdicts = verdicts + ((mutant, seen[key]),)
         if not seen[key][0]:
@@ -2162,7 +2158,6 @@ def mutant_verdict(
     index,
     entry,
     log_dir,
-    timeout,
     env,
     folder,
     reset,
@@ -2210,7 +2205,6 @@ def mutant_verdict(
                 entry,
                 mutant,
                 os.path.join(log_dir, "%d-mutant-%d.log" % (index, len(tried))),
-                timeout,
                 env,
                 reset,
                 sandbox,
@@ -2221,7 +2215,7 @@ def mutant_verdict(
         if ran is None:
             continue
         tried = tried + (mutant,)
-        if ran[1] or ran[0] != 0:
+        if ran != 0:
             return (
                 {
                     **entry,
@@ -2251,7 +2245,7 @@ def mutant_verdict(
     if suite is None:
         return _weak(entry, tried[0], record, coverage, seconds), written, seen
     verdicts, left, spent, seen = _suite_verdicts(
-        suite, tried, index, log_dir, timeout, env, folder, reset, seen, sandbox
+        suite, tried, index, log_dir, env, folder, reset, seen, sandbox
     )
     written = written + left
     seconds = seconds + spent
@@ -2349,7 +2343,6 @@ def gate(
     base,
     command,
     log_dir,
-    timeout=None,
     env=None,
     repo=None,
     setup=None,
@@ -2386,7 +2379,6 @@ def gate(
             base,
             command,
             log_dir,
-            timeout,
             env,
             commit,
             properties,
@@ -2425,7 +2417,6 @@ def _gate_runs(
     base,
     command,
     log_dir,
-    timeout,
     env,
     commit,
     properties,
@@ -2446,7 +2437,7 @@ def _gate_runs(
     kept = (
         _link_dependencies(repo, folder, top)
         if setup is None
-        else _gate_setup(setup, folder, top, log_dir, timeout, env, sandbox)
+        else _gate_setup(setup, folder, top, log_dir, env, sandbox)
     )
     setup_written = (
         ()
@@ -2468,7 +2459,6 @@ def _gate_runs(
                 folder,
                 properties[index],
                 os.path.join(log_dir, "%d-%s.log" % (index, name)),
-                timeout,
                 run_env,
                 sandbox,
             )
@@ -2489,7 +2479,7 @@ def _gate_runs(
     without_runs = {
         index: accepted(index, without_work_tree, "reverted", env)
         for index in runnable
-        if with_work[index] == (0, False)
+        if with_work[index] == 0
     }
     without = {index: ran for index, (_, (ran, _)) in without_runs.items()}
     judged = ()
@@ -2497,14 +2487,14 @@ def _gate_runs(
         if index not in with_work:
             judged = judged + (entry,)
             continue
-        outcome, reason = probe_outcome(with_work[index], without.get(index, (None, False)))
+        outcome, reason = probe_outcome(with_work[index], without.get(index))
         judged = judged + (
             {
                 **entry,
                 "outcome": outcome,
                 "reason": reason,
-                "with_work": with_work[index][0],
-                "reverted": without[index][0] if index in without else None,
+                "with_work": with_work[index],
+                "reverted": without.get(index),
                 "seconds": with_work_runs[index][1][1]
                 + (without_runs[index][1][1] if index in without_runs else 0),
             },
@@ -2525,7 +2515,6 @@ def _gate_runs(
             index,
             entry,
             log_dir,
-            timeout,
             env,
             folder,
             lambda: reset(with_work_tree),
@@ -2871,13 +2860,12 @@ def _link_dependencies(repo, folder, top):
     return names
 
 
-def _gate_setup(setup, folder, top, log_dir, timeout, env, sandbox=None):
+def _gate_setup(setup, folder, top, log_dir, env, sandbox=None):
     out = os.path.join(log_dir, "gate-setup.log")
     try:
-        code, timed_out = run_command(
+        code = run_command(
             build_argv(setup, {"worktree": folder}),
             folder,
-            timeout,
             out,
             out + ".err",
             env,
@@ -2885,10 +2873,6 @@ def _gate_setup(setup, folder, top, log_dir, timeout, env, sandbox=None):
         )
     except OSError as error:
         raise GateSetupError("the --gate-setup command could not start in %s: %s" % (folder, error))
-    if timed_out:
-        raise GateSetupError(
-            "the --gate-setup command timed out after %s seconds in %s" % (timeout, folder)
-        )
     if code != 0:
         raise GateSetupError(
             "the --gate-setup command exited %d in %s: %s"
@@ -3084,7 +3068,6 @@ def ship(
     gate_error=None,
     findings=None,
     exception=None,
-    timeout=None,
     push=True,
     foreign=(),
     proven_head=None,
@@ -3123,7 +3106,7 @@ def ship(
     )
     try:
         title, body = pr_facts.render(
-            render_command, facts, os.path.join(log_dir, "fields.json"), timeout, env
+            render_command, facts, os.path.join(log_dir, "fields.json"), process_environ(env, tree)
         )
     except pr_facts.RenderError as error:
         raise ShipError(str(error))
@@ -3147,9 +3130,7 @@ def ship(
             "remote": remote,
         },
     )
-    code, timed_out = run_command(argv, tree, timeout, out, err, env)
-    if timed_out:
-        raise ShipError("the pull-request command timed out for %s" % branch)
+    code = run_command(argv, tree, out, err, env)
     if code != 0:
         detail = last_line(err) or last_line(out) or ""
         raise ShipError("the pull-request command exited %d for %s: %s" % (code, branch, detail))
@@ -3227,7 +3208,6 @@ def _gate_stage(plan, msp, tree, settings, head, replayed, recorded_gate=None):
             settings["base_commit"],
             settings["acceptance_command"],
             os.path.join(settings["run_dir"], "gate", "msp-%d" % msp),
-            settings["timeout"],
             settings.get("env"),
             settings.get("repo"),
             settings.get("gate_setup"),
@@ -3248,7 +3228,6 @@ def gate_inputs(settings, replayed):
         "acceptance_command": settings["acceptance_command"],
         "suite_command": settings.get("suite_command"),
         "gate_setup": settings.get("gate_setup"),
-        "timeout": settings["timeout"],
         "replayed": replayed,
     }
     return hashlib.sha256(json.dumps(named, sort_keys=True).encode("utf-8")).hexdigest()
@@ -3430,7 +3409,6 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=(), 
             gate_error=record.get("gate_error"),
             findings=record.get("reconcile"),
             exception=exception,
-            timeout=settings["timeout"],
             push=settings["push"],
             foreign=foreign,
             proven_head=record.get("proven_head"),
@@ -3793,11 +3771,9 @@ def _dispatch_check_author(entry, settings, command, models, sandbox, base):
             session_id=carried,
             **seeded,
         )
-    code, timed_out = run_command(
-        argv, folders["clone"], settings["timeout"], out, err, settings["env"], confinement
-    )
+    code = run_command(argv, folders["clone"], out, err, settings["env"], confinement)
     returned = last_return(out)
-    judged, why = lane_verdict(code, returned, timed_out)
+    judged, why = lane_verdict(code, returned)
     ran = {
         "stdout": out,
         "stderr": err,
@@ -3807,7 +3783,7 @@ def _dispatch_check_author(entry, settings, command, models, sandbox, base):
     }
     if judged == "ok":
         return lock_record("ok", None, session_id=carried, **ran)
-    limit = None if timed_out else usage_limit_line(out, err)
+    limit = usage_limit_line(out, err)
     if limit is not None:
         return lock_record(
             MSP_PARKED,
@@ -3864,10 +3840,8 @@ def _named_check(check):
     return "%s::%s" % (check["file"], check["test"])
 
 
-def _without_probe_fault(check, code, timed_out):
+def _without_probe_fault(check, code):
     named = _named_check(check)
-    if timed_out:
-        return "%s timed out on the feature base with its locked slice, so it could not run" % named
     if code == ACCEPTANCE_FAILURE_EXIT:
         return None
     if code == 0:
@@ -3875,8 +3849,8 @@ def _without_probe_fault(check, code, timed_out):
     return CANNOT_RUN % (named, code)
 
 
-def _with_probe_fault(check, code, timed_out):
-    if code == 0 and not timed_out:
+def _with_probe_fault(check, code):
+    if code == 0:
         return None
     return FAILS_WITH_PROBE % _named_check(check)
 
@@ -3896,7 +3870,7 @@ def _lock_folder(settings, entry):
 def _lock_judgement(plan, entry, settings, base, stored, probes):
     repo = settings["repo"]
     locked = tuple(plan.get("locked") or ())
-    timeout, env = settings["timeout"], settings["env"]
+    env = settings["env"]
     without = {
         **_expanded(repo, base, base),
         **{path: (mode, oid, None) for path, (mode, oid) in stored.items()},
@@ -3914,7 +3888,7 @@ def _lock_judgement(plan, entry, settings, base, stored, probes):
         kept = (
             _link_dependencies(repo, folder, top)
             if setup is None
-            else _gate_setup(setup, folder, top, log_dir, timeout, env, confinement)
+            else _gate_setup(setup, folder, top, log_dir, env, confinement)
         )
 
         def accepted(position, check, target, name):
@@ -3924,20 +3898,15 @@ def _lock_judgement(plan, entry, settings, base, stored, probes):
                 folder,
                 check,
                 os.path.join(log_dir, "%d-%s.log" % (position, name)),
-                timeout,
                 env,
                 confinement,
             )
 
         faults = ()
         for position, check in enumerate(_locked_checks(plan, entry["slice"])):
-            fault = _without_probe_fault(
-                check, *accepted(position, check, without, "without-probe")
-            )
+            fault = _without_probe_fault(check, accepted(position, check, without, "without-probe"))
             if fault is None:
-                fault = _with_probe_fault(
-                    check, *accepted(position, check, with_probe, "with-probe")
-                )
+                fault = _with_probe_fault(check, accepted(position, check, with_probe, "with-probe"))
             faults = faults if fault is None else faults + (fault,)
         return faults
     finally:
@@ -4254,7 +4223,6 @@ def execute(
     worker_command,
     acceptance_command,
     pr_command,
-    timeout,
     concurrency,
     models=None,
     resume=False,
@@ -4295,8 +4263,7 @@ def execute(
             "why lines, so it can title and describe each pull request"
         )
     check_models(plan, worker_command, models)
-    if timeout is None:
-        raise ConfigError("a per-Lane timeout is required; mitosis has no default")
+    env = process_environ(env, repo)
     program = isolation.sandbox_program(worker_sandbox)
     if program is not None:
         isolation.refuse_unquotable(
@@ -4320,7 +4287,6 @@ def execute(
         "pr_command": pr_command,
         "render_command": render_command,
         "header": header,
-        "timeout": timeout,
         "remote": remote,
         "push": not no_push,
         "proven_heads": dict(proven_heads or {}),
@@ -4405,7 +4371,6 @@ def execute(
         plan,
         trees,
         worker_command,
-        timeout,
         concurrency,
         run_dir,
         base,
