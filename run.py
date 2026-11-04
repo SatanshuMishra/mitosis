@@ -1594,11 +1594,13 @@ def _sync_worktree(tree, commit, base, paths):
     return placed
 
 
-def revert_implementation(tree, branch, head, base, paths, message=RESTORE_MESSAGE):
+def revert_implementation(
+    tree, branch, head, base, paths, message=RESTORE_MESSAGE, locked_entries=None
+):
     written = tuple(sorted({_norm(path) for path in paths}))
     ref = "refs/heads/" + branch
     moved_from = branch_commit(tree, branch, required=True)
-    held = _committed_entries(tree, base)
+    held = {**_committed_entries(tree, base), **(locked_entries or {})}
     current = _committed_entries(tree, head)
     targets = _restored_targets(written, held)
     rows = _restore_rows(current, held, targets)
@@ -2940,9 +2942,14 @@ def referee_writes(plan, tree, head, base, held=None):
     if not held:
         return sorted(marked)
     current = _committed_entries(tree, head)
-    return sorted(
+    judged = frozenset(
         path for path in marked if _norm(path) not in held or current.get(_norm(path)) != held[_norm(path)]
     )
+    judged_names = frozenset(_norm(path) for path in judged)
+    moved = frozenset(
+        path for path, entry in held.items() if path not in judged_names and current.get(path) != entry
+    )
+    return sorted(judged | moved)
 
 
 def reconcile(plan, msp, tree, head, base, producer_heads=(), held=None):
@@ -3373,6 +3380,7 @@ def _referee_stage(
                 settings["base_commit"],
                 landed,
                 "revert(%s): restore the referee paths a Worker wrote" % _label(plan, msp),
+                settings.get("referee_held"),
             )
     except (GitError, OSError) as error:
         return {
