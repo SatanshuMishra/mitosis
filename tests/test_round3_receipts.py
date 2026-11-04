@@ -16,16 +16,11 @@ import run
 from test_mutant_coverage import ADDS, CORRECT_ADD, TEST_FILE, Scratch, put, step, summary_of, tail
 from test_round1_receipts import EXACT_TEST
 
-EXIT_LINGERING = 14
-LINGERING_MEANING = (
-    "a run left a process mitosis could not end, so mitosis stopped before reading anything "
-    "that process could change"
-)
 LATE_ADD = "def add(a, b):\n    return b + a\n"
 BROKEN_ADD = "def add(a, b):\n    return a - b\n"
 LINGER_DELAY = "1"
 LINGER_LIFE = "60"
-REAP_SECONDS = 10
+SHIELDED_LIFE = "8"
 CALL_SECONDS = 60
 SLOW_LANE = "import time\ntime.sleep(5)\n"
 STUB_LEFTOVERS = (
@@ -139,21 +134,14 @@ if os.path.basename(sys.argv[0]) == "mitosis.py":
 '''
 
 
-def lingering(content, mode):
+def lingering(content, mode, life=LINGER_LIFE):
     return (
         "subprocess.Popen([sys.executable, os.path.join(here, 'linger.py'), "
         "os.path.abspath('calc.py'), %r, os.path.join(here, 'worker.pid'), "
         "os.path.join(here, 'worker.log'), str(os.getpid()), %r, %r], "
         "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
-        "start_new_session=%r)\n" % (content, LINGER_DELAY, LINGER_LIFE, mode == "setsid")
+        "start_new_session=%r)\n" % (content, LINGER_DELAY, life, mode == "setsid")
     ) + ANNOUNCED % "worker.pid"
-
-
-def lingering_refusal(folder):
-    return (
-        "the run in %s left a process mitosis could not end within %d seconds, so mitosis read "
-        "nothing that run could change" % (folder, REAP_SECONDS)
-    )
 
 
 def alive(pid):
@@ -279,7 +267,6 @@ class Receipts(unittest.TestCase):
                         self.scratch.stub("worker.py", "{msp}", "{task}"),
                         self.scratch.stub("accept.py", "unittest", "{file}", "{test}"),
                         None,
-                        120,
                         1,
                         resume=True,
                         no_push=True,
@@ -450,7 +437,6 @@ class ProtectedRoots(unittest.TestCase):
             self.scratch.stub("worker.py", "{msp}", "{task}"),
             self.scratch.stub("accept.py", "unittest", "{file}", "{test}"),
             None,
-            120,
             1,
             resume=resume,
             trees_root=trees_root,
@@ -598,8 +584,6 @@ class Outlived(unittest.TestCase):
             self.scratch.stub("worker.py", "{msp}", "{task}"),
             "--acceptance-command",
             acceptance,
-            "--timeout",
-            "120",
             "--no-push",
             *flags,
             env=env,
@@ -650,33 +634,32 @@ class Outlived(unittest.TestCase):
                 self.assertEqual(gate["properties"][0].get("mutation"), "killed", tail(completed))
                 self.assertEqual(self._landed("calc.py"), CORRECT_ADD, tail(completed))
 
-    def a_process_mitosis_cannot_end_stops_the_run_before_it_reads_the_clone(self):
+    def a_process_mitosis_cannot_end_holds_the_run_until_it_ends(self):
         items = self.scratch.items([step("add", ["calc.py"], "demo", acceptance=[ADDS])])
         shield = {"PYTHONPATH": os.path.join(self.scratch.stubs, "shield")}
         for mode, flags in self._modes():
             with self.subTest(mode=mode):
                 self._fresh()
                 self.scratch.jobs(
-                    {"add": {"writes": {"calc.py": CORRECT_ADD}, "script": lingering(LATE_ADD, mode)}}
+                    {
+                        "add": {
+                            "writes": {"calc.py": CORRECT_ADD},
+                            "script": lingering(LATE_ADD, mode, SHIELDED_LIFE),
+                        }
+                    }
                 )
                 completed = self._build(items, self._accept(), *flags, env=shield)
-                self._end_leftover("worker.pid")
-                self.assertEqual(
-                    completed.returncode, EXIT_LINGERING, "mitosis exit code" + tail(completed)
+                pid = self._pid("worker.pid")
+                self.assertIsNotNone(pid, "the lingering process never started" + tail(completed))
+                self.assertFalse(
+                    alive(pid),
+                    "mitosis exited while process %d of the run was still alive" % pid + tail(completed),
                 )
-                clone = isolation.lane_folders(self.scratch.run_dir, 0)["clone"]
+                self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
                 self.assertEqual(
-                    completed.stderr.splitlines()[-2:],
-                    [
-                        "mitosis: " + lingering_refusal(clone),
-                        "exit %d: %s" % (EXIT_LINGERING, LINGERING_MEANING),
-                    ],
-                    tail(completed),
-                )
-                self.assertEqual(
-                    self.scratch.git("log", "--all", "--format=%H", "--", "calc.py").stdout,
-                    "",
-                    "mitosis landed the clone of a run it could not end" + tail(completed),
+                    self._landed("calc.py"),
+                    LATE_ADD,
+                    "mitosis read the clone before the run's last process ended" + tail(completed),
                 )
                 self.assertEqual(self.scratch.dispatched(), ["add"], tail(completed))
 
@@ -781,7 +764,7 @@ def load_tests(loader, standard, pattern):
             (
                 "a_worker_process_left_behind_never_changes_what_mitosis_lands",
                 "a_gate_process_left_behind_never_writes_the_checkout_after_its_run",
-                "a_process_mitosis_cannot_end_stops_the_run_before_it_reads_the_clone",
+                "a_process_mitosis_cannot_end_holds_the_run_until_it_ends",
                 "a_sandbox_mark_names_its_own_processes_and_a_missing_mark_names_none",
                 "a_sandboxed_process_born_after_the_listing_is_still_found",
                 "a_listing_that_fills_its_buffer_settles_nothing",

@@ -5,7 +5,6 @@ import json
 import os
 import re
 import shlex
-import signal
 import subprocess
 
 import core
@@ -15,10 +14,6 @@ import shape
 RETURN_KEYS = ("items", "assumptions", "constraints")
 
 DISPATCH_ATTEMPTS = 2
-
-GIT_TIMEOUT = 600
-
-KILL_GRACE = 30
 
 PROMPT_PLACEHOLDER = "{prompt}"
 MODEL_PLACEHOLDER = "{model}"
@@ -414,12 +409,12 @@ def _tracked(base):
     try:
         completed = subprocess.run(
             ["git", "-C", base, "ls-files", "-z"],
-            env=run.git_environ(),
+            env=run.git_environ(None, base),
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            timeout=GIT_TIMEOUT,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError:
         return None
     if completed.returncode != 0:
         return None
@@ -588,13 +583,6 @@ def check_items(items, source, root=None, required=None):
     return {"items": stamped, "errors": checked["errors"], "counts": checked["counts"]}
 
 
-def _kill_tree(process):
-    try:
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        process.kill()
-
-
 def _is_object(line):
     try:
         value = json.loads(line)
@@ -620,7 +608,7 @@ def _write_log(log, out, err):
         handle.write(b"--- stdout ---\n" + out + b"\n--- stderr ---\n" + err)
 
 
-def spawn(argv, prompt, timeout, cwd=None, log=None, env=None):
+def spawn(argv, prompt, cwd=None, log=None, env=None):
     try:
         process = subprocess.Popen(
             argv,
@@ -628,28 +616,15 @@ def spawn(argv, prompt, timeout, cwd=None, log=None, env=None):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=cwd,
-            env=env,
+            env=run.process_environ(env, cwd),
             start_new_session=True,
         )
     except OSError as failure:
         return {"exit": None, "line": None, "reason": "could not start %s: %s" % (argv[0], failure)}
-    reason = None
-    try:
-        out, err = process.communicate(prompt.encode("utf-8"), timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _kill_tree(process)
-        try:
-            out, err = process.communicate(timeout=KILL_GRACE)
-        except subprocess.TimeoutExpired:
-            out, err = b"", b""
-        reason = "timeout after %s seconds" % timeout
+    out, err = process.communicate(prompt.encode("utf-8"))
     _write_log(log, out, err)
     lines = [line.strip() for line in out.decode("utf-8", "replace").splitlines() if line.strip()]
-    return {
-        "exit": process.returncode,
-        "line": last_return(lines) if reason is None else None,
-        "reason": reason,
-    }
+    return {"exit": process.returncode, "line": last_return(lines), "reason": None}
 
 
 def _attempt(job):
@@ -660,12 +635,12 @@ def _attempt(job):
     return argv, core.carried_session(argv, session)
 
 
-def spawn_many(jobs, timeout, concurrency, cwd=None, env=None):
+def spawn_many(jobs, concurrency, cwd=None, env=None):
     workers = concurrency if isinstance(concurrency, int) and concurrency > 0 else 1
     attempts = [_attempt(job) for job in jobs]
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         pending = [
-            pool.submit(spawn, argv, job["prompt"], timeout, cwd=cwd, log=job.get("log"), env=env)
+            pool.submit(spawn, argv, job["prompt"], cwd=cwd, log=job.get("log"), env=env)
             for job, (argv, _) in zip(jobs, attempts)
         ]
         return [
@@ -674,7 +649,7 @@ def spawn_many(jobs, timeout, concurrency, cwd=None, env=None):
         ]
 
 
-def spawn_until(jobs, timeout, concurrency, cwd, accepts, attempts=None, env=None):
+def spawn_until(jobs, concurrency, cwd, accepts, attempts=None, env=None):
     rounds = DISPATCH_ATTEMPTS if attempts is None else max(1, attempts)
     results = {}
     outstanding = tuple(range(len(jobs)))
@@ -682,7 +657,7 @@ def spawn_until(jobs, timeout, concurrency, cwd, accepts, attempts=None, env=Non
         if not outstanding:
             break
         spawned = spawn_many(
-            [jobs[index] for index in outstanding], timeout, concurrency, cwd=cwd, env=env
+            [jobs[index] for index in outstanding], concurrency, cwd=cwd, env=env
         )
         results = {
             **results,
@@ -965,7 +940,6 @@ def decompose(
     document,
     template,
     root,
-    timeout,
     model=None,
     graph=None,
     charter=None,
@@ -975,7 +949,7 @@ def decompose(
     frozen = freeze(document)
     prompt = render_prompt(frozen, inventory(root, cap), graph, charter)
     argv = _argv_for(frozen, template, prompt, model, core.new_session_id())
-    spawned = spawn(argv, prompt, timeout, cwd=root, log=log)
+    spawned = spawn(argv, prompt, cwd=root, log=log)
     return _assemble(frozen, spawned, log, root)
 
 
@@ -1031,7 +1005,6 @@ def sample_structures(
     document,
     template,
     root,
-    timeout,
     model=None,
     graph=None,
     charter=None,
@@ -1057,7 +1030,7 @@ def sample_structures(
         for sample_log in logs
     ]
     accepts = _returned_a_delta if prior else _returned_a_structure
-    spawned = spawn_until(jobs, timeout, count, root, accepts, env=env)
+    spawned = spawn_until(jobs, count, root, accepts, env=env)
     if on_sessions is not None:
         on_sessions([session for one in spawned for session in one["session_ids"]])
     return [
@@ -1070,7 +1043,6 @@ def structure(
     document,
     template,
     root,
-    timeout,
     model=None,
     graph=None,
     charter=None,
@@ -1084,7 +1056,6 @@ def structure(
         document,
         template,
         root,
-        timeout,
         model=model,
         graph=graph,
         charter=charter,
