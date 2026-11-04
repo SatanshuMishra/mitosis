@@ -100,7 +100,13 @@ def escaping(targets):
 
 
 def check_author(files=(TEST_FILE,)):
-    return {**step("check-author", files, "check-author"), "role": "check-author"}
+    labelled = {**step("check-author", files, None), "role": "check-author"}
+    return {key: value for key, value in labelled.items() if key != "msp"}
+
+
+def msp_lock(summary, label):
+    found = [msp for msp in summary.get("msps") or [] if msp.get("msp") == label]
+    return (found[0].get("lock") if len(found) == 1 else None) or {}
 
 
 class Receipts(unittest.TestCase):
@@ -200,7 +206,10 @@ class Receipts(unittest.TestCase):
         completed = self._sandboxed(
             None,
             lambda targets: {
-                "check-author": {"writes": {TEST_FILE: escaping(targets) + EXACT_TEST}, "msp": "lock"},
+                "check-author": {
+                    "writes": {TEST_FILE: escaping(targets) + EXACT_TEST, "calc.py": CORRECT_ADD},
+                    "msp": "lock",
+                },
                 "add": {"writes": {"calc.py": CORRECT_ADD}, "msp": "demo"},
             },
             steps=[
@@ -209,7 +218,8 @@ class Receipts(unittest.TestCase):
             ],
         )
         self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
-        self.assertEqual((summary_of(completed).get("lock") or {}).get("state"), "ok")
+        self.assertNotIn("lock", summary_of(completed))
+        self.assertEqual(msp_lock(summary_of(completed), "demo").get("state"), "ok")
         self._assert_confined(completed)
 
     def _red_suite_run(self, red):

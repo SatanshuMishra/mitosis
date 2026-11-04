@@ -33,8 +33,6 @@ HFS_IGNORABLE = re.compile("[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]")
 
 LOCK_CLONE = "lock"
 
-REAP_LIMIT = 10
-
 REAP_PAUSE = 0.02
 
 SYSTEM_LIBRARY = "/usr/lib/libSystem.B.dylib"
@@ -53,8 +51,6 @@ SANDBOX_ALLOWED = 0
 DENIED = 1
 
 SEED_FILE = ".worktreeinclude"
-
-SEED_TIMEOUT = 600
 
 CLONE_NOFOLLOW = 0x0001
 
@@ -89,8 +85,8 @@ def lane_folders(run_dir, lane):
     return stage_folders(run_dir, "lane-%d" % lane)
 
 
-def lock_folders(run_dir):
-    return stage_folders(run_dir, LOCK_CLONE)
+def lock_folders(run_dir, msp):
+    return stage_folders(run_dir, "%s-%d" % (LOCK_CLONE, msp))
 
 
 def stage_folders(run_dir, name):
@@ -430,15 +426,12 @@ def _end_left(group, confinement, sandboxed):
             _signalled(os.kill, pid)
 
 
-def end_run(proc, confinement, folder):
-    deadline = time.monotonic() + REAP_LIMIT
+def end_run(proc, confinement):
     while True:
         proc.poll()
         sandboxed = _sandboxed_pids(confinement)
         if sandboxed == () and not _group_left(proc.pid):
             return
-        if time.monotonic() >= deadline:
-            raise run.LingeringProcess(folder, REAP_LIMIT)
         _end_left(proc.pid, confinement, sandboxed or ())
         time.sleep(REAP_PAUSE)
 
@@ -781,16 +774,12 @@ def _darwin_copy(source, target):
 
 
 def _linux_copy(source, target):
-    try:
-        completed = subprocess.run(
-            ["cp", "-a", "--reflink=always", "--", source, target],
-            capture_output=True,
-            timeout=SEED_TIMEOUT,
-        )
-    except subprocess.TimeoutExpired:
-        raise OSError(
-            errno.ETIMEDOUT, "cp --reflink=always did not finish within %d seconds" % SEED_TIMEOUT, target
-        )
+    completed = subprocess.run(
+        ["cp", "-a", "--reflink=always", "--", source, target],
+        env=run.process_environ(),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+    )
     if completed.returncode != 0:
         raise OSError(
             errno.ENOTSUP,

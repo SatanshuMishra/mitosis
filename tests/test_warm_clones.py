@@ -290,7 +290,7 @@ def step(name, files, msp, acceptance=(), after=()):
 
 
 def check_author():
-    return {**step("check-author", [CHECK_AUTHOR_TEST_FILE], "check-author"), "role": "check-author"}
+    return {**step("check-author", [CHECK_AUTHOR_TEST_FILE], "calc"), "role": "check-author"}
 
 
 def builder():
@@ -643,7 +643,7 @@ class WarmClones(unittest.TestCase):
         scratch.jobs(
             {
                 "check-author": {
-                    "writes": {CHECK_AUTHOR_TEST_FILE: EXACT_TEST},
+                    "writes": {CHECK_AUTHOR_TEST_FILE: EXACT_TEST, "calc.py": CORRECT_ADD},
                     "msp": "lock",
                     "script": RECORD_SEEDED,
                 },
@@ -652,9 +652,10 @@ class WarmClones(unittest.TestCase):
         )
         completed = scratch.build(items)
         self._warm_record("check-author", completed)
-        lock = scratch.state().get("lock")
-        self.assertIsInstance(lock, dict, "state.json holds no lock record" + tail(completed))
+        lock = ((scratch.state().get("msps") or {}).get("0") or {}).get("lock")
+        self.assertIsInstance(lock, dict, "state.json holds no lock record for MSP calc" + tail(completed))
         self.assertEqual(lock.get("seeded"), ["cache/"])
+        self.assertEqual(lock.get("state"), "ok", tail(completed))
 
     def no_worktreeinclude_seeds_nothing(self):
         scratch = self._scratch(worktreeinclude=None)
@@ -993,12 +994,12 @@ class WarmClones(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertTrue(phrase in text, "README.md does not name %s" % phrase)
 
-    def the_version_is_0_11_0_everywhere(self):
+    def the_version_is_0_12_0_everywhere(self):
         with open(os.path.join(ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as handle:
             plugin = json.load(handle)
-        self.assertEqual(load("core").__version__, "0.11.0")
-        self.assertEqual(plugin.get("version"), "0.11.0")
-        self.assertIn("0.11.0", read_text(os.path.join(ROOT, "CHANGELOG.md")))
+        self.assertEqual(load("core").__version__, "0.12.0")
+        self.assertEqual(plugin.get("version"), "0.12.0")
+        self.assertIn("0.12.0", read_text(os.path.join(ROOT, "CHANGELOG.md")))
 
 
 def load_tests(loader, standard, pattern):
@@ -1031,7 +1032,7 @@ def load_tests(loader, standard, pattern):
                 "a_landed_lane_leaves_no_seeded_clone",
                 "a_kept_seeded_clone_is_removable_by_rmtree",
                 "the_readme_documents_the_worktreeinclude_opt_in",
-                "the_version_is_0_11_0_everywhere",
+                "the_version_is_0_12_0_everywhere",
             ),
         ),
     ):

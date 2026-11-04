@@ -322,13 +322,23 @@ class Render(unittest.TestCase):
             "print(%r)\n" % (copy, PRINTED),
         )
         path = os.path.join(self.tmp, "new", "f.json")
-        result = pr_facts.render(command, {"title": "feat: x", "problem": ["P."]}, path, 10, None)
+        result = pr_facts.render(command, {"title": "feat: x", "problem": ["P."]}, path, None)
         self.assertEqual(result, ("feat(ship): fake title", "## Problem\nFake body."))
         recorded = self._lines(calls)
         self.assertEqual(len(recorded), 1)
         self.assertEqual(json.loads(recorded[0])[-3:], ["render", "--fields", path])
         with open(copy, encoding="utf-8") as handle:
             self.assertEqual(json.load(handle), {"title": "feat: x", "problem": ["P."]})
+
+    def waits_for_a_slow_render_to_print(self):
+        import pr_facts
+
+        self._folder()
+        command, calls = self._script("slow", "time.sleep(2)\nprint(%r)\n" % PRINTED)
+        path = os.path.join(self.tmp, "slow-facts", "f.json")
+        result = pr_facts.render(command, {"title": "feat: x"}, path, child_env())
+        self.assertEqual(result, ("feat(ship): fake title", "## Problem\nFake body."))
+        self.assertEqual(len(self._lines(calls)), 1)
 
     def refuses_each_failure_and_runs_once(self):
         import pr_facts
@@ -348,14 +358,12 @@ class Render(unittest.TestCase):
             "sys.stderr.write('pull-request render: --impact: at least one value is required\\n')\n"
             "sys.exit(2)\n",
         )
-        slow = self._script("slow", "time.sleep(5)\n")
         garbled = self._script("garbled", "print('not json')\n")
         cases = (
-            (missing, 10, ("install pull-request 0.3.0 or later",)),
-            (old[0], 10, ("older than 0.3.0", "install pull-request 0.3.0 or later")),
+            (missing, ("install pull-request 0.3.0 or later",)),
+            (old[0], ("older than 0.3.0", "install pull-request 0.3.0 or later")),
             (
                 refused[0],
-                10,
                 (
                     "exited 2",
                     path,
@@ -363,15 +371,14 @@ class Render(unittest.TestCase):
                     "pull-request render: --impact: at least one value is required",
                 ),
             ),
-            (slow[0], 1, ("timed out",)),
-            (garbled[0], 10, ("printed no title and body",)),
+            (garbled[0], ("printed no title and body",)),
         )
-        for command, timeout, expected in cases:
+        for command, expected in cases:
             with self.assertRaises(pr_facts.RenderError) as raised:
-                pr_facts.render(command, {"title": "feat: x"}, path, timeout, child_env())
+                pr_facts.render(command, {"title": "feat: x"}, path, child_env())
             for text in expected:
                 self.assertIn(text, str(raised.exception))
-        for _, calls in (old, refused, slow, garbled):
+        for _, calls in (old, refused, garbled):
             self.assertEqual(len(self._lines(calls)), 1)
 
 

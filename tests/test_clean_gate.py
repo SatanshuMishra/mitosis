@@ -2,7 +2,6 @@ import json
 import os
 import re
 import sys
-import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -21,7 +20,6 @@ TAMPERED_LOCKED = "import unittest\nraise SystemExit(0)\n"
 GATE_RUN_LOCKED = "raise SystemExit(0)\n"
 CALC_CHECK = "import calc; assert calc.add(2, 3) == 5"
 ACCEPTANCE = [{"file": "tests/test_calc.py", "test": "Calc.adds"}]
-SETUP_LIMIT = 25
 FILE_PROTOCOL = ("-c", "protocol.file.allow=always")
 
 CALC_TEST = """import unittest
@@ -211,7 +209,7 @@ with open(os.path.join(os.path.dirname(here), "setup.log"), "a", encoding="utf-8
 
 SETUP_FAILS = "import sys\nsys.exit(3)\n"
 
-SETUP_SLEEPS = "import time\ntime.sleep(30)\n"
+SETUP_SLEEPS = "import time\ntime.sleep(3)\n"
 
 
 def read_text(path):
@@ -491,17 +489,14 @@ class CleanGate(unittest.TestCase):
         for entry in entries:
             self.assertNotIn("leftover.txt", entry["listing"])
 
-    def a_gate_setup_that_times_out_holds_the_msp_back(self):
+    def a_gate_setup_slower_than_the_ignored_timeout_runs_to_its_end(self):
         self._scratch()
         self._worker([["write", "calc.py", CALC]])
-        started = time.monotonic()
-        completed = self._build(flags=self._setup("setup_sleeps.py"), timeout="2")
-        elapsed = time.monotonic() - started
-        self.assertEqual(completed.returncode, 21, "mitosis exit code" + lock_fixtures.tail(completed))
-        self.assertLess(elapsed, SETUP_LIMIT)
-        self.assertEqual(self._msp(completed)["state"], "gate-failed")
-        self.assertIn("gate-setup", self._recorded().get("gate_error") or "")
-        self.assertFalse(os.path.exists(os.path.join(self.scratch.tmp, "accept.log")))
+        completed = self._build(flags=self._setup("setup_sleeps.py"), timeout="1")
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
+        self.assertEqual(self._msp(completed)["state"], "committed", lock_fixtures.tail(completed))
+        self.assertIsNone(self._recorded().get("gate_error"), lock_fixtures.tail(completed))
+        self.assertGreaterEqual(len(self._accept_log()), 2, lock_fixtures.tail(completed))
 
     def a_conftest_committed_inside_a_base_submodule_fails_the_lane(self):
         self._scratch()
@@ -603,7 +598,7 @@ def load_tests(loader, standard, pattern):
                 "a_no_diff_attribute_never_hides_the_added_lines_from_the_mutants",
                 "a_locked_path_a_gate_run_writes_is_fatal",
                 "a_file_one_gate_run_leaves_never_reaches_the_next_run",
-                "a_gate_setup_that_times_out_holds_the_msp_back",
+                "a_gate_setup_slower_than_the_ignored_timeout_runs_to_its_end",
                 "a_conftest_committed_inside_a_base_submodule_fails_the_lane",
                 "a_committed_referee_write_never_lands_when_the_landing_commit_fails",
             ),

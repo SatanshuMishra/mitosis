@@ -8,7 +8,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -80,11 +79,11 @@ for line in task.splitlines():
         write_set = [p.strip() for p in line[len(prefix):].split(",") if p.strip()]
 with open(os.path.join(marker_dir, "lane-%s" % lane), "a") as handle:
     handle.write("ran; saw " + " ".join(sorted(os.listdir("."))) + "\n")
-if mode == "hang":
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+if mode == "outlive":
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"], stdin=subprocess.DEVNULL)
     with open(os.path.join(marker_dir, "child-%s" % lane), "w") as handle:
         handle.write(str(child.pid))
-    child.wait()
+    time.sleep(2)
 written = write_set[:1] if mode == "partial" else write_set
 if mode == "tests-only":
     written = [p for p in write_set if p.startswith("tests/")]
@@ -278,7 +277,7 @@ class RepoCase(unittest.TestCase):
         path = os.path.join(self.markers, "gate")
         return read(path).splitlines() if os.path.exists(path) else []
 
-    def execute(self, plan, mode="ok", accept="real", pr=PR_STUB, timeout=60, **extra):
+    def execute(self, plan, mode="ok", accept="real", pr=PR_STUB, **extra):
         return run.execute(
             plan,
             self.repo,
@@ -287,7 +286,6 @@ class RepoCase(unittest.TestCase):
             self.worker_command(mode),
             self.acceptance_command(accept),
             self.pr_command() if pr is PR_STUB else pr,
-            timeout,
             2,
             trees_root=self.trees,
             **{
@@ -310,12 +308,11 @@ class RepoCase(unittest.TestCase):
         sh(["git", "commit", "-q", "-m", message], tree)
         return sh(["git", "rev-parse", "HEAD"], tree)
 
-    def dispatch(self, plan, trees, mode="ok", timeout=60, prior=None, concurrency=2, **extra):
+    def dispatch(self, plan, trees, mode="ok", prior=None, concurrency=2, **extra):
         return run.dispatch(
             plan,
             trees,
             self.worker_command(mode),
-            timeout,
             concurrency,
             self.run_dir,
             "main",
@@ -337,7 +334,6 @@ class RepoCase(unittest.TestCase):
             "main",
             command or self.acceptance_command(accept),
             os.path.join(self.run_dir, "gate"),
-            60,
         )
 
     def pr_command(self):
@@ -495,16 +491,14 @@ class Dispatch(RepoCase):
         self.assertEqual(records[0]["exit"], 0)
         self.assertIsNone(records[0]["returned"])
 
-    def a_worker_that_never_exits_is_killed_and_failed(self):
+    def a_slow_worker_is_waited_on_and_its_leftover_process_ended(self):
         plan = core.plan([step("a", ["a.txt"])])
         trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
-        started = time.monotonic()
-        records = self.dispatch(plan, trees, mode="hang", timeout=1)
-        self.assertLess(time.monotonic() - started, 30)
-        self.assertEqual(records[0]["state"], "failed")
-        self.assertEqual(records[0]["reason"], "timeout")
+        records = self.dispatch(plan, trees, mode="outlive")
+        self.assertEqual(records[0]["state"], "ok", records[0])
+        self.assertEqual(records[0]["exit"], 0)
+        self.assertNotIn("timed_out", records[0])
         child = int(read(os.path.join(self.markers, "child-0")))
-        time.sleep(0.5)
         with self.assertRaises(ProcessLookupError):
             os.kill(child, 0)
 
@@ -658,7 +652,7 @@ class Dispatch(RepoCase):
         )
         final = run.execute(
             plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command(),
-            self.pr_command(), 60, 1, trees_root=self.trees, no_push=True,
+            self.pr_command(), 1, trees_root=self.trees, no_push=True,
         )
         by_step = {plan["lanes"][int(i)]["steps"][0]: r["state"] for i, r in final["lanes"].items()}
         self.assertEqual(
@@ -849,7 +843,7 @@ class Dispatch(RepoCase):
         server, client = lane_named(plan, "server"), lane_named(plan, "client")
         state = run.execute(
             plan, self.repo, "main", self.run_dir, self.worker_command("sneak-%d" % server),
-            self.acceptance_command(), None, 60, 2, trees_root=self.trees, no_push=True,
+            self.acceptance_command(), None, 2, trees_root=self.trees, no_push=True,
         )
         suspects = {
             tuple(entry["suspects"])
@@ -869,7 +863,7 @@ class Dispatch(RepoCase):
         plan = self._interface_plan()
         state = run.execute(
             plan, self.repo, "main", self.run_dir, self.worker_command(),
-            self.acceptance_command(), None, 60, 2, trees_root=self.trees, no_push=True,
+            self.acceptance_command(), None, 2, trees_root=self.trees, no_push=True,
         )
         self.assertEqual(
             [record.get("foreign_writes") for record in state["lanes"].values()], [[], [], []]
@@ -1215,7 +1209,6 @@ class Gate(RepoCase):
             self.worker_command("ok"),
             os.path.join(self.tmp, "no-such-runner") + " {file} {test}",
             self.pr_command(),
-            60,
             2,
             trees_root=self.trees,
             header=HEADER,
@@ -1246,7 +1239,6 @@ class Gate(RepoCase):
             "main",
             self.acceptance_command("real"),
             os.path.join(self.run_dir, "gate"),
-            60,
             setup="%s %s {worktree}" % (shlex.quote(sys.executable), shlex.quote(script)),
         )
 
@@ -1543,7 +1535,7 @@ class Reconcile(RepoCase):
         self.assertTrue(findings["fatal"])
         self.assertEqual(findings["crossing"], [])
         head = run.branch_commit(tree, branch)
-        run.revert_implementation(tree, branch, head, "main", findings["referee"])
+        run.revert_implementation(tree, branch, head, "main", findings["referee"], locked_entries={})
         run.commit_all(tree, "restore")
         restored = run.reconcile(plan, 0, tree, branch, "main")
         self.assertEqual(restored["referee"], [])
@@ -1761,7 +1753,6 @@ class Ship(RepoCase):
             "origin",
             os.path.join(self.run_dir, "ship"),
             header=HEADER,
-            timeout=60,
         )
         self.assertTrue(shipped["unchanged"])
         self.assertEqual(self.remote_heads(), [])
@@ -1781,7 +1772,6 @@ class Ship(RepoCase):
             self.worker_command("nothing-%d" % lane_named(plan, "b")),
             self.acceptance_command(),
             None,
-            60,
             2,
             trees_root=self.trees,
             no_push=True,
@@ -1803,7 +1793,7 @@ class Ship(RepoCase):
         plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"])])
         held = run.execute(
             plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command(),
-            None, 60, 2, trees_root=self.trees, no_push=True,
+            None, 2, trees_root=self.trees, no_push=True,
         )
         self.assertEqual({m["state"] for m in held["msps"].values()}, {run.MSP_COMMITTED})
         self.assertIn("ship", held["msps"]["1"])
@@ -1822,7 +1812,7 @@ class Ship(RepoCase):
         index = {plan["msps"][m]["steps"][0]: m for m in range(len(plan["msps"]))}
         held = run.execute(
             plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command(),
-            None, 60, 2, trees_root=self.trees, no_push=True,
+            None, 2, trees_root=self.trees, no_push=True,
         )
         self.assertEqual([e["msp"] for e in held["stacking_exceptions"]], [index["c"]])
         sh(["git", "merge", "-q", "--no-edit", held["msps"][str(index["b"])]["ship"]["branch"]], self.repo)
@@ -1875,7 +1865,6 @@ class Ship(RepoCase):
             self.worker_command(),
             self.acceptance_command(),
             None,
-            60,
             2,
             trees_root=self.trees,
             no_push=True,

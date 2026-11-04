@@ -336,8 +336,6 @@ class Scratch:
             self.stub("worker.py", "{msp}", "{task}"),
             "--acceptance-command",
             self.stub("accept.py", acceptance, "{file}", "{test}"),
-            "--timeout",
-            "120",
             "--no-push",
             *extra,
             env=env,
