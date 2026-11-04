@@ -221,11 +221,13 @@ A Step with `"role": "check-author"` writes the locked acceptance checks and
 builds nothing. It never becomes a Lane, an MSP or a pull request, and its
 name leaves every other Step's `after` list. A check-author whose `msp` names
 an MSP belongs to that MSP; the one unlabelled check-author, the shape
-earlier interphase releases render with no `msp` or, when its name is exactly
-`check-author`, with `msp` `check-author`, is split by acceptance ownership, each
+earlier interphase releases render with no `msp` or, when it is named exactly
+check-author, with that name as its `msp`, is split by acceptance ownership, each
 locked file going to the MSP whose Steps' acceptance entries name it. The plan
 refuses a label that names no MSP, two check-authors with one label, a locked
-file two MSPs' acceptance entries name, and a locked file no acceptance names.
+file two MSPs' acceptance entries name, a locked file no acceptance names, a
+locked file two check-authors write, and a Step whose acceptance names a file
+another MSP's check-author writes.
 
 Each MSP's check-author locks only that MSP's tests, as the first commit of
 that MSP's branch. Before any Lane is dispatched, each MSP whose locked files
