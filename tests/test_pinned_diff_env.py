@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -34,6 +35,9 @@ import shutil
 import subprocess
 import sys
 
+SESSION, SCHEMA = sys.argv[-2], sys.argv[-1]
+del sys.argv[-2:]
+
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "worker.json"), encoding="utf-8") as handle:
     jobs = json.load(handle)
@@ -46,7 +50,7 @@ named = [
 if len(named) > 1:
     named = [name for name in named if jobs[name].get("msp") in (None, sys.argv[1])]
 if len(named) != 1:
-    print(json.dumps({"item": "unknown", "status": "failed", "files_changed": [], "notes": "no job"}))
+    print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": "unknown", "status": "failed", "files_changed": [], "notes": "no job"}}))
     sys.exit(1)
 name = named[0]
 job = jobs[name]
@@ -101,8 +105,19 @@ with open(os.path.join(here, "records", name + ".json"), "w", encoding="utf-8") 
     json.dump(record, handle)
 touched = sorted(set(job.get("writes", {})) | set(job.get("links", {})) | set(job.get("deletes", [])))
 declared = job.get("declared", touched)
-print(json.dumps({"item": name, "status": "ok", "files_changed": declared, "notes": "done"}))
+print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": name, "status": "ok", "files_changed": declared, "notes": "done"}}))
 '''
+
+REASK_COMMAND = " ".join(
+    (
+        shlex.quote(sys.executable),
+        "-c",
+        shlex.quote("import sys; sys.stderr.write('no re-ask was expected\\n'); sys.exit(1)"),
+        "{prompt}",
+        "{session_id}",
+        "{schema}",
+    )
+)
 
 ACCEPT = r'''
 import os
@@ -184,13 +199,17 @@ def read_bytes(path):
         return handle.read()
 
 
+SPEC_SECTION = "1.1"
+SPEC_DOCUMENT = "# Spec\n\n## 1.1 Build\n"
+
+
 def step(name, files, msp, acceptance=(), after=()):
     base = {
         "name": name,
         "task": "task-" + name,
         "files": list(files),
-        "source": None,
         "acceptance": list(acceptance),
+        "spec_ref": [SPEC_SECTION],
         "msp": msp,
     }
     return {**base, "after": list(after)} if after else base
@@ -279,8 +298,13 @@ class Scratch:
     def file(self, name, content):
         return put(os.path.join(self.tmp, name), content)
 
+    def source(self):
+        path = put(os.path.join(self.tmp, "spec.md"), SPEC_DOCUMENT)
+        return {"path": os.path.abspath(path), "sha256": hashlib.sha256(SPEC_DOCUMENT.encode("utf-8")).hexdigest()}
+
     def items(self, steps, name="items.json"):
-        return self.file(name, json.dumps(steps))
+        source = self.source()
+        return self.file(name, json.dumps([{**entry, "source": source} for entry in steps]))
 
     def jobs(self, jobs):
         return put(os.path.join(self.stubs, "worker.json"), json.dumps(jobs))
@@ -310,7 +334,9 @@ class Scratch:
             "--feature-branch",
             "feature",
             "--dispatch-command",
-            self.stub("worker.py", "{msp}", "{task}"),
+            self.stub("worker.py", "{msp}", "{task}", "{session_id}", "{schema}"),
+            "--reask-command",
+            REASK_COMMAND,
             "--acceptance-command",
             self.stub("accept.py", acceptance, "{file}", "{test}"),
             "--timeout",

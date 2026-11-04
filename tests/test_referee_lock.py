@@ -14,10 +14,9 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
-import contract_schema
+import handoff
 
 MITOSIS = os.path.join(ROOT, "mitosis.py")
-K2_SCHEMA = os.path.join(HERE, "fixtures", "contracts", "k2-locked.schema.json")
 LOCK_CASES = os.path.join(HERE, "fixtures", "receipt-lock-cases.json")
 CALL_LIMIT = 60
 RUN_LIMIT = 400
@@ -40,6 +39,9 @@ import json
 import os
 import sys
 
+SESSION, SCHEMA = sys.argv[-2], sys.argv[-1]
+del sys.argv[-2:]
+
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "worker.json"), encoding="utf-8") as handle:
     job = json.load(handle)[sys.argv[1]]
@@ -57,8 +59,19 @@ if limit:
     stream.flush()
     sys.exit(1)
 declared = job.get("declared", sorted(job.get("writes", {})))
-print(json.dumps({"item": job["step"], "status": "ok", "files_changed": declared, "notes": "done"}))
+print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": job["step"], "status": "ok", "files_changed": declared, "notes": "done"}}))
 '''
+
+REASK_COMMAND = " ".join(
+    (
+        shlex.quote(sys.executable),
+        "-c",
+        shlex.quote("import sys; sys.stderr.write('no re-ask was expected\\n'); sys.exit(1)"),
+        "{prompt}",
+        "{session_id}",
+        "{schema}",
+    )
+)
 
 ACCEPT = r'''
 import os
@@ -92,7 +105,13 @@ print("https://example.invalid/pull/1")
 
 RENDER = r'''
 import json
-print(json.dumps({"title": "feat: add the calculator", "body": "## Problem\nCallers need it."}))
+print(json.dumps({
+    "title": "feat: add the calculator",
+    "body": (
+        "## Problem\nCallers need it.\n\n## Change\n- Add numbers.\n\n## Impact\nSums are right.\n\n"
+        "## Testing\n| Check | Result |\n|---|---|\n| tests/test_calc.py | passed |"
+    ),
+}))
 '''
 
 PR_FLAGS = (
@@ -115,13 +134,17 @@ def put(path, content):
     return path
 
 
+SPEC_SECTION = "1.1"
+SPEC_DOCUMENT = "# Spec\n\n## 1.1 Build\n"
+
+
 def step(name, files, msp, acceptance=(), after=()):
     base = {
         "name": name,
-        "task": "build " + name,
+        "task": "Build %s." % name,
         "files": list(files),
-        "source": None,
         "acceptance": list(acceptance),
+        "spec_ref": [SPEC_SECTION],
         "msp": msp,
     }
     return {**base, "after": list(after)} if after else base
@@ -193,8 +216,13 @@ class Scratch:
     def file(self, name, content):
         return put(os.path.join(self.tmp, name), content)
 
+    def source(self):
+        path = put(os.path.join(self.tmp, "spec.md"), SPEC_DOCUMENT)
+        return {"path": os.path.abspath(path), "sha256": hashlib.sha256(SPEC_DOCUMENT.encode("utf-8")).hexdigest()}
+
     def items(self, steps, name="items.json"):
-        return self.file(name, json.dumps(steps))
+        source = self.source()
+        return self.file(name, json.dumps([{**entry, "source": source} for entry in steps]))
 
     def jobs(self, jobs):
         return put(os.path.join(self.stubs, "worker.json"), json.dumps(jobs))
@@ -229,7 +257,9 @@ class Scratch:
             "--feature-branch",
             "feature",
             "--dispatch-command",
-            self.stub("worker.py", "{msp}"),
+            self.stub("worker.py", "{msp}", "{session_id}", "{schema}"),
+            "--reask-command",
+            REASK_COMMAND,
             "--acceptance-command",
             self.stub("accept.py", acceptance, "{file}", "{test}"),
             "--timeout",
@@ -340,7 +370,7 @@ class RefereeLock(unittest.TestCase):
         self.assertIn("referee", summary, "the JSON summary carries no referee object")
         referee = summary["referee"]
         self.assertIsNotNone(referee, "the JSON summary's referee object is null")
-        self.assertEqual(contract_schema.errors(referee, contract_schema.load(K2_SCHEMA)), [])
+        self.assertEqual(handoff.errors("k2-locked", referee), ())
         self.assertEqual(referee["locked"], [LOCKED])
         self.assertEqual(referee["commit"], scratch.checked("rev-parse", "feature").strip())
         self.assertEqual(

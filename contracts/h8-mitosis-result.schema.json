@@ -1,0 +1,1021 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "harness-redesign/h8-mitosis-result.schema.json",
+  "title": "H8 mitosis result",
+  "description": "The JSON object mitosis prints as its last stdout line on every run that reaches a summary, plan-only included; a refusal prints to stderr and carries none.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "plan_id",
+    "run_dir",
+    "exit",
+    "meaning",
+    "lanes",
+    "msps",
+    "coupling",
+    "referee",
+    "lock",
+    "findings",
+    "sandbox",
+    "attention"
+  ],
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "plan_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "run_dir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "exit": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "meaning": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lanes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/lane"
+      }
+    },
+    "msps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/msp"
+      }
+    },
+    "coupling": {
+      "$ref": "#/$defs/coupling"
+    },
+    "referee": {
+      "$ref": "h9-mitosis-state.schema.json#/$defs/referee"
+    },
+    "lock": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "reason",
+            "commit",
+            "session_id"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "ok",
+                "failed",
+                "parked-limit"
+              ]
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "commit": {
+              "anyOf": [
+                {
+                  "$ref": "h9-mitosis-state.schema.json#/$defs/commit"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "sandbox": {
+      "enum": [
+        "off",
+        "sandbox-exec"
+      ]
+    },
+    "attention": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "lane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lane",
+        "msp",
+        "steps",
+        "session",
+        "state",
+        "reason",
+        "notes",
+        "foreign_writes",
+        "stdout",
+        "stderr"
+      ],
+      "properties": {
+        "lane": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "msp": {
+          "type": "string",
+          "minLength": 1
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "session": {
+          "anyOf": [
+            {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "h9-mitosis-state.schema.json#/$defs/lane_state"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "foreign_writes": {
+          "type": "array",
+          "items": {
+            "$ref": "h9-mitosis-state.schema.json#/$defs/foreign_write"
+          }
+        },
+        "stdout": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stderr": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "property": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "file",
+        "test",
+        "step",
+        "outcome",
+        "reason",
+        "mutants"
+      ],
+      "properties": {
+        "file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "test": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "step": {
+          "type": "string",
+          "minLength": 1
+        },
+        "outcome": {
+          "$ref": "h9-mitosis-state.schema.json#/$defs/gate_outcome"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mutants": {
+          "anyOf": [
+            {
+              "$ref": "h9-mitosis-state.schema.json#/$defs/mutants"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mutation": {
+          "$ref": "h9-mitosis-state.schema.json#/$defs/mutation"
+        },
+        "coverage": {
+          "$ref": "h9-mitosis-state.schema.json#/$defs/coverage"
+        },
+        "killers": {
+          "$ref": "h9-mitosis-state.schema.json#/$defs/killers"
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "h9-mitosis-state.schema.json#/$defs/property_rules"
+        }
+      ]
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "counts",
+        "error",
+        "commit",
+        "properties",
+        "unproven"
+      ],
+      "properties": {
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "h9-mitosis-state.schema.json#/$defs/gate_outcome"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "counts": {
+          "anyOf": [
+            {
+              "$ref": "h9-mitosis-state.schema.json#/$defs/counts"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false
+            }
+          ]
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "anyOf": [
+            {
+              "$ref": "h9-mitosis-state.schema.json#/$defs/commit"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "properties": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/property"
+          }
+        },
+        "unproven": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "::.* (weak|inert|inconclusive)$"
+          }
+        }
+      }
+    },
+    "reconcile": {
+      "description": "referee and fatal are both null when the MSP holds no reconcile record.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "undeclared",
+        "unwritten",
+        "untouched",
+        "referee",
+        "fatal"
+      ],
+      "properties": {
+        "undeclared": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "unwritten": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "untouched": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "referee": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "fatal": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "if": {
+        "properties": {
+          "referee": {
+            "type": "null"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "fatal": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "fatal": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "msp": {
+      "description": "title and body are null unless the branch has been pushed; branch and base are null when the MSP never reached ship, or ship failed before any push.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "msp",
+        "state",
+        "reason",
+        "branch",
+        "base",
+        "pull_request",
+        "title",
+        "body",
+        "gate",
+        "reconcile",
+        "crossing",
+        "ignored",
+        "trajectory_error"
+      ],
+      "properties": {
+        "msp": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "h9-mitosis-state.schema.json#/$defs/msp_state"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pull_request": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^https?://\\S+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "body": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gate": {
+          "$ref": "#/$defs/gate"
+        },
+        "reconcile": {
+          "$ref": "#/$defs/reconcile"
+        },
+        "crossing": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "ignored": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "trajectory_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "shipped"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "pull_request": {
+                "type": "string",
+                "pattern": "^https?://\\S+$"
+              },
+              "branch": {
+                "type": "string",
+                "minLength": 1
+              },
+              "base": {
+                "type": "string",
+                "minLength": 1
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "body": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "pushed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "branch": {
+                "type": "string",
+                "minLength": 1
+              },
+              "base": {
+                "type": "string",
+                "minLength": 1
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "body": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "finding": {
+      "description": "One reason the run did not ship clean; kind fixes the exit code, and detail is the first line of the cause.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "msp",
+        "lane",
+        "kind",
+        "exit",
+        "detail"
+      ],
+      "properties": {
+        "msp": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lane": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "kind": {
+          "enum": [
+            "incomplete",
+            "held",
+            "undeclared",
+            "unwritten",
+            "crossing",
+            "foreign",
+            "referee",
+            "referee-reverted",
+            "failed",
+            "blocked",
+            "merge-blocked",
+            "parked-limit",
+            "parked",
+            "gate-inert",
+            "gate-inconclusive",
+            "ship-failed",
+            "manifest",
+            "gate-weak"
+          ]
+        },
+        "exit": {
+          "enum": [
+            4,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            20,
+            21,
+            22,
+            23,
+            24
+          ]
+        },
+        "detail": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "incomplete"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 4
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "held"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 4
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "undeclared"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 6
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "unwritten"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 6
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "crossing"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 7
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "foreign"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 8
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "referee"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 9
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "referee-reverted"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 9
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "failed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 10
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "blocked"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 11
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "merge-blocked"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 12
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "parked-limit"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 13
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "parked"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 13
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "gate-inert"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 20
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "gate-inconclusive"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 21
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "ship-failed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 22
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "manifest"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 23
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "gate-weak"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exit": {
+                "const": 24
+              }
+            }
+          }
+        }
+      ]
+    },
+    "coupling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordered",
+        "parallel"
+      ],
+      "properties": {
+        "ordered": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "first",
+              "then",
+              "signals"
+            ],
+            "properties": {
+              "first": {
+                "type": "string",
+                "minLength": 1
+              },
+              "then": {
+                "type": "string",
+                "minLength": 1
+              },
+              "signals": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "enum": [
+                    "import-adjacency",
+                    "shared-risk-marker",
+                    "recorded-regression",
+                    "same-migration-directory"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "parallel": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "steps",
+              "signals"
+            ],
+            "properties": {
+              "steps": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "signals": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "enum": [
+                    "import-adjacency",
+                    "shared-risk-marker",
+                    "recorded-regression",
+                    "same-migration-directory"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

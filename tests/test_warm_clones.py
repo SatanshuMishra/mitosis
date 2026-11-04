@@ -2,6 +2,7 @@ import contextlib
 import errno
 import importlib
 import io
+import hashlib
 import json
 import os
 import re
@@ -41,6 +42,9 @@ import stat
 import subprocess
 import sys
 
+SESSION, SCHEMA = sys.argv[-2], sys.argv[-1]
+del sys.argv[-2:]
+
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "worker.json"), encoding="utf-8") as handle:
     jobs = json.load(handle)
@@ -53,7 +57,7 @@ named = [
 if len(named) > 1:
     named = [name for name in named if jobs[name].get("msp") in (None, sys.argv[1])]
 if len(named) != 1:
-    print(json.dumps({"item": "unknown", "status": "failed", "files_changed": [], "notes": "no job"}))
+    print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": "unknown", "status": "failed", "files_changed": [], "notes": "no job"}}))
     sys.exit(1)
 name = named[0]
 job = jobs[name]
@@ -94,8 +98,19 @@ os.makedirs(os.path.join(here, "records"), exist_ok=True)
 with open(os.path.join(here, "records", name + ".json"), "w", encoding="utf-8") as handle:
     json.dump(record, handle)
 declared = job.get("declared", sorted(job.get("writes", {})))
-print(json.dumps({"item": name, "status": "ok", "files_changed": declared, "notes": "done"}))
+print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": name, "status": "ok", "files_changed": declared, "notes": "done"}}))
 '''
+
+REASK_COMMAND = " ".join(
+    (
+        shlex.quote(sys.executable),
+        "-c",
+        shlex.quote("import sys; sys.stderr.write('no re-ask was expected\\n'); sys.exit(1)"),
+        "{prompt}",
+        "{session_id}",
+        "{schema}",
+    )
+)
 
 ACCEPT = r'''
 import os
@@ -277,13 +292,17 @@ def remove_tree(top):
     shutil.rmtree(top, ignore_errors=True)
 
 
+SPEC_SECTION = "1.1"
+SPEC_DOCUMENT = "# Spec\n\n## 1.1 Build\n"
+
+
 def step(name, files, msp, acceptance=(), after=()):
     base = {
         "name": name,
         "task": "task-" + name,
         "files": list(files),
-        "source": None,
         "acceptance": list(acceptance),
+        "spec_ref": [SPEC_SECTION],
         "msp": msp,
     }
     return {**base, "after": list(after)} if after else base
@@ -444,8 +463,13 @@ class Scratch:
             raise RuntimeError("scaffold git %s failed: %s" % (" ".join(args), completed.stderr))
         return completed.stdout
 
+    def source(self):
+        path = put(os.path.join(self.tmp, "spec.md"), SPEC_DOCUMENT)
+        return {"path": os.path.abspath(path), "sha256": hashlib.sha256(SPEC_DOCUMENT.encode("utf-8")).hexdigest()}
+
     def items(self, steps):
-        return put(os.path.join(self.tmp, "items.json"), json.dumps(steps))
+        source = self.source()
+        return put(os.path.join(self.tmp, "items.json"), json.dumps([{**entry, "source": source} for entry in steps]))
 
     def jobs(self, jobs):
         return put(os.path.join(self.stubs, "worker.json"), json.dumps(jobs))
@@ -470,7 +494,9 @@ class Scratch:
             "--feature-branch",
             "feature",
             "--dispatch-command",
-            self.stub("worker.py", "{msp}", "{task}"),
+            self.stub("worker.py", "{msp}", "{task}", "{session_id}", "{schema}"),
+            "--reask-command",
+            REASK_COMMAND,
             "--acceptance-command",
             acceptance,
             "--timeout",
@@ -993,12 +1019,12 @@ class WarmClones(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertTrue(phrase in text, "README.md does not name %s" % phrase)
 
-    def the_version_is_0_11_0_everywhere(self):
+    def the_version_is_0_12_0_everywhere(self):
         with open(os.path.join(ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as handle:
             plugin = json.load(handle)
-        self.assertEqual(load("core").__version__, "0.11.0")
-        self.assertEqual(plugin.get("version"), "0.11.0")
-        self.assertIn("0.11.0", read_text(os.path.join(ROOT, "CHANGELOG.md")))
+        self.assertEqual(load("core").__version__, "0.12.0")
+        self.assertEqual(plugin.get("version"), "0.12.0")
+        self.assertIn("0.12.0", read_text(os.path.join(ROOT, "CHANGELOG.md")))
 
 
 def load_tests(loader, standard, pattern):
@@ -1031,7 +1057,7 @@ def load_tests(loader, standard, pattern):
                 "a_landed_lane_leaves_no_seeded_clone",
                 "a_kept_seeded_clone_is_removable_by_rmtree",
                 "the_readme_documents_the_worktreeinclude_opt_in",
-                "the_version_is_0_11_0_everywhere",
+                "the_version_is_0_12_0_everywhere",
             ),
         ),
     ):

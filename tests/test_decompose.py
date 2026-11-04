@@ -42,10 +42,16 @@ with open(os.path.join(here, "prompt.txt"), "w", encoding="utf-8") as handle:
     handle.write(prompt)
 with open(os.path.join(here, "argv.json"), "w", encoding="utf-8") as handle:
     json.dump(sys.argv[1:], handle)
-print("chatter that must stay out of the record")
+print("chatter that must stay out of the record", file=sys.stderr)
 print("more chatter", file=sys.stderr)
 with open(os.path.join(here, "reply.txt"), encoding="utf-8") as handle:
-    print(handle.read().strip())
+    reply = handle.read().strip()
+envelope = {"type": "result", "session_id": "", "result": reply}
+try:
+    envelope = {**envelope, "result": "done", "structured_output": {"reply": json.loads(reply)}}
+except ValueError:
+    pass
+print(json.dumps(envelope))
 sys.exit(int(os.environ.get("WORKER_EXIT", "0")))
 """
 
@@ -551,37 +557,45 @@ class Coverage(unittest.TestCase):
         self.assertEqual(result["coverage"]["uncovered"][0]["title"], "Three")
 
 
-class ReturnLine(unittest.TestCase):
-    def a_bare_json_line_is_the_return(self):
-        self.assertEqual(decompose.last_return(['{"items": []}']), '{"items": []}')
+class StructuredReply(unittest.TestCase):
+    def spawn_returns_the_whole_stdout_text(self):
+        payload = 'first line\n{"items": []}\n'
+        spawned = decompose.spawn(
+            [sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])", payload], "", 30
+        )
+        self.assertEqual(spawned["stdout"], payload)
+        self.assertEqual(spawned["exit"], 0)
+        self.assertIsNone(spawned["reason"])
 
-    def a_fence_around_the_return_is_stepped_over(self):
-        lines = ["```json", '{"items": []}', "```"]
-        self.assertEqual(decompose.last_return(lines), '{"items": []}')
-
-    def narration_after_the_return_is_stepped_over(self):
-        lines = ['{"items": []}', "That completes the decomposition."]
-        self.assertEqual(decompose.last_return(lines), '{"items": []}')
-
-    def the_latest_json_object_wins_over_an_earlier_one(self):
-        lines = ['{"items": ["first"]}', "then I revised it", '{"items": ["second"]}']
-        self.assertEqual(decompose.last_return(lines), '{"items": ["second"]}')
-
-    def a_json_array_is_not_a_return(self):
-        self.assertEqual(decompose.last_return(['{"items": []}', "[1, 2]"]), '{"items": []}')
-
-    def output_with_no_json_reports_the_last_line_it_saw(self):
-        self.assertEqual(decompose.last_return(["I could not", "do it"]), "do it")
-
-    def empty_output_has_no_return(self):
-        self.assertIsNone(decompose.last_return([]))
-
-    def a_fenced_return_survives_the_whole_spawn(self):
+    def a_fenced_return_on_stdout_is_never_read_as_the_reply(self):
         payload = '```json\n{"items": [], "assumptions": [], "constraints": []}\n```'
         spawned = decompose.spawn(
             [sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])", payload], "", 30
         )
-        self.assertEqual(decompose.parse_return(spawned["line"])["errors"], [])
+        read = decompose._reader(decompose.parse_return)
+        reply, errors = read(0, spawned["stdout"])
+        self.assertIsNone(reply)
+        self.assertIn("h10b-decompose-return", errors[0])
+
+    def the_structured_reply_is_unwrapped_from_its_reply_member(self):
+        value = {"items": [], "assumptions": [], "constraints": []}
+        stdout = json.dumps({"type": "result", "structured_output": {"reply": value}})
+        read = decompose._reader(decompose.parse_return)
+        self.assertEqual(read(0, stdout), (value, ()))
+
+    def a_reply_meeting_the_schema_but_not_the_expected_shape_is_invalid(self):
+        value = {"items": [], "assumptions": [], "constraints": []}
+        stdout = json.dumps({"type": "result", "structured_output": {"reply": value}})
+        reply, errors = decompose._reader(decompose.parse_delta)(0, stdout)
+        self.assertIsNone(reply)
+        self.assertIn("the return is missing 'keep'", errors)
+
+    def the_call_schema_wraps_h10b_as_the_reply_and_drops_the_meta_schema(self):
+        schema = json.loads(decompose.call_schema_text())
+        self.assertEqual(schema["type"], "object")
+        self.assertEqual(schema["required"], ["reply"])
+        self.assertIn("oneOf", schema["properties"]["reply"])
+        self.assertNotIn("$schema", schema)
 
 
 class EmptyReturn(unittest.TestCase):
@@ -835,7 +849,7 @@ class Delta(unittest.TestCase):
         self.assertNotIn("  task:", decompose.DELTA_CONTRACT)
 
     def parse_delta_reports_a_missing_or_mistyped_key_instead_of_raising(self):
-        parsed = decompose.parse_delta(json.dumps({"keep": "a", "add": []}))
+        parsed = decompose.parse_delta({"keep": "a", "add": []})
         self.assertEqual(sorted(parsed), sorted(decompose.DELTA_KEYS + ("errors",)))
         self.assertEqual(parsed["keep"], [])
         self.assertEqual(parsed["add"], [])
@@ -843,10 +857,9 @@ class Delta(unittest.TestCase):
         for key in ("change", "remove", "assumptions", "constraints"):
             self.assertTrue(any("missing '%s'" % key in error for error in parsed["errors"]))
             self.assertEqual(parsed[key], [])
-        self.assertEqual(decompose.parse_delta(None)["errors"], ["the decompose Worker printed no return line"])
-        self.assertTrue(any("JSON" in e for e in decompose.parse_delta("not json")["errors"]))
-        self.assertTrue(any("object" in e for e in decompose.parse_delta("[1]")["errors"]))
-        whole = decompose.parse_delta(json.dumps(delta(keep=["a"], remove=["b"])))
+        self.assertTrue(any("object" in e for e in decompose.parse_delta(None)["errors"]))
+        self.assertTrue(any("object" in e for e in decompose.parse_delta([1])["errors"]))
+        whole = decompose.parse_delta(delta(keep=["a"], remove=["b"]))
         self.assertEqual(whole["errors"], [])
         self.assertEqual(whole["keep"], ["a"])
         self.assertEqual(whole["remove"], ["b"])
@@ -974,7 +987,9 @@ class Delta(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             result = run_structure(root, "# One\n\nbody\n", {"items": []}, prior=prior)
         self.assertEqual(result["items"], [])
-        self.assertTrue(any("missing 'keep'" in e for e in result["errors"]))
+        self.assertTrue(
+            any("h10b-decompose-return" in e and '"keep"' in e for e in result["errors"])
+        )
 
 
 SAMPLER = """
@@ -986,11 +1001,15 @@ here = os.path.dirname(os.path.abspath(__file__))
 prompt = sys.stdin.read()
 with open(os.path.join(here, "prompt-%d.txt" % os.getpid()), "w", encoding="utf-8") as handle:
     handle.write(prompt)
-print(json.dumps({
-    "items": [{"name": "step-%d" % os.getpid(), "files": ["a.py"], "source": None, "acceptance": []}],
-    "assumptions": [],
-    "constraints": [],
-}))
+print(json.dumps({"type": "result", "session_id": "", "result": "done", "structured_output": {
+    "reply": {
+        "items": [
+            {"name": "step-%d" % os.getpid(), "files": ["a.py"], "source": None, "acceptance": []}
+        ],
+        "assumptions": [],
+        "constraints": [],
+    }
+}}))
 """
 
 
@@ -1186,7 +1205,7 @@ class SpawnMany(unittest.TestCase):
             job(delayed(0.0, {"n": 3})),
         ]
         results = decompose.spawn_many(jobs, timeout=20, concurrency=4)
-        self.assertEqual([json.loads(r["line"])["n"] for r in results], [0, 1, 2, 3])
+        self.assertEqual([json.loads(r["stdout"])["n"] for r in results], [0, 1, 2, 3])
         self.assertEqual([r["exit"] for r in results], [0, 0, 0, 0])
         self.assertEqual([r["reason"] for r in results], [None] * 4)
         self.assertEqual(decompose.spawn_many([], timeout=1, concurrency=4), [])
@@ -1197,7 +1216,7 @@ class SpawnMany(unittest.TestCase):
         results = decompose.spawn_many(jobs, timeout=20, concurrency=4)
         elapsed = time.monotonic() - started
         self.assertLess(elapsed, 2.0)
-        self.assertEqual([json.loads(r["line"])["n"] for r in results], [0, 1, 2, 3])
+        self.assertEqual([json.loads(r["stdout"])["n"] for r in results], [0, 1, 2, 3])
 
     def a_concurrency_at_or_below_zero_runs_one_at_a_time(self):
         for concurrency in (0, -3):
@@ -1206,7 +1225,7 @@ class SpawnMany(unittest.TestCase):
             results = decompose.spawn_many(jobs, timeout=20, concurrency=concurrency)
             elapsed = time.monotonic() - started
             self.assertGreaterEqual(elapsed, 0.6)
-            self.assertEqual([json.loads(r["line"])["n"] for r in results], [0, 1])
+            self.assertEqual([json.loads(r["stdout"])["n"] for r in results], [0, 1])
 
     def each_job_reads_its_own_prompt_and_writes_its_own_log(self):
         echo = [
@@ -1220,7 +1239,7 @@ class SpawnMany(unittest.TestCase):
                 job(echo, "second", os.path.join(root, "two.log")),
             ]
             results = decompose.spawn_many(jobs, timeout=20, concurrency=2, cwd=root)
-            self.assertEqual([json.loads(r["line"])["got"] for r in results], ["first", "second"])
+            self.assertEqual([json.loads(r["stdout"])["got"] for r in results], ["first", "second"])
             with open(jobs[0]["log"], encoding="utf-8") as handle:
                 self.assertIn("first", handle.read())
             with open(jobs[1]["log"], encoding="utf-8") as handle:
@@ -1234,110 +1253,160 @@ class SpawnMany(unittest.TestCase):
         ]
         results = decompose.spawn_many(jobs, timeout=0.5, concurrency=2)
         self.assertIn("timeout", results[0]["reason"])
-        self.assertIsNone(results[0]["line"])
-        self.assertEqual(json.loads(results[1]["line"])["n"], 1)
+        self.assertEqual(results[0]["stdout"], "")
+        self.assertEqual(json.loads(results[1]["stdout"])["n"], 1)
 
 
-FLAKY = """
+CALL = """
 import json
 import os
 import sys
+import time
 
 here = os.path.dirname(os.path.abspath(__file__))
-tally = os.path.join(here, "tally-%s.txt" % sys.argv[1])
-seen = 0
-if os.path.isfile(tally):
-    with open(tally, encoding="utf-8") as handle:
-        seen = int(handle.read())
-with open(tally, "w", encoding="utf-8") as handle:
-    handle.write(str(seen + 1))
+label = sys.argv[1]
+with open(os.path.join(here, label + ".log"), "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(sys.argv[2:]) + "\\n")
 sys.stdin.read()
-if seen < int(sys.argv[2]):
-    print(sys.argv[3])
-else:
-    print(json.dumps({"ok": True, "attempt": seen + 1}))
+with open(os.path.join(here, label + ".json"), encoding="utf-8") as handle:
+    job = json.load(handle)
+if job.get("hang"):
+    time.sleep(job["hang"])
+envelope = {"type": "result", "session_id": sys.argv[2], "result": job.get("result", "done")}
+if "reply" in job:
+    envelope = {**envelope, "structured_output": job["reply"]}
+print(json.dumps(envelope))
 """
 
+GOOD_STRUCTURE = {
+    "items": [
+        {
+            "name": "only",
+            "type": "feature",
+            "files": ["pkg/only.py"],
+            "acceptance": [{"file": "tests/test_only.py", "test": "a_thing_holds"}],
+            "spec_ref": "1",
+            "complexity": "simple",
+            "source": None,
+        }
+    ],
+    "assumptions": [],
+    "constraints": [],
+}
 
-def flaky(root, label, bad_rounds, bad_line="not a json object at all"):
-    path = write(root, "flaky.py", FLAKY)
-    return [sys.executable, path, label, str(bad_rounds), bad_line]
+
+def call_template(root, label, *placeholders):
+    path = write(root, "stubs/call.py", CALL)
+    return " ".join(
+        [shlex.quote(sys.executable), shlex.quote(path), label]
+        + list(placeholders or ("{session_id}", "{schema}"))
+    )
 
 
-def tally(root, label):
-    path = os.path.join(root, "tally-%s.txt" % label)
+def reask_template(root):
+    return call_template(root, "reask", "{session_id}", "{schema}", "{prompt}")
+
+
+def answer(root, label, **job):
+    write(root, "stubs/%s.json" % label, json.dumps(job))
+
+
+def calls(root, label):
+    path = os.path.join(root, "stubs", label + ".log")
     if not os.path.isfile(path):
-        return 0
+        return []
     with open(path, encoding="utf-8") as handle:
-        return int(handle.read())
+        return [json.loads(line) for line in handle if line.strip()]
 
 
-def _is_json_object(spawned):
-    line = spawned["line"]
-    if line is None:
-        return False
-    try:
-        return isinstance(json.loads(line), dict)
-    except ValueError:
-        return False
+def structure_call(root, prior=None, timeout=20, reask=True):
+    document = write(root, "docs/spec.md", "# One\n\nbody\n")
+    return decompose.structure(
+        document,
+        call_template(root, "structure"),
+        root,
+        timeout=timeout,
+        prior=prior,
+        reask=reask_template(root) if reask else None,
+    )
 
 
-class StructureRetry(unittest.TestCase):
-    def a_structure_dispatch_that_returns_no_json_object_is_asked_again(self):
+class StructureReask(unittest.TestCase):
+    def a_valid_structured_reply_is_never_reasked(self):
         with tempfile.TemporaryDirectory() as root:
-            write(root, "docs/spec.md", "# One\n\nbody\n")
-            good = json.dumps({
-                "items": [{
-                    "name": "only", "type": "feature", "files": ["pkg/only.py"],
-                    "acceptance": [{"file": "tests/test_only.py", "test": "a_thing_holds"}],
-                    "spec_ref": "1", "complexity": "low", "source": "1",
-                }],
-                "assumptions": [], "constraints": [],
-            })
-            argv = flaky(root, "structure", 1, bad_line="chatter, no object")
-            template = " ".join(shlex.quote(part) for part in argv)
-            write(root, "flaky.py", FLAKY.replace(
-                'print(json.dumps({"ok": True, "attempt": seen + 1}))',
-                "print(%r)" % good,
-            ))
-            result = decompose.structure(
-                os.path.join(root, "docs/spec.md"), template, root, timeout=20,
-            )
+            answer(root, "structure", reply={"reply": GOOD_STRUCTURE})
+            result = structure_call(root)
             self.assertEqual(result["errors"], [])
             self.assertEqual([item["name"] for item in result["items"]], ["only"])
-            self.assertEqual(tally(root, "structure"), 2)
+            self.assertEqual(len(calls(root, "structure")), 1)
+            self.assertEqual(calls(root, "reask"), [])
+            schema = json.loads(calls(root, "structure")[0][1])
+            self.assertEqual(schema, json.loads(decompose.call_schema_text()))
 
-    def a_valid_revision_is_dispatched_once_and_a_broken_one_twice(self):
-        prior = [bare("kept", task="its brief")]
-        for bad_rounds, dispatches in ((0, 1), (1, 2)):
-            with self.subTest(bad_rounds=bad_rounds), tempfile.TemporaryDirectory() as root:
-                write(root, "docs/spec.md", "# One\n\nbody\n")
-                argv = flaky(root, "revise", bad_rounds, bad_line="chatter, no object")
-                write(root, "flaky.py", FLAKY.replace(
-                    'print(json.dumps({"ok": True, "attempt": seen + 1}))',
-                    "print(%r)" % json.dumps(delta(keep=["kept"])),
-                ))
-                result = decompose.structure(
-                    os.path.join(root, "docs/spec.md"),
-                    " ".join(shlex.quote(part) for part in argv),
-                    root,
-                    timeout=20,
-                    prior=prior,
-                )
-                self.assertEqual(result["errors"], [])
-                self.assertEqual([step["name"] for step in result["items"]], ["kept"])
-                self.assertEqual(tally(root, "revise"), dispatches)
-
-    def a_structure_dispatch_that_never_returns_an_object_stops_at_the_bound(self):
+    def a_prose_reply_is_reasked_once_in_the_same_session(self):
         with tempfile.TemporaryDirectory() as root:
-            write(root, "docs/spec.md", "# One\n\nbody\n")
-            argv = flaky(root, "structure", 99, bad_line="chatter, no object")
-            template = " ".join(shlex.quote(part) for part in argv)
-            result = decompose.structure(
-                os.path.join(root, "docs/spec.md"), template, root, timeout=20,
-            )
+            answer(root, "structure", result=json.dumps(GOOD_STRUCTURE))
+            answer(root, "reask", reply={"reply": GOOD_STRUCTURE})
+            result = structure_call(root)
+            first = calls(root, "structure")
+            again = calls(root, "reask")
+            self.assertEqual(len(first), 1)
+            self.assertEqual(len(again), 1)
+            self.assertEqual(again[0][0], first[0][0])
+            self.assertEqual(again[0][1], first[0][1])
+            self.assertIn("h10b-decompose-return", again[0][2])
+            self.assertIn("structured_output", again[0][2])
+            self.assertEqual(result["errors"], [])
+            self.assertEqual([item["name"] for item in result["items"]], ["only"])
+
+    def a_second_invalid_reply_fails_with_every_error(self):
+        with tempfile.TemporaryDirectory() as root:
+            answer(root, "structure", reply={"reply": {"items": []}})
+            answer(root, "reask", reply={"reply": {"items": []}})
+            result = structure_call(root)
+            self.assertEqual(len(calls(root, "structure")), 1)
+            self.assertEqual(len(calls(root, "reask")), 1)
+            self.assertEqual(result["items"], [])
+            self.assertTrue(any("h10b-decompose-return" in error for error in result["errors"]))
+            self.assertTrue(any("oneOf" in error for error in result["errors"]))
+            self.assertTrue(any("re-ask" in error for error in result["errors"]))
+
+    def a_revision_meeting_h10b_but_not_a_delta_is_reasked(self):
+        prior = [bare("kept", task="its brief")]
+        with tempfile.TemporaryDirectory() as root:
+            answer(root, "structure", reply={"reply": GOOD_STRUCTURE})
+            answer(root, "reask", reply={"reply": delta(keep=["kept"])})
+            result = structure_call(root, prior=prior)
+            self.assertEqual(len(calls(root, "reask")), 1)
+            self.assertIn("the return is missing 'keep'", calls(root, "reask")[0][2])
+            self.assertEqual(result["errors"], [])
+            self.assertEqual([step["name"] for step in result["items"]], ["kept"])
+
+    def a_call_that_timed_out_is_not_reasked(self):
+        with tempfile.TemporaryDirectory() as root:
+            answer(root, "structure", hang=60)
+            answer(root, "reask", reply={"reply": GOOD_STRUCTURE})
+            result = structure_call(root, timeout=0.5)
+            self.assertEqual(calls(root, "reask"), [])
+            self.assertEqual(result["items"], [])
+            self.assertTrue(any("timeout" in error for error in result["errors"]))
+
+    def a_usage_limited_call_is_not_reasked(self):
+        with tempfile.TemporaryDirectory() as root:
+            answer(root, "structure", result="You've hit your usage limit; it resets at 5pm")
+            answer(root, "reask", reply={"reply": GOOD_STRUCTURE})
+            result = structure_call(root)
+            self.assertEqual(calls(root, "reask"), [])
+            self.assertEqual(result["items"], [])
             self.assertTrue(result["errors"])
-            self.assertEqual(tally(root, "structure"), decompose.DISPATCH_ATTEMPTS)
+
+    def without_a_reask_command_an_invalid_reply_fails_after_one_call(self):
+        with tempfile.TemporaryDirectory() as root:
+            answer(root, "structure", result="Here is the structure: only")
+            result = structure_call(root, reask=False)
+            self.assertEqual(len(calls(root, "structure")), 1)
+            self.assertEqual(result["items"], [])
+            self.assertTrue(any("structured_output" in error for error in result["errors"]))
 
 
 class SchedulingGuidance(unittest.TestCase):
@@ -1354,80 +1423,30 @@ class SchedulingGuidance(unittest.TestCase):
         self.assertIn("FAIL against the current code", text)
 
 
-class SpawnUntil(unittest.TestCase):
-    def a_result_the_predicate_rejects_is_dispatched_again(self):
-        with tempfile.TemporaryDirectory() as root:
-            jobs = [job(flaky(root, "a", 1))]
-            results = decompose.spawn_until(
-                jobs, timeout=20, concurrency=1, cwd=root,
-                accepts=lambda index, spawned: _is_json_object(spawned),
-            )
-            self.assertTrue(_is_json_object(results[0]))
-            self.assertEqual(json.loads(results[0]["line"])["attempt"], 2)
-            self.assertEqual(tally(root, "a"), 2)
-
-    def a_result_the_predicate_accepts_is_never_dispatched_twice(self):
-        with tempfile.TemporaryDirectory() as root:
-            jobs = [job(flaky(root, "a", 0))]
-            decompose.spawn_until(
-                jobs, timeout=20, concurrency=1, cwd=root,
-                accepts=lambda index, spawned: _is_json_object(spawned),
-            )
-            self.assertEqual(tally(root, "a"), 1)
-
-    def only_the_rejected_job_is_dispatched_again(self):
-        with tempfile.TemporaryDirectory() as root:
-            jobs = [job(flaky(root, "good", 0)), job(flaky(root, "bad", 1))]
-            results = decompose.spawn_until(
-                jobs, timeout=20, concurrency=2, cwd=root,
-                accepts=lambda index, spawned: _is_json_object(spawned),
-            )
-            self.assertEqual(tally(root, "good"), 1)
-            self.assertEqual(tally(root, "bad"), 2)
-            self.assertEqual([_is_json_object(one) for one in results], [True, True])
-
-    def a_result_that_never_satisfies_the_predicate_stops_at_the_bound(self):
-        with tempfile.TemporaryDirectory() as root:
-            jobs = [job(flaky(root, "a", 99))]
-            results = decompose.spawn_until(
-                jobs, timeout=20, concurrency=1, cwd=root,
-                accepts=lambda index, spawned: _is_json_object(spawned),
-            )
-            self.assertEqual(tally(root, "a"), decompose.DISPATCH_ATTEMPTS)
-            self.assertFalse(_is_json_object(results[0]))
-
-    def the_bound_is_at_least_one_attempt(self):
-        with tempfile.TemporaryDirectory() as root:
-            jobs = [job(flaky(root, "a", 99))]
-            decompose.spawn_until(
-                jobs, timeout=20, concurrency=1, cwd=root,
-                accepts=lambda index, spawned: _is_json_object(spawned),
-                attempts=0,
-            )
-            self.assertEqual(tally(root, "a"), 1)
-
+class SpawnReplies(unittest.TestCase):
     def results_come_back_in_the_order_the_jobs_were_given(self):
-        with tempfile.TemporaryDirectory() as root:
-            jobs = [job(delayed(0.3, {"n": 0})), job(delayed(0.0, {"n": 1}))]
-            results = decompose.spawn_until(
-                jobs, timeout=20, concurrency=2, cwd=root,
-                accepts=lambda index, spawned: True,
-            )
-            self.assertEqual([json.loads(one["line"])["n"] for one in results], [0, 1])
-
-    def each_result_carries_how_many_attempts_it_took(self):
-        with tempfile.TemporaryDirectory() as root:
-            jobs = [job(flaky(root, "good", 0)), job(flaky(root, "bad", 1))]
-            results = decompose.spawn_until(
-                jobs, timeout=20, concurrency=2, cwd=root,
-                accepts=lambda index, spawned: _is_json_object(spawned),
-            )
-            self.assertEqual([one["attempts"] for one in results], [1, 2])
+        jobs = [job(delayed(0.3, {"n": 0})), job(delayed(0.0, {"n": 1}))]
+        results = decompose.spawn_replies(
+            jobs,
+            timeout=20,
+            concurrency=2,
+            cwd=None,
+            read=lambda index, stdout: (json.loads(stdout), ()),
+            owned=decompose.REPLY_SCHEMA,
+        )
+        self.assertEqual([one["reply"]["n"] for one in results], [0, 1])
+        self.assertEqual([one["reasked"] for one in results], [False, False])
 
     def no_jobs_is_no_results(self):
         self.assertEqual(
-            decompose.spawn_until([], timeout=1, concurrency=2, cwd=None,
-                                  accepts=lambda index, spawned: True),
+            decompose.spawn_replies(
+                [],
+                timeout=1,
+                concurrency=2,
+                cwd=None,
+                read=lambda index, stdout: (None, ("never",)),
+                owned=decompose.REPLY_SCHEMA,
+            ),
             (),
         )
 
@@ -1504,7 +1523,7 @@ def load_tests(loader, tests, pattern):
         Contract,
         Run,
         Coverage,
-        ReturnLine,
+        StructuredReply,
         EmptyReturn,
         Structure,
         Decisions,
@@ -1512,8 +1531,8 @@ def load_tests(loader, tests, pattern):
         Sampling,
         SchedulingGuidance,
         SpawnMany,
-        SpawnUntil,
-        StructureRetry,
+        SpawnReplies,
+        StructureReask,
         PlainNumberedSections,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))

@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -27,6 +28,7 @@ ISOLATED_GIT_ENV = {
 UNSET_FOR_RUNS = ("PLUGIN_METRICS_PARENT", "CLAUDE_CODE_SESSION_ID")
 
 STRUCTURER = """
+import json
 import os
 import sys
 import tempfile
@@ -37,7 +39,13 @@ handle, _ = tempfile.mkstemp(dir=os.path.join(here, "sessions"), prefix="structu
 os.write(handle, sys.argv[-1].encode("utf-8"))
 os.close(handle)
 with open(os.path.join(here, "structure-reply.txt"), encoding="utf-8") as reply:
-    print(reply.read().strip())
+    value = json.load(reply)
+print(json.dumps({
+    "type": "result",
+    "session_id": sys.argv[-1],
+    "result": "done",
+    "structured_output": {"reply": value},
+}))
 """
 
 BRIEFER = """
@@ -56,7 +64,32 @@ marker = os.path.join(here, "fail-once-%s" % step)
 if os.path.isfile(marker):
     os.remove(marker)
     sys.exit(2)
-print(json.dumps({"name": step, "task": "build " + step}))
+print(json.dumps({
+    "type": "result",
+    "session_id": sys.argv[-1],
+    "result": "done",
+    "structured_output": {"name": step, "task": "build " + step},
+}))
+"""
+
+REASKER = """
+import json
+import os
+import sys
+import tempfile
+
+here = os.path.dirname(os.path.abspath(__file__))
+sys.stdin.read()
+handle, _ = tempfile.mkstemp(dir=os.path.join(here, "sessions"), prefix="reask-")
+os.write(handle, sys.argv[-1].encode("utf-8"))
+os.close(handle)
+step = json.loads(sys.argv[-2])["properties"]["name"]["const"]
+print(json.dumps({
+    "type": "result",
+    "session_id": sys.argv[-1],
+    "result": "done",
+    "structured_output": {"name": step, "task": "build " + step},
+}))
 """
 
 WORKER = r'''
@@ -79,8 +112,21 @@ for path in paths:
 if len(sys.argv) > 3:
     with open(os.path.join(here, "lane-%s.txt" % sys.argv[2]), "w", encoding="utf-8") as handle:
         handle.write(sys.argv[3])
-print(json.dumps({"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"}))
+reply = {"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"}
+session = sys.argv[3] if len(sys.argv) > 3 else ""
+print(json.dumps({"type": "result", "session_id": session, "result": "done", "structured_output": reply}))
 '''
+
+REASK_COMMAND = " ".join(
+    (
+        shlex.quote(sys.executable),
+        "-c",
+        shlex.quote("import sys; sys.stderr.write('no re-ask was expected\\n'); sys.exit(1)"),
+        "{prompt}",
+        "{session_id}",
+        "{schema}",
+    )
+)
 
 
 def write(root, relative, content):
@@ -89,6 +135,16 @@ def write(root, relative, content):
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(content)
     return path
+
+
+SPEC_SECTION = "1.1"
+SPEC_DOCUMENT = "# Spec\n\n## 1.1 Build\n"
+
+
+def items_document(folder, items):
+    path = os.path.abspath(write(folder, "spec.md", SPEC_DOCUMENT))
+    source = {"path": path, "sha256": hashlib.sha256(SPEC_DOCUMENT.encode("utf-8")).hexdigest()}
+    return json.dumps([{**item, "source": item.get("source") or source} for item in items])
 
 
 def read_json(path):
@@ -102,7 +158,7 @@ def command(root, script_name, script, *placeholders):
 
 
 def bare(name, **extra):
-    return {"name": name, "files": [name + ".py"], "source": None, "acceptance": [], **extra}
+    return {"name": name, "files": [name + ".py"], "source": None, "acceptance": [], "spec_ref": [SPEC_SECTION], **extra}
 
 
 def briefed(name, **extra):
@@ -151,28 +207,31 @@ def invoke(root, argv):
     return code, out.getvalue(), err.getvalue()
 
 
+def build_flags(run_dir, worker_template):
+    return [
+        "--items",
+        "items.json",
+        "--run-dir",
+        run_dir,
+        "--feature-branch",
+        "feature",
+        "--dispatch-command",
+        worker_template,
+        "--reask-command",
+        REASK_COMMAND,
+        "--acceptance-command",
+        "probe {file} {test}",
+        "--timeout",
+        "30",
+        "--no-push",
+    ]
+
+
 def build(root, elsewhere, items, worker_template):
     git_repo(root)
-    write(root, "items.json", json.dumps(items))
+    write(root, "items.json", items_document(root, items))
     run_dir = os.path.join(elsewhere, "run")
-    code, out, err = invoke(
-        root,
-        [
-            "--items",
-            "items.json",
-            "--run-dir",
-            run_dir,
-            "--feature-branch",
-            "feature",
-            "--dispatch-command",
-            worker_template,
-            "--acceptance-command",
-            "probe {file} {test}",
-            "--timeout",
-            "30",
-            "--no-push",
-        ],
-    )
+    code, out, err = invoke(root, build_flags(run_dir, worker_template))
     return code, out, err, read_json(os.path.join(run_dir, "state.json"))
 
 
@@ -190,7 +249,9 @@ class DispatchSessionId(unittest.TestCase):
         import mitosis
 
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
-            template = command(elsewhere, "worker.py", WORKER, "{task}", "{lane}", "{session_id}")
+            template = command(
+                elsewhere, "worker.py", WORKER, "{task}", "{lane}", "{session_id}", "{schema}"
+            )
             with isolated_run():
                 code, out, err, state = build(
                     root, elsewhere, [briefed("alpha"), briefed("beta")], template
@@ -207,21 +268,24 @@ class DispatchSessionId(unittest.TestCase):
                 self.assertRegex(value, UUID4)
                 self.assertEqual(state["lanes"][lane]["session_id"], value)
 
-    def test_session_id_null_without_placeholder(self):
+    def test_a_template_without_session_id_is_refused_before_any_worker(self):
         import mitosis
 
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
-            template = command(elsewhere, "worker.py", WORKER, "{task}")
+            template = command(elsewhere, "worker.py", WORKER, "{task}", "{lane}", "{schema}")
+            git_repo(root)
+            write(root, "items.json", items_document(root, [briefed("alpha")]))
+            run_dir = os.path.join(elsewhere, "run")
             with isolated_run():
-                code, out, err, state = build(root, elsewhere, [briefed("alpha")], template)
-            self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
-            self.assertEqual(state["lanes"]["0"]["state"], "ok")
-            self.assertIn("session_id", state["lanes"]["0"])
-            self.assertIsNone(state["lanes"]["0"]["session_id"])
+                code, out, err = invoke(root, build_flags(run_dir, template))
+            self.assertEqual(code, mitosis.EXIT_REFUSED, out + err)
+            self.assertIn("--dispatch-command lacks {session_id}", err)
+            self.assertFalse(os.path.exists(os.path.join(run_dir, "state.json")))
+            self.assertFalse(os.path.exists(os.path.join(elsewhere, "worker", "lane-0.txt")))
 
 
 class SpawnAttemptSessionId(unittest.TestCase):
-    def test_every_spawn_attempt_gets_its_own_id(self):
+    def test_every_call_gets_its_own_id_and_a_reask_keeps_it(self):
         import mitosis
 
         with tempfile.TemporaryDirectory() as root:
@@ -231,8 +295,11 @@ class SpawnAttemptSessionId(unittest.TestCase):
             ))
             write(root, "worker/fail-once-alpha", "")
             os.makedirs(os.path.join(root, "worker", "sessions"))
-            structurer = command(root, "structurer.py", STRUCTURER, "{document}", "{session_id}")
-            briefer = command(root, "briefer.py", BRIEFER, "{step}", "{session_id}")
+            structurer = command(
+                root, "structurer.py", STRUCTURER, "{document}", "{schema}", "{session_id}"
+            )
+            briefer = command(root, "briefer.py", BRIEFER, "{step}", "{schema}", "{session_id}")
+            reasker = command(root, "reasker.py", REASKER, "{prompt}", "{schema}", "{session_id}")
             run_dir = os.path.join(root, "run")
             with isolated_run():
                 code, out, err = invoke(
@@ -244,6 +311,8 @@ class SpawnAttemptSessionId(unittest.TestCase):
                         structurer,
                         "--brief-command",
                         briefer,
+                        "--reask-command",
+                        reasker,
                         "--structure-samples",
                         "2",
                         "--timeout",
@@ -262,6 +331,8 @@ class SpawnAttemptSessionId(unittest.TestCase):
                         "--resume",
                         "--brief-command",
                         briefer,
+                        "--reask-command",
+                        reasker,
                         "--timeout",
                         "20",
                         "--plan-only",
@@ -272,13 +343,14 @@ class SpawnAttemptSessionId(unittest.TestCase):
             self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
             sessions = recorded_sessions(root)
             kinds = sorted(kind for kind, _ in sessions)
-            self.assertEqual(
-                kinds, ["brief-alpha", "brief-alpha", "brief-beta", "structure", "structure"]
-            )
+            self.assertEqual(kinds, ["brief-alpha", "brief-beta", "reask", "structure", "structure"])
             values = [value for _, value in sessions]
             for value in values:
                 self.assertRegex(value, UUID4)
-            self.assertEqual(len(set(values)), len(values))
+            by_kind = dict(sessions)
+            self.assertEqual(by_kind["reask"], by_kind["brief-alpha"])
+            firsts = [value for kind, value in sessions if kind != "reask"]
+            self.assertEqual(len(set(firsts)), len(firsts))
 
 
 class SessionPlaceholderOffered(unittest.TestCase):

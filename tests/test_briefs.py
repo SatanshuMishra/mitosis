@@ -41,13 +41,19 @@ with open(os.path.join(here, "prompt-%s.txt" % step), "w", encoding="utf-8") as 
     handle.write(prompt)
 with open(os.path.join(here, "argv-%s.json" % step), "w", encoding="utf-8") as handle:
     json.dump(sys.argv[1:], handle)
-print("chatter that must stay out of the record")
+print("chatter that must stay out of the record", file=sys.stderr)
 print("more chatter", file=sys.stderr)
 reply = os.path.join(here, "reply-%s.txt" % step)
 if not os.path.isfile(reply):
     sys.exit(2)
 with open(reply, encoding="utf-8") as handle:
-    sys.stdout.write(handle.read())
+    text = handle.read()
+envelope = {"type": "result", "session_id": "", "result": text}
+try:
+    envelope = {**envelope, "result": "done", "structured_output": json.loads(text)}
+except ValueError:
+    pass
+print(json.dumps(envelope))
 """
 
 
@@ -119,13 +125,21 @@ class Contract(unittest.TestCase):
         self.assertIn('"name"', briefs.BRIEF_CONTRACT)
         self.assertIn('"task"', briefs.BRIEF_CONTRACT)
         self.assertIn("exactly", briefs.BRIEF_CONTRACT)
-        self.assertIn("one line of JSON", briefs.BRIEF_CONTRACT)
+        self.assertIn("structured output", briefs.BRIEF_CONTRACT)
+        self.assertIn("structured_output", briefs.BRIEF_CONTRACT)
+        self.assertIn("h10c-brief-return", briefs.BRIEF_CONTRACT)
         lowered = briefs.BRIEF_CONTRACT.lower()
-        self.assertIn("last line", lowered)
-        self.assertIn("json object", lowered)
-        self.assertIn("fence", lowered)
-        self.assertIn("narration", lowered)
+        self.assertNotIn("one line of json", lowered)
+        self.assertNotIn("last line", lowered)
+        self.assertNotIn("narration", lowered)
         self.assertEqual(briefs.RETURN_KEYS, ("name", "task"))
+
+    def the_call_schema_narrows_name_to_the_step_being_briefed(self):
+        schema = briefs.call_schema("beta")
+        self.assertEqual(schema["properties"]["name"], {"type": "string", "const": "beta"})
+        self.assertEqual(schema["required"], ["name", "task"])
+        self.assertNotIn("$schema", schema)
+        self.assertEqual(briefs.call_schema("alpha")["properties"]["name"]["const"], "alpha")
 
 
 class Pending(unittest.TestCase):
@@ -272,51 +286,77 @@ class Prompt(unittest.TestCase):
         self.assertNotIn("the gamma reading", prompt)
 
 
+def envelope(reply=None, result="done"):
+    printed = {"type": "result", "session_id": "s", "result": result}
+    if reply is not None:
+        printed = {**printed, "structured_output": reply}
+    return json.dumps(printed)
+
+
 class Return(unittest.TestCase):
     def a_good_return_parses(self):
-        parsed = briefs.parse_brief('{"name":"beta","task":"build beta"}', "beta")
+        parsed = briefs.parse_brief({"name": "beta", "task": "build beta"}, "beta")
         self.assertEqual(parsed, {"name": "beta", "task": "build beta", "errors": []})
 
     def a_return_naming_another_step_is_an_error(self):
-        parsed = briefs.parse_brief('{"name":"alpha","task":"build beta"}', "beta")
+        parsed = briefs.parse_brief({"name": "alpha", "task": "build beta"}, "beta")
         self.assertEqual(parsed["name"], "alpha")
         self.assertEqual(parsed["task"], "build beta")
         self.assertEqual(len(parsed["errors"]), 1)
         self.assertIn("alpha", parsed["errors"][0])
         self.assertIn("beta", parsed["errors"][0])
-        missing = briefs.parse_brief('{"task":"build beta"}', "beta")
+        missing = briefs.parse_brief({"task": "build beta"}, "beta")
         self.assertEqual(len(missing["errors"]), 1)
         self.assertIn("beta", missing["errors"][0])
 
     def a_missing_or_empty_task_is_an_error(self):
-        for line in (
-            '{"name":"beta"}',
-            '{"name":"beta","task":""}',
-            '{"name":"beta","task":"  \\n"}',
-            '{"name":"beta","task":7}',
-            '{"name":"beta","task":null}',
+        for value in (
+            {"name": "beta"},
+            {"name": "beta", "task": ""},
+            {"name": "beta", "task": "  \n"},
+            {"name": "beta", "task": 7},
+            {"name": "beta", "task": None},
         ):
-            parsed = briefs.parse_brief(line, "beta")
+            parsed = briefs.parse_brief(value, "beta")
             self.assertEqual(parsed["name"], "beta")
-            self.assertEqual(len(parsed["errors"]), 1, line)
+            self.assertEqual(len(parsed["errors"]), 1, value)
             self.assertIn("task", parsed["errors"][0])
             self.assertIn("beta", parsed["errors"][0])
 
-    def a_line_that_is_not_a_json_object_is_an_error(self):
-        for line in ("not json", "[1, 2]", '"a string"', "42", ""):
-            parsed = briefs.parse_brief(line, "beta")
+    def a_value_that_is_not_an_object_is_an_error(self):
+        for value in ("not json", [1, 2], "a string", 42, None):
+            parsed = briefs.parse_brief(value, "beta")
             self.assertEqual(parsed["name"], None)
             self.assertEqual(parsed["task"], None)
-            self.assertEqual(len(parsed["errors"]), 1, line)
-            self.assertIn("JSON object", parsed["errors"][0])
+            self.assertEqual(len(parsed["errors"]), 1, value)
+            self.assertIn("no object", parsed["errors"][0])
             self.assertIn("beta", parsed["errors"][0])
-        absent = briefs.parse_brief(None, "beta")
-        self.assertEqual(len(absent["errors"]), 1)
-        self.assertIn("beta", absent["errors"][0])
 
     def a_wrong_name_and_an_empty_task_are_two_errors(self):
-        parsed = briefs.parse_brief('{"name":"alpha","task":""}', "beta")
+        parsed = briefs.parse_brief({"name": "alpha", "task": ""}, "beta")
         self.assertEqual(len(parsed["errors"]), 2)
+
+    def a_structured_reply_for_the_step_is_read(self):
+        reply = {"name": "beta", "task": "build beta"}
+        self.assertEqual(briefs.read_brief(envelope(reply), "beta"), (reply, ()))
+
+    def a_structured_reply_naming_another_step_is_refused_naming_both(self):
+        reply, errors = briefs.read_brief(envelope({"name": "alpha", "task": "x"}), "beta")
+        self.assertIsNone(reply)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("alpha", errors[0])
+        self.assertIn("beta", errors[0])
+
+    def a_return_printed_in_prose_is_never_read(self):
+        for stdout in (
+            json.dumps({"name": "beta", "task": "build beta"}),
+            "```json\n" + json.dumps({"name": "beta", "task": "build beta"}) + "\n```",
+            envelope(result=json.dumps({"name": "beta", "task": "build beta"})),
+        ):
+            reply, errors = briefs.read_brief(stdout, "beta")
+            self.assertIsNone(reply, stdout)
+            self.assertTrue(errors, stdout)
+            self.assertIn("h10c-brief-return", errors[0])
 
 
 class Write(unittest.TestCase):
@@ -346,16 +386,16 @@ class Write(unittest.TestCase):
         self.assertEqual(
             [item["task"] for item in result["items"]], ["do alpha", "build beta", "build gamma"]
         )
-        self.assertEqual(sorted(result), ["errors", "items", "retried", "reused", "written"])
+        self.assertEqual(sorted(result), ["errors", "items", "reasked", "reused", "written"])
         self.assertEqual(items, before)
         for original, returned in zip(items, result["items"]):
             self.assertIsNot(original, returned)
         self.assertEqual(result["items"][0], items[0])
         self.assertEqual(result["items"][1], {**items[1], "task": "build beta"})
 
-    def a_fenced_return_is_read(self):
+    def a_fenced_return_in_prose_is_never_read(self):
         fenced = (
-            "Here is the brief.\n\n| col | col |\n|---|---|\n| a | b |\n\n"
+            "Here is the brief.\n\n"
             "```json\n"
             + json.dumps(good("beta"))
             + "\n```\n\nDone.\n"
@@ -371,9 +411,10 @@ class Write(unittest.TestCase):
                 models={"top": "big"},
                 document=document,
             )
-        self.assertEqual(result["errors"], [])
-        self.assertEqual(result["written"], ["beta", "gamma"])
-        self.assertEqual([item["task"] for item in result["items"]], ["build beta", "build gamma"])
+        self.assertEqual(result["written"], ["gamma"])
+        self.assertNotIn("task", result["items"][0])
+        self.assertTrue(result["errors"])
+        self.assertTrue(all("beta" in error for error in result["errors"]))
 
     def every_pending_step_is_attempted_before_the_refusal(self):
         items = [bare("alpha"), bare("beta"), bare("gamma"), briefed("delta")]
@@ -515,77 +556,118 @@ class Write(unittest.TestCase):
             self.assertFalse(os.path.isdir(os.path.join(root, "worker", "prompt-alpha.txt")))
         self.assertEqual(
             result,
-            {"items": items, "written": [], "reused": ["alpha", "beta"], "retried": [], "errors": []},
+            {"items": items, "written": [], "reused": ["alpha", "beta"], "reasked": [], "errors": []},
         )
 
 
-FLAKY_BRIEFER = """
+CALL = """
 import json
 import os
 import sys
 
 here = os.path.dirname(os.path.abspath(__file__))
-step = sys.argv[1]
+label = sys.argv[1]
+with open(os.path.join(here, label + ".log"), "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(sys.argv[2:]) + "\\n")
 sys.stdin.read()
-tally = os.path.join(here, "tally-%s.txt" % step)
-seen = 0
-if os.path.isfile(tally):
-    with open(tally, encoding="utf-8") as handle:
-        seen = int(handle.read())
-with open(tally, "w", encoding="utf-8") as handle:
-    handle.write(str(seen + 1))
-bad = int(sys.argv[2])
-if seen < bad:
-    print("- `a_thing_holds` - a bullet, which is not a JSON object")
-else:
-    print(json.dumps({"name": step, "task": "do the thing for " + step}))
+with open(os.path.join(here, label + ".json"), encoding="utf-8") as handle:
+    job = json.load(handle)
+step = sys.argv[2] if label == "brief" else None
+reply = job.get(step, job) if step else job
+envelope = {"type": "result", "session_id": sys.argv[3], "result": reply.get("result", "done")}
+if "reply" in reply:
+    envelope = {**envelope, "structured_output": reply["reply"]}
+print(json.dumps(envelope))
 """
 
 
-def flaky_briefer(root, bad_rounds):
-    path = write(root, "worker/flaky.py", FLAKY_BRIEFER)
-    return "%s %s {step} %d" % (shlex.quote(sys.executable), shlex.quote(path), bad_rounds)
+def call(root, label, *placeholders):
+    path = write(root, "stubs/call.py", CALL)
+    return " ".join([shlex.quote(sys.executable), shlex.quote(path), label] + list(placeholders))
 
 
-def attempts(root, name):
-    path = os.path.join(root, "worker", "tally-%s.txt" % name)
+def answer(root, label, job):
+    write(root, "stubs/%s.json" % label, json.dumps(job))
+
+
+def calls(root, label):
+    path = os.path.join(root, "stubs", label + ".log")
     if not os.path.isfile(path):
-        return 0
+        return []
     with open(path, encoding="utf-8") as handle:
-        return int(handle.read())
+        return [json.loads(line) for line in handle if line.strip()]
 
 
-class WriteRetry(unittest.TestCase):
-    def a_brief_whose_last_line_is_not_a_json_object_is_asked_again(self):
+def reasked_write(root, items, briefs_by_step, reask, **extra):
+    answer(root, "brief", briefs_by_step)
+    answer(root, "reask", reask)
+    return briefs.write(
+        items,
+        call(root, "brief", "{step}", "{session_id}", "{schema}"),
+        root,
+        timeout=20,
+        reask=call(root, "reask", "{prompt}", "{session_id}", "{schema}"),
+        **extra,
+    )
+
+
+class WriteReask(unittest.TestCase):
+    def a_brief_naming_another_step_is_reasked_in_the_same_session(self):
+        with tempfile.TemporaryDirectory() as root:
+            result = reasked_write(
+                root,
+                [bare("beta")],
+                {"beta": {"reply": {"name": "alpha", "task": "wrong"}}},
+                {"reply": {"name": "beta", "task": "do beta"}},
+            )
+            first = calls(root, "brief")
+            again = calls(root, "reask")
+        self.assertEqual(len(first), 1)
+        self.assertEqual(len(again), 1)
+        self.assertEqual(again[0][1], first[0][1])
+        self.assertEqual(again[0][2], first[0][2])
+        self.assertEqual(json.loads(first[0][2])["properties"]["name"]["const"], "beta")
+        self.assertIn("h10c-brief-return", again[0][0])
+        self.assertIn("'alpha'", again[0][0])
+        self.assertIn("'beta'", again[0][0])
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["reasked"], ["beta"])
+        self.assertEqual(result["items"][0]["task"], "do beta")
+
+    def a_brief_that_replies_cleanly_is_never_reasked(self):
+        with tempfile.TemporaryDirectory() as root:
+            result = reasked_write(
+                root,
+                [bare("beta")],
+                {"beta": {"reply": {"name": "beta", "task": "do beta"}}},
+                {"reply": {"name": "beta", "task": "never"}},
+            )
+            self.assertEqual(calls(root, "reask"), [])
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["reasked"], [])
+        self.assertEqual(result["items"][0]["task"], "do beta")
+
+    def a_second_invalid_brief_fails_that_brief_with_the_errors(self):
         items = [bare("beta"), bare("gamma")]
         with tempfile.TemporaryDirectory() as root:
-            template = flaky_briefer(root, 1)
-            result = briefs.write(items, template, root, timeout=20, concurrency=2)
-            self.assertEqual(attempts(root, "beta"), 2)
-            self.assertEqual(attempts(root, "gamma"), 2)
-        self.assertEqual(result["errors"], [])
-        self.assertEqual(result["written"], ["beta", "gamma"])
-        self.assertEqual(result["items"][0]["task"], "do the thing for beta")
-        self.assertEqual(result["retried"], ["beta", "gamma"])
-
-    def a_brief_that_returns_cleanly_is_never_asked_twice(self):
-        items = [bare("beta")]
-        with tempfile.TemporaryDirectory() as root:
-            template = flaky_briefer(root, 0)
-            result = briefs.write(items, template, root, timeout=20)
-            self.assertEqual(attempts(root, "beta"), 1)
-        self.assertEqual(result["errors"], [])
-        self.assertEqual(result["retried"], [])
-
-    def a_brief_that_never_returns_an_object_stops_at_the_bound_and_refuses(self):
-        items = [bare("beta")]
-        with tempfile.TemporaryDirectory() as root:
-            template = flaky_briefer(root, 99)
-            result = briefs.write(items, template, root, timeout=20)
-            self.assertEqual(attempts(root, "beta"), decompose.DISPATCH_ATTEMPTS)
-        self.assertTrue(result["errors"])
-        self.assertEqual(result["written"], [])
+            result = reasked_write(
+                root,
+                items,
+                {
+                    "beta": {"result": "- a bullet, which is not structured output"},
+                    "gamma": {"reply": {"name": "gamma", "task": "do gamma"}},
+                },
+                {"reply": {"name": "beta"}},
+                concurrency=2,
+            )
+            self.assertEqual(len(calls(root, "brief")), 2)
+            self.assertEqual(len(calls(root, "reask")), 1)
+        self.assertEqual(result["written"], ["gamma"])
         self.assertEqual(briefs.pending(result["items"]), [items[0]])
+        self.assertTrue(result["errors"])
+        self.assertTrue(all("beta" in error for error in result["errors"]))
+        self.assertTrue(any("re-ask" in error for error in result["errors"]))
+        self.assertTrue(any("h10c-brief-return" in error for error in result["errors"]))
 
 
 def load_tests(loader, tests, pattern):
@@ -599,7 +681,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Contract, Pending, Tier, Prompt, Return, Write, WriteRetry):
+    for case in (Contract, Pending, Tier, Prompt, Return, Write, WriteReask):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

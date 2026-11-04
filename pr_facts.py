@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 
+import handoff
 import shape
 
 SENTENCE_END = re.compile(r"[.?!](?= |$)")
@@ -308,24 +309,36 @@ def _refusal(command, path, completed):
     )
 
 
+RENDER = "pull-request render"
+
+RENDER_REPLY = "the reply of pull-request render"
+
+RENDER_SCHEMA = "h16-pr-render"
+
+FIELDS_SCHEMA = "h15-pr-fields"
+
+
 def _printed(stdout):
-    lines = [line for line in (stdout or "").splitlines() if line.strip()]
-    if not lines:
-        return None
+    text = (stdout or "").strip()
     try:
-        value = json.loads(lines[-1])
-    except ValueError:
-        return None
-    if (
-        isinstance(value, dict)
-        and isinstance(value.get("title"), str)
-        and isinstance(value.get("body"), str)
-    ):
-        return value["title"], value["body"]
-    return None
+        value = json.loads(text)
+    except ValueError as error:
+        raise RenderError(
+            "%s printed no title and body: %s, written by %s, is not one JSON value for the owned schema %s (%s)"
+            % (RENDER, RENDER_REPLY, RENDER, handoff.file_name(RENDER_SCHEMA), error)
+        )
+    try:
+        reply = handoff.require(RENDER_SCHEMA, value, RENDER_REPLY, RENDER)
+    except handoff.HandoffError as error:
+        raise RenderError(str(error))
+    return reply["title"], reply["body"]
 
 
 def render(command, facts, path, timeout, env=None):
+    try:
+        handoff.require(FIELDS_SCHEMA, facts, path, "mitosis")
+    except handoff.HandoffError as error:
+        raise RenderError(str(error))
     folder = os.path.dirname(path)
     if folder:
         os.makedirs(folder, exist_ok=True)
@@ -349,9 +362,4 @@ def render(command, facts, path, timeout, env=None):
         )
     if completed.returncode != 0:
         raise RenderError(_refusal(command, path, completed))
-    printed = _printed(completed.stdout)
-    if printed is None:
-        raise RenderError(
-            "pull-request render printed no title and body for the facts file %s" % path
-        )
-    return printed
+    return _printed(completed.stdout)

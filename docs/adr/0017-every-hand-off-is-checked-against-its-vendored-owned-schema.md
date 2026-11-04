@@ -1,0 +1,5 @@
+# Every hand-off is checked against its vendored owned schema, at the writer and the reader
+
+Status: accepted
+
+The result line, state.json, outcome entries, the lock record and the pull-request fields file are checked against the program's owned schemas immediately before mitosis writes them, and a failure writes nothing and stops the run with exit 15, or for an outcome entry is recorded as the MSP's trajectory_error. What mitosis reads from another tool, the --items file and pull-request render's reply, and its own state.json on resume, is refused when it fails its schema, never defaulted, trimmed or partly read. The schemas and the program's validator are carried byte for byte in contracts/, compared with the program's copies by a test whenever they are present and by the program's check_copies.py, so mitosis still works installed alone. We chose refusal at the boundary over lenient reading because every lenient reader let a fault born in one tool surface stages later in another; the cost is that a hand-written items file must now meet interphase's items schema in full, spec_ref included, and a schema change reaches mitosis only when its copy is refreshed.
