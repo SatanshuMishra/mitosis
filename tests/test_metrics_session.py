@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -136,6 +137,16 @@ def write(root, relative, content):
     return path
 
 
+SPEC_SECTION = "1.1"
+SPEC_DOCUMENT = "# Spec\n\n## 1.1 Build\n"
+
+
+def items_document(folder, items):
+    path = os.path.abspath(write(folder, "spec.md", SPEC_DOCUMENT))
+    source = {"path": path, "sha256": hashlib.sha256(SPEC_DOCUMENT.encode("utf-8")).hexdigest()}
+    return json.dumps([{**item, "source": item.get("source") or source} for item in items])
+
+
 def read_json(path):
     with open(path, encoding="utf-8") as handle:
         return json.load(handle)
@@ -147,7 +158,7 @@ def command(root, script_name, script, *placeholders):
 
 
 def bare(name, **extra):
-    return {"name": name, "files": [name + ".py"], "source": None, "acceptance": [], **extra}
+    return {"name": name, "files": [name + ".py"], "source": None, "acceptance": [], "spec_ref": [SPEC_SECTION], **extra}
 
 
 def briefed(name, **extra):
@@ -218,7 +229,7 @@ def build_flags(run_dir, worker_template):
 
 def build(root, elsewhere, items, worker_template):
     git_repo(root)
-    write(root, "items.json", json.dumps(items))
+    write(root, "items.json", items_document(root, items))
     run_dir = os.path.join(elsewhere, "run")
     code, out, err = invoke(root, build_flags(run_dir, worker_template))
     return code, out, err, read_json(os.path.join(run_dir, "state.json"))
@@ -263,7 +274,7 @@ class DispatchSessionId(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
             template = command(elsewhere, "worker.py", WORKER, "{task}", "{lane}", "{schema}")
             git_repo(root)
-            write(root, "items.json", json.dumps([briefed("alpha")]))
+            write(root, "items.json", items_document(root, [briefed("alpha")]))
             run_dir = os.path.join(elsewhere, "run")
             with isolated_run():
                 code, out, err = invoke(root, build_flags(run_dir, template))

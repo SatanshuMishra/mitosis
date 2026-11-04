@@ -548,6 +548,14 @@ def read_json(path, what):
         raise Refusal("%s %s is not valid JSON: %s" % (what, path, error))
 
 
+def read_items(path):
+    items = read_json(path, "--items")
+    try:
+        return handoff.require(ITEMS_SCHEMA, items, "the --items file %s" % path, "interphase")
+    except handoff.HandoffError as error:
+        raise Refusal(str(error))
+
+
 def file_digest(path):
     try:
         return run.sha256_file(path)
@@ -956,7 +964,7 @@ def input_run_dir(args, root):
 
 def resolve_input(args, root, repo, models, charter, graph, run_dir):
     if args.items:
-        items = read_json(os.path.abspath(args.items), "--items")
+        items = read_items(os.path.abspath(args.items))
         return staged(items, load_decomposed(run_dir), run_dir, None, True)
     document = check_document(args, root)
     decisions = load_decisions(args, root, document)
@@ -1034,14 +1042,18 @@ def refuse_unbuildable(args, repo):
     missing = missing_run_flags(args)
     if missing:
         raise Refusal("a run needs %s; pass --plan-only to stop at the plan" % ", ".join(missing))
+    refuse_untitled(args)
+    if not run.branch_exists(repo, args.feature_branch):
+        raise Refusal("--feature-branch %s is not a branch of %s" % (args.feature_branch, repo))
+
+
+def refuse_untitled(args):
     unwritten = missing_push_flags(args)
     if unwritten:
         raise Refusal(
             "a run allowed to push needs %s to title and describe each pull request; pass "
             "--no-push to hold the branches instead" % ", ".join(unwritten)
         )
-    if not run.branch_exists(repo, args.feature_branch):
-        raise Refusal("--feature-branch %s is not a branch of %s" % (args.feature_branch, repo))
 
 
 def check_pull_request_flags(args):
@@ -1092,6 +1104,8 @@ def refuse_unrenderable(args, plan, run_dir):
     header = run_header(args, plan, run_dir)
     if header is None:
         return
+    if not header["why"]:
+        refuse_untitled(args)
     if not header["impact"] and header["blast_radius"] is None:
         raise Refusal(
             "a run that opens pull requests needs --pr-impact, what callers or users notice, "
@@ -2115,6 +2129,7 @@ def summary(plan, state, run_dir, code, referee=None, troubles=()):
 
 
 RESULT_SCHEMA = "h8-mitosis-result"
+ITEMS_SCHEMA = "h12-interphase-items"
 
 
 def _summarised(plan, state, run_dir, code, referee=None, troubles=()):

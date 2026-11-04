@@ -1,5 +1,6 @@
 import contextlib
 import csv
+import hashlib
 import io
 import json
 import os
@@ -113,6 +114,16 @@ def write(root, relative, content):
     return path
 
 
+SPEC_SECTION = "1.1"
+SPEC_DOCUMENT = "# Spec\n\n## 1.1 Build\n"
+
+
+def items_document(folder, items):
+    path = os.path.abspath(write(folder, "spec.md", SPEC_DOCUMENT))
+    source = {"path": path, "sha256": hashlib.sha256(SPEC_DOCUMENT.encode("utf-8")).hexdigest()}
+    return json.dumps([{**item, "source": item.get("source") or source} for item in items])
+
+
 def read_text(path):
     with open(path, encoding="utf-8") as handle:
         return handle.read()
@@ -124,7 +135,7 @@ def command(root, script_name, script, *placeholders):
 
 
 def briefed(name, **extra):
-    return {"name": name, "task": "do " + name, "files": [name + ".py"], "source": None, "acceptance": [], **extra}
+    return {"name": name, "task": "do " + name, "files": [name + ".py"], "source": None, "acceptance": [], "spec_ref": [SPEC_SECTION], **extra}
 
 
 def gated_alpha():
@@ -161,7 +172,7 @@ def invoke(root, argv):
 def scratch_run(items, *flags, worker_config=None):
     with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
         git_repo(root)
-        write(root, "items.json", json.dumps(items))
+        write(root, "items.json", items_document(root, items))
         write(elsewhere, os.path.join("worker", "config.json"), json.dumps(worker_config or {}))
         build_flags = (
             (

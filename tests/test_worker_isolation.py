@@ -1,4 +1,5 @@
 import errno
+import hashlib
 import json
 import os
 import re
@@ -251,13 +252,17 @@ def read_bytes(path):
         return handle.read()
 
 
+SPEC_SECTION = "1.1"
+SPEC_DOCUMENT = "# Spec\n\n## 1.1 Build\n"
+
+
 def step(name, files, msp, acceptance=(), after=()):
     base = {
         "name": name,
         "task": "task-" + name,
         "files": list(files),
-        "source": None,
         "acceptance": list(acceptance),
+        "spec_ref": [SPEC_SECTION],
         "msp": msp,
     }
     return {**base, "after": list(after)} if after else base
@@ -346,8 +351,13 @@ class Scratch:
     def file(self, name, content):
         return put(os.path.join(self.tmp, name), content)
 
+    def source(self):
+        path = put(os.path.join(self.tmp, "spec.md"), SPEC_DOCUMENT)
+        return {"path": os.path.abspath(path), "sha256": hashlib.sha256(SPEC_DOCUMENT.encode("utf-8")).hexdigest()}
+
     def items(self, steps, name="items.json"):
-        return self.file(name, json.dumps(steps))
+        source = self.source()
+        return self.file(name, json.dumps([{**entry, "source": source} for entry in steps]))
 
     def jobs(self, jobs):
         return put(os.path.join(self.stubs, "worker.json"), json.dumps(jobs))

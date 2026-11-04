@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import itertools
 import json
@@ -186,7 +187,7 @@ print(json.dumps({
     "type": "result",
     "session_id": sys.argv[3],
     "result": "done",
-    "structured_output": {"name": step, "task": "build " + step},
+    "structured_output": {"name": step, "task": "Build %s." % step},
 }))
 """
 
@@ -219,6 +220,16 @@ def write(root, relative, content):
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(content)
     return path
+
+
+SPEC_SECTION = "1.1"
+SPEC_DOCUMENT = "# Spec\n\n## 1.1 Build\n"
+
+
+def items_document(folder, items):
+    path = os.path.abspath(write(folder, "spec.md", SPEC_DOCUMENT))
+    source = {"path": path, "sha256": hashlib.sha256(SPEC_DOCUMENT.encode("utf-8")).hexdigest()}
+    return json.dumps([{**item, "source": item.get("source") or source} for item in items])
 
 
 def read_json(path):
@@ -278,11 +289,11 @@ def briefed_steps(root):
 
 
 def bare(name, **extra):
-    return {"name": name, "files": [name + ".py"], "source": None, "acceptance": [], **extra}
+    return {"name": name, "files": [name + ".py"], "source": None, "acceptance": [], "spec_ref": [SPEC_SECTION], **extra}
 
 
 def briefed(name, **extra):
-    return bare(name, task="do " + name, **extra)
+    return bare(name, task="Do %s." % name, **extra)
 
 
 def structure_reply(*items):
@@ -348,6 +359,15 @@ PR_FLAGS = (
     IMPACT,
 )
 
+FAKE_BODY = (
+    "## Problem\nFake body.\n\n## Change\n- Fake change.\n\n## Impact\nFake impact.\n\n"
+    "## Testing\n| Check | Result |\n|---|---|\n| fake | passed |"
+)
+VERIFIED_BODY = (
+    "## Problem\nFake body.\n\n## Change\n- Fake change.\n\n## Impact\nFake impact.\n\n"
+    "## Testing\n| Check | Result |\n|---|---|\n| verification | %s |"
+)
+
 ACCEPTING_RENDER = r'''
 import json
 import os
@@ -358,8 +378,8 @@ here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "calls"), "a", encoding="utf-8") as handle:
     handle.write(json.dumps(sys.argv) + "\n")
 shutil.copyfile(sys.argv[sys.argv.index("--fields") + 1], os.path.join(here, "fields.copy.json"))
-print(json.dumps({"title": "feat(ship): fake title", "body": "## Problem\nFake body."}, separators=(",", ":")))
-'''
+print(json.dumps({"title": "feat(ship): fake title", "body": %r}, separators=(",", ":")))
+''' % FAKE_BODY
 
 
 def executable(folder, name, script):
@@ -538,7 +558,7 @@ class Flags(unittest.TestCase):
 
     def revise_cannot_be_combined_with_items_or_resume(self):
         with tempfile.TemporaryDirectory() as root:
-            write(root, "items.json", json.dumps([briefed("alpha")]))
+            write(root, "items.json", items_document(root, [briefed("alpha")]))
             code, _, err = invoke(root, ["--items", "items.json", "--revise", "--plan-only"])
             self.assertEqual(code, mitosis.EXIT_USAGE)
             self.assertIn("--revise", err)
@@ -651,7 +671,7 @@ class Staging(unittest.TestCase):
             self.assertEqual(structure_prompts(root), 0)
             items = read_json(os.path.join(run_dir, mitosis.ITEMS_FILE))
             self.assertEqual(
-                [item["task"] for item in items], ["do alpha", "build beta", "build gamma"]
+                [item["task"] for item in items], ["Do alpha.", "Build beta.", "Build gamma."]
             )
             structure = read_json(os.path.join(run_dir, mitosis.STRUCTURE_FILE))
             self.assertEqual([step["task"] for step in structure], [item["task"] for item in items])
@@ -697,7 +717,7 @@ class Staging(unittest.TestCase):
             finally:
                 mitosis.execute = kept
             self.assertEqual(code, mitosis.EXIT_NO_BRANCHES, err)
-            self.assertEqual([item["task"] for item in seen["items"]], ["do alpha", "build beta"])
+            self.assertEqual([item["task"] for item in seen["items"]], ["Do alpha.", "Build beta."])
             self.assertEqual(briefed_steps(root), ["beta"])
             items = read_json(os.path.join(root, "run", mitosis.ITEMS_FILE))
             self.assertEqual([item["name"] for item in items], ["alpha", "beta"])
@@ -749,7 +769,7 @@ class Staging(unittest.TestCase):
             self.assertFalse(os.path.isfile(os.path.join(run_dir, mitosis.ITEMS_FILE)))
             structure = read_json(os.path.join(run_dir, mitosis.STRUCTURE_FILE))
             self.assertEqual(
-                [step.get("task") for step in structure], ["build alpha", None, "build gamma"]
+                [step.get("task") for step in structure], ["Build alpha.", None, "Build gamma."]
             )
 
     def resume_without_a_structure_is_refused(self):
@@ -790,7 +810,7 @@ class Staging(unittest.TestCase):
             self.assertEqual(code, mitosis.EXIT_SHIPPED, err)
             structure = read_json(os.path.join(root, "run", mitosis.STRUCTURE_FILE))
             self.assertEqual([step["name"] for step in structure], ["alpha", "gamma"])
-            self.assertEqual(structure[0]["task"], "do alpha")
+            self.assertEqual(structure[0]["task"], "Do alpha.")
             self.assertNotIn("task", structure[1])
             self.assertEqual(briefed_steps(root), [])
             self.assertEqual(section(out, "Split shape")[0].split(", ")[0], "steps 2")
@@ -889,22 +909,22 @@ class ReconcileReporting(unittest.TestCase):
 
 class ItemsEntryPointRefusals(unittest.TestCase):
     CYCLIC = [
-        {"name": "x", "task": "t", "files": ["pkg/shared.py"], "source": None, "acceptance": []},
-        {"name": "y", "task": "t", "files": ["pkg/y.py"], "source": None,
+        {"name": "x", "task": "t", "files": ["pkg/shared.py"], "source": None, "spec_ref": [SPEC_SECTION], "acceptance": []},
+        {"name": "y", "task": "t", "files": ["pkg/y.py"], "source": None, "spec_ref": [SPEC_SECTION],
          "acceptance": [], "after": ["x"]},
-        {"name": "z", "task": "t", "files": ["pkg/shared.py"], "source": None,
+        {"name": "z", "task": "t", "files": ["pkg/shared.py"], "source": None, "spec_ref": [SPEC_SECTION],
          "acceptance": [], "after": ["y"]},
     ]
     EMPTY_MANIFEST = [
         {"name": "surface", "task": "t", "files": ["pkg/__init__.py", "pkg/g.py"],
-         "source": None, "acceptance": []},
-        {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None,
+         "source": None, "spec_ref": [SPEC_SECTION], "acceptance": []},
+        {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None, "spec_ref": [SPEC_SECTION],
          "acceptance": [], "after": ["surface"]},
     ]
 
     def _run(self, items):
         with tempfile.TemporaryDirectory() as root:
-            write(root, "items.json", json.dumps(items))
+            write(root, "items.json", items_document(root, items))
             return invoke(
                 root,
                 ["--items", "items.json", "--plan-only", "--run-dir", os.path.join(root, "run")],
@@ -916,11 +936,11 @@ class ItemsEntryPointRefusals(unittest.TestCase):
         self.assertEqual(len(core.msp_items(self.CYCLIC)), 1)
 
     GROUP_CYCLE = [
-        {"name": "a", "task": "t", "files": ["a.py"], "source": None,
+        {"name": "a", "task": "t", "files": ["a.py"], "source": None, "spec_ref": [SPEC_SECTION],
          "acceptance": [], "contract_group": "g"},
-        {"name": "x", "task": "t", "files": ["x.py"], "source": None,
+        {"name": "x", "task": "t", "files": ["x.py"], "source": None, "spec_ref": [SPEC_SECTION],
          "acceptance": [], "after": ["a"]},
-        {"name": "b", "task": "t", "files": ["b.py"], "source": None,
+        {"name": "b", "task": "t", "files": ["b.py"], "source": None, "spec_ref": [SPEC_SECTION],
          "acceptance": [], "contract_group": "g", "after": ["x"]},
     ]
 
@@ -940,9 +960,9 @@ class ItemsEntryPointRefusals(unittest.TestCase):
     def a_sound_plan_supplied_as_items_still_ships(self):
         code, out, err = self._run(
             [
-                {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None,
+                {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None, "spec_ref": [SPEC_SECTION],
                  "acceptance": []},
-                {"name": "surface", "task": "t", "files": ["pkg/__init__.py"], "source": None,
+                {"name": "surface", "task": "t", "files": ["pkg/__init__.py"], "source": None, "spec_ref": [SPEC_SECTION],
                  "acceptance": [], "after": ["parse"]},
             ]
         )
@@ -1023,7 +1043,7 @@ class HeldRun(unittest.TestCase):
     def _run(self, *extra, worker=None):
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
             git_repo(root)
-            write(root, "items.json", json.dumps([briefed("alpha")]))
+            write(root, "items.json", items_document(root, [briefed("alpha")]))
             with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
                 return invoke(
                     root,
@@ -1117,7 +1137,7 @@ class PullRequestFlags(unittest.TestCase):
     def _attempt(self, *flags, items=None):
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
             git_repo(root)
-            write(root, "items.json", json.dumps(items or [briefed("alpha")]))
+            write(root, "items.json", items_document(root, items or [briefed("alpha")]))
             with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
                 code, out, err = invoke(
                     root,
@@ -1190,7 +1210,7 @@ class PushOnly(unittest.TestCase):
                 ["git", "-C", root, "remote", "add", "origin", remote],
             ):
                 subprocess.run(args, check=True, capture_output=True, env=env)
-            write(root, "items.json", json.dumps([briefed("alpha")]))
+            write(root, "items.json", items_document(root, [briefed("alpha")]))
             with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
                 code, out, err = invoke(
                     root,
@@ -1229,7 +1249,7 @@ class PushOnly(unittest.TestCase):
         self.assertEqual(entry["branch"], "mitosis/alpha")
         self.assertIsNone(entry["pull_request"])
         self.assertEqual(entry["title"], "feat(ship): fake title")
-        self.assertEqual(entry["body"], "## Problem\nFake body.")
+        self.assertEqual(entry["body"], FAKE_BODY)
         self.assertEqual(heads, ["refs/heads/mitosis/alpha"])
         self.assertEqual(found["attention"], [])
         held = mitosis._msp_summary(
@@ -1269,8 +1289,8 @@ with open(os.path.join(here, "calls"), "a", encoding="utf-8") as handle:
     handle.write(json.dumps(sys.argv) + "\n")
 with open(sys.argv[sys.argv.index("--fields") + 1], encoding="utf-8") as handle:
     verified = json.load(handle)["testing"][-1]["result"]
-print(json.dumps({"title": "feat(ship): fake title", "body": "## Verification\n" + verified}))
-'''
+print(json.dumps({"title": "feat(ship): fake title", "body": %r %% verified}))
+''' % VERIFIED_BODY
 
 OPENING_PR = r'''
 import os
@@ -1303,7 +1323,7 @@ class ProvenHead(unittest.TestCase):
             files=["alpha.py", "alpha_check.txt"],
             acceptance=[{"file": "alpha_check.txt", "test": "property"}],
         )
-        write(self.root, "items.json", json.dumps([step]))
+        write(self.root, "items.json", items_document(self.root, [step]))
 
     def tearDown(self):
         subprocess.run(["rm", "-rf", self.root, self.elsewhere], check=True)
@@ -1391,8 +1411,8 @@ class ProvenHead(unittest.TestCase):
         self.assertEqual(found["state"], run.MSP_PUSHED)
         self.assertEqual(
             found["body"],
-            "## Verification\nNot run: the caller proved %s after mitosis gated %s"
-            % (new_head[:12], pushed[:12]),
+            VERIFIED_BODY
+            % ("Not run: the caller proved %s after mitosis gated %s" % (new_head[:12], pushed[:12])),
         )
 
     def test_a_later_proven_head_keeps_the_open_pull_request(self):
@@ -1410,8 +1430,8 @@ class ProvenHead(unittest.TestCase):
         self.assertEqual(found["pull_request"], "https://example.invalid/pull/1")
         self.assertEqual(
             found["body"],
-            "## Verification\nNot run: the caller proved %s after mitosis gated %s"
-            % (new_head[:12], pushed[:12]),
+            VERIFIED_BODY
+            % ("Not run: the caller proved %s after mitosis gated %s" % (new_head[:12], pushed[:12])),
         )
 
     def test_the_pushed_head_as_proven_head_pushes_nothing(self):
@@ -1540,7 +1560,7 @@ class RenderPreflight(unittest.TestCase):
             files=["alpha.py", "alpha_check.txt"],
             acceptance=[{"file": "alpha_check.txt", "test": "property"}],
         )
-        write(self.root, "items.json", json.dumps([step]))
+        write(self.root, "items.json", items_document(self.root, [step]))
 
     def tearDown(self):
         subprocess.run(["rm", "-rf", self.root, self.elsewhere], check=True)
@@ -1747,7 +1767,7 @@ class RenderPreflight(unittest.TestCase):
         self.assertEqual(code, 0, out + err)
         entry = json.loads(out.splitlines()[-1])["msps"][0]
         self.assertEqual(entry["title"], "feat(ship): fake title")
-        self.assertEqual(entry["body"], "## Problem\nFake body.")
+        self.assertEqual(entry["body"], FAKE_BODY)
         path = os.path.join(self.run_dir, "ship", "msp-0", "fields.json")
         fields = read_json(path)
         self.assertEqual(fields["problem"], ["Bodies are composed twice.", "Reviewers skip them."])
@@ -1993,7 +2013,7 @@ class CouplingReport(unittest.TestCase):
 
     def _plan_only(self):
         with tempfile.TemporaryDirectory() as root:
-            write(root, "items.json", json.dumps(self.ITEMS))
+            write(root, "items.json", items_document(root, self.ITEMS))
             write(root, "graph.json", json.dumps({"src/a.py": ["src/b.py"]}))
             return invoke(
                 root,
@@ -2035,7 +2055,7 @@ class ReportSections(unittest.TestCase):
             write(
                 root,
                 "items.json",
-                json.dumps([briefed("alpha"), briefed("beta", after=["alpha"]), briefed("gamma")]),
+                items_document(root, [briefed("alpha"), briefed("beta", after=["alpha"]), briefed("gamma")]),
             )
             code, out, err = invoke(
                 root,
@@ -2201,9 +2221,12 @@ def shared_lane_items(count):
     return [briefed("s%d" % i, files=["shared.py", "f%d.py" % i]) for i in range(count)]
 
 
-def one_step_limit(items):
+def one_step_limit(items, root=None):
+    source = items[0].get("source") if items else None
+    shared = (source["path"],) if isinstance(source, dict) else ()
+    sizes = core.file_sizes(shared, root)
     return max(
-        core.estimate_tokens(items, (index,), {}, {}, earlier=tuple(range(index)))
+        core.estimate_tokens(items, (index,), sizes, {}, shared=shared, earlier=tuple(range(index)))
         for index in range(len(items))
     ) + 1
 
@@ -2211,16 +2234,29 @@ def one_step_limit(items):
 class SessionReport(unittest.TestCase):
     def _plan_only(self, items, *extra):
         with tempfile.TemporaryDirectory() as root:
-            write(root, "items.json", json.dumps(items))
+            write(root, "items.json", items_document(root, items))
             return invoke(
                 root,
                 ["--items", "items.json", "--plan-only", "--run-dir", os.path.join(root, "run"), *extra],
             )
 
     def the_plan_only_report_shows_an_oversized_lane_built_as_sessions(self):
-        items = shared_lane_items(3)
-        limit = one_step_limit(items)
-        code, out, err = self._plan_only(items, "--session-tokens", str(limit))
+        with tempfile.TemporaryDirectory() as root:
+            document = items_document(root, shared_lane_items(3))
+            limit = one_step_limit(json.loads(document), root)
+            write(root, "items.json", document)
+            code, out, err = invoke(
+                root,
+                [
+                    "--items",
+                    "items.json",
+                    "--plan-only",
+                    "--run-dir",
+                    os.path.join(root, "run"),
+                    "--session-tokens",
+                    str(limit),
+                ],
+            )
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
         body = section(out, "Split quality")
         self.assertIn(
@@ -2302,7 +2338,7 @@ class SessionReport(unittest.TestCase):
                 ["git", "-C", root, "branch", "feature"],
             ):
                 subprocess.run(args, check=True, capture_output=True, env=env)
-            write(elsewhere, "items.json", json.dumps([briefed("alpha")]))
+            write(elsewhere, "items.json", items_document(elsewhere, [briefed("alpha")]))
 
             def attempt(worker, *extra):
                 with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):

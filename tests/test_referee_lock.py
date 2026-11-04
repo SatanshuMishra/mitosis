@@ -105,7 +105,13 @@ print("https://example.invalid/pull/1")
 
 RENDER = r'''
 import json
-print(json.dumps({"title": "feat: add the calculator", "body": "## Problem\nCallers need it."}))
+print(json.dumps({
+    "title": "feat: add the calculator",
+    "body": (
+        "## Problem\nCallers need it.\n\n## Change\n- Add numbers.\n\n## Impact\nSums are right.\n\n"
+        "## Testing\n| Check | Result |\n|---|---|\n| tests/test_calc.py | passed |"
+    ),
+}))
 '''
 
 PR_FLAGS = (
@@ -128,13 +134,17 @@ def put(path, content):
     return path
 
 
+SPEC_SECTION = "1.1"
+SPEC_DOCUMENT = "# Spec\n\n## 1.1 Build\n"
+
+
 def step(name, files, msp, acceptance=(), after=()):
     base = {
         "name": name,
-        "task": "build " + name,
+        "task": "Build %s." % name,
         "files": list(files),
-        "source": None,
         "acceptance": list(acceptance),
+        "spec_ref": [SPEC_SECTION],
         "msp": msp,
     }
     return {**base, "after": list(after)} if after else base
@@ -206,8 +216,13 @@ class Scratch:
     def file(self, name, content):
         return put(os.path.join(self.tmp, name), content)
 
+    def source(self):
+        path = put(os.path.join(self.tmp, "spec.md"), SPEC_DOCUMENT)
+        return {"path": os.path.abspath(path), "sha256": hashlib.sha256(SPEC_DOCUMENT.encode("utf-8")).hexdigest()}
+
     def items(self, steps, name="items.json"):
-        return self.file(name, json.dumps(steps))
+        source = self.source()
+        return self.file(name, json.dumps([{**entry, "source": source} for entry in steps]))
 
     def jobs(self, jobs):
         return put(os.path.join(self.stubs, "worker.json"), json.dumps(jobs))
