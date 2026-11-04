@@ -1,9 +1,13 @@
+import inspect
 import os
 import sys
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(HERE))
+
+import run
 
 import test_per_msp_lock_plan as planning
 import test_per_msp_lock_run as scaffold
@@ -97,6 +101,12 @@ class ConsumerTouchesProducerLock(unittest.TestCase):
         resumed = self.scratch.build(self.items, "--no-push", "--resume")
         self.assertIn(scaffold.TEST_A, self.scratch.tree("mitosis/beta"), scaffold.tail(resumed))
         self.assertEqual(self._locked_content("mitosis/beta"), self._locked_content("mitosis/alpha"))
+
+
+class RefereeRestoreSource(unittest.TestCase):
+    def test_every_referee_restore_names_the_locked_entries_it_puts_back(self):
+        locked = inspect.signature(run.revert_implementation).parameters["locked_entries"]
+        self.assertIs(locked.default, inspect.Parameter.empty)
 
 
 if __name__ == "__main__":
