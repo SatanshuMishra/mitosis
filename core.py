@@ -639,7 +639,8 @@ def _is_check_author(item):
 
 def _check_author_label(item):
     value = item.get("msp")
-    return None if value is None or value == "" else str(value)
+    unlabelled = value is None or value == "" or item.get("name") == CHECK_AUTHOR
+    return None if unlabelled else str(value)
 
 
 def _role_errors(items):
