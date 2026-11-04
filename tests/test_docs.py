@@ -423,7 +423,7 @@ class Docs(unittest.TestCase):
             with open(path, encoding="utf-8") as handle:
                 self.assertIn("--proven-head", handle.read(), os.path.relpath(path, ROOT))
 
-    def version_is_0_11_0(self):
+    def version_is_above_0_11_0(self):
         plugin, _ = _manifests(self)
         version = core.__version__
         self.assertGreater(tuple(int(part) for part in version.split(".")), (0, 11, 0))

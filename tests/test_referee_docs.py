@@ -41,7 +41,7 @@ class RefereeDocs(unittest.TestCase):
                 self.assertEqual(missing, [], "%s does not mention %s" % (relative, missing))
                 self.assertNotIn(REMOVED, text)
 
-    def version_is_0_11_0(self):
+    def version_is_above_0_11_0(self):
         version = core.__version__
         self.assertGreater(tuple(int(part) for part in version.split(".")), RELEASED)
         with open(os.path.join(ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as handle:
@@ -59,7 +59,7 @@ def load_tests(loader, standard, pattern):
             RefereeDocs,
             (
                 "docs_describe_the_referee_and_the_new_exit_codes",
-                "version_is_0_11_0",
+                "version_is_above_0_11_0",
             ),
         ),
     ):
