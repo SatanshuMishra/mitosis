@@ -1,0 +1,204 @@
+import copy
+import hashlib
+import importlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+MITOSIS = os.path.join(ROOT, "mitosis.py")
+CALL_LIMIT = 60
+RUN_LIMIT = 400
+STRIPPED = ("CLAUDE_CODE_SESSION_ID", "PLUGIN_METRICS_PARENT", "SHIP")
+GIT_IDENTITY = {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_AUTHOR_NAME": "mitosis test",
+    "GIT_AUTHOR_EMAIL": "test@example.invalid",
+    "GIT_COMMITTER_NAME": "mitosis test",
+    "GIT_COMMITTER_EMAIL": "test@example.invalid",
+}
+
+
+def module(name):
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    return importlib.import_module(name)
+
+
+def put(path, content):
+    if os.path.dirname(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        handle.write(content)
+    return path
+
+
+def read_bytes(path):
+    with open(path, "rb") as handle:
+        return handle.read()
+
+
+def read_json(path):
+    with open(path, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def tail(completed):
+    return "\n--- stdout ---\n%s\n--- stderr ---\n%s" % (
+        completed.stdout[-4000:],
+        completed.stderr[-4000:],
+    )
+
+
+class ItemsRead(unittest.TestCase):
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="mitosis-items-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.repo = os.path.join(self.tmp, "repo")
+        kept = {key: value for key, value in os.environ.items() if key not in STRIPPED}
+        self.env = {
+            **kept,
+            **GIT_IDENTITY,
+            "HOME": os.path.join(self.tmp, "home"),
+            "PLUGIN_METRICS_DIR": os.path.join(self.tmp, "metrics"),
+        }
+        os.makedirs(self.env["HOME"])
+        os.makedirs(self.repo)
+        put(os.path.join(self.repo, "README.md"), "seed\n")
+        for args in (
+            ("init", "-q", "-b", "main", self.repo),
+            ("-C", self.repo, "add", "-A"),
+            ("-C", self.repo, "commit", "-q", "-m", "seed"),
+        ):
+            completed = subprocess.run(
+                ["git", *args],
+                cwd=self.tmp,
+                env=self.env,
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=CALL_LIMIT,
+            )
+            if completed.returncode != 0:
+                raise RuntimeError("scaffold git %s failed: %s" % (" ".join(args), completed.stderr))
+        spec = put(os.path.join(self.tmp, "spec.md"), "# Api\n\n## 5.1 Define\n\n## 5.2 Use\n")
+        source = {"path": spec, "sha256": hashlib.sha256(read_bytes(spec)).hexdigest()}
+        self.items = [
+            {
+                "name": "define-api",
+                "task": "Define the api shape.",
+                "files": ["src/api.py"],
+                "source": source,
+                "acceptance": [{"file": "tests/test_api.py", "test": "Api.shape", "check": "C1.1"}],
+                "spec_ref": ["5.1"],
+                "type": "contract",
+                "contract_group": "api",
+                "complexity": "simple",
+            },
+            {
+                "name": "use-api",
+                "task": "Call the api.",
+                "files": ["src/use.py"],
+                "source": source,
+                "acceptance": [{"file": "tests/test_use.py", "test": "Use.calls"}],
+                "spec_ref": ["5.2"],
+                "after": ["define-api"],
+            },
+        ]
+
+    def _planned(self, name, document):
+        path = put(os.path.join(self.tmp, name + ".json"), document)
+        run_dir = os.path.join(self.tmp, "runs", name)
+        completed = subprocess.run(
+            [sys.executable, MITOSIS, "--items", path, "--plan-only", "--run-dir", run_dir],
+            cwd=self.repo,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=RUN_LIMIT,
+        )
+        return completed, path, os.path.join(run_dir, "plan.json")
+
+    def _changed(self, change):
+        items = copy.deepcopy(self.items)
+        change(items)
+        return items
+
+    def an_items_file_meeting_h12_with_check_ids_is_planned(self):
+        handoff = module("handoff")
+        self.assertEqual(handoff.errors("h12-interphase-items", self.items), ())
+        completed, _, plan_path = self._planned("valid", json.dumps(self.items))
+        self.assertEqual(completed.returncode, 0, tail(completed))
+        planned = {item["name"]: item for item in read_json(plan_path)["items"]}
+        self.assertIn(
+            {"file": "tests/test_api.py", "test": "Api.shape", "check": "C1.1"},
+            planned["define-api"]["acceptance"],
+        )
+
+    def an_unknown_key_is_refused_naming_interphase_and_h12(self):
+        handoff = module("handoff")
+        self.assertEqual(handoff.errors("h12-interphase-items", self.items), ())
+        for name, change in (
+            ("priority", lambda items: items[0].update(priority=1)),
+            ("given", lambda items: items[0]["acceptance"][0].update(given="x")),
+        ):
+            completed, path, plan_path = self._planned(name, json.dumps(self._changed(change)))
+            self.assertEqual(completed.returncode, 3, name + tail(completed))
+            for part in (path, "interphase", "h12-interphase-items", "additionalProperties"):
+                self.assertIn(part, completed.stderr, name)
+            self.assertFalse(os.path.exists(plan_path), name)
+
+    def an_unknown_complexity_or_type_is_refused_not_tiered(self):
+        handoff = module("handoff")
+        self.assertEqual(handoff.errors("h12-interphase-items", self.items), ())
+        for name, change, pointer in (
+            ("medium", lambda items: items[0].update(complexity="medium"), "#/0/complexity"),
+            ("fix", lambda items: items[1].update(type="fix"), "#/1/type"),
+        ):
+            completed, _, plan_path = self._planned(name, json.dumps(self._changed(change)))
+            self.assertEqual(completed.returncode, 3, name + tail(completed))
+            self.assertIn("h12-interphase-items", completed.stderr, name)
+            self.assertIn(pointer, completed.stderr, name)
+            self.assertFalse(os.path.exists(plan_path), name)
+
+    def a_document_that_is_not_a_non_empty_array_of_items_is_refused(self):
+        handoff = module("handoff")
+        self.assertEqual(handoff.errors("h12-interphase-items", self.items), ())
+        unreferenced = self._changed(lambda items: items[1].pop("spec_ref"))
+        for name, document, named in (
+            ("object", "{}", None),
+            ("empty", "[]", None),
+            ("unreferenced", json.dumps(unreferenced), "spec_ref"),
+        ):
+            completed, _, plan_path = self._planned(name, document)
+            self.assertEqual(completed.returncode, 3, name + tail(completed))
+            self.assertIn("h12-interphase-items", completed.stderr, name)
+            if named is not None:
+                self.assertIn(named, completed.stderr, name)
+            self.assertFalse(os.path.exists(plan_path), name)
+
+
+class Loader(unittest.TestLoader):
+    def getTestCaseNames(self, case):
+        return sorted(
+            name
+            for name in vars(case)
+            if not name.startswith("_") and callable(getattr(case, name)) and name != "setUp"
+        )
+
+
+def load_tests(loader, standard, pattern):
+    suite = unittest.TestSuite()
+    suite.addTests(Loader().loadTestsFromTestCase(ItemsRead))
+    return suite
+
+
+if __name__ == "__main__":
+    unittest.main()
