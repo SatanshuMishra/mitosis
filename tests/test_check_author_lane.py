@@ -10,9 +10,9 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-sys.path.insert(0, HERE)
+sys.path.insert(0, ROOT)
 
-import contract_schema
+import handoff
 
 MITOSIS = os.path.join(ROOT, "mitosis.py")
 CALL_LIMIT = 60
@@ -128,7 +128,6 @@ except subprocess.TimeoutExpired:
 sys.exit(code if code in (0, 1) else 2)
 '''
 
-K2_SCHEMA = os.path.join(HERE, "fixtures", "contracts", "k2-locked.schema.json")
 TEST_FILE = "tests/test_calc.py"
 ADDS = {"file": TEST_FILE, "test": "Calc.adds"}
 CORRECT_ADD = "def add(a, b):\n    return a + b\n"
@@ -359,7 +358,7 @@ class CheckAuthorLane(unittest.TestCase):
     def _referee(self, summary, completed):
         referee = summary.get("referee")
         self.assertIsInstance(referee, dict, "the JSON summary carries no referee object" + tail(completed))
-        self.assertEqual(contract_schema.errors(referee, contract_schema.load(K2_SCHEMA)), [])
+        self.assertEqual(handoff.errors("k2-locked", referee), ())
         return referee
 
     def _feature(self):

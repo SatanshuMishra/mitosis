@@ -12,9 +12,8 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
-import contract_schema
+import handoff
 
-K6_SCHEMA = os.path.join(HERE, "fixtures", "contracts", "k6-outcome.schema.json")
 MITOSIS = os.path.join(ROOT, "mitosis.py")
 CALL_LIMIT = 60
 RUN_LIMIT = 400
@@ -296,7 +295,7 @@ class GateOutcomes(unittest.TestCase):
         self.assertIn("id", entry, "the trajectory line carries no id")
         self.assertIn("ts", entry, "the trajectory line carries no ts")
         bare = {key: value for key, value in entry.items() if key not in ("id", "ts")}
-        self.assertEqual(contract_schema.errors(bare, contract_schema.load(K6_SCHEMA)), [])
+        self.assertEqual(handoff.errors("k6-outcome", bare), ())
         return bare
 
     def _gate(self, completed):

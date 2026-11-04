@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "harness-redesign/h10-worker-return.schema.json",
+  "title": "H10 Worker return",
+  "description": "The one-line JSON object a mitosis Worker or check-author prints last; mitosis takes the last stdout line that parses as an object, and only status ok with exit 0 makes the Lane ok.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "item",
+    "status",
+    "files_changed",
+    "notes"
+  ],
+  "properties": {
+    "item": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "failed"
+      ]
+    },
+    "files_changed": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 200
+    }
+  }
+}

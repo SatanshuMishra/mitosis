@@ -10,9 +10,9 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-sys.path.insert(0, HERE)
+sys.path.insert(0, ROOT)
 
-import contract_schema
+import handoff
 
 MITOSIS = os.path.join(ROOT, "mitosis.py")
 CALL_LIMIT = 60
@@ -128,7 +128,6 @@ except subprocess.TimeoutExpired:
 sys.exit(code if code in (0, 1) else 2)
 '''
 
-K6_SCHEMA = os.path.join(HERE, "fixtures", "contracts", "k6-outcome.schema.json")
 TEST_FILE = "tests/test_calc.py"
 ADDS = {"file": TEST_FILE, "test": "Calc.adds"}
 EXISTS = {"file": TEST_FILE, "test": "Calc.exists"}
@@ -380,13 +379,12 @@ class GateClasses(unittest.TestCase):
         self.assertEqual(removed[0]["outcome"], "not-applicable")
         self.assertIn(REASON, removed[0]["reason"] or "")
         entries = self._entries()
-        schema = contract_schema.load(K6_SCHEMA)
         for entry in entries:
             with self.subTest(entry=entry.get("id")):
                 self.assertIn("id", entry, "the trajectory line carries no id")
                 self.assertIn("ts", entry, "the trajectory line carries no ts")
                 bare = {key: value for key, value in entry.items() if key not in ("id", "ts")}
-                self.assertEqual(contract_schema.errors(bare, schema), [])
+                self.assertEqual(handoff.errors("k6-outcome", bare), ())
         self.assertEqual(len(entries), len(earlier) + 2)
 
     def a_class_naming_no_property_is_refused(self):

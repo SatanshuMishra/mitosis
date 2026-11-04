@@ -43,14 +43,17 @@ claude plugin marketplace add SatanshuMishra/mitosis
 claude plugin install mitosis@mitosis
 ```
 
-The plugin carries the skill and the fourteen modules it runs — `core.py`,
+The plugin carries the skill and the fifteen modules it runs — `core.py`,
 `shape.py`, `decompose.py`, `briefs.py`, `run.py`, `isolation.py`, `pr_facts.py`,
 `mitosis.py`, `metrics.py`, `spend.py`, `metrics_writer.py`, `referee.py`,
-`mutants.py`, `outcomes.py` — and the two data files they read,
-`prices.json` and `catalogue.json`, which need Python 3.9 or later. A run
-that names `--pr-type` and `--pr-subject` also needs the pull-request
-command, 0.3.0 or later, on PATH or named with `--render-command`, because
-mitosis writes no pull-request text itself.
+`mutants.py`, `outcomes.py`, `handoff.py` — the two data files they read,
+`prices.json` and `catalogue.json`, and the `contracts/` folder beside the
+modules, which holds byte-identical copies of the program's
+`contracts/validator.py` and of every owned schema mitosis writes or reads.
+They need Python 3.9 or later. A run that names `--pr-type` and
+`--pr-subject` also needs the pull-request command, 0.3.0 or later, on PATH
+or named with `--render-command`, because mitosis writes no pull-request text
+itself.
 
 To update, refresh the marketplace, update the plugin, and restart:
 
@@ -64,9 +67,10 @@ release changes it; `CHANGELOG.md` lists them. The version is part of each
 plan's id, so finish a run before updating: it cannot be resumed on another
 release.
 
-Without Claude Code, copy the fourteen modules into one directory and invoke
-`mitosis.py` by path. They import one another, so they must stay side by
-side.
+Without Claude Code, copy the fifteen modules and the `contracts/` folder
+into one directory and invoke `mitosis.py` by path. The modules import one
+another and `handoff.py` loads `contracts/validator.py` and the schemas beside
+it, so they must stay side by side.
 
 ## A worked invocation
 

@@ -14,10 +14,9 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
-import contract_schema
+import handoff
 
 MITOSIS = os.path.join(ROOT, "mitosis.py")
-K2_SCHEMA = os.path.join(HERE, "fixtures", "contracts", "k2-locked.schema.json")
 LOCK_CASES = os.path.join(HERE, "fixtures", "receipt-lock-cases.json")
 CALL_LIMIT = 60
 RUN_LIMIT = 400
@@ -340,7 +339,7 @@ class RefereeLock(unittest.TestCase):
         self.assertIn("referee", summary, "the JSON summary carries no referee object")
         referee = summary["referee"]
         self.assertIsNotNone(referee, "the JSON summary's referee object is null")
-        self.assertEqual(contract_schema.errors(referee, contract_schema.load(K2_SCHEMA)), [])
+        self.assertEqual(handoff.errors("k2-locked", referee), ())
         self.assertEqual(referee["locked"], [LOCKED])
         self.assertEqual(referee["commit"], scratch.checked("rev-parse", "feature").strip())
         self.assertEqual(
