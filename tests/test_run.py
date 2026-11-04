@@ -1535,7 +1535,7 @@ class Reconcile(RepoCase):
         self.assertTrue(findings["fatal"])
         self.assertEqual(findings["crossing"], [])
         head = run.branch_commit(tree, branch)
-        run.revert_implementation(tree, branch, head, "main", findings["referee"])
+        run.revert_implementation(tree, branch, head, "main", findings["referee"], locked_entries={})
         run.commit_all(tree, "restore")
         restored = run.reconcile(plan, 0, tree, branch, "main")
         self.assertEqual(restored["referee"], [])

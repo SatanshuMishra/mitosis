@@ -1595,12 +1595,12 @@ def _sync_worktree(tree, commit, base, paths):
 
 
 def revert_implementation(
-    tree, branch, head, base, paths, message=RESTORE_MESSAGE, locked_entries=None
+    tree, branch, head, base, paths, message=RESTORE_MESSAGE, *, locked_entries
 ):
     written = tuple(sorted({_norm(path) for path in paths}))
     ref = "refs/heads/" + branch
     moved_from = branch_commit(tree, branch, required=True)
-    held = {**_committed_entries(tree, base), **(locked_entries or {})}
+    held = {**_committed_entries(tree, base), **locked_entries}
     current = _committed_entries(tree, head)
     targets = _restored_targets(written, held)
     rows = _restore_rows(current, held, targets)
@@ -3307,7 +3307,7 @@ def _reconcile_stage(plan, msp, tree, producers, trees, settings, head=None, unr
             _judged_head(tree, head),
             settings["base_commit"],
             _producer_heads(tree, producers, trees),
-            settings.get("referee_held"),
+            reached_referee_held(tree["path"], _judged_head(tree, head), settings),
         )
     except GitError as error:
         return {
@@ -3326,7 +3326,7 @@ def _committed_reconcile(plan, tree, settings, uncommitted, head=None, unreplaye
             tree["path"],
             _judged_head(tree, head),
             settings["base_commit"],
-            settings.get("referee_held"),
+            reached_referee_held(tree["path"], _judged_head(tree, head), settings),
         )
     except GitError as error:
         return {
@@ -3373,14 +3373,15 @@ def _referee_stage(
     landed = [path for path in written if path not in unreplayed]
     try:
         if landed:
+            judged = _judged_head(tree, head)
             revert_implementation(
                 tree["path"],
                 tree["branch"],
-                _judged_head(tree, head),
+                judged,
                 settings["base_commit"],
                 landed,
                 "revert(%s): restore the referee paths a Worker wrote" % _label(plan, msp),
-                settings.get("referee_held"),
+                locked_entries=reached_referee_held(tree["path"], judged, settings) or {},
             )
     except (GitError, OSError) as error:
         return {
@@ -4201,6 +4202,18 @@ def msp_referee(plan, state, settings, msp):
     )
 
 
+def reached_referee_held(tree, head, settings):
+    held = settings.get("referee_held")
+    if not held:
+        return held
+    holders = settings.get("referee_holders") or {}
+    reached = {
+        commit: git_ok(["merge-base", "--is-ancestor", commit, head], tree, env=PINNED_GIT)
+        for commit in frozenset(holders.values())
+    }
+    return {path: entry for path, entry in held.items() if reached.get(holders.get(path), True)}
+
+
 def referee_entries(repo, holders):
     commits = sorted(set(holders.values()))
     listed = {commit: _committed_entries(repo, commit) for commit in commits}
@@ -4422,6 +4435,7 @@ def msp_settings(plan, state, settings, msp):
         **settings,
         "base_commit": msp_base(plan, state, msp, settings["base_commit"]),
         "referee_held": referee_entries(settings["repo"], holders) if holders else None,
+        "referee_holders": {_norm(path): commit for path, commit in holders.items()} or None,
     }
 
 
