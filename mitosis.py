@@ -10,6 +10,7 @@ from datetime import datetime
 import briefs
 import core
 import decompose
+import handoff
 import isolation
 import metrics
 import referee
@@ -33,6 +34,8 @@ EXIT_REFEREE = 9
 EXIT_MANIFEST = 23
 
 EXIT_LINGERING = 14
+
+EXIT_HANDOFF = 15
 
 LANE_EXIT = {
     "ok": EXIT_SHIPPED,
@@ -73,6 +76,8 @@ EXIT_MEANING = {
     "exports nothing",
     EXIT_LINGERING: "a run left a process mitosis could not end, so mitosis stopped before reading "
     "anything that process could change",
+    EXIT_HANDOFF: "a hand-off mitosis was about to write failed its owned schema; mitosis wrote "
+    "nothing for it and stopped",
     LANE_EXIT["failed"]: "a Lane failed",
     LANE_EXIT["blocked"]: "a Lane or MSP was blocked, by a predecessor or by a write across an "
     "MSP boundary",
@@ -1002,7 +1007,7 @@ def run_header(args, plan, run_dir):
         return run.carried_header(
             pull_request_header(args), run.prior_state(run_dir, plan, args.resume)
         )
-    except run.ResumeError as error:
+    except (run.ResumeError, handoff.HandoffError) as error:
         raise Refusal(str(error))
 
 
@@ -1125,6 +1130,10 @@ def _n(count, noun):
 def _one_line(text):
     lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
     return lines[0] if lines else ""
+
+
+def _whole(text):
+    return "" if text is None else str(text)
 
 
 def read_document(path):
@@ -1588,7 +1597,7 @@ def gate_exit(record):
 
 
 def _finding(msp, lane, kind, code, detail):
-    return {"msp": msp, "lane": lane, "kind": kind, "exit": code, "detail": _one_line(detail)}
+    return {"msp": msp, "lane": lane, "kind": kind, "exit": code, "detail": _whole(detail)}
 
 
 def _lane_findings(plan, lane_records):
@@ -1616,7 +1625,7 @@ def _gate_detail(record):
         return record["gate_error"]
     gate = record.get("gate") or {}
     named = [
-        "%s::%s: %s" % (entry.get("file"), entry.get("test"), _one_line(entry.get("reason")))
+        "%s::%s: %s" % (entry.get("file"), entry.get("test"), _whole(entry.get("reason")))
         for entry in gate.get("properties") or []
         if entry.get("outcome") in run.GATE_STATES
     ]
@@ -1805,7 +1814,7 @@ def _lane_summary(plan, state):
             "steps": list(lane.get("steps") or ()),
             "session": list(lane["session"]) if lane.get("session") else None,
             "state": (records.get(str(index)) or {}).get("state"),
-            "reason": _one_line((records.get(str(index)) or {}).get("reason")),
+            "reason": _whole((records.get(str(index)) or {}).get("reason")),
             "notes": ((records.get(str(index)) or {}).get("returned") or {}).get("notes"),
             "foreign_writes": list((records.get(str(index)) or {}).get("foreign_writes") or ()),
             "stdout": (records.get(str(index)) or {}).get("stdout"),
@@ -1833,7 +1842,7 @@ def _msp_summary(plan, state):
             {
                 "msp": _label(plan, index),
                 "state": record.get("state"),
-                "reason": _one_line(record.get("reason")),
+                "reason": _whole(record.get("reason")),
                 "branch": shipped.get("branch"),
                 "base": shipped.get("base"),
                 "pull_request": shipped.get("pull_request") or None,
@@ -2028,15 +2037,22 @@ def summary(plan, state, run_dir, code, referee=None, troubles=()):
     }
 
 
+RESULT_SCHEMA = "h8-mitosis-result"
+
+
 def _summarised(plan, state, run_dir, code, referee=None, troubles=()):
-    _print(
-        (
-            json.dumps(
-                summary(plan, state, run_dir, code, referee, troubles), separators=(",", ":")
-            ),
-        )
-    )
+    built = summary(plan, state, run_dir, code, referee, troubles)
+    try:
+        handoff.require(RESULT_SCHEMA, built, "the result line", "mitosis")
+    except handoff.HandoffError as error:
+        _print(_handoff_lines(error), sys.stderr)
+        return EXIT_HANDOFF
+    _print((json.dumps(built, separators=(",", ":")),))
     return code
+
+
+def _handoff_lines(error):
+    return ("mitosis: %s" % error, "exit %d: %s" % (EXIT_HANDOFF, EXIT_MEANING[EXIT_HANDOFF]))
 
 
 def referee_record(args, plan, repo, base):
@@ -2078,7 +2094,7 @@ def pinned_base(args, plan, run_dir, repo):
     try:
         prior = run.prior_state(run_dir, plan, args.resume)
         return run.pinned_base(repo, args.feature_branch, prior)
-    except (run.ResumeError, run.GitError) as error:
+    except (run.ResumeError, run.GitError, handoff.HandoffError) as error:
         raise Refusal(str(error))
 
 
@@ -2194,6 +2210,9 @@ def run_pipeline(args):
     except run.LingeringProcess:
         recorder.ended(EXIT_LINGERING, EXIT_MEANING[EXIT_LINGERING])
         raise
+    except handoff.HandoffError:
+        recorder.ended(EXIT_HANDOFF, EXIT_MEANING[EXIT_HANDOFF])
+        raise
     except BaseException:
         recorder.ended(None, None)
         raise
@@ -2299,6 +2318,9 @@ def main(argv=None):
             sys.stderr,
         )
         return EXIT_LINGERING
+    except handoff.HandoffError as error:
+        _print(_handoff_lines(error), sys.stderr)
+        return EXIT_HANDOFF
 
 
 if __name__ == "__main__":

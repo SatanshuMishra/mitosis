@@ -979,7 +979,21 @@ class Resume(RepoCase):
     def resume_refuses_a_different_plan(self):
         plan = core.plan([step("a", ["a.txt"])])
         os.makedirs(self.run_dir)
-        write(os.path.join(self.run_dir, run.STATE_FILE), json.dumps({"plan_id": "someoneelse", "lanes": {}, "msps": {}}))
+        other = {
+            "version": "0.12.0",
+            "plan_id": "someoneelse",
+            "feature_branch": "main",
+            "base_commit": "0" * 40,
+            "started": "2026-11-03T00:00:00+00:00",
+            "drift": None,
+            "worktrees": [],
+            "lanes": {},
+            "msps": {},
+            "stacking_exceptions": [],
+            "merge_danger": None,
+            "sandbox": "off",
+        }
+        write(os.path.join(self.run_dir, run.STATE_FILE), json.dumps(other))
         with self.assertRaises(run.ResumeError) as caught:
             self.execute(plan, resume=True)
         self.assertIn("someoneelse", str(caught.exception))

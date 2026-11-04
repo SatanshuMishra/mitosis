@@ -253,7 +253,9 @@ class ResumeError(RuntimeError):
 
 
 class ShipError(RuntimeError):
-    pass
+    def __init__(self, message, shipped=None):
+        super().__init__(message)
+        self.shipped = shipped
 
 
 class LingeringProcess(RuntimeError):
@@ -1274,8 +1276,12 @@ def read_json(path):
         return json.load(handle)
 
 
+STATE_SCHEMA = "h9-mitosis-state"
+
+
 def write_state(run_dir, state):
-    write_json(os.path.join(run_dir, STATE_FILE), state)
+    path = os.path.join(run_dir, STATE_FILE)
+    write_json(path, handoff.require(STATE_SCHEMA, state, path, "mitosis"))
     return state
 
 
@@ -1283,8 +1289,14 @@ def load_state(run_dir):
     path = os.path.join(run_dir, STATE_FILE)
     if not os.path.isfile(path):
         return None
-    loaded = read_json(path)
-    return loaded if isinstance(loaded, dict) else None
+    try:
+        loaded = read_json(path)
+    except ValueError as error:
+        raise handoff.HandoffError(
+            "%s, written by mitosis, is not JSON, so it cannot meet the owned schema %s: %s"
+            % (path, handoff.file_name(STATE_SCHEMA), error)
+        ) from error
+    return handoff.require(STATE_SCHEMA, loaded, path, "mitosis")
 
 
 def sha256_file(path):
@@ -1759,11 +1771,18 @@ def gate_state(result):
     return GATE_STATES.get(result.get("outcome"))
 
 
+NEVER_JUDGED = "the gate never judged this property, so it proves nothing yet"
+
+
+def _resolved_property(entry):
+    timed = {**entry, "seconds": 0 if entry.get("seconds") is None else entry["seconds"]}
+    if entry["outcome"] is not None:
+        return timed
+    return {**timed, "outcome": "inconclusive", "reason": entry.get("reason") or NEVER_JUDGED}
+
+
 def _gate_result(properties, implementation, commit, reverted):
-    resolved = [
-        {**entry, "outcome": entry["outcome"] or "inconclusive", "seconds": entry.get("seconds", 0)}
-        for entry in properties
-    ]
+    resolved = [_resolved_property(entry) for entry in properties]
     outcome = gate_outcome(resolved)
     return {
         "outcome": outcome,
@@ -2699,11 +2718,12 @@ def locked_record(repo, branch, commit, locked):
                 "before the build" % (path, branch)
             )
         files = files + ((path, shown.stdout),)
-    return {
+    record = {
         "locked": list(locked),
         "receipt_lock": referee.receipt_lock(files),
         "commit": commit,
     }
+    return handoff.require("k2-locked", record, "the lock record", "mitosis")
 
 
 def _object_id(data, oid):
@@ -3245,11 +3265,31 @@ def ship(
     )
     code, timed_out = run_command(argv, tree, timeout, out, err, env)
     if timed_out:
-        raise ShipError("the pull-request command timed out for %s" % branch)
+        raise ShipError("the pull-request command timed out for %s" % branch, pushed)
     if code != 0:
         detail = last_line(err) or last_line(out) or ""
-        raise ShipError("the pull-request command exited %d for %s: %s" % (code, branch, detail))
-    return {**pushed, "pull_request": last_line(out) or ""}
+        raise ShipError(
+            "the pull-request command exited %d for %s: %s" % (code, branch, detail), pushed
+        )
+    return {**pushed, "pull_request": pull_request_url(out, branch, pushed)}
+
+
+def pull_request_url(out, branch, pushed):
+    printed = last_line(out)
+    if printed is None:
+        raise ShipError(
+            "the pull-request command exited 0 for %s but printed nothing, so no pull request "
+            "URL names what it opened" % branch,
+            pushed,
+        )
+    found = handoff.errors_at(STATE_SCHEMA, "#/$defs/ship/properties/pull_request", printed)
+    if found:
+        raise ShipError(
+            "the pull-request command exited 0 for %s but its last line %s is not a pull request "
+            "URL: %s" % (branch, json.dumps(printed), "; ".join(found)),
+            pushed,
+        )
+    return printed
 
 
 def _reconcile_clean(findings):
@@ -3529,7 +3569,9 @@ def _ship_stage(plan, msp, tree, base, exception, record, settings, foreign=(), 
             render_command=settings["render_command"],
             pushed_before=pushed_before,
         )
-    except (OSError, GitError, ShipError, subprocess.SubprocessError, ValueError) as error:
+    except ShipError as error:
+        return {"state": "ship-failed", "reason": str(error), "ship": error.shipped or pushed_before}
+    except (OSError, GitError, subprocess.SubprocessError, ValueError) as error:
         return {"state": "ship-failed", "reason": str(error), "ship": pushed_before}
     if shipped["unchanged"]:
         return {
@@ -3585,7 +3627,7 @@ def _trajectory_stage(plan, msp, gated, settings):
         return {}
     try:
         outcomes.append(path, _gate_outcomes(plan, msp, gated["gate"], settings))
-    except OSError as error:
+    except (OSError, handoff.HandoffError) as error:
         return {"trajectory_error": str(error)}
     return {}
 
