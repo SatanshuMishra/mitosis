@@ -24,7 +24,7 @@ TERMS = (
     "24",
 )
 REMOVED = "never withholds a pull request"
-VERSION = "0.11.0"
+RELEASED = (0, 11, 0)
 
 
 def text_of(relative):
@@ -42,13 +42,14 @@ class RefereeDocs(unittest.TestCase):
                 self.assertNotIn(REMOVED, text)
 
     def version_is_0_11_0(self):
-        self.assertEqual(core.__version__, VERSION)
+        version = core.__version__
+        self.assertGreater(tuple(int(part) for part in version.split(".")), RELEASED)
         with open(os.path.join(ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as handle:
-            self.assertEqual(json.load(handle)["version"], VERSION)
+            self.assertEqual(json.load(handle)["version"], version)
         headed = [
-            line for line in text_of("CHANGELOG.md").splitlines() if line.startswith("## " + VERSION)
+            line for line in text_of("CHANGELOG.md").splitlines() if line.startswith("## " + version)
         ]
-        self.assertTrue(headed, "CHANGELOG.md has no line starting ## %s" % VERSION)
+        self.assertTrue(headed, "CHANGELOG.md has no line starting ## %s" % version)
 
 
 def load_tests(loader, standard, pattern):

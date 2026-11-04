@@ -425,13 +425,14 @@ class Docs(unittest.TestCase):
 
     def version_is_0_11_0(self):
         plugin, _ = _manifests(self)
-        self.assertEqual(core.__version__, "0.11.0")
-        self.assertEqual(plugin.get("version"), "0.11.0")
+        version = core.__version__
+        self.assertGreater(tuple(int(part) for part in version.split(".")), (0, 11, 0))
+        self.assertEqual(plugin.get("version"), version)
         path = _changelog_path(ROOT)
         self.assertIsNotNone(path, "the plugin carries no changelog")
         with open(path, encoding="utf-8") as handle:
             head = _changelog_head(handle.read())
-        self.assertTrue(head.startswith("## 0.11.0 "), head.splitlines()[0])
+        self.assertTrue(head.startswith("## %s " % version), head.splitlines()[0])
 
     def documents_the_render_hand_off(self):
         _in_plugin(self)

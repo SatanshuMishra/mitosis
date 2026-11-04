@@ -49,7 +49,7 @@ def read(path):
 def step(name, files, **extra):
     base = {
         "name": name,
-        "task": "do " + name,
+        "task": "Do %s." % name,
         "files": list(files),
         "source": None,
         "acceptance": [],
@@ -166,18 +166,26 @@ print("https://example.invalid/pull/%d" % len(open(os.path.join(marker_dir, "pr"
 '''
 
 
+FAKE_BODY = (
+    "## Problem\nFake problem.\n\n## Change\n- Fake change.\n\n## Impact\nFake impact.\n\n"
+    "## Testing\n| Check | Result |\n|---|---|\n| tests/t_impl.txt | passed |"
+)
+
+
 RENDER_SCRIPT = r'''
 import json
 import os
 import shutil
 import sys
 
+FAKE_BODY = %r
+
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "calls"), "a") as handle:
     handle.write(json.dumps(sys.argv) + "\n")
 shutil.copyfile(sys.argv[sys.argv.index("--fields") + 1], os.path.join(here, "fields.copy.json"))
-sys.stdout.write('{"title":"feat(ship): fake title","body":"## Problem\\nFake body."}\n')
-'''
+sys.stdout.write(json.dumps({"title": "feat(ship): fake title", "body": FAKE_BODY}) + "\n")
+''' % (FAKE_BODY,)
 
 
 REFUSING_RENDER_SCRIPT = r'''
@@ -197,6 +205,7 @@ HEADER = {
     "scope": "ship",
     "subject": "write pull requests in the house format",
     "why": ("Callers need it.",),
+    "impact": ("Callers notice nothing.",),
 }
 
 PR_STUB = object()
@@ -1049,7 +1058,7 @@ class Resume(RepoCase):
         for record in second["msps"].values():
             self.assertEqual(record["state"], run.MSP_PUSHED)
             self.assertEqual(record["ship"]["title"], "feat(ship): fake title")
-            self.assertEqual(record["ship"]["body"], "## Problem\nFake body.")
+            self.assertEqual(record["ship"]["body"], FAKE_BODY)
         self.assertEqual(len(read(os.path.join(self.tmp, "render", "calls")).splitlines()), 2)
         self.assertEqual(self.pull_requests(), [])
 
@@ -1341,7 +1350,7 @@ class Gate(RepoCase):
         self.assertEqual(state["msps"]["0"]["state"], "shipped")
         self.assertEqual(state["msps"]["0"]["proven_head"], head)
         self.assertEqual(self.remote_heads(), ["mitosis/impl"])
-        self.assertEqual(self.fields(0)["change"], ["do impl"])
+        self.assertEqual(self.fields(0)["change"], ["Do impl."])
         self.assertEqual(
             self.fields(0)["testing"],
             [{"check": "tests/t_impl.txt::property", "result": "passes with and without the work"}],
@@ -1712,15 +1721,15 @@ class Ship(RepoCase):
         self.assertEqual(record["ship"]["pull_request"], "https://example.invalid/pull/1")
         self.assertEqual(
             self.pull_requests(),
-            [[record["ship"]["branch"], "main", "feat(ship): fake title", "## Problem\nFake body."]],
+            [[record["ship"]["branch"], "main", "feat(ship): fake title", FAKE_BODY]],
         )
         self.assertEqual(
             self.fields(0),
             {
                 "title": "feat(ship): write pull requests in the house format",
                 "problem": ["Callers need it."],
-                "change": ["do impl"],
-                "impact": [None],
+                "change": ["Do impl."],
+                "impact": ["Callers notice nothing."],
                 "testing": [
                     {
                         "check": "tests/t_impl.txt::property",
@@ -1746,7 +1755,7 @@ class Ship(RepoCase):
             self.assertEqual(record["ship"]["pull_request"], "")
             self.assertEqual(
                 (record["ship"]["title"], record["ship"]["body"]),
-                ("feat(ship): fake title", "## Problem\nFake body."),
+                ("feat(ship): fake title", FAKE_BODY),
             )
         self.assertEqual(
             self.fields(index["c"])["testing"],
@@ -1768,10 +1777,10 @@ class Ship(RepoCase):
     def a_resume_keeps_the_door_call_the_run_recorded(self):
         self.add_remote()
         plan = core.plan([step("a", ["a.txt"])])
-        guarded = {**HEADER, "door": "two-way", "blast_radius": "Docs only."}
+        guarded = {**HEADER, "impact": (), "door": "two-way", "blast_radius": "Docs only."}
         held = self.execute(plan, pr=None, header=guarded, no_push=True)
         self.assertEqual(held["merge_danger"], {"door": "two-way", "blast_radius": "Docs only."})
-        shipped = self.execute(plan, pr=None, header=HEADER, resume=True)
+        shipped = self.execute(plan, pr=None, header={**HEADER, "impact": ()}, resume=True)
         self.assertEqual(shipped["merge_danger"], held["merge_danger"])
         self.assertEqual(self.fields(0)["impact"], ["Docs only."])
         self.assertNotIn(
@@ -1782,7 +1791,7 @@ class Ship(RepoCase):
             self.execute(
                 plan,
                 pr=None,
-                header={**HEADER, "door": "one-way", "blast_radius": "Docs only."},
+                header={**HEADER, "impact": (), "door": "one-way", "blast_radius": "Docs only."},
                 resume=True,
             )
 
@@ -1995,10 +2004,10 @@ class Ship(RepoCase):
         record = state["msps"]["0"]
         self.assertEqual(record["state"], "shipped")
         self.assertEqual(record["ship"]["title"], "feat(ship): fake title")
-        self.assertEqual(record["ship"]["body"], "## Problem\nFake body.")
+        self.assertEqual(record["ship"]["body"], FAKE_BODY)
         self.assertEqual(
             self.pull_requests(),
-            [[record["ship"]["branch"], "main", "feat(ship): fake title", "## Problem\nFake body."]],
+            [[record["ship"]["branch"], "main", "feat(ship): fake title", FAKE_BODY]],
         )
         fields = json.loads(read(os.path.join(self.run_dir, "ship", "msp-0", "fields.json")))
         self.assertIsInstance(fields, dict)
@@ -2106,7 +2115,7 @@ class Sessions(RepoCase):
         subjects = sh(["git", "log", "--reverse", "--format=%s", "main.." + branch], self.repo)
         bodies = sh(["git", "log", "--reverse", "--format=%b", "main.." + branch], self.repo)
         self.assertEqual(subjects.splitlines(), ["feat(ship): s0", "feat(ship): s1", "feat(ship): s2"])
-        self.assertEqual([line for line in bodies.splitlines() if line], ["do s0", "do s1", "do s2"])
+        self.assertEqual([line for line in bodies.splitlines() if line], ["Do s0.", "Do s1.", "Do s2."])
 
     def a_run_without_a_header_lands_chore_commits(self):
         plan = core.plan(session_items())
