@@ -2,8 +2,11 @@ import json
 import os
 
 import decompose
+import handoff
 
 RETURN_KEYS = ("name", "task")
+
+REPLY_SCHEMA = "h10c-brief-return"
 
 STEP_PLACEHOLDER = "{step}"
 
@@ -11,15 +14,14 @@ RETURN_SHAPE = '{"name":"<step>","task":"<the brief>"}'
 
 BRIEF_CONTRACT = "\n".join(
     (
-        "When finished, print one line of JSON and nothing after it:",
+        "When finished, return your reply as structured output meeting the call schema of %s;"
+        " the reply is read from structured_output, never from a line of text:" % REPLY_SCHEMA,
         RETURN_SHAPE,
         "The object carries exactly the keys " + ", ".join('"%s"' % key for key in RETURN_KEYS) + ".",
         "  name: the Step you were asked to brief, exactly as named above; a return naming any"
         " other Step is rejected",
         "  task: the Step's entire brief as one string; the Worker that builds it receives"
         " nothing else, and an empty task is rejected",
-        "The last line of your output that parses as a JSON object is taken as the return, so"
-        " narration or a code fence around it is tolerated.",
     )
 )
 
@@ -161,30 +163,13 @@ def render_brief_prompt(document, structure, step, pack=None, charter=None, deci
     return "\n\n".join("\n".join(part) for part in parts if part) + "\n"
 
 
-def _clip(text, limit=200):
-    return text if len(text) <= limit else text[:limit] + "..."
-
-
 def _parsed(name, task, errors):
     return {"name": name, "task": task, "errors": list(errors)}
 
 
-def parse_brief(line, expected):
-    if line is None:
-        return _parsed(None, None, ["the brief Worker for %s printed no return line" % expected])
-    try:
-        value = json.loads(line)
-    except ValueError:
-        value = None
+def parse_brief(value, expected):
     if not isinstance(value, dict):
-        return _parsed(
-            None,
-            None,
-            [
-                "the brief Worker for %s: the last line is not a JSON object: %s"
-                % (expected, _clip(line))
-            ],
-        )
+        return _parsed(None, None, ["the brief Worker for %s returned no object" % expected])
     name = value.get("name")
     task = value.get("task")
     errors = []
@@ -195,17 +180,34 @@ def parse_brief(line, expected):
     return _parsed(name, task, errors)
 
 
+def call_schema(name):
+    base = handoff.call_schema(REPLY_SCHEMA)
+    narrowed = {"type": "string", "const": name}
+    return {**base, "properties": {**base["properties"], "name": narrowed}}
+
+
+def read_brief(stdout, expected):
+    reply, errors = handoff.read_reply(stdout, REPLY_SCHEMA)
+    if errors:
+        return None, errors
+    found = parse_brief(reply, expected)["errors"]
+    if found:
+        return None, tuple(found)
+    return reply, ()
+
+
 def _frozen(document):
     if document is None or isinstance(document, dict):
         return document
     return decompose.freeze(document)
 
 
-def _argv(template, prompt, name, frozen, model, session_id):
+def _argv(template, prompt, name, frozen, model, session_id, schema):
     substitutions = {
         decompose.PROMPT_PLACEHOLDER: prompt,
         STEP_PLACEHOLDER: name,
         decompose.SESSION_PLACEHOLDER: session_id,
+        decompose.SCHEMA_PLACEHOLDER: schema,
     }
     if frozen is not None:
         substitutions = {**substitutions, decompose.DOCUMENT_PLACEHOLDER: frozen["path"]}
@@ -225,10 +227,15 @@ def _job(step, template, frozen, structure, models, packs, charter, decisions, l
         decisions=decisions,
     )
     model = (models or {}).get(tier_for(step))
+    schema = json.dumps(call_schema(name), sort_keys=True)
     return {
-        "argv_for": lambda session_id: _argv(template, prompt, name, frozen, model, session_id),
+        "argv_for": lambda session_id: _argv(
+            template, prompt, name, frozen, model, session_id, schema
+        ),
         "prompt": prompt,
         "log": os.path.join(log_dir, name + ".log") if log_dir else None,
+        "schema": schema,
+        "model": model,
     }
 
 
@@ -241,11 +248,19 @@ def _spawn_errors(name, spawned):
     return errors
 
 
+def _reply_errors(name, spawned):
+    asked = " after one re-ask" if spawned.get("reasked") else ""
+    return [
+        "the brief Worker for %s replied%s against %s: %s" % (name, asked, REPLY_SCHEMA, error)
+        for error in spawned["reply_errors"]
+    ]
+
+
 def _outcome(name, spawned):
     spawn_errors = _spawn_errors(name, spawned)
-    if spawned["line"] is None and spawn_errors:
-        return _parsed(None, None, spawn_errors)
-    parsed = parse_brief(spawned["line"], name)
+    if spawned["reply"] is None:
+        return _parsed(None, None, spawn_errors + _reply_errors(name, spawned))
+    parsed = parse_brief(spawned["reply"], name)
     return {**parsed, "errors": spawn_errors + parsed["errors"]}
 
 
@@ -271,6 +286,7 @@ def write(
     decisions=None,
     env=None,
     on_sessions=None,
+    reask=None,
 ):
     frozen = _frozen(document)
     whole = items if structure is None else structure
@@ -279,21 +295,23 @@ def write(
         _job(step, template, frozen, whole, models, packs, charter, decisions, log_dir)
         for step in todo
     ]
-    spawned = decompose.spawn_until(
+    spawned = decompose.spawn_replies(
         jobs,
         timeout,
         concurrency,
         root,
-        lambda index, one: not _outcome(todo[index]["name"], one)["errors"],
+        lambda index, stdout: read_brief(stdout, todo[index]["name"]),
+        REPLY_SCHEMA,
+        reask=reask,
         env=env,
     )
     if on_sessions is not None:
-        on_sessions([session for one in spawned for session in one["session_ids"]])
+        on_sessions([one["session_id"] for one in spawned])
     outcomes = {step["name"]: _outcome(step["name"], one) for step, one in zip(todo, spawned)}
     return {
         "items": [_rebuild(item, outcomes) for item in items],
         "written": [step["name"] for step in todo if not outcomes[step["name"]]["errors"]],
         "reused": [item["name"] for item in items if _briefed(item)],
-        "retried": [step["name"] for step, one in zip(todo, spawned) if one.get("attempts", 1) > 1],
+        "reasked": [step["name"] for step, one in zip(todo, spawned) if one["reasked"]],
         "errors": [error for step in todo for error in outcomes[step["name"]]["errors"]],
     }

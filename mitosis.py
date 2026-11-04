@@ -4,6 +4,7 @@ import itertools
 import json
 import os
 import re
+import shlex
 import sys
 from datetime import datetime
 
@@ -131,9 +132,11 @@ NO_PLAN = (
     "--resume writes the briefs and builds the plan"
 )
 
-BRIEF_PLACEHOLDERS = ("prompt", "model", "step", "document", "session_id")
+BRIEF_PLACEHOLDERS = ("prompt", "model", "step", "document", "session_id", "schema")
 
-TEMPLATE_PLACEHOLDERS = {"brief": BRIEF_PLACEHOLDERS}
+DECOMPOSE_PLACEHOLDERS = ("prompt", "model", "document", "session_id", "schema")
+
+TEMPLATE_PLACEHOLDERS = {"brief": BRIEF_PLACEHOLDERS, "decompose": DECOMPOSE_PLACEHOLDERS}
 
 PLACEHOLDER_HELP = {
     "dispatch": (
@@ -141,7 +144,7 @@ PLACEHOLDER_HELP = {
         "{session_id} {schema}"
     ),
     "reask": " ".join("{%s}" % key for key in run.TEMPLATE_PLACEHOLDERS["reask"]),
-    "decompose": "{prompt} {model} {document} {session_id}",
+    "decompose": " ".join("{%s}" % key for key in DECOMPOSE_PLACEHOLDERS),
     "brief": " ".join("{%s}" % key for key in BRIEF_PLACEHOLDERS),
     "acceptance": "{file} {test} {worktree}",
     "gate-setup": "{worktree}",
@@ -239,20 +242,23 @@ FLAG_SPECS = {
     },
     "--reask-command": {
         "metavar": "TEMPLATE",
-        "help": "asks a Worker or check-author whose reply fails %s once more, in the same "
-        "session; placeholders %s; required for a run, which also needs {schema} and "
-        "{session_id} in --dispatch-command; replies are read from structured_output"
-        % (run.WORKER_RETURN, PLACEHOLDER_HELP["reask"]),
+        "help": "asks a Worker, check-author, decompose or brief Worker whose reply fails its "
+        "owned schema once more, in the same session; placeholders %s; required for a run "
+        "that calls a model, whose command also needs {schema} and {session_id}; replies are "
+        "read from structured_output" % PLACEHOLDER_HELP["reask"],
     },
     "--decompose-command": {
         "metavar": "TEMPLATE",
-        "help": "the structure Worker; placeholders %s; the prompt also arrives on stdin"
-        % PLACEHOLDER_HELP["decompose"],
+        "help": "the structure Worker; placeholders %s; the prompt also arrives on stdin; "
+        "needs {schema} and {session_id}, and its reply meets %s as structured output"
+        % (PLACEHOLDER_HELP["decompose"], decompose.REPLY_SCHEMA),
     },
     "--brief-command": {
         "metavar": "TEMPLATE",
         "help": "one brief Worker per unbriefed Step; placeholders %s; the prompt also "
-        "arrives on stdin; required for the brief stage" % PLACEHOLDER_HELP["brief"],
+        "arrives on stdin; required for the brief stage; needs {schema} and {session_id}, and "
+        "its reply meets %s as structured output"
+        % (PLACEHOLDER_HELP["brief"], briefs.REPLY_SCHEMA),
     },
     "--decisions": {
         "metavar": "PATH",
@@ -618,10 +624,22 @@ TEMPLATE_FLAGS = {
 }
 
 
+def check_split(name, template):
+    if not isinstance(template, str) or not template.strip():
+        raise run.ConfigError("the %s command is empty" % name)
+    try:
+        shlex.split(template)
+    except ValueError as error:
+        raise run.ConfigError("the %s command does not split into argv: %s" % (name, error))
+
+
 def check_template(name, template):
     flag = TEMPLATE_FLAGS[name]
     try:
-        run.check_template(name, template)
+        if name in TEMPLATE_PLACEHOLDERS:
+            check_split(name, template)
+        else:
+            run.check_template(name, template)
     except run.ConfigError as error:
         raise Refusal("%s: %s" % (flag, error))
     unknown = unoffered_placeholders(name, template)
@@ -656,6 +674,61 @@ def check_templates(args):
             run.check_reply_templates(args.dispatch_command, args.reask_command)
         except run.ConfigError as error:
             raise Refusal(str(error))
+    called = called_model_templates(args)
+    for flag, template in called:
+        check_model_template(flag, template)
+    if called:
+        check_reask_template(args.reask_command, tuple(flag for flag, _ in called))
+
+
+def called_model_templates(args):
+    from_document = not args.items
+    decomposes = from_document and not args.resume and args.decompose_command is not None
+    briefing = (
+        from_document and args.brief_command is not None and (args.resume or not args.plan_only)
+    )
+    return tuple(
+        (flag, template)
+        for flag, template, calls in (
+            ("--decompose-command", args.decompose_command, decomposes),
+            ("--brief-command", args.brief_command, briefing),
+        )
+        if calls
+    )
+
+
+def missing_placeholders(template, needed):
+    used = {match.group(1) for match in run.PLACEHOLDER.finditer(template or "")}
+    return tuple("{%s}" % key for key in needed if key not in used)
+
+
+def check_model_template(flag, template):
+    missing = missing_placeholders(template, run.MODEL_TEMPLATE_NEEDS)
+    if missing:
+        raise Refusal(
+            "%s lacks %s; a model command must carry {schema}, the call schema its reply meets "
+            "as structured output, and {session_id}, the session a re-ask resumes"
+            % (flag, ", ".join(missing))
+        )
+
+
+def check_reask_template(reask, flags):
+    if reask is None:
+        raise Refusal(
+            "--reask-command is required: a reply from %s that fails its owned schema is asked "
+            "again in the same session through it, offered %s"
+            % (
+                " or ".join(flags),
+                ", ".join("{%s}" % key for key in run.TEMPLATE_PLACEHOLDERS[run.REASK_STEM]),
+            )
+        )
+    missing = missing_placeholders(reask, run.REASK_TEMPLATE_NEEDS)
+    if missing:
+        raise Refusal(
+            "--reask-command lacks %s; a re-ask must carry {prompt}, the errors to answer, "
+            "{session_id}, the session to resume, and {schema}, the call schema to meet"
+            % ", ".join(missing)
+        )
 
 
 def check_worker_writes(args, run_dir, repo):
@@ -765,6 +838,7 @@ def structure_document(args, root, run_dir, models, charter, graph, decisions, p
         prior=prior,
         env=recorder.env,
         on_sessions=lambda sessions: recorder.stage_ended("structure", began, sessions),
+        reask=args.reask_command,
     )
     order = decompose.rank(results)
     chosen = chosen_sample(order, args.pick)
@@ -775,8 +849,10 @@ def structure_document(args, root, run_dir, models, charter, graph, decisions, p
     if result["errors"]:
         _print(("Coverage map:",) + tuple("  " + line for line in coverage_lines({}, result, root)))
         raise Refusal(
-            "the structure stage returned %s; the log is %s"
-            % (_n(len(result["errors"]), "contract error"), result["log"])
+            "the structure stage returned %s; the log is %s:\n" % (
+                _n(len(result["errors"]), "contract error"), result["log"]
+            )
+            + "\n".join("  " + line for line in result["errors"])
         )
     record = {key: result[key] for key in result if key != "items"}
     run.write_json(os.path.join(run_dir, DECOMPOSE_FILE), record)
@@ -797,15 +873,15 @@ def refuse_unmapped_briefs(template, pending, models):
 
 
 def brief_lines(written):
-    retried = written.get("retried") or []
+    reasked = written.get("reasked") or []
     lines = (
         "brief stage: %s written, %s reused"
         % (_n(len(written["written"]), "brief"), _n(len(written["reused"]), "brief")),
     )
-    if retried:
+    if reasked:
         lines = lines + (
-            "%s re-dispatched after a return that broke the contract: %s"
-            % (_n(len(retried), "brief"), ", ".join(retried)),
+            "%s re-asked in the same session after a reply that failed %s: %s"
+            % (_n(len(reasked), "brief"), briefs.REPLY_SCHEMA, ", ".join(reasked)),
         )
     return lines + tuple(written["errors"])
 
@@ -846,6 +922,7 @@ def brief_structure(args, items, root, run_dir, models, charter, graph, decision
             decisions=decisions,
             env=recorder.env,
             on_sessions=lambda sessions: recorder.stage_ended("brief", began, sessions),
+            reask=args.reask_command,
         )
     except (ValueError, OSError) as error:
         raise Refusal("the brief stage could not run: %s" % error)

@@ -147,6 +147,7 @@ class CoverageReport(unittest.TestCase):
 
 
 STRUCTURER = """
+import json
 import os
 import sys
 
@@ -161,7 +162,13 @@ if os.path.isfile(os.path.join(here, "structure-reply-second.txt")):
     except FileExistsError:
         name = "structure-reply-second.txt"
 with open(os.path.join(here, name), encoding="utf-8") as handle:
-    print(handle.read().strip())
+    reply = json.load(handle)
+print(json.dumps({
+    "type": "result",
+    "session_id": sys.argv[2],
+    "result": "done",
+    "structured_output": {"reply": reply},
+}))
 """
 
 BRIEFER = """
@@ -175,7 +182,24 @@ with open(os.path.join(here, "brief-prompt-%s.txt" % step), "w", encoding="utf-8
     handle.write(sys.stdin.read())
 if os.path.isfile(os.path.join(here, "fail-%s" % step)):
     sys.exit(2)
-print(json.dumps({"name": step, "task": "build " + step}))
+print(json.dumps({
+    "type": "result",
+    "session_id": sys.argv[3],
+    "result": "done",
+    "structured_output": {"name": step, "task": "build " + step},
+}))
+"""
+
+REASKER = """
+import json
+import os
+import sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "reask.log"), "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(sys.argv[1:]) + "\\n")
+sys.stdin.read()
+print(json.dumps({"type": "result", "session_id": sys.argv[2], "result": "still prose"}))
 """
 
 ISOLATED_GIT_ENV = {
@@ -211,13 +235,27 @@ def structurer(root, reply, second=None):
     write(root, "worker/structure-reply.txt", json.dumps(reply))
     if second is not None:
         write(root, "worker/structure-reply-second.txt", json.dumps(second))
-    return command(root, "structurer.py", STRUCTURER, "{document}")
+    return command(root, "structurer.py", STRUCTURER, "{document}", "{session_id}", "{schema}")
 
 
 def briefer(root, failing=()):
     for name in failing:
         write(root, "worker/fail-%s" % name, "")
-    return command(root, "briefer.py", BRIEFER, "{step}", "{document}")
+    return command(
+        root, "briefer.py", BRIEFER, "{step}", "{document}", "{session_id}", "{schema}"
+    )
+
+
+def reasker(root):
+    return command(root, "reasker.py", REASKER, "{prompt}", "{session_id}", "{schema}")
+
+
+def reasks(root):
+    path = os.path.join(root, "worker", "reask.log")
+    if not os.path.isfile(path):
+        return []
+    with open(path, encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
 
 
 def structure_prompts(root):
@@ -410,12 +448,93 @@ class Flags(unittest.TestCase):
                 "--spec",
                 "x",
                 "--decompose-command",
-                "c {prompt} {model} {document}",
+                "c {prompt} {model} {document} {session_id} {schema}",
                 "--brief-command",
-                "b {prompt} {model} {step} {document}",
+                "b {prompt} {model} {step} {document} {session_id} {schema}",
+                "--reask-command",
+                "r {prompt} {session_id} {schema} {model}",
             ]
         )
         mitosis.check_templates(args)
+
+    def a_model_template_without_schema_or_session_is_refused_before_any_call(self):
+        cases = (
+            ("--decompose-command", "{session_id}", "{schema}", ()),
+            ("--decompose-command", "{schema}", "{session_id}", ()),
+            ("--brief-command", "{session_id}", "{schema}", ("--resume",)),
+            ("--brief-command", "{schema}", "{session_id}", ("--resume",)),
+        )
+        for flag, kept, missing, extra in cases:
+            with self.subTest(flag=flag, missing=missing), tempfile.TemporaryDirectory() as root:
+                write(root, "docs/spec.md", "# One\n\nbody\n")
+                write(root, "run/structure.json", json.dumps([bare("alpha")]))
+                template = command(root, "model.py", "", "{document}", kept)
+                code, _, err = invoke(
+                    root,
+                    [
+                        "--spec",
+                        "docs/spec.md",
+                        flag,
+                        template,
+                        "--reask-command",
+                        reasker(root),
+                        "--timeout",
+                        "20",
+                        "--plan-only",
+                        "--run-dir",
+                        os.path.join(root, "run"),
+                        *extra,
+                    ],
+                )
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                self.assertIn(flag, err)
+                self.assertIn(missing, err)
+                self.assertEqual(structure_prompts(root), 0)
+                self.assertEqual(briefed_steps(root), [])
+
+    def a_model_run_without_a_complete_reask_command_is_refused_before_any_call(self):
+        for reask, named in ((None, "--reask-command is required"), ("r {prompt} {schema}", "{session_id}")):
+            with self.subTest(reask=reask), tempfile.TemporaryDirectory() as root:
+                write(root, "docs/spec.md", "# One\n\nbody\n")
+                code, _, err = invoke(
+                    root,
+                    [
+                        "--spec",
+                        "docs/spec.md",
+                        "--decompose-command",
+                        structurer(root, structure_reply(bare("alpha"))),
+                        *(("--reask-command", reask) if reask else ()),
+                        "--timeout",
+                        "20",
+                        "--plan-only",
+                        "--run-dir",
+                        os.path.join(root, "run"),
+                    ],
+                )
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                self.assertIn("--reask-command", err)
+                self.assertIn(named, err)
+                self.assertEqual(structure_prompts(root), 0)
+
+    def a_resume_that_calls_no_model_needs_no_reask_command(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(root, "docs/spec.md", "# One\n\nbody\n")
+            write(root, "run/structure.json", json.dumps([bare("alpha")]))
+            code, _, err = invoke(
+                root,
+                [
+                    "--spec",
+                    "docs/spec.md",
+                    "--resume",
+                    "--decompose-command",
+                    "c {prompt}",
+                    "--plan-only",
+                    "--run-dir",
+                    os.path.join(root, "run"),
+                ],
+            )
+            self.assertNotIn("--reask-command", err)
+            self.assertNotIn("--decompose-command lacks", err)
 
     def revise_cannot_be_combined_with_items_or_resume(self):
         with tempfile.TemporaryDirectory() as root:
@@ -465,6 +584,8 @@ class Staging(unittest.TestCase):
                 structurer(root, reply, second),
                 "--brief-command",
                 briefer(root),
+                "--reask-command",
+                reasker(root),
                 "--timeout",
                 "20",
                 "--plan-only",
@@ -483,6 +604,8 @@ class Staging(unittest.TestCase):
                 "--resume",
                 "--brief-command",
                 briefer(root, failing),
+                "--reask-command",
+                reasker(root),
                 "--timeout",
                 "20",
                 "--run-dir",
@@ -620,6 +743,7 @@ class Staging(unittest.TestCase):
             code, _, err = self._resume(root, "--plan-only", failing=("beta",))
             self.assertEqual(code, mitosis.EXIT_REFUSED)
             self.assertIn("beta", err)
+            self.assertEqual(len(reasks(root)), 1)
             self.assertNotIn("alpha", err.split("mitosis:")[-1].split("\n")[0])
             self.assertEqual(briefed_steps(root), ["alpha", "beta", "gamma"])
             self.assertFalse(os.path.isfile(os.path.join(run_dir, mitosis.ITEMS_FILE)))
@@ -1970,15 +2094,18 @@ class BriefStageReport(unittest.TestCase):
 
     def a_brief_that_had_to_be_asked_again_is_named_in_the_report(self):
         lines = mitosis.brief_lines(
-            {"written": ["a", "b"], "reused": [], "retried": ["b"], "errors": []}
+            {"written": ["a", "b"], "reused": [], "reasked": ["b"], "errors": []}
         )
-        self.assertIn("1 brief re-dispatched after a return that broke the contract: b", lines)
+        self.assertIn(
+            "1 brief re-asked in the same session after a reply that failed h10c-brief-return: b",
+            lines,
+        )
 
     def a_run_where_every_brief_returned_cleanly_says_nothing_about_retries(self):
         lines = mitosis.brief_lines(
-            {"written": ["a"], "reused": [], "retried": [], "errors": []}
+            {"written": ["a"], "reused": [], "reasked": [], "errors": []}
         )
-        self.assertTrue(all("re-dispatched" not in line for line in lines))
+        self.assertTrue(all("re-asked" not in line for line in lines))
 
 
 class CoverageRendering(unittest.TestCase):

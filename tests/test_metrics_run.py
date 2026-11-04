@@ -165,13 +165,20 @@ sys.exit(0 if os.path.exists("alpha.py") and "work" in open("alpha.py").read() e
 '''
 
 STRUCTURER = """
+import json
 import os
 import sys
 
 here = os.path.dirname(os.path.abspath(__file__))
 sys.stdin.read()
 with open(os.path.join(here, "structure-reply.txt"), encoding="utf-8") as handle:
-    print(handle.read().strip())
+    reply = json.load(handle)
+print(json.dumps({
+    "type": "result",
+    "session_id": sys.argv[-1],
+    "result": "done",
+    "structured_output": {"reply": reply},
+}))
 """
 
 PULL_REQUEST = """
@@ -545,7 +552,11 @@ class PlanOnly(unittest.TestCase):
                     "--run-dir",
                     os.path.join(elsewhere, "run"),
                     "--decompose-command",
-                    command(elsewhere, "structurer.py", STRUCTURER, "{document}"),
+                    command(
+                        elsewhere, "structurer.py", STRUCTURER, "{document}", "{schema}", "{session_id}"
+                    ),
+                    "--reask-command",
+                    REASK_COMMAND,
                     "--timeout",
                     "30",
                     "--plan-only",

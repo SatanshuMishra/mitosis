@@ -9,12 +9,15 @@ import signal
 import subprocess
 
 import core
+import handoff
 import run
 import shape
 
 RETURN_KEYS = ("items", "assumptions", "constraints")
 
-DISPATCH_ATTEMPTS = 2
+REPLY_SCHEMA = "h10b-decompose-return"
+
+REASK_SUFFIX = ".reask"
 
 GIT_TIMEOUT = 600
 
@@ -24,7 +27,14 @@ PROMPT_PLACEHOLDER = "{prompt}"
 MODEL_PLACEHOLDER = "{model}"
 DOCUMENT_PLACEHOLDER = "{document}"
 SESSION_PLACEHOLDER = "{session_id}"
-PLACEHOLDERS = (PROMPT_PLACEHOLDER, MODEL_PLACEHOLDER, DOCUMENT_PLACEHOLDER, SESSION_PLACEHOLDER)
+SCHEMA_PLACEHOLDER = "{schema}"
+PLACEHOLDERS = (
+    PROMPT_PLACEHOLDER,
+    MODEL_PLACEHOLDER,
+    DOCUMENT_PLACEHOLDER,
+    SESSION_PLACEHOLDER,
+    SCHEMA_PLACEHOLDER,
+)
 
 SKIPPED_DIRS = (".git", "node_modules", "__pycache__")
 
@@ -133,7 +143,9 @@ DELTA_LEAD = (
 def _contract(shape, lead, required, tail=()):
     return "\n".join(
         (
-            "When finished, print one line of JSON and nothing after it:",
+            "When finished, return your reply as structured output meeting the call schema of"
+            " %s, which carries this object as its reply member; the reply is read from"
+            " structured_output, never from a line of text:" % REPLY_SCHEMA,
             shape,
             lead + ", ".join(required) + ".",
         )
@@ -595,21 +607,6 @@ def _kill_tree(process):
         process.kill()
 
 
-def _is_object(line):
-    try:
-        value = json.loads(line)
-    except ValueError:
-        return False
-    return isinstance(value, dict)
-
-
-def last_return(lines):
-    for line in reversed(lines):
-        if _is_object(line):
-            return line
-    return lines[-1] if lines else None
-
-
 def _write_log(log, out, err):
     if not log:
         return
@@ -632,7 +629,12 @@ def spawn(argv, prompt, timeout, cwd=None, log=None, env=None):
             start_new_session=True,
         )
     except OSError as failure:
-        return {"exit": None, "line": None, "reason": "could not start %s: %s" % (argv[0], failure)}
+        return {
+            "exit": None,
+            "stdout": "",
+            "stderr": "",
+            "reason": "could not start %s: %s" % (argv[0], failure),
+        }
     reason = None
     try:
         out, err = process.communicate(prompt.encode("utf-8"), timeout=timeout)
@@ -644,10 +646,10 @@ def spawn(argv, prompt, timeout, cwd=None, log=None, env=None):
             out, err = b"", b""
         reason = "timeout after %s seconds" % timeout
     _write_log(log, out, err)
-    lines = [line.strip() for line in out.decode("utf-8", "replace").splitlines() if line.strip()]
     return {
         "exit": process.returncode,
-        "line": last_return(lines) if reason is None else None,
+        "stdout": out.decode("utf-8", "replace"),
+        "stderr": err.decode("utf-8", "replace"),
         "reason": reason,
     }
 
@@ -674,36 +676,79 @@ def spawn_many(jobs, timeout, concurrency, cwd=None, env=None):
         ]
 
 
-def spawn_until(jobs, timeout, concurrency, cwd, accepts, attempts=None, env=None):
-    rounds = DISPATCH_ATTEMPTS if attempts is None else max(1, attempts)
-    results = {}
-    outstanding = tuple(range(len(jobs)))
-    for _ in range(rounds):
-        if not outstanding:
-            break
-        spawned = spawn_many(
-            [jobs[index] for index in outstanding], timeout, concurrency, cwd=cwd, env=env
-        )
-        results = {
-            **results,
-            **{
-                index: {
-                    **one,
-                    "attempts": results.get(index, {}).get("attempts", 0) + 1,
-                    "session_ids": results.get(index, {}).get("session_ids", [])
-                    + [one.get("session_id")],
-                }
-                for index, one in zip(outstanding, spawned)
-            },
+def _usage_limited(spawned):
+    for text in (spawned.get("stdout") or "", spawned.get("stderr") or ""):
+        lines = [line for line in text.splitlines() if line.strip()]
+        if any(run.USAGE_LIMIT.search(line) for line in lines[-run.USAGE_LIMIT_TAIL:]):
+            return True
+    return False
+
+
+def _reask_log(log):
+    if not log:
+        return None
+    stem, extension = os.path.splitext(log)
+    return stem + REASK_SUFFIX + extension
+
+
+def _read(read, index, spawned):
+    if spawned["reason"] is not None:
+        return {**spawned, "reply": None, "reply_errors": []}
+    reply, errors = read(index, spawned["stdout"])
+    return {**spawned, "reply": reply, "reply_errors": list(errors)}
+
+
+def _reasked(job, first, reask, owned, timeout, cwd, env):
+    prompt = handoff.reask_prompt(owned, first["reply_errors"])
+    argv = build_argv(
+        reask,
+        {
+            PROMPT_PLACEHOLDER: prompt,
+            SESSION_PLACEHOLDER: first["session_id"] or "",
+            SCHEMA_PLACEHOLDER: job["schema"],
+            MODEL_PLACEHOLDER: job.get("model") or "",
+        },
+    )
+    return spawn(argv, prompt, timeout, cwd=cwd, log=_reask_log(job.get("log")), env=env)
+
+
+def _needs_reask(read):
+    return (
+        read["reply"] is None
+        and read["reason"] is None
+        and bool(read["reply_errors"])
+        and not _usage_limited(read)
+    )
+
+
+def spawn_replies(jobs, timeout, concurrency, cwd, read, owned, reask=None, env=None):
+    firsts = [
+        _read(read, index, one)
+        for index, one in enumerate(spawn_many(jobs, timeout, concurrency, cwd=cwd, env=env))
+    ]
+    asked = tuple(
+        index for index, one in enumerate(firsts) if reask is not None and _needs_reask(one)
+    )
+    if not asked:
+        return tuple({**one, "reasked": False} for one in firsts)
+    workers = concurrency if isinstance(concurrency, int) and concurrency > 0 else 1
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        pending = {
+            index: pool.submit(
+                _reasked, jobs[index], firsts[index], reask, owned, timeout, cwd, env
+            )
+            for index in asked
         }
-        outstanding = tuple(
-            index for index in outstanding if not accepts(index, results[index])
-        )
-    return tuple(results[index] for index in range(len(jobs)))
-
-
-def _clip(text, limit=200):
-    return text if len(text) <= limit else text[:limit] + "..."
+        again = {index: future.result() for index, future in pending.items()}
+    return tuple(
+        {
+            **_read(read, index, {**again[index], "session_id": one["session_id"]}),
+            "reasked": True,
+        }
+        if index in again
+        else {**one, "reasked": False}
+        for index, one in enumerate(firsts)
+    )
 
 
 def _empty_lists(keys, errors):
@@ -714,13 +759,7 @@ def _empty_return(errors):
     return _empty_lists(RETURN_KEYS, errors)
 
 
-def _parse_lists(line, keys):
-    if line is None:
-        return _empty_lists(keys, ["the decompose Worker printed no return line"])
-    try:
-        value = json.loads(line)
-    except ValueError:
-        return _empty_lists(keys, ["the decompose Worker's last line is not JSON: " + _clip(line)])
+def _parse_lists(value, keys):
     if not isinstance(value, dict):
         return _empty_lists(
             keys, ["the return must be a JSON object with keys %s" % ", ".join(keys)]
@@ -739,20 +778,29 @@ def _parse_lists(line, keys):
     return {**parsed, "errors": errors}
 
 
-def parse_return(line):
-    return _parse_lists(line, RETURN_KEYS)
+def parse_return(value):
+    return _parse_lists(value, RETURN_KEYS)
 
 
-def _returned_a_structure(index, spawned):
-    return not parse_return(spawned["line"])["errors"]
+def parse_delta(value):
+    return _parse_lists(value, DELTA_KEYS)
 
 
-def parse_delta(line):
-    return _parse_lists(line, DELTA_KEYS)
+def call_schema_text():
+    return json.dumps(handoff.call_schema(REPLY_SCHEMA), sort_keys=True)
 
 
-def _returned_a_delta(index, spawned):
-    return not parse_delta(spawned["line"])["errors"]
+def _reader(parse):
+    def read(index, stdout):
+        reply, errors = handoff.read_reply(stdout, REPLY_SCHEMA)
+        if errors:
+            return None, errors
+        found = parse(reply)["errors"]
+        if found:
+            return None, tuple(found)
+        return reply, ()
+
+    return read
 
 
 def _step_name(step):
@@ -922,17 +970,28 @@ def _spawn_errors(spawned):
     return errors
 
 
+def _reply_errors(spawned):
+    if spawned["reply"] is not None:
+        return []
+    asked = ", after one re-ask," if spawned.get("reasked") else ""
+    return [
+        "the decompose Worker's reply%s fails %s: %s" % (asked, REPLY_SCHEMA, error)
+        for error in spawned["reply_errors"]
+    ]
+
+
 def _empty_errors(frozen, items):
     if items or not (frozen.get("text") or "").strip():
         return []
     return ["the decompose Worker returned no Steps for a document that has content"]
 
 
-def _argv_for(frozen, template, prompt, model, session_id):
+def _argv_for(frozen, template, prompt, model, session_id, schema):
     substitutions = {
         PROMPT_PLACEHOLDER: prompt,
         DOCUMENT_PLACEHOLDER: frozen["path"],
         SESSION_PLACEHOLDER: session_id,
+        SCHEMA_PLACEHOLDER: schema,
     }
     if model is not None:
         substitutions = {**substitutions, MODEL_PLACEHOLDER: model}
@@ -943,9 +1002,9 @@ def _assemble(frozen, spawned, log, root, required=None, parse=parse_return):
     source = source_of(frozen)
     spawn_errors = _spawn_errors(spawned)
     parsed = (
-        parse(spawned["line"])
-        if spawned["line"] is not None or not spawn_errors
-        else _empty_return([])
+        parse(spawned["reply"])
+        if spawned["reply"] is not None
+        else _empty_return(_reply_errors(spawned))
     )
     collected = collect(parsed, source, root, required)
     return {
@@ -971,11 +1030,24 @@ def decompose(
     charter=None,
     cap=None,
     log=None,
+    reask=None,
+    env=None,
 ):
     frozen = freeze(document)
     prompt = render_prompt(frozen, inventory(root, cap), graph, charter)
-    argv = _argv_for(frozen, template, prompt, model, core.new_session_id())
-    spawned = spawn(argv, prompt, timeout, cwd=root, log=log)
+    schema = call_schema_text()
+    job = {
+        "argv_for": lambda session_id: _argv_for(
+            frozen, template, prompt, model, session_id, schema
+        ),
+        "prompt": prompt,
+        "log": log,
+        "schema": schema,
+        "model": model,
+    }
+    spawned = spawn_replies(
+        [job], timeout, 1, root, _reader(parse_return), REPLY_SCHEMA, reask=reask, env=env
+    )[0]
     return _assemble(frozen, spawned, log, root)
 
 
@@ -993,8 +1065,8 @@ def _task_errors(items):
     ]
 
 
-def _delta_return(prior, line):
-    parsed = parse_delta(line)
+def _delta_return(prior, value):
+    parsed = parse_delta(value)
     carried = {key: parsed[key] for key in ("assumptions", "constraints")}
     if parsed["errors"]:
         return {"items": [], **carried, "errors": parsed["errors"]}
@@ -1013,7 +1085,7 @@ def _assemble_structure(frozen, spawned, log, root, prior=None):
             log,
             root,
             core.STRUCTURE_ITEM_FIELDS,
-            parse=lambda line: _delta_return(prior, line),
+            parse=lambda value: _delta_return(prior, value),
         )
     assembled = _assemble(frozen, spawned, log, root, core.STRUCTURE_ITEM_FIELDS)
     return {**assembled, "errors": assembled["errors"] + _task_errors(assembled["items"])}
@@ -1041,25 +1113,31 @@ def sample_structures(
     prior=None,
     env=None,
     on_sessions=None,
+    reask=None,
 ):
     count = samples if isinstance(samples, int) and samples > 0 else 1
     frozen = freeze(document)
     prompt = render_structure_prompt(
         frozen, inventory(root, cap), graph, charter, decisions, prior
     )
+    schema = call_schema_text()
     logs = _sample_logs(log, count)
     jobs = [
         {
-            "argv_for": lambda session_id: _argv_for(frozen, template, prompt, model, session_id),
+            "argv_for": lambda session_id: _argv_for(
+                frozen, template, prompt, model, session_id, schema
+            ),
             "prompt": prompt,
             "log": sample_log,
+            "schema": schema,
+            "model": model,
         }
         for sample_log in logs
     ]
-    accepts = _returned_a_delta if prior else _returned_a_structure
-    spawned = spawn_until(jobs, timeout, count, root, accepts, env=env)
+    read = _reader(parse_delta if prior else parse_return)
+    spawned = spawn_replies(jobs, timeout, count, root, read, REPLY_SCHEMA, reask=reask, env=env)
     if on_sessions is not None:
-        on_sessions([session for one in spawned for session in one["session_ids"]])
+        on_sessions([one["session_id"] for one in spawned])
     return [
         _assemble_structure(frozen, one, sample_log, root, prior)
         for one, sample_log in zip(spawned, logs)
@@ -1078,6 +1156,8 @@ def structure(
     log=None,
     decisions=None,
     prior=None,
+    reask=None,
+    env=None,
 ):
     return sample_structures(
         1,
@@ -1092,6 +1172,8 @@ def structure(
         log=log,
         decisions=decisions,
         prior=prior,
+        reask=reask,
+        env=env,
     )[0]
 
 

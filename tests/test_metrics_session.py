@@ -27,6 +27,7 @@ ISOLATED_GIT_ENV = {
 UNSET_FOR_RUNS = ("PLUGIN_METRICS_PARENT", "CLAUDE_CODE_SESSION_ID")
 
 STRUCTURER = """
+import json
 import os
 import sys
 import tempfile
@@ -37,7 +38,13 @@ handle, _ = tempfile.mkstemp(dir=os.path.join(here, "sessions"), prefix="structu
 os.write(handle, sys.argv[-1].encode("utf-8"))
 os.close(handle)
 with open(os.path.join(here, "structure-reply.txt"), encoding="utf-8") as reply:
-    print(reply.read().strip())
+    value = json.load(reply)
+print(json.dumps({
+    "type": "result",
+    "session_id": sys.argv[-1],
+    "result": "done",
+    "structured_output": {"reply": value},
+}))
 """
 
 BRIEFER = """
@@ -56,7 +63,32 @@ marker = os.path.join(here, "fail-once-%s" % step)
 if os.path.isfile(marker):
     os.remove(marker)
     sys.exit(2)
-print(json.dumps({"name": step, "task": "build " + step}))
+print(json.dumps({
+    "type": "result",
+    "session_id": sys.argv[-1],
+    "result": "done",
+    "structured_output": {"name": step, "task": "build " + step},
+}))
+"""
+
+REASKER = """
+import json
+import os
+import sys
+import tempfile
+
+here = os.path.dirname(os.path.abspath(__file__))
+sys.stdin.read()
+handle, _ = tempfile.mkstemp(dir=os.path.join(here, "sessions"), prefix="reask-")
+os.write(handle, sys.argv[-1].encode("utf-8"))
+os.close(handle)
+step = json.loads(sys.argv[-2])["properties"]["name"]["const"]
+print(json.dumps({
+    "type": "result",
+    "session_id": sys.argv[-1],
+    "result": "done",
+    "structured_output": {"name": step, "task": "build " + step},
+}))
 """
 
 WORKER = r'''
@@ -242,7 +274,7 @@ class DispatchSessionId(unittest.TestCase):
 
 
 class SpawnAttemptSessionId(unittest.TestCase):
-    def test_every_spawn_attempt_gets_its_own_id(self):
+    def test_every_call_gets_its_own_id_and_a_reask_keeps_it(self):
         import mitosis
 
         with tempfile.TemporaryDirectory() as root:
@@ -252,8 +284,11 @@ class SpawnAttemptSessionId(unittest.TestCase):
             ))
             write(root, "worker/fail-once-alpha", "")
             os.makedirs(os.path.join(root, "worker", "sessions"))
-            structurer = command(root, "structurer.py", STRUCTURER, "{document}", "{session_id}")
-            briefer = command(root, "briefer.py", BRIEFER, "{step}", "{session_id}")
+            structurer = command(
+                root, "structurer.py", STRUCTURER, "{document}", "{schema}", "{session_id}"
+            )
+            briefer = command(root, "briefer.py", BRIEFER, "{step}", "{schema}", "{session_id}")
+            reasker = command(root, "reasker.py", REASKER, "{prompt}", "{schema}", "{session_id}")
             run_dir = os.path.join(root, "run")
             with isolated_run():
                 code, out, err = invoke(
@@ -265,6 +300,8 @@ class SpawnAttemptSessionId(unittest.TestCase):
                         structurer,
                         "--brief-command",
                         briefer,
+                        "--reask-command",
+                        reasker,
                         "--structure-samples",
                         "2",
                         "--timeout",
@@ -283,6 +320,8 @@ class SpawnAttemptSessionId(unittest.TestCase):
                         "--resume",
                         "--brief-command",
                         briefer,
+                        "--reask-command",
+                        reasker,
                         "--timeout",
                         "20",
                         "--plan-only",
@@ -293,13 +332,14 @@ class SpawnAttemptSessionId(unittest.TestCase):
             self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
             sessions = recorded_sessions(root)
             kinds = sorted(kind for kind, _ in sessions)
-            self.assertEqual(
-                kinds, ["brief-alpha", "brief-alpha", "brief-beta", "structure", "structure"]
-            )
+            self.assertEqual(kinds, ["brief-alpha", "brief-beta", "reask", "structure", "structure"])
             values = [value for _, value in sessions]
             for value in values:
                 self.assertRegex(value, UUID4)
-            self.assertEqual(len(set(values)), len(values))
+            by_kind = dict(sessions)
+            self.assertEqual(by_kind["reask"], by_kind["brief-alpha"])
+            firsts = [value for kind, value in sessions if kind != "reask"]
+            self.assertEqual(len(set(firsts)), len(firsts))
 
 
 class SessionPlaceholderOffered(unittest.TestCase):
