@@ -219,11 +219,12 @@ record list `seeded`, seed_skipped and seed_seconds. With no
 
 A Step with `"role": "check-author"` writes the locked acceptance checks and
 builds nothing. It never becomes a Lane, an MSP or a pull request, and its
-name leaves every other Step's `after` list. A check-author whose `msp` names
-an MSP belongs to that MSP; the one unlabelled check-author, the shape
-earlier interphase releases render with no `msp` or, when it is named exactly
-check-author, with that name as its `msp`, is split by acceptance ownership, each
-locked file going to the MSP whose Steps' acceptance entries name it. The plan
+name leaves every other Step's `after` list. A check-author named exactly
+check-author is the unlabelled one whatever its `msp` says; earlier interphase
+releases render it with no `msp` or with that name as its `msp`. It is split by
+acceptance ownership, each locked file going to the MSP whose Steps' acceptance
+entries name it. Any other check-author whose `msp` names an MSP belongs to
+that MSP. The plan
 refuses a label that names no MSP, two check-authors with one label, a locked
 file two MSPs' acceptance entries name, a locked file no acceptance names, a
 locked file two check-authors write, and a Step whose acceptance names a file
