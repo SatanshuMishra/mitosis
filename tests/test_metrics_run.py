@@ -120,17 +120,25 @@ if "print" in chosen:
     print(chosen["print"], file=sys.stderr)
 if "exit" in chosen:
     sys.exit(chosen["exit"])
-print(
-    json.dumps(
-        {
-            "item": "lane",
-            "status": chosen.get("status", "ok"),
-            "files_changed": paths,
-            "notes": chosen.get("notes", "done"),
-        }
+reply = {
+    "item": "lane",
+    "status": chosen.get("status", "ok"),
+    "files_changed": paths,
+    "notes": chosen.get("notes", "done"),
+}
+print(json.dumps({"type": "result", "session_id": session, "result": "done", "structured_output": reply}))
+'''
+
+REASK_COMMAND = " ".join(
+    (
+        shlex.quote(sys.executable),
+        "-c",
+        shlex.quote("import sys; sys.stderr.write('no re-ask was expected\\n'); sys.exit(1)"),
+        "{prompt}",
+        "{session_id}",
+        "{schema}",
     )
 )
-'''
 
 ACCEPTANCE = r'''
 import glob
@@ -215,7 +223,10 @@ def renderer(elsewhere):
 
 def worker(elsewhere, config=None, *placeholders):
     write(elsewhere, os.path.join("worker", "config.json"), json.dumps(config or {}))
-    return command(elsewhere, "worker.py", WORKER, "{task}", "{lane}", *placeholders)
+    rest = tuple(word for word in placeholders if word != "{session_id}")
+    return command(
+        elsewhere, "worker.py", WORKER, "{task}", "{lane}", "{session_id}", *rest, "{schema}"
+    )
 
 
 def acceptance(elsewhere, config=None):
@@ -300,6 +311,8 @@ def build(root, elsewhere, items, template, *extra, accept=None, run_dir=None):
         "feature",
         "--dispatch-command",
         template,
+        "--reask-command",
+        REASK_COMMAND,
         "--acceptance-command",
         accept or acceptance(elsewhere),
         "--timeout",

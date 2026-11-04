@@ -82,8 +82,20 @@ if "model" in config:
         handle.write(json.dumps(message) + "\n")
 if lane in config.get("failing_lanes", []):
     sys.exit(4)
-print(json.dumps({"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"}))
+reply = {"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"}
+print(json.dumps({"type": "result", "session_id": session, "result": "done", "structured_output": reply}))
 '''
+
+REASK_COMMAND = " ".join(
+    (
+        shlex.quote(sys.executable),
+        "-c",
+        shlex.quote("import sys; sys.stderr.write('no re-ask was expected\\n'); sys.exit(1)"),
+        "{prompt}",
+        "{session_id}",
+        "{schema}",
+    )
+)
 
 ACCEPTANCE = r'''
 import os
@@ -146,7 +158,7 @@ def invoke(root, argv):
     return code, out.getvalue(), err.getvalue()
 
 
-def scratch_run(items, *flags, worker_config=None, session="{session_id}"):
+def scratch_run(items, *flags, worker_config=None):
     with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
         git_repo(root)
         write(root, "items.json", json.dumps(items))
@@ -156,7 +168,9 @@ def scratch_run(items, *flags, worker_config=None, session="{session_id}"):
                 "--feature-branch",
                 "feature",
                 "--dispatch-command",
-                command(elsewhere, "worker.py", WORKER, "{task}", "{lane}", session),
+                command(elsewhere, "worker.py", WORKER, "{task}", "{lane}", "{session_id}", "{schema}"),
+                "--reask-command",
+                REASK_COMMAND,
                 "--acceptance-command",
                 command(elsewhere, "accept.py", ACCEPTANCE, "{file}", "{test}"),
                 "--timeout",
@@ -192,8 +206,8 @@ def plan_only_run():
     return scratch_run([briefed("alpha"), briefed("beta")], "--plan-only")
 
 
-def unlinked_run():
-    return scratch_run([briefed("alpha")], "--no-push", worker_config={}, session="none")
+def unpriced_run():
+    return scratch_run([briefed("alpha")], "--no-push", worker_config={})
 
 
 def written_store():
@@ -202,7 +216,7 @@ def written_store():
 
 SINGLE_RUN_STORES = (
     ("plan-only", plan_only_run, 0),
-    ("build without session_id", unlinked_run, 0),
+    ("build without a transcript", unpriced_run, 0),
     ("build with a failing Lane", failing_lane_run, 10),
 )
 
@@ -316,7 +330,7 @@ class SingleRunStores(unittest.TestCase):
                     completed = run_duckdb(self, home, setup + "\n" + substituted(block, store) + "\n")
                     self.assertEqual(completed.returncode, 0, block + "\n" + completed.stderr)
                 ended = run_duckdb(self, home, setup + "\n" + substituted(lane_end[0], store) + "\n")
-                if label == "build without session_id":
+                if label == "build without a transcript":
                     self.assertEqual(answers["spend_by_model"], [QUERY_COLUMNS["spend_by_model"]])
                 if label == "plan-only":
                     self.assertEqual(csv_rows(ended.stdout), [LANE_END_COLUMNS])

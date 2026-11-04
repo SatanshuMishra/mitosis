@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shlex
 import sys
 import time
 import unittest
@@ -69,6 +70,9 @@ import os
 import subprocess
 import sys
 
+SESSION, SCHEMA = sys.argv[-2], sys.argv[-1]
+del sys.argv[-2:]
+
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "clean-worker.json"), encoding="utf-8") as handle:
     job = json.load(handle)[sys.argv[1]]
@@ -119,8 +123,19 @@ for action in job["actions"]:
         replace_tree(action[1], action[2])
     else:
         sys.exit("unknown action %r" % (kind,))
-print(json.dumps({"item": job["step"], "status": "ok", "files_changed": job["declared"], "notes": "done"}))
+print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": job["step"], "status": "ok", "files_changed": job["declared"], "notes": "done"}}))
 '''
+
+REASK_COMMAND = " ".join(
+    (
+        shlex.quote(sys.executable),
+        "-c",
+        shlex.quote("import sys; sys.stderr.write('no re-ask was expected\\n'); sys.exit(1)"),
+        "{prompt}",
+        "{session_id}",
+        "{schema}",
+    )
+)
 
 LOGGING_ACCEPT = r'''
 import json
@@ -276,7 +291,9 @@ class CleanGate(unittest.TestCase):
             "--feature-branch",
             "feature",
             "--dispatch-command",
-            scratch.stub("clean_worker.py", "{msp}"),
+            scratch.stub("clean_worker.py", "{msp}", "{session_id}", "{schema}"),
+            "--reask-command",
+            REASK_COMMAND,
             "--acceptance-command",
             accept or scratch.stub("accept_log.py", "{worktree}"),
             "--timeout",

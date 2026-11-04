@@ -68,7 +68,7 @@ import subprocess
 import sys
 import time
 
-mode, marker_dir, lane, task = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+mode, marker_dir, lane, task, session = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 running = os.path.join(marker_dir, "running-%s" % lane)
 open(running, "w").close()
 if mode == "slow-" + lane:
@@ -113,13 +113,24 @@ if mode == "cross":
         handle.write("written across an MSP boundary by lane %s\n" % lane)
 if mode == "noisy":
     for i in range(5000):
-        print("prose line %d" % i)
+        print("prose line %d" % i, file=sys.stderr)
 status = "failed" if mode == "reports-failed" else "ok"
-notes = "n" * 500 if mode == "noisy" else "done"
+reply = {"item": "lane-%s" % lane, "status": status, "files_changed": reported, "notes": "done"}
 if mode != "silent":
-    print(json.dumps({"item": "lane-%s" % lane, "status": status, "files_changed": reported, "notes": notes}))
+    print(json.dumps({"type": "result", "session_id": session, "result": "done", "structured_output": reply}))
 os.remove(running)
 sys.exit(3 if mode in ("crash", "crash-" + lane) else 0)
+'''
+
+
+REASK_SCRIPT = r'''
+import json
+import os
+import sys
+
+marker_dir = sys.argv[1]
+with open(os.path.join(marker_dir, "reask"), "a") as handle:
+    handle.write(json.dumps(sys.argv[2:]) + "\n")
 '''
 
 
@@ -245,12 +256,27 @@ class RepoCase(unittest.TestCase):
         if not os.path.exists(script):
             write(script, WORKER_SCRIPT)
         os.makedirs(self.markers, exist_ok=True)
-        return "%s %s %s %s {lane} {task}" % (
+        return "%s %s %s %s {lane} {task} {session_id} {schema}" % (
             shlex.quote(sys.executable),
             shlex.quote(script),
             mode,
             shlex.quote(self.markers),
         )
+
+    def reask_command(self):
+        script = os.path.join(self.tmp, "reask.py")
+        if not os.path.exists(script):
+            write(script, REASK_SCRIPT)
+        os.makedirs(self.markers, exist_ok=True)
+        return "%s %s %s {prompt} {session_id} {schema}" % (
+            shlex.quote(sys.executable),
+            shlex.quote(script),
+            shlex.quote(self.markers),
+        )
+
+    def reask_calls(self):
+        path = os.path.join(self.markers, "reask")
+        return [json.loads(line) for line in read(path).splitlines()] if os.path.exists(path) else []
 
     def marker(self, lane):
         path = os.path.join(self.markers, "lane-%d" % lane)
@@ -289,7 +315,7 @@ class RepoCase(unittest.TestCase):
             self.pr_command() if pr is PR_STUB else pr,
             timeout,
             2,
-            trees_root=self.trees,
+            trees_root=self.trees, reask_command=self.reask_command(),
             **{
                 "header": HEADER,
                 "render_command": self.render_command,
@@ -320,7 +346,7 @@ class RepoCase(unittest.TestCase):
             self.run_dir,
             "main",
             prior=prior,
-            **extra,
+            **{"reask": self.reask_command(), **extra},
         )
 
     def build(self, plan, mode="ok"):
@@ -494,6 +520,28 @@ class Dispatch(RepoCase):
         self.assertEqual(records[0]["state"], "failed")
         self.assertEqual(records[0]["exit"], 0)
         self.assertIsNone(records[0]["returned"])
+        self.assertIn("h10-worker-return", records[0]["reason"])
+        self.assertTrue(records[0]["stdout"].endswith("0.reask.out"))
+        asked = self.reask_calls()
+        self.assertEqual(len(asked), 1)
+        self.assertEqual(asked[0][1], records[0]["session_id"])
+        self.assertEqual(asked[0][2], run.worker_schema())
+        self.assertIn("stdout is not one JSON object", asked[0][0])
+
+    def a_worker_with_a_valid_reply_is_never_reasked(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        records = self.dispatch(plan, trees, mode="reports-failed")
+        self.assertEqual(records[0]["returned"]["status"], "failed")
+        self.assertEqual(self.reask_calls(), [])
+
+    def a_dispatch_without_a_reask_command_is_refused_before_any_worker(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        with self.assertRaises(run.ConfigError) as refused:
+            self.dispatch(plan, trees, reask=None)
+        self.assertIn("--reask-command is required", str(refused.exception))
+        self.assertIsNone(self.marker(0))
 
     def a_worker_that_never_exits_is_killed_and_failed(self):
         plan = core.plan([step("a", ["a.txt"])])
@@ -503,6 +551,7 @@ class Dispatch(RepoCase):
         self.assertLess(time.monotonic() - started, 30)
         self.assertEqual(records[0]["state"], "failed")
         self.assertEqual(records[0]["reason"], "timeout")
+        self.assertEqual(self.reask_calls(), [])
         child = int(read(os.path.join(self.markers, "child-0")))
         time.sleep(0.5)
         with self.assertRaises(ProcessLookupError):
@@ -658,7 +707,7 @@ class Dispatch(RepoCase):
         )
         final = run.execute(
             plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command(),
-            self.pr_command(), 60, 1, trees_root=self.trees, no_push=True,
+            self.pr_command(), 60, 1, trees_root=self.trees, reask_command=self.reask_command(), no_push=True,
         )
         by_step = {plan["lanes"][int(i)]["steps"][0]: r["state"] for i, r in final["lanes"].items()}
         self.assertEqual(
@@ -849,7 +898,7 @@ class Dispatch(RepoCase):
         server, client = lane_named(plan, "server"), lane_named(plan, "client")
         state = run.execute(
             plan, self.repo, "main", self.run_dir, self.worker_command("sneak-%d" % server),
-            self.acceptance_command(), None, 60, 2, trees_root=self.trees, no_push=True,
+            self.acceptance_command(), None, 60, 2, trees_root=self.trees, reask_command=self.reask_command(), no_push=True,
         )
         suspects = {
             tuple(entry["suspects"])
@@ -869,7 +918,7 @@ class Dispatch(RepoCase):
         plan = self._interface_plan()
         state = run.execute(
             plan, self.repo, "main", self.run_dir, self.worker_command(),
-            self.acceptance_command(), None, 60, 2, trees_root=self.trees, no_push=True,
+            self.acceptance_command(), None, 60, 2, trees_root=self.trees, reask_command=self.reask_command(), no_push=True,
         )
         self.assertEqual(
             [record.get("foreign_writes") for record in state["lanes"].values()], [[], [], []]
@@ -882,8 +931,7 @@ class Dispatch(RepoCase):
         record = records[0]
         self.assertEqual(record["state"], "ok")
         self.assertLess(len(json.dumps(record)), 1500)
-        self.assertLessEqual(len(record["returned"]["notes"]), core.NOTES_CAP)
-        self.assertIn("prose line 4999", read(record["stdout"]))
+        self.assertIn("prose line 4999", read(record["stderr"]))
         self.assertTrue(record["stdout"].startswith(self.run_dir))
 
     def a_resumed_ok_lane_is_not_dispatched_again(self):
@@ -1217,7 +1265,7 @@ class Gate(RepoCase):
             self.pr_command(),
             60,
             2,
-            trees_root=self.trees,
+            trees_root=self.trees, reask_command=self.reask_command(),
             header=HEADER,
             render_command=self.render_command,
             env=spawn_env(),
@@ -1783,7 +1831,7 @@ class Ship(RepoCase):
             None,
             60,
             2,
-            trees_root=self.trees,
+            trees_root=self.trees, reask_command=self.reask_command(),
             no_push=True,
         )
         by_step = lambda state: {plan["msps"][int(m)]["steps"][0]: r["state"] for m, r in state["msps"].items()}
@@ -1803,7 +1851,7 @@ class Ship(RepoCase):
         plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"])])
         held = run.execute(
             plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command(),
-            None, 60, 2, trees_root=self.trees, no_push=True,
+            None, 60, 2, trees_root=self.trees, reask_command=self.reask_command(), no_push=True,
         )
         self.assertEqual({m["state"] for m in held["msps"].values()}, {run.MSP_COMMITTED})
         self.assertIn("ship", held["msps"]["1"])
@@ -1822,7 +1870,7 @@ class Ship(RepoCase):
         index = {plan["msps"][m]["steps"][0]: m for m in range(len(plan["msps"]))}
         held = run.execute(
             plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command(),
-            None, 60, 2, trees_root=self.trees, no_push=True,
+            None, 60, 2, trees_root=self.trees, reask_command=self.reask_command(), no_push=True,
         )
         self.assertEqual([e["msp"] for e in held["stacking_exceptions"]], [index["c"]])
         sh(["git", "merge", "-q", "--no-edit", held["msps"][str(index["b"])]["ship"]["branch"]], self.repo)
@@ -1877,7 +1925,7 @@ class Ship(RepoCase):
             None,
             60,
             2,
-            trees_root=self.trees,
+            trees_root=self.trees, reask_command=self.reask_command(),
             no_push=True,
         )
         self.assertEqual({m["state"] for m in held["msps"].values()}, {run.MSP_COMMITTED})

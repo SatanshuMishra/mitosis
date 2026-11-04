@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 
 import core
+import handoff
 import isolation
 import mutants
 import outcomes
@@ -100,6 +101,14 @@ MSP_GATE_FAILED = "gate-failed"
 BLOCKING_OUTCOMES = ("weak", "inert", "inconclusive")
 
 PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
+
+WORKER_RETURN = core.RETURN_SCHEMA
+
+REASK_STEM = "reask"
+
+MODEL_TEMPLATE_NEEDS = ("schema", "session_id")
+
+REASK_TEMPLATE_NEEDS = ("prompt", "session_id", "schema")
 
 LANE_RECORD_KEYS = (
     "lane",
@@ -491,7 +500,9 @@ TEMPLATE_PLACEHOLDERS = {
         "document",
         "run_dir",
         "session_id",
+        "schema",
     ),
+    "reask": ("prompt", "session_id", "schema", "model"),
     "decompose": ("prompt", "model", "document", "session_id"),
     "acceptance": ("file", "test", "worktree"),
     "gate-setup": ("worktree",),
@@ -520,6 +531,46 @@ def check_template(name, template):
                 ", ".join("{%s}" % key for key in offered),
             )
         )
+
+
+def _missing_placeholders(template, needed):
+    used = {match.group(1) for match in PLACEHOLDER.finditer(template or "")}
+    return tuple(key for key in needed if key not in used)
+
+
+def check_reply_templates(worker_command, reask_command):
+    missing = _missing_placeholders(worker_command, MODEL_TEMPLATE_NEEDS)
+    if missing:
+        raise ConfigError(
+            "--dispatch-command lacks %s; a model command must carry {schema}, the call schema "
+            "its reply meets as structured output, and {session_id}, the session a re-ask resumes"
+            % ", ".join("{%s}" % key for key in missing)
+        )
+    if reask_command is None:
+        raise ConfigError(
+            "--reask-command is required: a Worker reply that fails %s is asked again in the "
+            "same session through it, offered %s"
+            % (
+                WORKER_RETURN,
+                ", ".join("{%s}" % key for key in TEMPLATE_PLACEHOLDERS[REASK_STEM]),
+            )
+        )
+    try:
+        check_template(REASK_STEM, reask_command)
+    except ConfigError as error:
+        raise ConfigError("--reask-command: %s" % error) from error
+    missing = _missing_placeholders(reask_command, REASK_TEMPLATE_NEEDS)
+    if missing:
+        raise ConfigError(
+            "--reask-command lacks %s; a re-ask must carry {prompt}, the errors to answer, "
+            "{session_id}, the session to resume, and {schema}, the call schema to meet"
+            % ", ".join("{%s}" % key for key in missing)
+        )
+
+
+@lru_cache(maxsize=1)
+def worker_schema():
+    return json.dumps(handoff.call_schema(WORKER_RETURN), sort_keys=True)
 
 
 def check_models(plan, template, models):
@@ -562,51 +613,84 @@ def usage_limit_line(stdout_path, stderr_path):
     return None
 
 
-def last_return(path):
+def read_return(path):
     try:
         with open(path, "rb") as handle:
-            data = handle.read()
-    except OSError:
-        return None
-    for line in reversed(data.decode("utf-8", "replace").splitlines()):
-        if not line.strip():
-            continue
-        returned = parse_return(line.strip())
-        if returned is not None:
-            return returned
-    return None
+            text = handle.read().decode("utf-8", "replace")
+    except OSError as error:
+        return None, (
+            "the reply cannot be read against %s: its output file could not be opened (%s)"
+            % (WORKER_RETURN, error.strerror or type(error).__name__),
+        )
+    return handoff.read_reply(text, WORKER_RETURN)
 
 
-def parse_return(line):
-    if line is None:
-        return None
-    try:
-        parsed = json.loads(line)
-    except ValueError:
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    files = parsed.get("files_changed")
-    notes = parsed.get("notes")
-    bounded = {
-        "item": parsed.get("item") if isinstance(parsed.get("item"), str) else None,
-        "status": parsed.get("status") if isinstance(parsed.get("status"), str) else None,
-        "files_changed": (
-            [f for f in files if isinstance(f, str)] if isinstance(files, list) else []
-        ),
-        "notes": (notes if isinstance(notes, str) else "")[: core.NOTES_CAP],
+def reply_errors(errors):
+    listed = tuple(errors or ())
+    if not listed:
+        return "no reply"
+    if len(listed) == 1:
+        return listed[0]
+    return "%s %s" % (listed[0], "; ".join(listed[1:]))
+
+
+def call_files(folder, stem):
+    return {
+        "out": os.path.join(folder, "%s.out" % stem),
+        "err": os.path.join(folder, "%s.err" % stem),
+        "reask_out": os.path.join(folder, "%s.%s.out" % (stem, REASK_STEM)),
+        "reask_err": os.path.join(folder, "%s.%s.err" % (stem, REASK_STEM)),
     }
-    return {key: bounded[key] for key in core.RETURN_KEYS}
 
 
-def lane_verdict(exit_code, returned, timed_out):
+def _called(code, timed_out, out, err, first=None):
+    returned, errors = read_return(out)
+    return {
+        "exit": code,
+        "timed_out": timed_out,
+        "returned": returned,
+        "errors": errors,
+        "stdout": out,
+        "stderr": err,
+        "first_exit": first,
+    }
+
+
+def worker_call(argv, reask, cwd, timeout, files, env=None, sandbox=None):
+    code, timed_out = run_command(argv, cwd, timeout, files["out"], files["err"], env, sandbox)
+    first = _called(code, timed_out, files["out"], files["err"])
+    if (
+        first["returned"] is not None
+        or timed_out
+        or usage_limit_line(files["out"], files["err"]) is not None
+    ):
+        return first
+    again = build_argv(
+        reask["template"],
+        {**reask["values"], "prompt": handoff.reask_prompt(WORKER_RETURN, first["errors"])},
+    )
+    code, timed_out = run_command(
+        again, cwd, timeout, files["reask_out"], files["reask_err"], env, sandbox
+    )
+    return _called(code, timed_out, files["reask_out"], files["reask_err"], first["exit"])
+
+
+def reask_values(values):
+    return {
+        "session_id": values["session_id"],
+        "schema": values["schema"],
+        "model": values.get("model"),
+    }
+
+
+def lane_verdict(exit_code, returned, timed_out, errors=()):
     if timed_out:
         return "failed", "timeout"
     status = returned.get("status") if returned else None
     if exit_code == 0 and status == "ok":
         return "ok", None
     if returned is None:
-        return "failed", "exit %d with no return line" % exit_code
+        return "failed", "exit %d with no valid reply: %s" % (exit_code, reply_errors(errors))
     if exit_code == 0:
         return "failed", "exit 0 but reported %s" % status
     if status == "ok":
@@ -740,6 +824,7 @@ def _worker_values(plan, lane, tree, models, run_dir, session_id):
         "document": brief.get("document"),
         "run_dir": run_dir,
         "session_id": session_id,
+        "schema": worker_schema(),
     }
 
 
@@ -816,21 +901,37 @@ def _land(plan, lane, tree, record, run_dir, header):
     }
 
 
-def _verdict(lane, tree, started, merged, out, err, code, timed_out, session_id):
-    returned = last_return(out)
-    judged, why = lane_verdict(code, returned, timed_out)
-    limit = None if timed_out or judged != "failed" else usage_limit_line(out, err)
-    state, reason = (judged, why) if limit is None else (LANE_PARKED, "usage limit: %s" % limit)
+def called_verdict(called):
+    judged, why = lane_verdict(
+        called["exit"], called["returned"], called["timed_out"], called["errors"]
+    )
+    if judged == "ok" or called["first_exit"] is None:
+        return judged, why
+    return judged, "exit %d with no valid reply; re-asked once: %s" % (called["first_exit"], why)
+
+
+def _lane_outcome(called):
+    judged, why = called_verdict(called)
+    limit = (
+        None
+        if called["timed_out"] or judged != "failed"
+        else usage_limit_line(called["stdout"], called["stderr"])
+    )
+    return (judged, why) if limit is None else (LANE_PARKED, "usage limit: %s" % limit)
+
+
+def _verdict(lane, tree, started, merged, called, session_id):
+    state, reason = _lane_outcome(called)
     return lane_record(
         lane,
         tree["msp"],
         state,
         reason=reason,
-        exit=code,
-        timed_out=timed_out,
-        returned=returned,
-        stdout=out,
-        stderr=err,
+        exit=called["exit"],
+        timed_out=called["timed_out"],
+        returned=called["returned"],
+        stdout=called["stdout"],
+        stderr=called["stderr"],
         merged=merged,
         commit=None,
         started=started,
@@ -948,9 +1049,11 @@ def dispatch(
     sandbox=None,
     header=None,
     seeds=None,
+    reask=None,
 ):
     if timeout is None:
         raise ConfigError("a per-Lane timeout is required; mitosis has no default")
+    check_reply_templates(command, reask)
     check_models(plan, command, models)
     lanes = plan.get("lanes") or []
     edges = lane_edges(plan)
@@ -1073,16 +1176,14 @@ def dispatch(
                     )
                     progressed = True
                     continue
-                out = os.path.join(lane_dir, "%d.out" % lane)
-                err = os.path.join(lane_dir, "%d.err" % lane)
+                files = call_files(lane_dir, str(lane))
                 session = core.new_session_id()
                 folders = isolation.lane_folders(run_dir, lane)
-                argv = build_argv(
-                    command,
-                    _worker_values(
-                        plan, lane, {**tree, "path": folders["clone"]}, models, run_dir, session
-                    ),
+                values = _worker_values(
+                    plan, lane, {**tree, "path": folders["clone"]}, models, run_dir, session
                 )
+                argv = build_argv(command, values)
+                asked = {"template": reask, "values": reask_values(values)}
                 carried = core.carried_session(argv, session)
                 try:
                     start = isolation.cut_clone(tree, folders)
@@ -1104,7 +1205,7 @@ def dispatch(
                     progressed = True
                     continue
                 future = pool.submit(
-                    run_command, argv, folders["clone"], timeout, out, err, env, confinement
+                    worker_call, argv, asked, folders["clone"], timeout, files, env, confinement
                 )
                 running = {
                     **running,
@@ -1112,8 +1213,6 @@ def dispatch(
                         lane,
                         now(),
                         merged,
-                        out,
-                        err,
                         carried,
                         folders["clone"],
                         start,
@@ -1130,14 +1229,12 @@ def dispatch(
             if running:
                 done, _ = wait(list(running), return_when=FIRST_COMPLETED)
                 for future in done:
-                    lane, started, merged, out, err, session, clone, start, seeding = running[
-                        future
-                    ]
+                    lane, started, merged, session, clone, start, seeding = running[future]
                     running = {f: v for f, v in running.items() if f is not future}
-                    code, timed_out = future.result()
+                    called = future.result()
                     tree = tree_of[lanes[lane]["msp"]]
                     judged = {
-                        **_verdict(lane, tree, started, merged, out, err, code, timed_out, session),
+                        **_verdict(lane, tree, started, merged, called, session),
                         "clone": clone,
                         "start": start,
                         **_seed_fields(seeding),
@@ -3727,6 +3824,7 @@ def _lock_values(plan, folders, feature_branch, models, run_dir, session_id):
         "document": brief.get("document"),
         "run_dir": run_dir,
         "session_id": session_id,
+        "schema": worker_schema(),
     }
 
 
@@ -3735,12 +3833,11 @@ def _dispatch_check_author(plan, settings, command, models, sandbox, base):
     folders = isolation.lock_folders(run_dir)
     lane_dir = os.path.join(run_dir, "lanes")
     os.makedirs(lane_dir, exist_ok=True)
-    out = os.path.join(lane_dir, "%s.out" % LOCK_DIR)
-    err = os.path.join(lane_dir, "%s.err" % LOCK_DIR)
+    files = call_files(lane_dir, LOCK_DIR)
     session = core.new_session_id()
-    argv = build_argv(
-        command, _lock_values(plan, folders, settings["feature_branch"], models, run_dir, session)
-    )
+    values = _lock_values(plan, folders, settings["feature_branch"], models, run_dir, session)
+    argv = build_argv(command, values)
+    asked = {"template": settings["reask_command"], "values": reask_values(values)}
     carried = core.carried_session(argv, session)
     seeded = {}
     try:
@@ -3758,21 +3855,22 @@ def _dispatch_check_author(plan, settings, command, models, sandbox, base):
             session_id=carried,
             **seeded,
         )
-    code, timed_out = run_command(
-        argv, folders["clone"], settings["timeout"], out, err, settings["env"], confinement
+    called = worker_call(
+        argv, asked, folders["clone"], settings["timeout"], files, settings["env"], confinement
     )
-    returned = last_return(out)
-    judged, why = lane_verdict(code, returned, timed_out)
+    judged, why = called_verdict(called)
     ran = {
-        "stdout": out,
-        "stderr": err,
-        "returned": returned,
+        "stdout": called["stdout"],
+        "stderr": called["stderr"],
+        "returned": called["returned"],
         "clone": folders["clone"],
         **seeded,
     }
     if judged == "ok":
         return lock_record("ok", None, session_id=carried, **ran)
-    limit = None if timed_out else usage_limit_line(out, err)
+    limit = (
+        None if called["timed_out"] else usage_limit_line(called["stdout"], called["stderr"])
+    )
     if limit is not None:
         return lock_record(LANE_PARKED, "usage limit: %s" % limit, session_id=carried, **ran)
     return lock_record("failed", "the check-author failed: %s" % why, session_id=carried, **ran)
@@ -4066,10 +4164,12 @@ def execute(
     suite_command=None,
     gate_classes=None,
     gate_classes_sha256=None,
+    reask_command=None,
 ):
     prior = prior_state(run_dir, plan, resume)
     header = carried_header(header, prior)
     check_template("dispatch", worker_command)
+    check_reply_templates(worker_command, reask_command)
     check_template("acceptance", acceptance_command)
     if not no_push and pr_command is not None:
         check_template("pull-request", pr_command)
@@ -4121,6 +4221,7 @@ def execute(
         "gate_classes": tuple(gate_classes or ()),
         "sandbox": sandbox,
         "seeds": seeds,
+        "reask_command": reask_command,
     }
     os.makedirs(run_dir, exist_ok=True)
     write_json(os.path.join(run_dir, PLAN_FILE), plan)
@@ -4187,6 +4288,7 @@ def execute(
         sandbox=sandbox,
         header=landing or header,
         seeds=seeds,
+        reask=reask_command,
     )
     notify(
         observer,

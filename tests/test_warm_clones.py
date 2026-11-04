@@ -41,6 +41,9 @@ import stat
 import subprocess
 import sys
 
+SESSION, SCHEMA = sys.argv[-2], sys.argv[-1]
+del sys.argv[-2:]
+
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "worker.json"), encoding="utf-8") as handle:
     jobs = json.load(handle)
@@ -53,7 +56,7 @@ named = [
 if len(named) > 1:
     named = [name for name in named if jobs[name].get("msp") in (None, sys.argv[1])]
 if len(named) != 1:
-    print(json.dumps({"item": "unknown", "status": "failed", "files_changed": [], "notes": "no job"}))
+    print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": "unknown", "status": "failed", "files_changed": [], "notes": "no job"}}))
     sys.exit(1)
 name = named[0]
 job = jobs[name]
@@ -94,8 +97,19 @@ os.makedirs(os.path.join(here, "records"), exist_ok=True)
 with open(os.path.join(here, "records", name + ".json"), "w", encoding="utf-8") as handle:
     json.dump(record, handle)
 declared = job.get("declared", sorted(job.get("writes", {})))
-print(json.dumps({"item": name, "status": "ok", "files_changed": declared, "notes": "done"}))
+print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": name, "status": "ok", "files_changed": declared, "notes": "done"}}))
 '''
+
+REASK_COMMAND = " ".join(
+    (
+        shlex.quote(sys.executable),
+        "-c",
+        shlex.quote("import sys; sys.stderr.write('no re-ask was expected\\n'); sys.exit(1)"),
+        "{prompt}",
+        "{session_id}",
+        "{schema}",
+    )
+)
 
 ACCEPT = r'''
 import os
@@ -470,7 +484,9 @@ class Scratch:
             "--feature-branch",
             "feature",
             "--dispatch-command",
-            self.stub("worker.py", "{msp}", "{task}"),
+            self.stub("worker.py", "{msp}", "{task}", "{session_id}", "{schema}"),
+            "--reask-command",
+            REASK_COMMAND,
             "--acceptance-command",
             acceptance,
             "--timeout",

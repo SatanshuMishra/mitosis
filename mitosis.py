@@ -133,8 +133,9 @@ TEMPLATE_PLACEHOLDERS = {"brief": BRIEF_PLACEHOLDERS}
 PLACEHOLDER_HELP = {
     "dispatch": (
         "{task} {model} {tier} {worktree} {branch} {lane} {msp} {charter} {document} {run_dir} "
-        "{session_id}"
+        "{session_id} {schema}"
     ),
+    "reask": " ".join("{%s}" % key for key in run.TEMPLATE_PLACEHOLDERS["reask"]),
     "decompose": "{prompt} {model} {document} {session_id}",
     "brief": " ".join("{%s}" % key for key in BRIEF_PLACEHOLDERS),
     "acceptance": "{file} {test} {worktree}",
@@ -227,8 +228,16 @@ FLAG_SPECS = {
     },
     "--dispatch-command": {
         "metavar": "TEMPLATE",
-        "help": "one Worker per Lane; placeholders %s; split into argv before substitution"
-        % PLACEHOLDER_HELP["dispatch"],
+        "help": "one Worker per Lane; placeholders %s; split into argv before substitution; "
+        "a run needs {schema}, the call schema the reply meets as structured output, and "
+        "{session_id}" % PLACEHOLDER_HELP["dispatch"],
+    },
+    "--reask-command": {
+        "metavar": "TEMPLATE",
+        "help": "asks a Worker or check-author whose reply fails %s once more, in the same "
+        "session; placeholders %s; required for a run, which also needs {schema} and "
+        "{session_id} in --dispatch-command; replies are read from structured_output"
+        % (run.WORKER_RETURN, PLACEHOLDER_HELP["reask"]),
     },
     "--decompose-command": {
         "metavar": "TEMPLATE",
@@ -592,16 +601,30 @@ def unoffered_placeholders(name, template):
     return tuple(sorted(used - set(offered)))
 
 
+TEMPLATE_FLAGS = {
+    "dispatch": "--dispatch-command",
+    "reask": "--reask-command",
+    "decompose": "--decompose-command",
+    "brief": "--brief-command",
+    "acceptance": "--acceptance-command",
+    "gate-setup": "--gate-setup",
+    "suite": "--suite-command",
+    "pull-request": "--pr-command",
+}
+
+
 def check_template(name, template):
+    flag = TEMPLATE_FLAGS[name]
     try:
         run.check_template(name, template)
     except run.ConfigError as error:
-        raise Refusal(str(error))
+        raise Refusal("%s: %s" % (flag, error))
     unknown = unoffered_placeholders(name, template)
     if unknown:
         raise Refusal(
-            "the %s command uses %s, which it is never given; it offers %s"
+            "%s: the %s command uses %s, which it is never given; it offers %s"
             % (
+                flag,
                 name,
                 ", ".join("{%s}" % key for key in unknown),
                 ", ".join("{%s}" % key for key in TEMPLATE_PLACEHOLDERS[name]),
@@ -612,6 +635,7 @@ def check_template(name, template):
 def check_templates(args):
     for name, template in (
         ("dispatch", args.dispatch_command),
+        ("reask", args.reask_command),
         ("decompose", args.decompose_command),
         ("brief", args.brief_command),
         ("acceptance", args.acceptance_command),
@@ -622,6 +646,11 @@ def check_templates(args):
         if template is None:
             continue
         check_template(name, template)
+    if not args.plan_only and args.dispatch_command is not None:
+        try:
+            run.check_reply_templates(args.dispatch_command, args.reask_command)
+        except run.ConfigError as error:
+            raise Refusal(str(error))
 
 
 def check_worker_writes(args, run_dir, repo):
@@ -2117,6 +2146,7 @@ def execute(args, plan, models, run_dir, repo, root, base=None):
             worker_writes=tuple(args.worker_write),
             gate_classes=loaded_gate_classes(args)[0],
             gate_classes_sha256=loaded_gate_classes(args)[1],
+            reask_command=args.reask_command,
         ), None
     except (run.ConfigError, run.ResumeError) as error:
         raise Refusal(str(error))

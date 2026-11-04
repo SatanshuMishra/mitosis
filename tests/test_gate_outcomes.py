@@ -32,6 +32,9 @@ import json
 import os
 import sys
 
+SESSION, SCHEMA = sys.argv[-2], sys.argv[-1]
+del sys.argv[-2:]
+
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "worker.json"), encoding="utf-8") as handle:
     job = json.load(handle)[sys.argv[1]]
@@ -49,8 +52,19 @@ if limit:
     stream.flush()
     sys.exit(1)
 declared = job.get("declared", sorted(job.get("writes", {})))
-print(json.dumps({"item": job["step"], "status": "ok", "files_changed": declared, "notes": "done"}))
+print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": job["step"], "status": "ok", "files_changed": declared, "notes": "done"}}))
 '''
+
+REASK_COMMAND = " ".join(
+    (
+        shlex.quote(sys.executable),
+        "-c",
+        shlex.quote("import sys; sys.stderr.write('no re-ask was expected\\n'); sys.exit(1)"),
+        "{prompt}",
+        "{session_id}",
+        "{schema}",
+    )
+)
 
 ACCEPT = r'''
 import os
@@ -227,7 +241,9 @@ class Scratch:
             "--feature-branch",
             "feature",
             "--dispatch-command",
-            self.stub("worker.py", "{msp}"),
+            self.stub("worker.py", "{msp}", "{session_id}", "{schema}"),
+            "--reask-command",
+            REASK_COMMAND,
             "--acceptance-command",
             self.stub("accept.py", acceptance, "{file}", "{test}"),
             "--timeout",

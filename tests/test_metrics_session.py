@@ -79,8 +79,21 @@ for path in paths:
 if len(sys.argv) > 3:
     with open(os.path.join(here, "lane-%s.txt" % sys.argv[2]), "w", encoding="utf-8") as handle:
         handle.write(sys.argv[3])
-print(json.dumps({"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"}))
+reply = {"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"}
+session = sys.argv[3] if len(sys.argv) > 3 else ""
+print(json.dumps({"type": "result", "session_id": session, "result": "done", "structured_output": reply}))
 '''
+
+REASK_COMMAND = " ".join(
+    (
+        shlex.quote(sys.executable),
+        "-c",
+        shlex.quote("import sys; sys.stderr.write('no re-ask was expected\\n'); sys.exit(1)"),
+        "{prompt}",
+        "{session_id}",
+        "{schema}",
+    )
+)
 
 
 def write(root, relative, content):
@@ -151,28 +164,31 @@ def invoke(root, argv):
     return code, out.getvalue(), err.getvalue()
 
 
+def build_flags(run_dir, worker_template):
+    return [
+        "--items",
+        "items.json",
+        "--run-dir",
+        run_dir,
+        "--feature-branch",
+        "feature",
+        "--dispatch-command",
+        worker_template,
+        "--reask-command",
+        REASK_COMMAND,
+        "--acceptance-command",
+        "probe {file} {test}",
+        "--timeout",
+        "30",
+        "--no-push",
+    ]
+
+
 def build(root, elsewhere, items, worker_template):
     git_repo(root)
     write(root, "items.json", json.dumps(items))
     run_dir = os.path.join(elsewhere, "run")
-    code, out, err = invoke(
-        root,
-        [
-            "--items",
-            "items.json",
-            "--run-dir",
-            run_dir,
-            "--feature-branch",
-            "feature",
-            "--dispatch-command",
-            worker_template,
-            "--acceptance-command",
-            "probe {file} {test}",
-            "--timeout",
-            "30",
-            "--no-push",
-        ],
-    )
+    code, out, err = invoke(root, build_flags(run_dir, worker_template))
     return code, out, err, read_json(os.path.join(run_dir, "state.json"))
 
 
@@ -190,7 +206,9 @@ class DispatchSessionId(unittest.TestCase):
         import mitosis
 
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
-            template = command(elsewhere, "worker.py", WORKER, "{task}", "{lane}", "{session_id}")
+            template = command(
+                elsewhere, "worker.py", WORKER, "{task}", "{lane}", "{session_id}", "{schema}"
+            )
             with isolated_run():
                 code, out, err, state = build(
                     root, elsewhere, [briefed("alpha"), briefed("beta")], template
@@ -207,17 +225,20 @@ class DispatchSessionId(unittest.TestCase):
                 self.assertRegex(value, UUID4)
                 self.assertEqual(state["lanes"][lane]["session_id"], value)
 
-    def test_session_id_null_without_placeholder(self):
+    def test_a_template_without_session_id_is_refused_before_any_worker(self):
         import mitosis
 
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
-            template = command(elsewhere, "worker.py", WORKER, "{task}")
+            template = command(elsewhere, "worker.py", WORKER, "{task}", "{lane}", "{schema}")
+            git_repo(root)
+            write(root, "items.json", json.dumps([briefed("alpha")]))
+            run_dir = os.path.join(elsewhere, "run")
             with isolated_run():
-                code, out, err, state = build(root, elsewhere, [briefed("alpha")], template)
-            self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
-            self.assertEqual(state["lanes"]["0"]["state"], "ok")
-            self.assertIn("session_id", state["lanes"]["0"])
-            self.assertIsNone(state["lanes"]["0"]["session_id"])
+                code, out, err = invoke(root, build_flags(run_dir, template))
+            self.assertEqual(code, mitosis.EXIT_REFUSED, out + err)
+            self.assertIn("--dispatch-command lacks {session_id}", err)
+            self.assertFalse(os.path.exists(os.path.join(run_dir, "state.json")))
+            self.assertFalse(os.path.exists(os.path.join(elsewhere, "worker", "lane-0.txt")))
 
 
 class SpawnAttemptSessionId(unittest.TestCase):

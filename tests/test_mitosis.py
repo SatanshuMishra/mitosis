@@ -19,6 +19,17 @@ import mitosis
 import run
 import shape
 
+REASK_COMMAND = " ".join(
+    (
+        shlex.quote(sys.executable),
+        "-c",
+        shlex.quote("import sys; sys.stderr.write('no re-ask was expected\\n'); sys.exit(1)"),
+        "{prompt}",
+        "{session_id}",
+        "{schema}",
+    )
+)
+
 
 def lanes(*spans):
     return {
@@ -87,38 +98,6 @@ class AchievedParallelism(unittest.TestCase):
         peak, counted = mitosis.achieved_parallelism(spans)
         self.assertLessEqual(peak, 3)
         self.assertEqual(counted, 9)
-
-
-class ReturnParsing(unittest.TestCase):
-    def _out(self, text):
-        import tempfile
-
-        path = os.path.join(tempfile.mkdtemp(), "out")
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        return path
-
-    RETURN = '{"item":"a","status":"ok","files_changed":["x.py"],"notes":"n"}'
-
-    def a_fenced_return_is_still_found(self):
-        got = run.last_return(self._out("prose\n```json\n" + self.RETURN + "\n```\n"))
-        self.assertEqual(got["item"], "a")
-
-    def prose_after_the_return_does_not_discard_it(self):
-        got = run.last_return(self._out(self.RETURN + "\nAll done.\n"))
-        self.assertEqual(got["status"], "ok")
-
-    def the_last_return_wins_when_there_are_several(self):
-        first = '{"item":"a","status":"failed","files_changed":[],"notes":""}'
-        got = run.last_return(self._out(first + "\n" + self.RETURN + "\n"))
-        self.assertEqual(got["status"], "ok")
-
-    def narration_that_merely_looks_like_json_is_skipped(self):
-        got = run.last_return(self._out(self.RETURN + "\n[1, 2, 3]\n\"a string\"\n"))
-        self.assertEqual(got["item"], "a")
-
-    def a_worker_that_returns_nothing_still_reports_nothing(self):
-        self.assertIsNone(run.last_return(self._out("no json here at all\n")))
 
 
 class RiskMarkers(unittest.TestCase):
@@ -581,7 +560,9 @@ class Staging(unittest.TestCase):
                     "--feature-branch",
                     "feature",
                     "--dispatch-command",
-                    "worker {task}",
+                    "worker {task} {session_id} {schema}",
+                    "--reask-command",
+                    "reask {prompt} {session_id} {schema}",
                     "--acceptance-command",
                     "probe {file} {test}",
                     "--pr-command",
@@ -616,7 +597,9 @@ class Staging(unittest.TestCase):
                     "--feature-branch",
                     "feature",
                     "--dispatch-command",
-                    "worker {task}",
+                    "worker {task} {session_id} {schema}",
+                    "--reask-command",
+                    "reask {prompt} {session_id} {schema}",
                     "--acceptance-command",
                     "probe {file} {test}",
                     "--pr-command",
@@ -894,6 +877,8 @@ HOLDING_WORKER = r'''
 import json
 import sys
 
+SESSION = sys.argv[2] if len(sys.argv) > 2 else ""
+
 prefix = "Write-set for this Lane, the only files you may edit: "
 paths = [
     path.strip()
@@ -905,7 +890,8 @@ paths = [
 for path in paths:
     with open(path, "a") as handle:
         handle.write("work\n")
-print(json.dumps({"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"}))
+reply = {"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"}
+print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": reply}))
 '''
 
 
@@ -925,7 +911,9 @@ class HeldRun(unittest.TestCase):
                         "--feature-branch",
                         "feature",
                         "--dispatch-command",
-                        command(elsewhere, "worker.py", worker or HOLDING_WORKER, "{task}"),
+                        command(elsewhere, "worker.py", worker or HOLDING_WORKER, "{task}", "{session_id}", "{schema}"),
+                        "--reask-command",
+                        REASK_COMMAND,
                         "--acceptance-command",
                         "probe {file} {test}",
                         "--timeout",
@@ -953,8 +941,8 @@ class HeldRun(unittest.TestCase):
         self.assertEqual(code, 10, out + err)
         found = json.loads(out.splitlines()[-1])
         self.assertEqual(found["lanes"][0]["state"], "failed")
-        self.assertIn("exit 4", found["lanes"][0]["reason"])
-        self.assertTrue(found["lanes"][0]["stderr"].endswith("0.err"))
+        self.assertIn("exit 4 with no valid reply; re-asked once: exit 1", found["lanes"][0]["reason"])
+        self.assertTrue(found["lanes"][0]["stderr"].endswith("0.reask.err"))
         self.assertEqual(len(found["attention"]), 2)
         self.assertIn("Lane 0 (alpha) is failed", found["attention"][0])
         self.assertIn("MSP alpha is blocked", found["attention"][1])
@@ -1017,7 +1005,9 @@ class PullRequestFlags(unittest.TestCase):
                         "--feature-branch",
                         "feature",
                         "--dispatch-command",
-                        command(elsewhere, "worker.py", MARKING_WORKER, "{task}"),
+                        command(elsewhere, "worker.py", MARKING_WORKER, "{task}", "{session_id}", "{schema}"),
+                        "--reask-command",
+                        REASK_COMMAND,
                         "--acceptance-command",
                         "probe {file} {test}",
                         "--timeout",
@@ -1088,7 +1078,9 @@ class PushOnly(unittest.TestCase):
                         "--feature-branch",
                         "feature",
                         "--dispatch-command",
-                        command(elsewhere, "worker.py", HOLDING_WORKER, "{task}"),
+                        command(elsewhere, "worker.py", HOLDING_WORKER, "{task}", "{session_id}", "{schema}"),
+                        "--reask-command",
+                        REASK_COMMAND,
                         "--acceptance-command",
                         "probe {file} {test}",
                         "--timeout",
@@ -1204,7 +1196,9 @@ class ProvenHead(unittest.TestCase):
                     "--feature-branch",
                     "feature",
                     "--dispatch-command",
-                    command(self.elsewhere, "worker.py", HOLDING_WORKER, "{task}"),
+                    command(self.elsewhere, "worker.py", HOLDING_WORKER, "{task}", "{session_id}", "{schema}"),
+                    "--reask-command",
+                    REASK_COMMAND,
                     "--acceptance-command",
                     command(
                         self.elsewhere,
@@ -1439,7 +1433,9 @@ class RenderPreflight(unittest.TestCase):
                     "--feature-branch",
                     "feature",
                     "--dispatch-command",
-                    command(self.elsewhere, "worker.py", worker, "{task}"),
+                    command(self.elsewhere, "worker.py", worker, "{task}", "{session_id}", "{schema}"),
+                    "--reask-command",
+                    REASK_COMMAND,
                     "--acceptance-command",
                     command(
                         self.elsewhere,
@@ -2193,7 +2189,9 @@ class SessionReport(unittest.TestCase):
                             "--feature-branch",
                             "feature",
                             "--dispatch-command",
-                            command(elsewhere, "worker.py", worker, "{task}"),
+                            command(elsewhere, "worker.py", worker, "{task}", "{session_id}", "{schema}"),
+                            "--reask-command",
+                            REASK_COMMAND,
                             "--acceptance-command",
                             "probe {file} {test}",
                             "--timeout",
@@ -2304,7 +2302,6 @@ def load_tests(loader, tests, pattern):
     suite = unittest.TestSuite()
     for case in (
         AchievedParallelism,
-        ReturnParsing,
         RiskMarkers,
         TemplatePlaceholders,
         CoverageReport,

@@ -37,6 +37,9 @@ import shutil
 import subprocess
 import sys
 
+SESSION, SCHEMA = sys.argv[-2], sys.argv[-1]
+del sys.argv[-2:]
+
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "worker.json"), encoding="utf-8") as handle:
     jobs = json.load(handle)
@@ -49,7 +52,7 @@ named = [
 if len(named) > 1:
     named = [name for name in named if jobs[name].get("msp") in (None, sys.argv[1])]
 if len(named) != 1:
-    print(json.dumps({"item": "unknown", "status": "failed", "files_changed": [], "notes": "no job"}))
+    print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": "unknown", "status": "failed", "files_changed": [], "notes": "no job"}}))
     sys.exit(1)
 name = named[0]
 job = jobs[name]
@@ -104,7 +107,30 @@ with open(os.path.join(here, "records", name + ".json"), "w", encoding="utf-8") 
     json.dump(record, handle)
 touched = sorted(set(job.get("writes", {})) | set(job.get("links", {})) | set(job.get("deletes", [])))
 declared = job.get("declared", touched)
-print(json.dumps({"item": name, "status": "ok", "files_changed": declared, "notes": "done"}))
+print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": name, "status": "ok", "files_changed": declared, "notes": "done"}}))
+'''
+
+REASK_COMMAND = " ".join(
+    (
+        shlex.quote(sys.executable),
+        "-c",
+        shlex.quote("import sys; sys.stderr.write('no re-ask was expected\\n'); sys.exit(1)"),
+        "{prompt}",
+        "{session_id}",
+        "{schema}",
+    )
+)
+
+REASK_REPLY = r'''
+import json
+import os
+import sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "reask.log"), "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(sys.argv[1:]) + "\n")
+reply = {"item": "check-author", "status": "ok", "files_changed": ["tests/test_calc.py"], "notes": "asked again"}
+print(json.dumps({"type": "result", "session_id": sys.argv[2], "result": "done", "structured_output": reply}))
 '''
 
 ACCEPT = r'''
@@ -294,7 +320,7 @@ class Scratch:
             timeout=RUN_LIMIT,
         )
 
-    def build(self, items, *extra, acceptance="unittest", env=None):
+    def build(self, items, *extra, acceptance="unittest", env=None, reask=REASK_COMMAND):
         return self.mitosis(
             "--items",
             items,
@@ -303,7 +329,9 @@ class Scratch:
             "--feature-branch",
             "feature",
             "--dispatch-command",
-            self.stub("worker.py", "{msp}", "{task}"),
+            self.stub("worker.py", "{msp}", "{task}", "{session_id}", "{schema}"),
+            "--reask-command",
+            reask,
             "--acceptance-command",
             self.stub("accept.py", acceptance, "{file}", "{test}"),
             "--timeout",
@@ -469,6 +497,37 @@ class CheckAuthorLane(unittest.TestCase):
         self.assertEqual(scratch.dispatched(), ["check-author", "add"])
         self.assertEqual((self._msp(summary, "calc").get("gate") or {}).get("outcome"), "pass")
 
+    def a_check_author_reply_that_fails_h10_is_reasked_in_its_own_session(self):
+        scratch = self._scratch()
+        put(os.path.join(scratch.stubs, "reask.py"), REASK_REPLY)
+        items = scratch.items([check_author(), builder()])
+        scratch.jobs(
+            {
+                "check-author": {
+                    "writes": {TEST_FILE: EXACT_TEST},
+                    "msp": "lock",
+                    "declared": [""],
+                    "script": "record['session'] = SESSION",
+                },
+                "add": {"writes": {"calc.py": CORRECT_ADD}, "msp": "calc"},
+            }
+        )
+        completed = scratch.build(
+            items, reask=scratch.stub("reask.py", "{prompt}", "{session_id}", "{schema}")
+        )
+        with open(os.path.join(scratch.stubs, "reask.log"), encoding="utf-8") as handle:
+            asked = [json.loads(line) for line in handle if line.strip()]
+        self.assertEqual(len(asked), 1, tail(completed))
+        prompt, session, schema = asked[0]
+        self.assertEqual(session, scratch.record("check-author")["session"])
+        self.assertIn("h10-worker-return", prompt)
+        self.assertIn("#/files_changed/0", prompt)
+        self.assertEqual(json.loads(schema), handoff.call_schema("h10-worker-return"))
+        summary = summary_of(completed)
+        self.assertEqual(self._lock(summary, completed).get("state"), "ok")
+        self.assertEqual(scratch.dispatched(), ["check-author", "add"])
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
+
     def a_locked_test_that_passes_before_the_build_stops_it(self):
         scratch = self._scratch()
         before = self._feature()
@@ -551,6 +610,7 @@ def load_tests(loader, standard, pattern):
                 "an_items_file_with_a_check_author_plans",
                 "a_malformed_check_author_is_refused",
                 "a_check_author_lane_locks_then_the_build_runs",
+                "a_check_author_reply_that_fails_h10_is_reasked_in_its_own_session",
                 "a_locked_test_that_passes_before_the_build_stops_it",
                 "a_check_author_write_outside_the_locked_paths_is_not_landed",
                 "locked_files_already_on_the_feature_branch_skip_the_lane",
