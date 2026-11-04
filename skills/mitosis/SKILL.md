@@ -22,9 +22,7 @@ Reach for mitosis when all three hold:
 2. Each change can name a test that proves it. The gate runs that test with
    the work present and again with the work reverted; a change with no such
    test is still built, but the run proves nothing about it and says so.
-3. A human will review each part as its own pull request. mitosis opens
-   pull requests, or pushes the branches for the caller to open, and
-   stops.
+3. A human will review each part as its own pull request.
 
 Do not reach for it when:
 
@@ -51,35 +49,31 @@ quotes or newlines lands as one argument and is never reinterpreted by a shell.
 | `--pr-command` | one pull request per MSP; optional, refused with `--no-push` | listed under --help |
 | `--render-command` | render --fields, per MSP at start and ship | none |
 | `--pr-type` `--pr-scope` `--pr-subject` `--pr-why` `--pr-impact` `--pr-blast-radius` | nothing; they are facts handed to render | none |
-| `--decompose-command` | the structure pass that turns a document into unbriefed Steps | prompt, model, document |
-| `--brief-command` | one Worker per unbriefed Step, writing its task | prompt, model, step, document |
+| `--decompose-command` | the structure pass that turns a document into unbriefed Steps | prompt, model, document, session_id, schema |
+| `--brief-command` | one Worker per unbriefed Step, writing its task | prompt, model, step, document, session_id, schema |
+| `--reask-command` | the same session once more, for a reply failing its owned schema; required to call a model | prompt, session_id, schema, model |
 | `--worker-sandbox` | each Worker, gate and lock-stage run under sandbox-exec, writing only its clone or checkout, temp, transcript and `--worker-write` paths; exit 3 without it; exit 14 if a leftover process lingers | none |
 | `--worker-write` | nothing; one more sandbox-writable path; repeatable; exit 3 if it overlaps the run directory, repository or its git directory | none |
 | `--suite-command` | the full suite unmutated, then per surviving mutant; exit 1 kills only after an unmutated pass, else `weak` | worktree, report |
 | `--gate-classes` | nothing; a JSON `{test, class, reason}` list classing properties | none |
 
-A Worker spawned from this skill, its brief as its whole prompt and the model
-chosen by tier:
+A Worker's prompt is its whole brief. Dispatch, decompose and brief templates
+must carry `{schema}`, the call schema as JSON text, and `{session_id}`, or
+mitosis exits 3; the runs below show them with the re-ask template. A reply is read
+only from the structured_output of the JSON object printed; one failing its
+owned schema is re-asked once in that session, then fails its call. Every
+hand-off mitosis writes is checked against `contracts/` first; a state, result
+or lock record that fails exits 15.
 
-```
-claude -p {task} --model {model} --session-id {session_id} --permission-mode bypassPermissions
-```
-
-The brief carries the charter and document paths, the Steps in order,
-write-set, read-set and return contract. Its last output line that parses
-as a JSON object is its return.
-
-Tiers are labels, not models. When the dispatch template uses the model
-placeholder, every tier the plan assigns must be mapped, or mitosis refuses
-to start:
+Tiers are labels; with `{model}` in the template, map every tier the plan
+assigns, or mitosis refuses to start:
 
 ```
 --tier-model top=claude-opus-5 --tier-model cheap=claude-sonnet-5
 ```
 
-The acceptance template must exit 0 when the property passes, 1 when it
-fails, and anything else when it could not run. The third code lets the gate
-tell a broken build from a failing test:
+The acceptance template exits 0 on a pass, 1 on a fail and anything else
+when it could not run, so the gate tells a broken build from a failing test:
 
 ```
 --acceptance-command "python3 -m pytest {file} -k {test} -q"
@@ -88,11 +82,9 @@ tell a broken build from a failing test:
 pytest exits 5 when it collects nothing, so a misspelled test reads as
 inconclusive. Wrap another runner to map its exit codes to those three.
 
-The wrapper has one more duty. Reverting the implementation deletes what the
-work created, so a test importing a new module stops loading. A module missing
-because it was reverted means the behaviour does not exist: exit 1. Any other
-load error stays inconclusive. Catch the whole import family, since importing
-a name out of a surviving package raises the general error.
+Reverting the implementation deletes new modules, so the wrapper exits 1 when
+an import fails on a module the revert removed, catching the whole import
+family; any other load error stays inconclusive.
 
 Exclude editor state and build caches, or they arrive as undeclared writes.
 
@@ -105,10 +97,7 @@ or mitosis refuses to run.
 mitosis writes no pull-request text: at ship it writes each MSP's facts file,
 runs pull-request render --fields on it and uses the printed title and body
 unchanged; a refusal ends the MSP `ship-failed`, never retried. It needs
-pull-request 0.3.0 or later on PATH or named with `--render-command`. The body
-holds Problem from `--pr-why`, a Change entry per Step, Impact from
-`--pr-impact` or else `--pr-blast-radius`, a Testing row per acceptance test,
-and Trade-offs and open problems. Naming `--pr-type` and `--pr-subject`, even
+pull-request 0.3.0 or later on PATH or named with `--render-command`. Naming `--pr-type` and `--pr-subject`, even
 with `--no-push`, needs `--pr-impact` or `--pr-blast-radius` and `--timeout`,
 and probes render before any Worker spawns. Pushing also needs `--pr-why`;
 without `--pr-command` each MSP branch is pushed and ends `pushed`.
@@ -120,64 +109,51 @@ tell them apart. Pass one, never both.
 
 ### Items: hand-written Steps
 
-`--items` takes a JSON array. Each Step is one entry with the five required
-fields and any optional ones; --help lists them.
-Two Steps that build a validator and then its command-line flag:
+`--items` takes a JSON array that must meet h12 in `contracts/`, or exit 3:
+every Step has `spec_ref`, its document sections, and `source`, the
+document's absolute path and SHA-256. A validator, then its flag:
 
 ```json
 [
-  {
-    "name": "validate-manifest",
-    "task": "Add validate_manifest(path) to app/manifest.py, returning one error per missing key.",
-    "files": ["app/manifest.py", "tests/test_manifest.py"],
-    "source": null,
-    "acceptance": [
-      {"file": "tests/test_manifest.py", "test": "a_missing_key_is_reported_by_name"}
-    ],
-    "type": "feature",
-    "complexity": "simple"
-  },
-  {
-    "name": "validate-flag",
-    "task": "Add --validate to app/cli.py, printing those errors and exiting 1 if any.",
-    "files": ["app/cli.py", "tests/test_cli.py"],
-    "source": null,
-    "acceptance": [
-      {"file": "tests/test_cli.py", "test": "validate_exits_one_on_a_bad_manifest"}
-    ],
-    "after": ["validate-manifest"],
-    "type": "feature",
-    "complexity": "simple"
-  }
+  {"name": "validate-manifest",
+   "task": "Add validate_manifest(path) to app/manifest.py, returning one error per missing key.",
+   "files": ["app/manifest.py", "tests/test_manifest.py"],
+   "source": {"path": "/work/app/docs/manifest.md", "sha256": "4bc2c86cd92744fbb47c8f13e04a42d78fec19f8c032ab091e4a8255720346c8"},
+   "acceptance": [{"file": "tests/test_manifest.py", "test": "a_missing_key_is_reported_by_name"}],
+   "spec_ref": ["1.1"]},
+  {"name": "validate-flag",
+   "task": "Add --validate to app/cli.py, printing those errors and exiting 1 if any.",
+   "files": ["app/cli.py", "tests/test_cli.py"],
+   "source": {"path": "/work/app/docs/manifest.md", "sha256": "4bc2c86cd92744fbb47c8f13e04a42d78fec19f8c032ab091e4a8255720346c8"},
+   "acceptance": [{"file": "tests/test_cli.py", "test": "validate_exits_one_on_a_bad_manifest"}],
+   "spec_ref": ["1.2"], "after": ["validate-manifest"]}
 ]
 ```
 
-`source` is null because no document produced these Steps. `after` orders
-the second behind the first; because their write-sets are disjoint, they
-become two MSPs and the second stacks its pull request on the first.
+`after` orders the second behind the first; with disjoint write-sets they
+become two MSPs, the second stacking its pull request on the first.
 
 Steps sharing a `contract_group` are halves of one interface, built in sequence by one
 Lane in one MSP. To build them in parallel, give one `"type": "contract"`
 and make the others wait on it through `after`. One `msp` tag ships Steps
 together.
 
-Plan first. This validates and schedules the Steps, writes the plan into the
-run directory and prints the plan-stage report; it spawns nothing:
+Plan first; this validates, schedules and writes the plan, spawning nothing:
 
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --items plan.json --plan-only
 ```
 
-An `after` naming a Step that does not exist is fatal and is
-named; a write-set path that does not exist yet, an empty `acceptance` list
-and a non-empty `assumptions` list are each counted, not fatal. When the
-Lane count and the tiers look right, run:
+An `after` naming no Step is fatal; a write-set path not yet made, an empty
+`acceptance` and a non-empty `assumptions` are counted, not fatal. When the
+Lanes and tiers look right, run:
 
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --items plan.json \
   --charter docs/CHARTER.md \
   --feature-branch main \
-  --dispatch-command "claude -p {task} --model {model} --permission-mode bypassPermissions" \
+  --dispatch-command "claude -p {task} --model {model} --session-id {session_id} --output-format json --json-schema {schema} --permission-mode bypassPermissions" \
+  --reask-command "claude -p {prompt} --resume {session_id} --model {model} --output-format json --json-schema {schema} --permission-mode bypassPermissions" \
   --acceptance-command "python3 -m pytest {file} -k {test} -q" \
   --pr-command "gh pr create --head {branch} --base {base} --title {title} --body {body}" \
   --pr-type feat --pr-subject "validate manifests from the command line" \
@@ -187,7 +163,8 @@ python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --items plan.json \
   --timeout 1800 --concurrency 4
 ```
 
-The pull-request template's last stdout line is recorded as the pull request.
+The pull-request template's last stdout line, an http or https URL, is
+recorded as the pull request.
 
 ### Spec: a document
 
@@ -202,14 +179,14 @@ prompt is large, so let it arrive on stdin. No Step returned here carries a
 
 ```
 python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --spec docs/specs/search.md --plan-only \
-  --decompose-command "claude -p --model {model} --permission-mode bypassPermissions" \
+  --decompose-command "claude -p --model {model} --session-id {session_id} --output-format json --json-schema {schema} --permission-mode bypassPermissions" \
+  --reask-command "claude -p {prompt} --resume {session_id} --model {model} --output-format json --json-schema {schema} --permission-mode bypassPermissions" \
   --tier-model top=claude-opus-5 \
   --timeout 900
 ```
 
-It persists its Steps and prints a report. Read the Split shape findings,
-the scalars that score the split, the coverage map of sections no Step
-claimed, and the assumptions, each of which keeps its Step from `simple`.
+It persists its Steps and reports the Split shape findings, scalars,
+unclaimed sections and assumptions, each keeping its Step from `simple`.
 
 No finding stops a run; each is printed, put in its pull request and given an
 exit code.
@@ -234,9 +211,8 @@ When the plan reads right, run it with `--resume`, the items run's flags with
 `--spec` in place of `--items`, plus `--brief-command`; it briefs every
 unbriefed Step in parallel, then builds.
 
-Every Step carries the document's path and hash in `source`, so each Worker
-opens the document from its own clone, and the report's drift section says
-whether it changed since the Steps were cut.
+The report's drift section says whether the document `source` names changed
+since the Steps were cut.
 
 ## What a run does
 
@@ -387,9 +363,8 @@ both commits. A malformed value or label exits 2.
 
 Each invocation is one run in the metrics store, `~/.plugin-metrics` or
 `PLUGIN_METRICS_DIR`, with one summary of split, gates, MSP states and spend.
-Each model call gets a fresh `{session_id}` placeholder; given to claude -p
---session-id as above, it names the transcript the call is priced from. Every
-command mitosis starts gets `PLUGIN_METRICS_PARENT` naming the run.
+Each model call's fresh `{session_id}` names the transcript it is priced
+from. Every command mitosis starts gets `PLUGIN_METRICS_PARENT` naming the run.
 
 ## Checking an installed copy
 

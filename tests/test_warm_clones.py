@@ -1019,12 +1019,12 @@ class WarmClones(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertTrue(phrase in text, "README.md does not name %s" % phrase)
 
-    def the_version_is_0_11_0_everywhere(self):
+    def the_version_is_0_12_0_everywhere(self):
         with open(os.path.join(ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as handle:
             plugin = json.load(handle)
-        self.assertEqual(load("core").__version__, "0.11.0")
-        self.assertEqual(plugin.get("version"), "0.11.0")
-        self.assertIn("0.11.0", read_text(os.path.join(ROOT, "CHANGELOG.md")))
+        self.assertEqual(load("core").__version__, "0.12.0")
+        self.assertEqual(plugin.get("version"), "0.12.0")
+        self.assertIn("0.12.0", read_text(os.path.join(ROOT, "CHANGELOG.md")))
 
 
 def load_tests(loader, standard, pattern):
@@ -1057,7 +1057,7 @@ def load_tests(loader, standard, pattern):
                 "a_landed_lane_leaves_no_seeded_clone",
                 "a_kept_seeded_clone_is_removable_by_rmtree",
                 "the_readme_documents_the_worktreeinclude_opt_in",
-                "the_version_is_0_11_0_everywhere",
+                "the_version_is_0_12_0_everywhere",
             ),
         ),
     ):
