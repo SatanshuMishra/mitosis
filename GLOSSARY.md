@@ -62,8 +62,16 @@ The checks that judge a Worker's work and everything they read: the locked check
 _Avoid_: judge, oracle
 
 **Locked check**:
-An acceptance test a check author writes and commits on the feature branch before the build, named on a `- Locked:` line of the charter.
+An acceptance test a check author writes before the build, locked only when it fails on the feature base and passes against the check author's probe, and committed as the first commit of the branch of the one MSP whose Steps name it; a path a `- Locked:` line of the charter names is a locked check every MSP holds.
 _Avoid_: frozen test, pinned test
+
+**Probe files**:
+The files a check author's probe may write for an MSP: the files of that MSP's Steps and of every MSP it merges. Only probe writes there are overlaid when mitosis judges a locked check, and no probe write is committed.
+_Avoid_: scratch implementation, stub files
+
+**Lock commit**:
+The commit holding an MSP's locked checks on top of the feature base: the first commit of that MSP's branch and the tree its gate reverts the work to.
+_Avoid_: test commit, base commit
 
 **Referee path**:
 A path the charter locks, a test-configuration file or snapshot anywhere, or a baseline, allowlist or skip list inside a test location; a Step's own locked acceptance file is handed to its Worker read-only, any other in a Step's files refuses the plan, and a committed write to one is restored and holds its MSP back.

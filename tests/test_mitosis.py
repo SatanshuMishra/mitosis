@@ -449,8 +449,6 @@ class Flags(unittest.TestCase):
                     structurer(root, structure_reply(bare("alpha"))),
                     "--brief-command",
                     briefer(root) + " {worktree}",
-                    "--timeout",
-                    "20",
                     "--plan-only",
                     "--run-dir",
                     os.path.join(root, "run"),
@@ -581,8 +579,6 @@ class Flags(unittest.TestCase):
                     "2",
                     "--pick",
                     "3",
-                    "--timeout",
-                    "20",
                     "--plan-only",
                     "--run-dir",
                     os.path.join(root, "run"),
@@ -606,8 +602,6 @@ class Staging(unittest.TestCase):
                 briefer(root),
                 "--reask-command",
                 reasker(root),
-                "--timeout",
-                "20",
                 "--plan-only",
                 "--run-dir",
                 os.path.join(root, "run"),
@@ -626,8 +620,6 @@ class Staging(unittest.TestCase):
                 briefer(root, failing),
                 "--reask-command",
                 reasker(root),
-                "--timeout",
-                "20",
                 "--run-dir",
                 os.path.join(root, "run"),
                 *extra,
@@ -733,8 +725,6 @@ class Staging(unittest.TestCase):
                     "docs/spec.md",
                     "--decompose-command",
                     structurer(root, structure_reply(bare("alpha"))),
-                    "--timeout",
-                    "20",
                     "--run-dir",
                     os.path.join(root, "run"),
                     "--feature-branch",
@@ -1060,8 +1050,6 @@ class HeldRun(unittest.TestCase):
                         REASK_COMMAND,
                         "--acceptance-command",
                         "probe {file} {test}",
-                        "--timeout",
-                        "30",
                         *extra,
                     ],
                 )
@@ -1154,8 +1142,6 @@ class PullRequestFlags(unittest.TestCase):
                         REASK_COMMAND,
                         "--acceptance-command",
                         "probe {file} {test}",
-                        "--timeout",
-                        "30",
                         "--render-command",
                         fake_render(elsewhere),
                         *flags,
@@ -1227,8 +1213,6 @@ class PushOnly(unittest.TestCase):
                         REASK_COMMAND,
                         "--acceptance-command",
                         "probe {file} {test}",
-                        "--timeout",
-                        "30",
                         *PR_FLAGS,
                         "--render-command",
                         fake_render(elsewhere),
@@ -1352,8 +1336,6 @@ class ProvenHead(unittest.TestCase):
                         "{file}",
                         "{test}",
                     ),
-                    "--timeout",
-                    "30",
                     *PR_FLAGS,
                     "--render-command",
                     executable(self.elsewhere, "pull-request", VERIFYING_RENDER),
@@ -1589,8 +1571,6 @@ class RenderPreflight(unittest.TestCase):
                         "{file}",
                         "{test}",
                     ),
-                    "--timeout",
-                    "30",
                     *extra,
                 ],
             )
@@ -1713,7 +1693,7 @@ class RenderPreflight(unittest.TestCase):
         probed = read_json(os.path.join(self.run_dir, "probe-0.json"))
         self.assertEqual(probed["impact"], ["Ship only."])
 
-    def the_probe_needs_a_timeout(self):
+    def the_probe_runs_without_a_timeout(self):
         args = mitosis.build_parser().parse_args(
             [
                 "--items",
@@ -1731,10 +1711,10 @@ class RenderPreflight(unittest.TestCase):
                 fake_render(self.elsewhere),
             ]
         )
-        with self.assertRaises(mitosis.Refusal) as caught:
-            mitosis.refuse_unrenderable(args, core.plan([briefed("alpha")]), self.run_dir)
-        self.assertIn("--timeout", str(caught.exception))
-        self.assertFalse(os.path.exists(os.path.join(self.elsewhere, "calls")))
+        mitosis.refuse_unrenderable(args, core.plan([briefed("alpha")]), self.run_dir)
+        with open(os.path.join(self.elsewhere, "calls"), encoding="utf-8") as handle:
+            self.assertEqual(len(handle.read().splitlines()), 1)
+        self.assertTrue(os.path.isfile(os.path.join(self.run_dir, "probe-0.json")))
 
     def a_typed_run_without_a_subject_lands_typed_commits(self):
         code, out, err = self._invoke(
@@ -2357,8 +2337,6 @@ class SessionReport(unittest.TestCase):
                             REASK_COMMAND,
                             "--acceptance-command",
                             "probe {file} {test}",
-                            "--timeout",
-                            "30",
                             "--no-push",
                             *extra,
                         ],

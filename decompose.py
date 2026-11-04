@@ -5,7 +5,6 @@ import json
 import os
 import re
 import shlex
-import signal
 import subprocess
 
 import core
@@ -18,10 +17,6 @@ RETURN_KEYS = ("items", "assumptions", "constraints")
 REPLY_SCHEMA = "h10b-decompose-return"
 
 REASK_SUFFIX = ".reask"
-
-GIT_TIMEOUT = 600
-
-KILL_GRACE = 30
 
 PROMPT_PLACEHOLDER = "{prompt}"
 MODEL_PLACEHOLDER = "{model}"
@@ -426,12 +421,12 @@ def _tracked(base):
     try:
         completed = subprocess.run(
             ["git", "-C", base, "ls-files", "-z"],
-            env=run.git_environ(),
+            env=run.git_environ(None, base),
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            timeout=GIT_TIMEOUT,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError:
         return None
     if completed.returncode != 0:
         return None
@@ -600,11 +595,6 @@ def check_items(items, source, root=None, required=None):
     return {"items": stamped, "errors": checked["errors"], "counts": checked["counts"]}
 
 
-def _kill_tree(process):
-    try:
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        process.kill()
 
 
 def _write_log(log, out, err):
@@ -617,7 +607,7 @@ def _write_log(log, out, err):
         handle.write(b"--- stdout ---\n" + out + b"\n--- stderr ---\n" + err)
 
 
-def spawn(argv, prompt, timeout, cwd=None, log=None, env=None):
+def spawn(argv, prompt, cwd=None, log=None, env=None):
     try:
         process = subprocess.Popen(
             argv,
@@ -625,7 +615,7 @@ def spawn(argv, prompt, timeout, cwd=None, log=None, env=None):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=cwd,
-            env=env,
+            env=run.process_environ(env, cwd),
             start_new_session=True,
         )
     except OSError as failure:
@@ -635,22 +625,13 @@ def spawn(argv, prompt, timeout, cwd=None, log=None, env=None):
             "stderr": "",
             "reason": "could not start %s: %s" % (argv[0], failure),
         }
-    reason = None
-    try:
-        out, err = process.communicate(prompt.encode("utf-8"), timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _kill_tree(process)
-        try:
-            out, err = process.communicate(timeout=KILL_GRACE)
-        except subprocess.TimeoutExpired:
-            out, err = b"", b""
-        reason = "timeout after %s seconds" % timeout
+    out, err = process.communicate(prompt.encode("utf-8"))
     _write_log(log, out, err)
     return {
         "exit": process.returncode,
         "stdout": out.decode("utf-8", "replace"),
         "stderr": err.decode("utf-8", "replace"),
-        "reason": reason,
+        "reason": None,
     }
 
 
@@ -662,12 +643,12 @@ def _attempt(job):
     return argv, core.carried_session(argv, session)
 
 
-def spawn_many(jobs, timeout, concurrency, cwd=None, env=None):
+def spawn_many(jobs, concurrency, cwd=None, env=None):
     workers = concurrency if isinstance(concurrency, int) and concurrency > 0 else 1
     attempts = [_attempt(job) for job in jobs]
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         pending = [
-            pool.submit(spawn, argv, job["prompt"], timeout, cwd=cwd, log=job.get("log"), env=env)
+            pool.submit(spawn, argv, job["prompt"], cwd=cwd, log=job.get("log"), env=env)
             for job, (argv, _) in zip(jobs, attempts)
         ]
         return [
@@ -698,7 +679,7 @@ def _read(read, index, spawned):
     return {**spawned, "reply": reply, "reply_errors": list(errors)}
 
 
-def _reasked(job, first, reask, owned, timeout, cwd, env):
+def _reasked(job, first, reask, owned, cwd, env):
     prompt = handoff.reask_prompt(owned, first["reply_errors"])
     argv = build_argv(
         reask,
@@ -709,7 +690,7 @@ def _reasked(job, first, reask, owned, timeout, cwd, env):
             MODEL_PLACEHOLDER: job.get("model") or "",
         },
     )
-    return spawn(argv, prompt, timeout, cwd=cwd, log=_reask_log(job.get("log")), env=env)
+    return spawn(argv, prompt, cwd=cwd, log=_reask_log(job.get("log")), env=env)
 
 
 def _needs_reask(read):
@@ -721,10 +702,10 @@ def _needs_reask(read):
     )
 
 
-def spawn_replies(jobs, timeout, concurrency, cwd, read, owned, reask=None, env=None):
+def spawn_replies(jobs, concurrency, cwd, read, owned, reask=None, env=None):
     firsts = [
         _read(read, index, one)
-        for index, one in enumerate(spawn_many(jobs, timeout, concurrency, cwd=cwd, env=env))
+        for index, one in enumerate(spawn_many(jobs, concurrency, cwd=cwd, env=env))
     ]
     asked = tuple(
         index for index, one in enumerate(firsts) if reask is not None and _needs_reask(one)
@@ -735,7 +716,7 @@ def spawn_replies(jobs, timeout, concurrency, cwd, read, owned, reask=None, env=
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         pending = {
             index: pool.submit(
-                _reasked, jobs[index], firsts[index], reask, owned, timeout, cwd, env
+                _reasked, jobs[index], firsts[index], reask, owned, cwd, env
             )
             for index in asked
         }
@@ -1024,7 +1005,6 @@ def decompose(
     document,
     template,
     root,
-    timeout,
     model=None,
     graph=None,
     charter=None,
@@ -1046,7 +1026,7 @@ def decompose(
         "model": model,
     }
     spawned = spawn_replies(
-        [job], timeout, 1, root, _reader(parse_return), REPLY_SCHEMA, reask=reask, env=env
+        [job], 1, root, _reader(parse_return), REPLY_SCHEMA, reask=reask, env=env
     )[0]
     return _assemble(frozen, spawned, log, root)
 
@@ -1103,7 +1083,6 @@ def sample_structures(
     document,
     template,
     root,
-    timeout,
     model=None,
     graph=None,
     charter=None,
@@ -1135,7 +1114,7 @@ def sample_structures(
         for sample_log in logs
     ]
     read = _reader(parse_delta if prior else parse_return)
-    spawned = spawn_replies(jobs, timeout, count, root, read, REPLY_SCHEMA, reask=reask, env=env)
+    spawned = spawn_replies(jobs, count, root, read, REPLY_SCHEMA, reask=reask, env=env)
     if on_sessions is not None:
         on_sessions([one["session_id"] for one in spawned])
     return [
@@ -1148,7 +1127,6 @@ def structure(
     document,
     template,
     root,
-    timeout,
     model=None,
     graph=None,
     charter=None,
@@ -1164,7 +1142,6 @@ def structure(
         document,
         template,
         root,
-        timeout,
         model=model,
         graph=graph,
         charter=charter,

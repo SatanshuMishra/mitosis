@@ -334,7 +334,7 @@ def _printed(stdout):
     return reply["title"], reply["body"]
 
 
-def render(command, facts, path, timeout, env=None):
+def render(command, facts, path, env=None):
     try:
         handoff.require(FIELDS_SCHEMA, facts, path, "mitosis")
     except handoff.HandoffError as error:
@@ -347,14 +347,10 @@ def render(command, facts, path, timeout, env=None):
     try:
         completed = subprocess.run(
             [command, "render", "--fields", path],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
-            timeout=timeout,
             env=env,
-        )
-    except subprocess.TimeoutExpired:
-        raise RenderError(
-            "pull-request render timed out after %s seconds on the facts file %s" % (timeout, path)
         )
     except OSError as error:
         raise RenderError(

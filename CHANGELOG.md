@@ -3,7 +3,7 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
-## 0.12.0 - 2026-11-04
+## 0.13.0 - 2026-11-04
 
 Every hand-off mitosis writes or reads has one owned format, checked where it
 is produced.
@@ -11,9 +11,11 @@ is produced.
 - mitosis vendors byte-identical copies of the program's validator and owned
   schemas in `contracts/`, and `handoff.py` checks each hand-off against them.
   mitosis owns h8, the result line, h9, the run state, h10, the Worker and
-  check-author reply, h10b, the structure reply, h10c, the brief reply, h12,
-  the items it reads, h15, the pull request's facts file, h16, render's
-  reply, k2, the lock record, and k6, each outcome entry.
+  check-author reply, h10b, the structure reply, h10c, the brief reply, k2,
+  the lock record, and k6, each outcome entry; it checks h12, the items it
+  reads, h15, the pull request's facts file, and h16, render's reply, which
+  other plugins own. h8 and h9 accept the lock on each MSP, every lock state
+  and the finding kinds a stopped lock reports.
 - `--dispatch-command`, `--decompose-command` and `--brief-command` must carry
   `{schema}`, the call schema as JSON text, and `{session_id}`; a template
   without either is refused with exit 3, where one without `{session_id}`
@@ -30,6 +32,30 @@ is produced.
   `source` naming the document, or the run is refused with exit 3.
 - A pull request is recorded only as the http or https URL the pull-request
   command prints on its last line; any other line ends the MSP `ship-failed`.
+
+## 0.12.0 - 2026-11-03
+
+Each MSP locks its own acceptance tests, and mitosis has no wall-clock limit.
+
+- Each MSP's check-author locks only that MSP's tests, as the first commit of
+  that MSP's branch, judged against the check-author's probe: each locked
+  test must exit 1 at the feature base plus the locked files and exit 0 once
+  the probe is added, and the probe is never committed. A check-author with
+  an `msp` label belongs to that MSP; the one unlabelled check-author is split
+  by acceptance ownership. The feature branch is not moved at lock time.
+- A failed lock blocks only its MSP and the MSPs that merge it, directly or
+  through another; every other MSP is built, gated and finished.
+- The result's `msps[].lock` replaces the top-level `lock`, and each MSP's
+  gate, reconcile and referee judge against its own lock commit.
+- mitosis has no wall-clock limit: no Worker, check-author, acceptance run,
+  gate setup, render probe or git command has a timeout, and the reaper ends
+  a finished Lane's leftover processes until none is left, so exit 14 is
+  gone. `--timeout` is deprecated and ignored: a run given it prints one
+  stderr line saying so, and a run without it starts.
+- Every process mitosis starts runs with no input, the null device or a
+  fixed input written in full, with terminal and pager prompts off, and with
+  git's dead-peer detection on: ssh in batch mode with keep-alives and
+  `http.lowSpeedLimit` and `http.lowSpeedTime` set.
 
 ## 0.11.0 - 2026-11-01
 

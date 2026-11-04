@@ -20,11 +20,9 @@ EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_MISCONFIGURED = 2
 
-TIMEOUT = 600
-
 
 def git(root, *args):
-    return subprocess.run(("git", "-C", root) + args, capture_output=True, check=True, timeout=TIMEOUT).stdout
+    return subprocess.run(("git", "-C", root) + args, stdin=subprocess.DEVNULL, capture_output=True, check=True).stdout
 
 
 def _text(raw):
@@ -42,7 +40,7 @@ def version_at(root, ref):
 
 def is_ancestor(root, ref):
     probe = ("git", "-C", root, "merge-base", "--is-ancestor", ref, "HEAD")
-    return subprocess.run(probe, capture_output=True, timeout=TIMEOUT).returncode == 0
+    return subprocess.run(probe, stdin=subprocess.DEVNULL, capture_output=True).returncode == 0
 
 
 def last_release(root):
@@ -188,7 +186,7 @@ def main(argv=None, environ=None):
         return EXIT_MISCONFIGURED
     try:
         problems = _problems(args, terms, env)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+    except subprocess.CalledProcessError as error:
         detail = error.stderr.decode("utf-8", "replace").strip() if error.stderr else str(error)
         print("release check: git failed: %s" % masked(detail, terms), file=sys.stderr)
         return EXIT_MISCONFIGURED

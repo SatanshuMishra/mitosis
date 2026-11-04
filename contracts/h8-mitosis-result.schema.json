@@ -15,7 +15,6 @@
     "msps",
     "coupling",
     "referee",
-    "lock",
     "findings",
     "sandbox",
     "attention"
@@ -77,7 +76,8 @@
               "enum": [
                 "ok",
                 "failed",
-                "parked-limit"
+                "parked-limit",
+                "parked"
               ]
             },
             "reason": {
@@ -101,6 +101,20 @@
                 "string",
                 "null"
               ]
+            },
+            "probes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "undeclared": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
             }
           }
         },
@@ -512,6 +526,12 @@
             "string",
             "null"
           ]
+        },
+        "lock": {
+          "$ref": "#/properties/lock"
+        },
+        "referee": {
+          "$ref": "h9-mitosis-state.schema.json#/$defs/referee"
         }
       },
       "allOf": [
@@ -623,7 +643,11 @@
             "gate-inconclusive",
             "ship-failed",
             "manifest",
-            "gate-weak"
+            "gate-weak",
+            "lock-failed",
+            "lock-parked-limit",
+            "lock-parked",
+            "lock-incomplete"
           ]
         },
         "exit": {

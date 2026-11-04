@@ -275,7 +275,6 @@ def write(
     items,
     template,
     root,
-    timeout,
     models=None,
     concurrency=1,
     log_dir=None,
@@ -297,7 +296,6 @@ def write(
     ]
     spawned = decompose.spawn_replies(
         jobs,
-        timeout,
         concurrency,
         root,
         lambda index, stdout: read_brief(stdout, todo[index]["name"]),

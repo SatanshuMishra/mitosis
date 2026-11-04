@@ -9,7 +9,7 @@ import uuid
 
 import referee
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 PLAN_KEYS = (
     "version",
@@ -32,7 +32,7 @@ PLAN_KEYS = (
     "session_tokens",
     "sizes",
     "briefs",
-    "check_author",
+    "check_authors",
 )
 
 ITEM_FIELDS = (
@@ -642,6 +642,12 @@ def _is_check_author(item):
     return item.get("role") == CHECK_AUTHOR
 
 
+def _check_author_label(item):
+    value = item.get("msp")
+    unlabelled = value is None or value == "" or item.get("name") == CHECK_AUTHOR
+    return None if unlabelled else str(value)
+
+
 def _role_errors(items):
     unknown = [
         "%s: role %r is not one of %s" % (_label(item, index), item["role"], ", ".join(ROLES))
@@ -649,21 +655,50 @@ def _role_errors(items):
         if "role" in item and item["role"] not in ROLES
     ]
     authors = [item for item in items if _is_check_author(item)]
+    unlabelled = [item for item in authors if _check_author_label(item) is None]
     several = (
         [
-            "more than one Step has role %s: %s"
-            % (CHECK_AUTHOR, ", ".join(_label(item, index) for index, item in enumerate(authors)))
+            "more than one Step has role %s and no msp: %s"
+            % (CHECK_AUTHOR, ", ".join(_label(item, index) for index, item in enumerate(unlabelled)))
         ]
-        if len(authors) > 1
+        if len(unlabelled) > 1
         else []
     )
+    labels = tuple(
+        label
+        for label in dict.fromkeys(_check_author_label(item) for item in authors)
+        if label is not None
+    )
+    shared_label = [
+        "%s: %d %s Steps carry msp %s, and one MSP's label holds one check-author"
+        % (", ".join(names), len(names), CHECK_AUTHOR, label)
+        for label in labels
+        for names in (
+            [
+                _label(item, index)
+                for index, item in enumerate(authors)
+                if _check_author_label(item) == label
+            ],
+        )
+        if len(names) > 1
+    ]
     declaring = [
         "%s: a %s Step writes the locked checks and declares no acceptance entries, but it "
         "declares %d" % (_label(item, index), CHECK_AUTHOR, len(item.get("acceptance") or ()))
         for index, item in enumerate(authors)
         if item.get("acceptance")
     ]
-    owner = {path: _label(item, index) for index, item in enumerate(authors) for path in _files(item)}
+    owner = {}
+    twice = []
+    for index, item in enumerate(authors):
+        for path in _files(item):
+            if path in owner and owner[path] != _label(item, index):
+                twice = twice + [
+                    "%s: lists %s in its files, which the %s Step %s also writes"
+                    % (_label(item, index), path, CHECK_AUTHOR, owner[path])
+                ]
+            else:
+                owner = {**owner, path: owner.get(path, _label(item, index))}
     shared = [
         "%s: lists %s in its files, which the %s Step %s owns as a locked check"
         % (_label(item, index), path, CHECK_AUTHOR, owner[path])
@@ -672,12 +707,11 @@ def _role_errors(items):
         for path in _files(item)
         if path in owner
     ]
-    return unknown + several + declaring + shared
+    return unknown + several + shared_label + declaring + twice + shared
 
 
-def check_author_step(items):
-    found = [item for item in items if _is_check_author(item)]
-    return found[0] if len(found) == 1 else None
+def check_author_steps(items):
+    return tuple(item for item in items if _is_check_author(item))
 
 
 def without_check_author(items):
@@ -1310,6 +1344,19 @@ def referee_line(locked):
     )
 
 
+PROBE_LINE = (
+    "Probe files, the only files your probe may write: %s (and no others). Prove each test "
+    "passes against a probe implementation written only inside these files, and fails on "
+    "today's code by an "
+    "assertion failure or a missing module, never by a crash in the harness; leave the probe "
+    "in place in the clone and never commit it."
+)
+
+
+def probe_line(paths):
+    return PROBE_LINE % ", ".join(paths)
+
+
 def brief_text(brief):
     header = ["Lane %s of MSP %s" % (brief["lane"], brief["msp_label"])]
     if brief.get("charter"):
@@ -1357,6 +1404,8 @@ def brief_text(brief):
         "Write-set for this Lane, the only files you may edit: %s" % ", ".join(brief["write_set"]),
         CLONE_LINE,
     ] + (
+        [probe_line(brief["probe_files"])] if brief.get("probe_files") is not None else []
+    ) + (
         [referee_line(brief.get("locked") or ())]
         if brief.get("role") != CHECK_AUTHOR or brief.get("locked")
         else []
@@ -1409,17 +1458,18 @@ def _brief(
     return {**partial, "text": brief_text(partial)}
 
 
-def _check_author_brief(author, packs, charter, source, cap, locked):
-    own = frozenset(referee.normalised(path) for path in _files(author))
+def _check_author_brief(parts, msp, label, probe, packs, charter, source, cap, locked):
+    steps = [{**author, "files": list(paths)} for author, paths in parts]
+    write_set = list(dict.fromkeys(path for _, paths in parts for path in paths))
+    own = frozenset(referee.normalised(path) for path in write_set)
     others = [path for path in locked if referee.normalised(path) not in own]
-    write_set = list(dict.fromkeys(_files(author)))
-    read_set, read_overflow = _lane_read_set([author], (0,), packs, cap, write_set)
+    read_set, read_overflow = _lane_read_set(steps, tuple(range(len(steps))), packs, cap, write_set)
     partial = {
         "lane": CHECK_AUTHOR_LANE,
-        "msp": LOCK_MSP,
-        "msp_label": LOCK_MSP,
+        "msp": msp,
+        "msp_label": label,
         "role": CHECK_AUTHOR,
-        "steps": [_step_brief(author)],
+        "steps": [_step_brief(step) for step in steps],
         "write_set": write_set,
         "read_set": read_set,
         "read_overflow": read_overflow,
@@ -1427,13 +1477,151 @@ def _check_author_brief(author, packs, charter, source, cap, locked):
         "document": source.get("path") if isinstance(source, dict) else None,
         "return_contract": RETURN_CONTRACT,
         "locked": others,
+        "probe_files": list(probe),
     }
+    names = list(dict.fromkeys(author["name"] for author, _ in parts))
     return {
-        "name": author["name"],
-        "files": write_set,
-        "source": author.get("source"),
+        "msp": msp,
+        "label": label,
+        "name": ", ".join(names),
+        "steps": names,
+        "slice": write_set,
+        "source": parts[0][0].get("source"),
         "brief": {**partial, "text": brief_text(partial)},
     }
+
+
+def _msp_of_label(items, msps, label):
+    found = [
+        index
+        for index, msp in enumerate(msps)
+        if any(_check_author_label(items[i]) == label for i in msp)
+    ]
+    return found[0] if found else None
+
+
+def _naming_steps(items, path):
+    return tuple(
+        index
+        for index, item in enumerate(items)
+        if path in {_norm(named) for named in _acceptance_files(item)}
+    )
+
+
+def _locked_file_errors(author, target, path, naming, owner, items, labels):
+    name = author["name"]
+    falls = tuple(dict.fromkeys(owner[i] for i in naming))
+    if not naming:
+        return (
+            "%s: writes %s, which no Step's acceptance names, so no MSP can lock it"
+            % (name, path),
+        )
+    if target is None and len(falls) > 1:
+        first = next(i for i in naming if owner[i] == falls[0])
+        second = next(i for i in naming if owner[i] == falls[1])
+        return (
+            "%s is named by the acceptance of %s (MSP %s) and %s (MSP %s), which fall in two "
+            "MSPs, so no one MSP can lock it"
+            % (
+                path,
+                items[first]["name"],
+                labels[falls[0]],
+                items[second]["name"],
+                labels[falls[1]],
+            ),
+        )
+    if target is None:
+        return ()
+    return tuple(
+        "%s: names %s in its acceptance, which %s, the %s of MSP %s, writes"
+        % (items[i]["name"], path, name, CHECK_AUTHOR, labels[target])
+        for i in naming
+        if owner[i] != target
+    )
+
+
+def check_author_slices(authors, items, msps):
+    owner = _owners(msps, len(items))
+    labels = tuple(_msp_label(items, msp) for msp in msps)
+    errors = ()
+    placed = ()
+    for position, author in enumerate(authors):
+        label = _check_author_label(author)
+        target = None if label is None else _msp_of_label(items, msps, label)
+        if label is not None and target is None:
+            errors = errors + (
+                "%s: carries msp %s, which names no MSP: no Step carries msp %s"
+                % (author["name"], label, label),
+            )
+            continue
+        for path in _files(author):
+            naming = _naming_steps(items, path)
+            found = _locked_file_errors(author, target, path, naming, owner, items, labels)
+            if found:
+                errors = errors + found
+                continue
+            placed = placed + ((owner[naming[0]] if target is None else target, position, path),)
+    return errors, placed
+
+
+def _slice_parts(authors, placed, msp):
+    positions = sorted({position for target, position, _ in placed if target == msp})
+    return tuple(
+        (authors[position], tuple(path for target, at, path in placed if target == msp and at == position))
+        for position in positions
+    )
+
+
+def _lane_edges(plan):
+    return {
+        int(consumer): tuple(int(producer) for producer in producers)
+        for consumer, producers in (plan.get("lane_after") or {}).items()
+    }
+
+
+def msp_producers(plan):
+    lanes = plan.get("lanes") or []
+    producers = {index: () for index in range(len(plan.get("msps") or []))}
+    for consumer, sources in _lane_edges(plan).items():
+        own = lanes[consumer]["msp"]
+        for producer in sources:
+            other = lanes[producer]["msp"]
+            if other != own and other not in producers[own]:
+                producers = {**producers, own: producers[own] + (other,)}
+    return {msp: tuple(sorted(found)) for msp, found in producers.items()}
+
+
+def _merged(producers, msp):
+    seen = frozenset()
+    frontier = producers.get(msp, ())
+    while frontier:
+        fresh = tuple(
+            producer for producer in dict.fromkeys(frontier) if producer not in seen and producer != msp
+        )
+        seen = seen | frozenset(fresh)
+        frontier = tuple(further for producer in fresh for further in producers.get(producer, ()))
+    return seen
+
+
+def msp_merges(plan):
+    producers = msp_producers(plan)
+    return {msp: tuple(sorted(_merged(producers, msp))) for msp in producers}
+
+
+def msp_mergers(plan):
+    merges = msp_merges(plan)
+    return {msp: tuple(other for other in sorted(merges) if msp in merges[other]) for msp in merges}
+
+
+def probe_files(plan, msp):
+    msps = plan.get("msps") or []
+    return tuple(
+        dict.fromkeys(
+            path
+            for index in (msp,) + msp_merges(plan).get(msp, ())
+            for path in msps[index].get("files") or ()
+        )
+    )
 
 
 def _merged_locks(first, second):
@@ -1546,14 +1734,17 @@ def plan(
     checked = validate(items, root=root)
     if checked["errors"] or lock_errors:
         raise ValidationError(tuple(checked["errors"]) + lock_errors)
-    author = check_author_step(items)
-    locked = _merged_locks(charter_locked, _files(author) if author else ())
+    authors = check_author_steps(items)
+    locked = _merged_locks(charter_locked, tuple(path for author in authors for path in _files(author)))
     items = without_locked_acceptance(without_check_author(items), locked)
     refused = referee_errors(items, locked)
     if refused:
         raise ValidationError(refused)
     items, ordered = order_coupled(items, graph, risk_markers, history)
     msps = msp_items(items)
+    slice_errors, placed = check_author_slices(authors, items, msps)
+    if slice_errors:
+        raise ValidationError(slice_errors)
     whole = lane_items(items)
     tiers = {
         item["name"]: tier_for(
@@ -1582,35 +1773,39 @@ def plan(
     lane_tiers = tuple(group_tiers[g] for g, group in enumerate(groups) for _ in group)
     owners = lane_msps(items, lanes)
     edges = chained_after(lane_after(items, lanes), groups)
+    msp_entries = [
+        {
+            "label": labels[index],
+            "steps": [items[i]["name"] for i in msp],
+            "files": sorted({path for i in msp for path in _files(items[i])}),
+        }
+        for index, msp in enumerate(msps)
+    ]
+    lane_entries = [
+        {
+            "msp": owners[index],
+            "steps": [items[i]["name"] for i in lane],
+            "tier": lane_tiers[index],
+            "cost": lane_cost(items, lane),
+            "tokens": estimate(lane, earlier=places[index]["earlier"]),
+            **(
+                {"session": [places[index]["index"], places[index]["count"]]}
+                if places[index]["count"] > 1
+                else {}
+            ),
+        }
+        for index, lane in enumerate(lanes)
+    ]
+    lane_edges = {str(consumer): list(producers) for consumer, producers in edges.items()}
+    related = {"msps": msp_entries, "lanes": lane_entries, "lane_after": lane_edges}
     body = {
         "version": __version__,
         "source": source,
         "locked": list(locked),
         "items": items,
-        "msps": [
-            {
-                "label": labels[index],
-                "steps": [items[i]["name"] for i in msp],
-                "files": sorted({path for i in msp for path in _files(items[i])}),
-            }
-            for index, msp in enumerate(msps)
-        ],
-        "lanes": [
-            {
-                "msp": owners[index],
-                "steps": [items[i]["name"] for i in lane],
-                "tier": lane_tiers[index],
-                "cost": lane_cost(items, lane),
-                "tokens": estimate(lane, earlier=places[index]["earlier"]),
-                **(
-                    {"session": [places[index]["index"], places[index]["count"]]}
-                    if places[index]["count"] > 1
-                    else {}
-                ),
-            }
-            for index, lane in enumerate(lanes)
-        ],
-        "lane_after": {str(consumer): list(producers) for consumer, producers in edges.items()},
+        "msps": msp_entries,
+        "lanes": lane_entries,
+        "lane_after": lane_edges,
         "clusters": [list(group) for group in clusters(items, lanes)],
         "tiers": tiers,
         "verify_modes": verify_modes(items, serial_markers),
@@ -1641,13 +1836,22 @@ def plan(
             )
             for index, lane in enumerate(lanes)
         ],
-        "check_author": (
+        "check_authors": [
             _check_author_brief(
-                author, context_packs([author], graph, hops, cap), charter, source, cap, locked
+                parts,
+                index,
+                labels[index],
+                probe_files(related, index),
+                context_packs([author for author, _ in parts], graph, hops, cap),
+                charter,
+                source,
+                cap,
+                locked,
             )
-            if author
-            else None
-        ),
+            for index in range(len(msps))
+            for parts in (_slice_parts(authors, placed, index),)
+            if parts
+        ],
     }
     kept = {key: body[key] for key in PLAN_KEYS if key in body and _present(body[key])}
     identified = {**kept, "plan_id": plan_id_for(kept)}
@@ -1659,7 +1863,7 @@ LOCK_TIER = "top"
 
 def plan_tiers(plan):
     used = {lane.get("tier") for lane in plan.get("lanes") or ()}
-    return tuple(sorted(used | ({LOCK_TIER} if plan.get("check_author") else set()), key=str))
+    return tuple(sorted(used | ({LOCK_TIER} if plan.get("check_authors") else set()), key=str))
 
 
 def new_session_id():

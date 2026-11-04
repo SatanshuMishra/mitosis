@@ -180,7 +180,8 @@ LOCK_MESSAGE = "test: lock the acceptance checks"
 
 
 def check_author(name="check-author", files=(TEST_FILE,), acceptance=()):
-    return {**step(name, files, "check-author", acceptance), "role": "check-author"}
+    labelled = {**step(name, files, None, acceptance), "role": "check-author"}
+    return {key: value for key, value in labelled.items() if key != "msp"}
 
 
 def builder(files=("calc.py",), after=("check-author",)):
@@ -389,13 +390,15 @@ class CheckAuthorLane(unittest.TestCase):
         return found[0]
 
     def _lock(self, summary, completed):
-        lock = summary.get("lock")
-        self.assertIsInstance(lock, dict, "the JSON summary carries no lock object" + tail(completed))
+        self.assertNotIn("lock", summary, "the JSON summary carries a top-level lock" + tail(completed))
+        lock = self._msp(summary, "calc").get("lock")
+        self.assertIsInstance(lock, dict, "MSP calc carries no lock object" + tail(completed))
         return lock
 
     def _referee(self, summary, completed):
-        referee = summary.get("referee")
-        self.assertIsInstance(referee, dict, "the JSON summary carries no referee object" + tail(completed))
+        self.assertIsNone(summary.get("referee"), "a run with no charter lock has no top-level referee")
+        referee = self._msp(summary, "calc").get("referee")
+        self.assertIsInstance(referee, dict, "MSP calc carries no referee object" + tail(completed))
         self.assertEqual(handoff.errors("k2-locked", referee), ())
         return referee
 
@@ -404,6 +407,12 @@ class CheckAuthorLane(unittest.TestCase):
 
     def _gained(self, before):
         return self.scratch.checked("rev-list", before + "..feature").split()
+
+    def _first_on(self, before, branch):
+        listed = self.scratch.checked(
+            "rev-list", "--reverse", "--first-parent", before + ".." + branch
+        ).split()
+        return listed[0] if listed else None
 
     def _plan_only(self, steps, label):
         scratch = self.scratch
@@ -429,6 +438,10 @@ class CheckAuthorLane(unittest.TestCase):
         with open(os.path.join(scratch.tmp, "runs", "plan", "plan.json"), encoding="utf-8") as handle:
             plan = json.load(handle)
         self.assertEqual(plan.get("locked"), [TEST_FILE])
+        self.assertEqual(
+            [(entry.get("msp"), entry.get("name"), entry.get("slice")) for entry in plan.get("check_authors") or []],
+            [(0, "check-author", [TEST_FILE])],
+        )
         for lane in plan.get("lanes") or []:
             self.assertNotIn("check-author", lane.get("steps") or [])
         report = completed.stdout.splitlines()[:-1]
@@ -483,14 +496,14 @@ class CheckAuthorLane(unittest.TestCase):
         items = scratch.items([check_author(), builder()])
         scratch.jobs(
             {
-                "check-author": {"writes": {TEST_FILE: EXACT_TEST}, "msp": "lock"},
+                "check-author": {"writes": {TEST_FILE: EXACT_TEST, "calc.py": CORRECT_ADD}, "msp": "lock"},
                 "add": {"writes": {"calc.py": CORRECT_ADD}, "msp": "calc"},
             }
         )
         completed = scratch.build(items)
-        gained = self._gained(before)
-        self.assertEqual(len(gained), 1, "commits the feature branch gained" + tail(completed))
-        lock_commit = gained[0]
+        self.assertEqual(self._gained(before), [], "commits the feature branch gained" + tail(completed))
+        lock_commit = self._first_on(before, "mitosis/calc")
+        self.assertIsNotNone(lock_commit, "mitosis/calc holds no commit" + tail(completed))
         self.assertEqual(scratch.checked("log", "-1", "--format=%s", lock_commit).strip(), LOCK_MESSAGE)
         self.assertEqual(
             scratch.checked("diff", "--name-status", before, lock_commit).strip(),
@@ -501,9 +514,10 @@ class CheckAuthorLane(unittest.TestCase):
         referee = self._referee(summary, completed)
         self.assertEqual(referee["commit"], lock_commit)
         self.assertEqual(referee["locked"], [TEST_FILE])
-        self.assertIn(
-            lock_commit, scratch.checked("rev-list", "--first-parent", "mitosis/calc").split()
-        )
+        lock = self._lock(summary, completed)
+        self.assertEqual(lock.get("state"), "ok")
+        self.assertEqual(lock.get("commit"), lock_commit)
+        self.assertEqual(lock.get("probes"), ["calc.py"])
         self.assertEqual(scratch.dispatched(), ["check-author", "add"])
         self.assertEqual((self._msp(summary, "calc").get("gate") or {}).get("outcome"), "pass")
 
@@ -514,7 +528,7 @@ class CheckAuthorLane(unittest.TestCase):
         scratch.jobs(
             {
                 "check-author": {
-                    "writes": {TEST_FILE: EXACT_TEST},
+                    "writes": {TEST_FILE: EXACT_TEST, "calc.py": CORRECT_ADD},
                     "msp": "lock",
                     "declared": [""],
                     "script": "record['session'] = SESSION",
@@ -544,7 +558,7 @@ class CheckAuthorLane(unittest.TestCase):
         items = scratch.items([check_author(), builder()])
         scratch.jobs(
             {
-                "check-author": {"writes": {TEST_FILE: PASSING_TEST}, "msp": "lock"},
+                "check-author": {"writes": {TEST_FILE: PASSING_TEST, "calc.py": CORRECT_ADD}, "msp": "lock"},
                 "add": {"writes": {"calc.py": CORRECT_ADD}, "msp": "calc"},
             }
         )
@@ -554,8 +568,13 @@ class CheckAuthorLane(unittest.TestCase):
         self.assertEqual(lock.get("state"), "failed")
         self.assertIn(TEST_FILE, lock.get("reason") or "")
         self.assertIn("Calc.adds", lock.get("reason") or "")
+        self.assertIn("passes on the feature base without the build", lock.get("reason") or "")
         self.assertEqual(self._lane(summary, "add")["state"], "blocked")
+        self.assertEqual(self._msp(summary, "calc").get("state"), "blocked")
         self.assertEqual(self._feature(), before)
+        self.assertEqual(
+            scratch.git("rev-parse", "--verify", "--quiet", "refs/heads/mitosis/calc").returncode, 1
+        )
         self.assertEqual(scratch.dispatched(), ["check-author"])
         self.assertNotEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
 
@@ -566,7 +585,7 @@ class CheckAuthorLane(unittest.TestCase):
         scratch.jobs(
             {
                 "check-author": {
-                    "writes": {TEST_FILE: EXACT_TEST, "calc.py": CORRECT_ADD},
+                    "writes": {TEST_FILE: EXACT_TEST, "calc.py": CORRECT_ADD, "stray.py": "stray\n"},
                     "declared": [TEST_FILE],
                     "msp": "lock",
                 },
@@ -574,20 +593,26 @@ class CheckAuthorLane(unittest.TestCase):
             }
         )
         completed = scratch.build(items)
-        gained = self._gained(before)
-        self.assertEqual(len(gained), 1, "commits the feature branch gained" + tail(completed))
+        self.assertEqual(self._gained(before), [], "commits the feature branch gained" + tail(completed))
+        lock_commit = self._first_on(before, "mitosis/calc")
+        self.assertIsNotNone(lock_commit, "mitosis/calc holds no commit" + tail(completed))
         self.assertEqual(
-            scratch.checked("diff", "--name-status", before, gained[0]).strip(),
+            scratch.checked("diff", "--name-status", before, lock_commit).strip(),
             "A\t" + TEST_FILE,
         )
+        summary = summary_of(completed)
+        lock = self._lock(summary, completed)
+        self.assertEqual(lock.get("undeclared"), ["stray.py"])
+        self.assertEqual(lock.get("probes"), ["calc.py"])
         found = [
             finding
-            for finding in summary_of(completed).get("findings") or []
-            if finding.get("msp") == "lock"
+            for finding in summary.get("findings") or []
+            if finding.get("msp") == "calc"
             and finding.get("kind") == "undeclared"
-            and names(finding.get("detail"), "calc.py")
+            and names(finding.get("detail"), "stray.py")
         ]
-        self.assertTrue(found, "no undeclared finding under lock names calc.py" + tail(completed))
+        self.assertTrue(found, "no undeclared finding under calc names stray.py" + tail(completed))
+        self.assertNotIn("stray.py", scratch.checked("ls-tree", "-r", "--name-only", "mitosis/calc").split())
 
     def locked_files_already_on_the_feature_branch_skip_the_lane(self):
         scratch = self._scratch({TEST_FILE: EXACT_TEST})
@@ -604,6 +629,7 @@ class CheckAuthorLane(unittest.TestCase):
         summary = summary_of(completed)
         lock = self._lock(summary, completed)
         self.assertEqual(lock.get("state"), "ok")
+        self.assertEqual(lock.get("commit"), before)
         self.assertIn("already on the feature branch", lock.get("reason") or "")
         referee = self._referee(summary, completed)
         self.assertEqual(referee["commit"], before)

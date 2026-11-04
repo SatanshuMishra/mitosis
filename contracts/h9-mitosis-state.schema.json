@@ -827,7 +827,6 @@
         "state",
         "reason",
         "exit",
-        "timed_out",
         "returned",
         "stdout",
         "stderr",
@@ -1077,6 +1076,19 @@
         },
         "trajectory_error": {
           "type": "string"
+        },
+        "lock": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/lock"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "referee": {
+          "$ref": "#/$defs/referee"
         }
       },
       "allOf": [
@@ -1227,7 +1239,8 @@
           "enum": [
             "ok",
             "failed",
-            "parked-limit"
+            "parked-limit",
+            "parked"
           ]
         },
         "reason": {
@@ -1312,6 +1325,13 @@
           }
         },
         "checked_out": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "probes": {
           "type": "array",
           "items": {
             "type": "string",

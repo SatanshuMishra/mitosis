@@ -57,8 +57,8 @@ sys.exit(int(os.environ.get("WORKER_EXIT", "0")))
 
 SLEEPER = """
 import time
-time.sleep(60)
-"""
+time.sleep(2)
+""" + WORKER
 
 
 def worker(root, reply, script=WORKER):
@@ -85,7 +85,7 @@ def item(name, **extra):
 
 def run(root, document_text, reply, **extra):
     document = write(root, "docs/spec.md", document_text)
-    return decompose.decompose(document, worker(root, reply), root, timeout=20, **extra)
+    return decompose.decompose(document, worker(root, reply), root, **extra)
 
 
 def bare(name, **extra):
@@ -100,7 +100,7 @@ def bare(name, **extra):
 
 def run_structure(root, document_text, reply, **extra):
     document = write(root, "docs/spec.md", document_text)
-    return decompose.structure(document, worker(root, reply), root, timeout=20, **extra)
+    return decompose.structure(document, worker(root, reply), root, **extra)
 
 
 def delayed(seconds, reply):
@@ -349,13 +349,13 @@ class Run(unittest.TestCase):
         self.assertEqual(len(result["errors"]), 1)
         self.assertIn("ghost", result["errors"][0])
 
-    def a_worker_that_never_exits_is_killed_and_reported(self):
+    def a_slow_worker_is_waited_on_for_its_return(self):
+        reply = {"items": [item("a")], "assumptions": [], "constraints": []}
         with tempfile.TemporaryDirectory() as root:
             document = write(root, "docs/spec.md", "# One\n\nbody\n")
-            template = worker(root, "", script=SLEEPER)
-            result = decompose.decompose(document, template, root, timeout=0.5)
-        self.assertEqual(result["items"], [])
-        self.assertTrue(any("timeout" in error for error in result["errors"]))
+            result = decompose.decompose(document, worker(root, reply, script=SLEEPER), root)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual([entry["name"] for entry in result["items"]], ["a"])
 
     def a_return_that_is_not_json_is_reported(self):
         with tempfile.TemporaryDirectory() as root:
@@ -404,19 +404,19 @@ class Run(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             document = write(root, "docs/spec.md", "# One\n\nbody\n")
             template = worker(root, reply) + " --doc {document} --model {model}"
-            result = decompose.decompose(document, template, root, timeout=20, model="top-model")
+            result = decompose.decompose(document, template, root, model="top-model")
             argv = json.loads(received(root, "argv.json"))
         self.assertEqual(argv, ["--doc", document, "--model", "top-model"])
         self.assertEqual(result["errors"], [])
         with tempfile.TemporaryDirectory() as root:
             document = write(root, "docs/spec.md", "# One\n\nbody\n")
             with self.assertRaises(ValueError):
-                decompose.decompose(document, worker(root, reply) + " {model}", root, timeout=20)
+                decompose.decompose(document, worker(root, reply) + " {model}", root)
 
     def a_command_that_cannot_start_is_reported(self):
         with tempfile.TemporaryDirectory() as root:
             document = write(root, "docs/spec.md", "# One\n\nbody\n")
-            result = decompose.decompose(document, "/nonexistent/worker --go", root, timeout=5)
+            result = decompose.decompose(document, "/nonexistent/worker --go", root)
         self.assertEqual(result["items"], [])
         self.assertIsNone(result["exit"])
         self.assertTrue(any("could not start" in error for error in result["errors"]))
@@ -527,14 +527,14 @@ class Coverage(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             for name, text in documents.items():
                 document = write(root, name, text)
-                result = decompose.decompose(document, worker(root, reply), root, timeout=20)
+                result = decompose.decompose(document, worker(root, reply), root)
                 self.assertEqual([step["name"] for step in result["items"]], ["a"], name)
                 self.assertIn(result["coverage"]["mode"], ("headings", "lines", "none"), name)
                 self.assertEqual(result["errors"], [], name)
             with open(os.path.join(root, "blob.bin"), "wb") as handle:
                 handle.write(b"\xff\xfe\x00\x01")
             result = decompose.decompose(
-                os.path.join(root, "blob.bin"), worker(root, reply), root, timeout=20
+                os.path.join(root, "blob.bin"), worker(root, reply), root
             )
             self.assertEqual(result["coverage"]["mode"], "none")
             self.assertIn("UTF-8", result["coverage"]["reason"])
@@ -561,7 +561,7 @@ class StructuredReply(unittest.TestCase):
     def spawn_returns_the_whole_stdout_text(self):
         payload = 'first line\n{"items": []}\n'
         spawned = decompose.spawn(
-            [sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])", payload], "", 30
+            [sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])", payload], ""
         )
         self.assertEqual(spawned["stdout"], payload)
         self.assertEqual(spawned["exit"], 0)
@@ -570,7 +570,7 @@ class StructuredReply(unittest.TestCase):
     def a_fenced_return_on_stdout_is_never_read_as_the_reply(self):
         payload = '```json\n{"items": [], "assumptions": [], "constraints": []}\n```'
         spawned = decompose.spawn(
-            [sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])", payload], "", 30
+            [sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])", payload], ""
         )
         read = decompose._reader(decompose.parse_return)
         reply, errors = read(0, spawned["stdout"])
@@ -1144,12 +1144,12 @@ class Sampling(unittest.TestCase):
             template = worker(home, reply) + " --model {model}"
             log = os.path.join(home, "run", "structure.log")
             single = decompose.structure(
-                document, template, root, timeout=20, model="m", charter="C.md", log=log
+                document, template, root, model="m", charter="C.md", log=log
             )
             single_prompt = received(home, "prompt.txt")
             single_argv = received(home, "argv.json")
             sampled = decompose.sample_structures(
-                1, document, template, root, timeout=20, model="m", charter="C.md", log=log
+                1, document, template, root, model="m", charter="C.md", log=log
             )
             self.assertEqual(received(home, "prompt.txt"), single_prompt)
             self.assertEqual(received(home, "argv.json"), single_argv)
@@ -1162,8 +1162,8 @@ class Sampling(unittest.TestCase):
             template = worker(home, reply)
             for samples in (0, -1, None):
                 self.assertEqual(
-                    decompose.sample_structures(samples, document, template, root, timeout=20),
-                    [decompose.structure(document, template, root, timeout=20)],
+                    decompose.sample_structures(samples, document, template, root),
+                    [decompose.structure(document, template, root)],
                 )
 
     def several_samples_run_concurrently_against_one_prompt(self):
@@ -1171,7 +1171,7 @@ class Sampling(unittest.TestCase):
             document = write(root, "docs/spec.md", "# 1. One\n\nbody\n")
             template = worker(root, "", script=SAMPLER)
             log = os.path.join(root, "run", "structure.log")
-            results = decompose.sample_structures(3, document, template, root, timeout=20, log=log)
+            results = decompose.sample_structures(3, document, template, root, log=log)
             prompts = sorted(
                 name for name in os.listdir(os.path.join(root, "worker")) if name.startswith("prompt-")
             )
@@ -1204,16 +1204,16 @@ class SpawnMany(unittest.TestCase):
             job(delayed(0.2, {"n": 2})),
             job(delayed(0.0, {"n": 3})),
         ]
-        results = decompose.spawn_many(jobs, timeout=20, concurrency=4)
+        results = decompose.spawn_many(jobs, concurrency=4)
         self.assertEqual([json.loads(r["stdout"])["n"] for r in results], [0, 1, 2, 3])
         self.assertEqual([r["exit"] for r in results], [0, 0, 0, 0])
         self.assertEqual([r["reason"] for r in results], [None] * 4)
-        self.assertEqual(decompose.spawn_many([], timeout=1, concurrency=4), [])
+        self.assertEqual(decompose.spawn_many([], concurrency=4), [])
 
     def spawn_many_runs_jobs_concurrently(self):
         jobs = [job(delayed(0.5, {"n": n})) for n in range(4)]
         started = time.monotonic()
-        results = decompose.spawn_many(jobs, timeout=20, concurrency=4)
+        results = decompose.spawn_many(jobs, concurrency=4)
         elapsed = time.monotonic() - started
         self.assertLess(elapsed, 2.0)
         self.assertEqual([json.loads(r["stdout"])["n"] for r in results], [0, 1, 2, 3])
@@ -1222,7 +1222,7 @@ class SpawnMany(unittest.TestCase):
         for concurrency in (0, -3):
             jobs = [job(delayed(0.3, {"n": n})) for n in range(2)]
             started = time.monotonic()
-            results = decompose.spawn_many(jobs, timeout=20, concurrency=concurrency)
+            results = decompose.spawn_many(jobs, concurrency=concurrency)
             elapsed = time.monotonic() - started
             self.assertGreaterEqual(elapsed, 0.6)
             self.assertEqual([json.loads(r["stdout"])["n"] for r in results], [0, 1])
@@ -1238,7 +1238,7 @@ class SpawnMany(unittest.TestCase):
                 job(echo, "first", os.path.join(root, "a", "one.log")),
                 job(echo, "second", os.path.join(root, "two.log")),
             ]
-            results = decompose.spawn_many(jobs, timeout=20, concurrency=2, cwd=root)
+            results = decompose.spawn_many(jobs, concurrency=2, cwd=root)
             self.assertEqual([json.loads(r["stdout"])["got"] for r in results], ["first", "second"])
             with open(jobs[0]["log"], encoding="utf-8") as handle:
                 self.assertIn("first", handle.read())
@@ -1246,15 +1246,12 @@ class SpawnMany(unittest.TestCase):
                 self.assertIn("second", handle.read())
         self.assertEqual(jobs[0], job(echo, "first", os.path.join(root, "a", "one.log")))
 
-    def a_job_that_times_out_does_not_hold_the_others(self):
-        jobs = [
-            job([sys.executable, "-c", "import time; time.sleep(60)"]),
-            job(delayed(0.0, {"n": 1})),
-        ]
-        results = decompose.spawn_many(jobs, timeout=0.5, concurrency=2)
-        self.assertIn("timeout", results[0]["reason"])
-        self.assertEqual(results[0]["stdout"], "")
-        self.assertEqual(json.loads(results[1]["stdout"])["n"], 1)
+    def a_slow_job_runs_to_its_return_beside_a_fast_one(self):
+        jobs = [job(delayed(2.0, {"n": 0})), job(delayed(0.0, {"n": 1}))]
+        results = decompose.spawn_many(jobs, concurrency=2)
+        self.assertEqual([r["reason"] for r in results], [None, None])
+        self.assertEqual([r["exit"] for r in results], [0, 0])
+        self.assertEqual([json.loads(r["stdout"])["n"] for r in results], [0, 1])
 
 
 CALL = """
@@ -1319,13 +1316,12 @@ def calls(root, label):
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def structure_call(root, prior=None, timeout=20, reask=True):
+def structure_call(root, prior=None, reask=True):
     document = write(root, "docs/spec.md", "# One\n\nbody\n")
     return decompose.structure(
         document,
         call_template(root, "structure"),
         root,
-        timeout=timeout,
         prior=prior,
         reask=reask_template(root) if reask else None,
     )
@@ -1382,15 +1378,6 @@ class StructureReask(unittest.TestCase):
             self.assertEqual(result["errors"], [])
             self.assertEqual([step["name"] for step in result["items"]], ["kept"])
 
-    def a_call_that_timed_out_is_not_reasked(self):
-        with tempfile.TemporaryDirectory() as root:
-            answer(root, "structure", hang=60)
-            answer(root, "reask", reply={"reply": GOOD_STRUCTURE})
-            result = structure_call(root, timeout=0.5)
-            self.assertEqual(calls(root, "reask"), [])
-            self.assertEqual(result["items"], [])
-            self.assertTrue(any("timeout" in error for error in result["errors"]))
-
     def a_usage_limited_call_is_not_reasked(self):
         with tempfile.TemporaryDirectory() as root:
             answer(root, "structure", result="You've hit your usage limit; it resets at 5pm")
@@ -1428,7 +1415,6 @@ class SpawnReplies(unittest.TestCase):
         jobs = [job(delayed(0.3, {"n": 0})), job(delayed(0.0, {"n": 1}))]
         results = decompose.spawn_replies(
             jobs,
-            timeout=20,
             concurrency=2,
             cwd=None,
             read=lambda index, stdout: (json.loads(stdout), ()),
@@ -1441,7 +1427,6 @@ class SpawnReplies(unittest.TestCase):
         self.assertEqual(
             decompose.spawn_replies(
                 [],
-                timeout=1,
                 concurrency=2,
                 cwd=None,
                 read=lambda index, stdout: (None, ("never",)),

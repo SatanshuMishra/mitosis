@@ -52,7 +52,7 @@ quotes or newlines lands as one argument and is never reinterpreted by a shell.
 | `--decompose-command` | the structure pass that turns a document into unbriefed Steps | prompt, model, document, session_id, schema |
 | `--brief-command` | one Worker per unbriefed Step, writing its task | prompt, model, step, document, session_id, schema |
 | `--reask-command` | the same session once more, for a reply failing its owned schema; required to call a model | prompt, session_id, schema, model |
-| `--worker-sandbox` | each Worker, gate and lock-stage run under sandbox-exec, writing only its clone or checkout, temp, transcript and `--worker-write` paths; exit 3 without it; exit 14 if a leftover process lingers | none |
+| `--worker-sandbox` | each Worker, gate and lock-stage run under sandbox-exec, writing only its clone or checkout, temp, transcript and `--worker-write` paths; exit 3 without it | none |
 | `--worker-write` | nothing; one more sandbox-writable path; repeatable; exit 3 if it overlaps the run directory, repository or its git directory | none |
 | `--suite-command` | the full suite unmutated, then per surviving mutant; exit 1 kills only after an unmutated pass, else `weak` | worktree, report |
 | `--gate-classes` | nothing; a JSON `{test, class, reason}` list classing properties | none |
@@ -88,17 +88,17 @@ family; any other load error stays inconclusive.
 
 Exclude editor state and build caches, or they arrive as undeclared writes.
 
-Three more things every run needs: `--feature-branch`, which must exist and is
-what every MSP branches from; `--timeout` in seconds on a monotonic clock,
-applied to every Worker, acceptance run and pull-request command; and the
-repository root as the working directory, since every path is relative to it,
-or mitosis refuses to run.
+Two more things every run needs: `--feature-branch`, which must exist and is
+what every MSP branches from, and the repository root as the working
+directory, since every path is relative to it, or mitosis refuses to run.
+`--timeout` is deprecated and ignored, mitosis has no wall-clock limit; a
+command's exit ends every wait, and every process gets no input.
 
 mitosis writes no pull-request text: at ship it writes each MSP's facts file,
 runs pull-request render --fields on it and uses the printed title and body
 unchanged; a refusal ends the MSP `ship-failed`, never retried. It needs
 pull-request 0.3.0 or later on PATH or named with `--render-command`. Naming `--pr-type` and `--pr-subject`, even
-with `--no-push`, needs `--pr-impact` or `--pr-blast-radius` and `--timeout`,
+with `--no-push`, needs `--pr-impact` or `--pr-blast-radius`,
 and probes render before any Worker spawns. Pushing also needs `--pr-why`;
 without `--pr-command` each MSP branch is pushed and ends `pushed`.
 
@@ -160,7 +160,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --items plan.json \
   --pr-why "A bad manifest should fail before it ships." \
   --pr-impact "Bad manifests stop at validation." \
   --tier-model top=claude-opus-5 --tier-model cheap=claude-sonnet-5 \
-  --timeout 1800 --concurrency 4
+  --concurrency 4
 ```
 
 The pull-request template's last stdout line, an http or https URL, is
@@ -181,8 +181,7 @@ prompt is large, so let it arrive on stdin. No Step returned here carries a
 python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --spec docs/specs/search.md --plan-only \
   --decompose-command "claude -p --model {model} --session-id {session_id} --output-format json --json-schema {schema} --permission-mode bypassPermissions" \
   --reask-command "claude -p {prompt} --resume {session_id} --model {model} --output-format json --json-schema {schema} --permission-mode bypassPermissions" \
-  --tier-model top=claude-opus-5 \
-  --timeout 900
+  --tier-model top=claude-opus-5
 ```
 
 It persists its Steps and reports the Split shape findings, scalars,
@@ -238,8 +237,7 @@ outside the write-set is judged by reconcile only, exit 6, or reverted as a
 referee write, exit 9; the gate never sees it. JSON `sandbox` is
 sandbox-exec or `off`. Each git call
 drops the diff, pathspec, repository and object variables. Producer merges run no hooks; a git command meeting
-another process's lock is retried, and every git call times out after 600
-seconds with a named error. A later change to a file whose Lane already
+another process's lock is retried. A later change to a file whose Lane already
 committed is kept in its own commit and named in the pull request, `attention`
 and the exit code.
 
@@ -273,10 +271,12 @@ without a run and kept out of the plan id, so `--resume` rebuilds nothing; an
 entry naming no property is refused.
 
 A Step with `"role": "check-author"` is the lock stage, never a Lane, MSP
-or pull request. When the feature branch lacks a `- Locked:` path it runs
-first in its own clone; each other acceptance test must exit 1 at its tree,
-then mitosis commits the locked paths on the feature branch and builds from
-there. Its record is the JSON `lock` object; a failed one blocks every Lane.
+or pull request. Each MSP's check-author locks its tests on that MSP's branch,
+from its own clone at the feature base: one per `msp` label, or the unlabelled
+one split by acceptance owner. Each test must exit 1 there and 0 with its
+uncommitted probe; only the locked files are committed, as the MSP's first
+commit. Its record is the MSP's `lock` in JSON `msps`; a failed one blocks
+only it and the MSPs merging it.
 
 The referee is what judges the work, and no Worker writes it: the charter's
 `- Locked:` lines, plus built-in markers for test configuration, snapshots,

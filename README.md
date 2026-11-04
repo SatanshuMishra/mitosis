@@ -131,8 +131,7 @@ python3 mitosis.py \
   --pr-why "A bad manifest should fail before it ships." \
   --pr-impact "A release with a bad manifest now stops at validation." \
   --tier-model top=model-a \
-  --tier-model cheap=model-b \
-  --timeout 1800
+  --tier-model cheap=model-b
 ```
 
 mitosis composes no pull-request title or body. At ship it writes each MSP's
@@ -150,8 +149,7 @@ what reconcile, stacking or the build found. `--pr-door` is still accepted
 and no longer reaches the body.
 
 Every run that names `--pr-type` and `--pr-subject`, `--plan-only` and
-`--no-push` included, needs `--pr-impact` or `--pr-blast-radius` and
-`--timeout`, which bounds the render probe, and runs
+`--no-push` included, needs `--pr-impact` or `--pr-blast-radius`, and runs
 render on each MSP's facts before any Worker is dispatched, so a missing
 pull-request command, one older than 0.3.0 or a refusal stops the run before
 a build is paid for.
@@ -180,8 +178,7 @@ python3 mitosis.py \
   --pr-why "A bad manifest should fail before it ships." \
   --pr-impact "A release with a bad manifest now stops at validation." \
   --tier-model top=model-a \
-  --tier-model cheap=model-b \
-  --timeout 1800
+  --tier-model cheap=model-b
 ```
 
 Run `python3 mitosis.py --help` for every flag; this is one path through it,
@@ -257,8 +254,8 @@ still write any path the caller's account can; with it, the JSON result's
 later command that runs Worker-written code: the gate's `--gate-setup`,
 acceptance, mutant and `--suite-command` runs, and the lock stage's checks.
 Each may write only the clean checkout it runs in, `gate/msp-<n>/checkout-*`
-or `lock/checkout-*` under the run directory, a private temp folder beside
-its log folder, `gate/msp-<n>.tmp` or `lock.tmp`, passed as TMPDIR and
+or `lock/msp-<n>/checkout-*` under the run directory, a private temp folder beside
+its log folder, `gate/msp-<n>.tmp` or `lock/msp-<n>.tmp`, passed as TMPDIR and
 holding the line traces and suite reports, and each `--worker-write` path; a
 `--gate-setup` that writes anywhere else names that path with
 `--worker-write`. mitosis's own logs and state stay outside every write
@@ -272,8 +269,8 @@ a folder mitosis places MSP worktrees in, compared by resolved real path,
 refuses the run with exit 3 before any Worker or model call, naming the one it
 overlaps. When a Worker, gate or lock-stage command exits, mitosis ends
 its process group and, under `--worker-sandbox`, every process left in that
-run's sandbox before reading anything the run could change; a process it
-cannot end within 10 seconds stops the run with exit 14. Every git call mitosis makes
+run's sandbox before reading anything the run could change, and keeps ending
+them until none is left. Every git call mitosis makes
 drops the environment variables that shape a diff, widen a pathspec, locate
 another repository or point at other objects.
 
@@ -310,16 +307,39 @@ record list `seeded`, seed_skipped and seed_seconds. With no
 
 A Step with `"role": "check-author"` writes the locked acceptance checks and
 builds nothing. It never becomes a Lane, an MSP or a pull request, and its
-name leaves every other Step's `after` list. When the feature branch lacks a
-`- Locked:` path, the check-author runs before every Lane, in its own clone;
-mitosis lands only the locked paths, requires each other Step's acceptance
-test to exit 1 at that tree, then commits the locked files on the feature
-branch as `test: lock the acceptance checks` and builds every MSP from that
-commit. The commit never touches a checkout that has the feature branch
-checked out. Its record is the JSON result's `lock` object, apart from the
-numbered Lanes; a check-author that fails blocks every Lane. A feature branch
-that already holds every locked path runs no check-author, so checks locked
-by hand keep working.
+name leaves every other Step's `after` list. A check-author named exactly
+check-author is the unlabelled one whatever its `msp` says; earlier interphase
+releases render it with no `msp` or with that name as its `msp`. It is split by
+acceptance ownership, each locked file going to the MSP whose Steps' acceptance
+entries name it. Any other check-author whose `msp` names an MSP belongs to
+that MSP. The plan
+refuses a label that names no MSP, two check-authors with one label, a locked
+file two MSPs' acceptance entries name, a locked file no acceptance names, a
+locked file two check-authors write, and a Step whose acceptance names a file
+another MSP's check-author writes.
+
+Each MSP's check-author locks only that MSP's tests, as the first commit of
+that MSP's branch. Before any Lane is dispatched, each MSP whose locked files
+the feature branch lacks runs its check-author in its own clone at the feature
+base, up to `--concurrency` at once. mitosis judges each locked test against
+the check-author's probe: it must exit 1 at the feature base plus the locked
+files, and exit 0 once the check-author's probe writes are added, the clone's
+writes inside the files of that MSP's Steps and of every MSP it merges. A test
+that passes without the probe, fails with it, or cannot run refuses the lock,
+naming it. The probe is never committed; mitosis commits the locked files
+alone onto the feature base as `test: lock the acceptance checks`, cuts that
+MSP's branch and worktree from that commit, and never moves the feature
+branch or pushes at lock time, so the lock commit reaches the remote with the
+MSP's branch at ship and its pull request carries its own tests. An MSP whose
+locked files the feature branch already holds is locked there with no
+check-author, so checks locked by hand keep working.
+
+Each MSP's lock record is its `lock` object in the JSON result's `msps` list,
+which replaces the top-level `lock` of earlier releases. A failed lock blocks
+only its MSP and the MSPs that merge it, directly or through another, and
+every other MSP is built, gated and finished. The gate and reconcile of an MSP
+judge against its own lock commit, and its referee covers the locked files of
+its own lock and of every MSP it merges.
 
 ## Holding and resuming a run
 
@@ -442,9 +462,9 @@ Dependency folders come from outside the Worker's control. Without
 virtual-environment folder, one holding `pyvenv.cfg`, that the repository
 root holds and the commit lacks. With `--gate-setup`, the gate links nothing
 and runs that command once per gate in the clean checkout, with `{worktree}`
-naming it and the run's `--timeout`; a project whose root folders point back
+naming it; a project whose root folders point back
 into the root checkout, such as an editable install, uses it. A gate setup
-that exits non-zero or times out runs no acceptance test and holds the MSP
+that exits non-zero runs no acceptance test and holds the MSP
 back as `gate-failed`, with exit 21, and a gate error naming the gate setup.
 A pre-gate commit that git refuses holds the MSP back the same way, with
 exit 21, its work left uncommitted in the worktree and no gate run.
@@ -468,9 +488,23 @@ exit 22, and nothing is pushed.
 every gate also receives one outcome entry per acceptance test, appended to
 that file.
 
-Every git call times out after 600 seconds and fails with an error naming the
-command and that a hook or a lock may be hanging, so a stuck git never stalls
-a run.
+## No wall-clock limit
+
+`--timeout` is deprecated and ignored, mitosis has no wall-clock limit. A run
+given it prints one stderr line saying so and runs as it would without it, so
+a script written before this release keeps starting. A Worker, a
+check-author, an acceptance run, a gate setup and a git command each run until
+they exit, and a command's exit, not a timer, ends every wait; telling a hung
+run from a slow one is the caller's, by watching for progress. Every process
+mitosis starts reads the null device as its input, or a fixed input mitosis
+writes in full and closes, and runs with `GIT_TERMINAL_PROMPT=0`,
+`GH_PROMPT_DISABLED=1`, `GIT_PAGER=cat` and `PAGER=cat`. Its ssh is the
+caller's own `GIT_SSH_COMMAND`, the repository's `core.sshCommand`, the
+caller's `GIT_SSH` or ssh, followed by `-o BatchMode=yes -o
+ServerAliveInterval=15 -o ServerAliveCountMax=4`, and `http.lowSpeedLimit=1`
+with `http.lowSpeedTime=60` follow any git configuration the caller set, so
+git's dead-peer detection ends a connection whose peer went away instead of
+waiting on it.
 
 A Worker that stops at a usage limit leaves its Lane `parked-limit`; Lanes
 not yet dispatched park with it, and their MSPs end `parked`, with exit 13.

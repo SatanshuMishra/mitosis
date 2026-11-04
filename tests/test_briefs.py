@@ -370,7 +370,6 @@ class Write(unittest.TestCase):
                 items,
                 template,
                 root,
-                timeout=20,
                 models={"top": "big", "cheap": "small"},
                 concurrency=2,
                 document=document,
@@ -407,7 +406,6 @@ class Write(unittest.TestCase):
                 [bare("beta"), bare("gamma")],
                 template,
                 root,
-                timeout=20,
                 models={"top": "big"},
                 document=document,
             )
@@ -422,7 +420,7 @@ class Write(unittest.TestCase):
             document = write(root, "docs/spec.md", "# One\n\nbody\n")
             template = briefer(root, {"alpha": good("alpha"), "beta": "this is not a return"})
             result = briefs.write(
-                items, template, root, timeout=20, models={"top": "big"}, document=document
+                items, template, root, models={"top": "big"}, document=document
             )
             for name in ("alpha", "beta", "gamma"):
                 self.assertTrue(was_dispatched(root, name), name)
@@ -443,7 +441,7 @@ class Write(unittest.TestCase):
             document = write(root, "docs/spec.md", "# One\n\nbody\n")
             template = briefer(root, {"beta": good("alpha")})
             result = briefs.write(
-                [bare("beta")], template, root, timeout=20, models={"top": "big"}, document=document
+                [bare("beta")], template, root, models={"top": "big"}, document=document
             )
         self.assertEqual(result["written"], [])
         self.assertNotIn("task", result["items"][0])
@@ -469,7 +467,6 @@ class Write(unittest.TestCase):
                 items,
                 template,
                 root,
-                timeout=20,
                 models={"top": "big", "cheap": "small"},
                 concurrency=2,
                 document=document,
@@ -506,7 +503,6 @@ class Write(unittest.TestCase):
                 [briefed("alpha"), bare("beta"), bare("gamma")],
                 template,
                 root,
-                timeout=20,
                 models={"top": "big"},
                 log_dir=log_dir,
                 document=document,
@@ -521,13 +517,12 @@ class Write(unittest.TestCase):
             document = write(root, "docs/spec.md", "# One\n\nbody\n")
             template = briefer(root, {"beta": good("beta")})
             with self.assertRaises(ValueError):
-                briefs.write([bare("beta")], template, root, timeout=20, document=document)
+                briefs.write([bare("beta")], template, root, document=document)
             with self.assertRaises(ValueError):
                 briefs.write(
                     [bare("beta")],
                     template,
                     root,
-                    timeout=20,
                     models={"cheap": "small"},
                     document=document,
                 )
@@ -540,7 +535,6 @@ class Write(unittest.TestCase):
                 [bare("beta")],
                 template,
                 root,
-                timeout=20,
                 models={"top": "big"},
                 document=frozen(),
             )
@@ -552,7 +546,7 @@ class Write(unittest.TestCase):
         items = [briefed("alpha"), briefed("beta")]
         with tempfile.TemporaryDirectory() as root:
             template = briefer(root, {})
-            result = briefs.write(items, template, root, timeout=20, models={"top": "big"})
+            result = briefs.write(items, template, root, models={"top": "big"})
             self.assertFalse(os.path.isdir(os.path.join(root, "worker", "prompt-alpha.txt")))
         self.assertEqual(
             result,
@@ -605,7 +599,6 @@ def reasked_write(root, items, briefs_by_step, reask, **extra):
         items,
         call(root, "brief", "{step}", "{session_id}", "{schema}"),
         root,
-        timeout=20,
         reask=call(root, "reask", "{prompt}", "{session_id}", "{schema}"),
         **extra,
     )

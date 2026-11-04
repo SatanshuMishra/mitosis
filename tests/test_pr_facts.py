@@ -336,7 +336,7 @@ class Render(unittest.TestCase):
             "print(%r)\n" % (copy, PRINTED),
         )
         path = os.path.join(self.tmp, "new", "f.json")
-        result = pr_facts.render(command, FIELDS, path, 10, None)
+        result = pr_facts.render(command, FIELDS, path, None)
         self.assertEqual(result, ("feat(ship): fake title", PRINTED_BODY))
         recorded = self._lines(calls)
         self.assertEqual(len(recorded), 1)
@@ -351,7 +351,7 @@ class Render(unittest.TestCase):
         command, calls = self._script("render", "print(%r)\n" % PRINTED)
         path = os.path.join(self.tmp, "facts", "f.json")
         with self.assertRaises(pr_facts.RenderError) as raised:
-            pr_facts.render(command, {"title": "feat: x", "problem": ["P."]}, path, 10, None)
+            pr_facts.render(command, {"title": "feat: x", "problem": ["P."]}, path, None)
         message = str(raised.exception)
         for text in (path, "mitosis", "h15-pr-fields", "change", "impact", "testing"):
             self.assertIn(text, message)
@@ -364,9 +364,19 @@ class Render(unittest.TestCase):
         self._folder()
         command, calls = self._script("render", "print('[]')\nprint(%r)\n" % PRINTED)
         with self.assertRaises(pr_facts.RenderError) as raised:
-            pr_facts.render(command, FIELDS, os.path.join(self.tmp, "f.json"), 10, None)
+            pr_facts.render(command, FIELDS, os.path.join(self.tmp, "f.json"), None)
         for text in ("pull-request render", "h16-pr-render"):
             self.assertIn(text, str(raised.exception))
+        self.assertEqual(len(self._lines(calls)), 1)
+
+    def waits_for_a_slow_render_to_print(self):
+        import pr_facts
+
+        self._folder()
+        command, calls = self._script("slow", "time.sleep(2)\nprint(%r)\n" % PRINTED)
+        path = os.path.join(self.tmp, "slow-facts", "f.json")
+        result = pr_facts.render(command, FIELDS, path, child_env())
+        self.assertEqual(result, ("feat(ship): fake title", PRINTED_BODY))
         self.assertEqual(len(self._lines(calls)), 1)
 
     def refuses_each_failure_and_runs_once(self):
@@ -387,14 +397,12 @@ class Render(unittest.TestCase):
             "sys.stderr.write('pull-request render: --impact: at least one value is required\\n')\n"
             "sys.exit(2)\n",
         )
-        slow = self._script("slow", "time.sleep(5)\n")
         garbled = self._script("garbled", "print('not json')\n")
         cases = (
-            (missing, 10, ("install pull-request 0.3.0 or later",)),
-            (old[0], 10, ("older than 0.3.0", "install pull-request 0.3.0 or later")),
+            (missing, ("install pull-request 0.3.0 or later",)),
+            (old[0], ("older than 0.3.0", "install pull-request 0.3.0 or later")),
             (
                 refused[0],
-                10,
                 (
                     "exited 2",
                     path,
@@ -402,15 +410,14 @@ class Render(unittest.TestCase):
                     "pull-request render: --impact: at least one value is required",
                 ),
             ),
-            (slow[0], 1, ("timed out",)),
-            (garbled[0], 10, ("printed no title and body", "pull-request render", "h16-pr-render")),
+            (garbled[0], ("printed no title and body", "pull-request render", "h16-pr-render")),
         )
-        for command, timeout, expected in cases:
+        for command, expected in cases:
             with self.assertRaises(pr_facts.RenderError) as raised:
-                pr_facts.render(command, FIELDS, path, timeout, child_env())
+                pr_facts.render(command, FIELDS, path, child_env())
             for text in expected:
                 self.assertIn(text, str(raised.exception))
-        for _, calls in (old, refused, slow, garbled):
+        for _, calls in (old, refused, garbled):
             self.assertEqual(len(self._lines(calls)), 1)
 
 

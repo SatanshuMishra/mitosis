@@ -6,6 +6,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from test_warm_clones import (
+    ADDS,
     APFS_ONLY,
     CHECK_AUTHOR_TEST_FILE,
     CORRECT_ADD,
@@ -48,7 +49,10 @@ class SeededWriteSet(unittest.TestCase):
     def an_untouched_seeded_file_in_the_locked_list_never_reaches_the_feature_branch(self):
         scratch = self.scratch
         author = {**check_author(), "files": [CHECK_AUTHOR_TEST_FILE, SEEDED_FILE]}
-        items = scratch.items([author, builder()])
+        seeded_check = {"file": SEEDED_FILE, "test": "Seeded.kept"}
+        items = scratch.items(
+            [author, {**builder(), "acceptance": [ADDS, seeded_check]}]
+        )
         scratch.jobs(
             {
                 "check-author": {
@@ -64,9 +68,17 @@ class SeededWriteSet(unittest.TestCase):
             scratch.record("check-author").get("bytes"), WARM, "no seeded copy" + tail(completed)
         )
         self.assertEqual(self._cache_paths("feature"), [], tail(completed))
-        lock = scratch.state().get("lock") or {}
+        lock = ((scratch.state().get("msps") or {}).get("0") or {}).get("lock") or {}
         self.assertEqual(lock.get("state"), "failed", tail(completed))
-        self.assertEqual(lock.get("reason"), "the check-author left %s unwritten" % SEEDED_FILE)
+        self.assertEqual(
+            lock.get("reason"),
+            "the check-author Step check-author left %s unwritten" % SEEDED_FILE,
+        )
+        self.assertEqual(
+            scratch.git("rev-parse", "--verify", "--quiet", "refs/heads/mitosis/calc").returncode,
+            1,
+            "an MSP whose lock failed got a branch" + tail(completed),
+        )
 
 
 def load_tests(loader, standard, pattern):
