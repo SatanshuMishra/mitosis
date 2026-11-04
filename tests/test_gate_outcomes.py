@@ -84,7 +84,13 @@ print("https://example.invalid/pull/1")
 
 RENDER = r'''
 import json
-print(json.dumps({"title": "feat: add the calculator", "body": "## Problem\nCallers need it."}))
+print(json.dumps({
+    "title": "feat: add the calculator",
+    "body": (
+        "## Problem\nCallers need it.\n\n## Change\n- Add numbers.\n\n## Impact\nSums are right.\n\n"
+        "## Testing\n| Check | Result |\n|---|---|\n| tests/test_calc.py | passed |"
+    ),
+}))
 '''
 
 PR_FLAGS = (
@@ -110,7 +116,7 @@ def put(path, content):
 def step(name, files, msp, acceptance=(), after=()):
     base = {
         "name": name,
-        "task": "build " + name,
+        "task": "Build %s." % name,
         "files": list(files),
         "source": None,
         "acceptance": list(acceptance),

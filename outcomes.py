@@ -4,6 +4,10 @@ import re
 import uuid
 from datetime import datetime, timezone
 
+import handoff
+
+OUTCOME_SCHEMA = "k6-outcome"
+PRODUCER = "mitosis"
 CHECK_ID = re.compile(r"^C[0-9]+\.[0-9]+$")
 CHECK_STATUS = {
     "pass": "pass",
@@ -50,12 +54,13 @@ def _stamp():
 
 
 def append(path, entries):
+    checked = tuple(handoff.require(OUTCOME_SCHEMA, item, path, PRODUCER) for item in entries)
     folder = os.path.dirname(path)
     if folder:
         os.makedirs(folder, exist_ok=True)
     lines = "".join(
         json.dumps({"id": str(uuid.uuid4()), "ts": _stamp(), **item}, separators=(",", ":")) + "\n"
-        for item in entries
+        for item in checked
     )
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(lines)
