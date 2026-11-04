@@ -9,6 +9,12 @@ import test_per_msp_lock_plan as planning
 import test_per_msp_lock_run as scaffold
 
 INTERPHASE_0_14_MSP = "check-author"
+REFEREE_REVERTED = "referee-reverted"
+WORKER_WRITES = 'for path, content in sorted(job.get("writes", {}).items()):'
+DELETING_WORKER = scaffold.WORKER.replace(
+    WORKER_WRITES, 'for path in job.get("deletes", []):\n    os.remove(path)\n' + WORKER_WRITES
+)
+EMPTIED_TEST = "import unittest\n\n\nclass A(unittest.TestCase):\n    def returns_two(self):\n        pass\n"
 
 
 def interphase_0_14(files):
@@ -33,6 +39,56 @@ class InterphaseCheckAuthorShape(unittest.TestCase):
             {entry.get("msp"): planning.slice_of(entry) for entry in plan.get("check_authors") or []},
             {alpha: [scaffold.TEST_A], beta: [scaffold.TEST_B]},
         )
+
+
+def msp_named(completed, label):
+    found = [
+        record
+        for record in scaffold.summary_of(completed).get("msps") or []
+        if record.get("msp") == label
+    ]
+    return found[0] if found else {}
+
+
+class ConsumerTouchesProducerLock(unittest.TestCase):
+    def setUp(self):
+        self.scratch = scaffold.Scratch()
+        self.addCleanup(self.scratch.close)
+        scaffold.put(os.path.join(self.scratch.stubs, "worker.py"), DELETING_WORKER)
+        self.items = self.scratch.items(scaffold.labelled(b_after_a=True))
+
+    def _consumer_build(self, consumer_job):
+        self.scratch.jobs(scaffold.standard_jobs(**{"build-b": consumer_job}))
+        return self.scratch.build(self.items, "--no-push")
+
+    def _locked_content(self, ref):
+        shown = self.scratch.git("show", "%s:%s" % (ref, scaffold.TEST_A))
+        return shown.stdout if shown.returncode == 0 else None
+
+    def test_a_consumer_deleting_a_producers_merged_locked_test_is_a_referee_write(self):
+        completed = self._consumer_build(
+            {"writes": {scaffold.SRC_B: scaffold.WORK_SOURCE}, "deletes": [scaffold.TEST_A]}
+        )
+        beta = msp_named(completed, "beta")
+        self.assertEqual(beta.get("state"), REFEREE_REVERTED, "beta" + scaffold.tail(completed))
+        self.assertIn(scaffold.TEST_A, (beta.get("reconcile") or {}).get("referee") or [])
+
+    def test_the_referee_restore_puts_back_a_producers_deleted_locked_test(self):
+        completed = self._consumer_build(
+            {"writes": {scaffold.SRC_B: scaffold.WORK_SOURCE}, "deletes": [scaffold.TEST_A]}
+        )
+        self.assertIn(scaffold.TEST_A, self.scratch.tree("mitosis/beta"), scaffold.tail(completed))
+        self.assertEqual(self._locked_content("mitosis/beta"), self._locked_content("mitosis/alpha"))
+
+    def test_the_referee_restore_puts_back_a_producers_rewritten_locked_test(self):
+        first = self._consumer_build(
+            {"writes": {scaffold.SRC_B: scaffold.WORK_SOURCE, scaffold.TEST_A: EMPTIED_TEST}}
+        )
+        self.assertEqual(msp_named(first, "beta").get("state"), REFEREE_REVERTED, scaffold.tail(first))
+        self.assertEqual(self._locked_content("mitosis/beta"), self._locked_content("mitosis/alpha"))
+        resumed = self.scratch.build(self.items, "--no-push", "--resume")
+        self.assertIn(scaffold.TEST_A, self.scratch.tree("mitosis/beta"), scaffold.tail(resumed))
+        self.assertEqual(self._locked_content("mitosis/beta"), self._locked_content("mitosis/alpha"))
 
 
 if __name__ == "__main__":
