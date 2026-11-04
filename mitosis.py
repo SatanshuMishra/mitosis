@@ -1638,16 +1638,11 @@ def _msp_findings(plan, index, record, lane_records):
 LOCK_EXIT = {"failed": LANE_EXIT["failed"], run.MSP_PARKED: MSP_EXIT[run.MSP_PARKED]}
 
 
-def lock_of(state, msp):
-    record = (((state or {}).get("msps") or {}).get(str(msp)) or {}).get("lock")
-    return record if isinstance(record, dict) else None
-
-
 def locks(state, plan):
     return tuple(
-        (msp, lock_of(state, msp))
+        (msp, run.lock_of(state, msp))
         for msp in range(len(plan.get("msps") or []))
-        if lock_of(state, msp) is not None
+        if run.lock_of(state, msp) is not None
     )
 
 

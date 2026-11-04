@@ -4060,7 +4060,7 @@ def kept_lock(repo, record):
 
 
 def lock_of(state, msp):
-    record = ((state.get("msps") or {}).get(str(msp)) or {}).get("lock")
+    record = (((state or {}).get("msps") or {}).get(str(msp)) or {}).get("lock")
     return record if isinstance(record, dict) else None
 
 
