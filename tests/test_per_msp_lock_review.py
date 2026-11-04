@@ -80,6 +80,14 @@ class ConsumerTouchesProducerLock(unittest.TestCase):
         self.assertIn(scaffold.TEST_A, self.scratch.tree("mitosis/beta"), scaffold.tail(completed))
         self.assertEqual(self._locked_content("mitosis/beta"), self._locked_content("mitosis/alpha"))
 
+    def test_a_consumer_whose_producer_failed_holds_no_producer_test(self):
+        self.scratch.jobs(scaffold.standard_jobs(**{"build-a": {"exit": 1}}))
+        completed = self.scratch.build(self.items, "--no-push")
+        beta = msp_named(completed, "beta")
+        self.assertNotEqual(beta.get("state"), REFEREE_REVERTED, scaffold.tail(completed))
+        self.assertEqual((beta.get("reconcile") or {}).get("referee") or [], [])
+        self.assertNotIn(scaffold.TEST_A, self.scratch.tree("mitosis/beta"))
+
     def test_the_referee_restore_puts_back_a_producers_rewritten_locked_test(self):
         first = self._consumer_build(
             {"writes": {scaffold.SRC_B: scaffold.WORK_SOURCE, scaffold.TEST_A: EMPTIED_TEST}}
