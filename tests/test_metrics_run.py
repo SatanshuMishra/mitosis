@@ -1,6 +1,7 @@
 import contextlib
 import datetime
 import glob
+import hashlib
 import importlib.util
 import io
 import json
@@ -120,17 +121,25 @@ if "print" in chosen:
     print(chosen["print"], file=sys.stderr)
 if "exit" in chosen:
     sys.exit(chosen["exit"])
-print(
-    json.dumps(
-        {
-            "item": "lane",
-            "status": chosen.get("status", "ok"),
-            "files_changed": paths,
-            "notes": chosen.get("notes", "done"),
-        }
+reply = {
+    "item": "lane",
+    "status": chosen.get("status", "ok"),
+    "files_changed": paths,
+    "notes": chosen.get("notes", "done"),
+}
+print(json.dumps({"type": "result", "session_id": session, "result": "done", "structured_output": reply}))
+'''
+
+REASK_COMMAND = " ".join(
+    (
+        shlex.quote(sys.executable),
+        "-c",
+        shlex.quote("import sys; sys.stderr.write('no re-ask was expected\\n'); sys.exit(1)"),
+        "{prompt}",
+        "{session_id}",
+        "{schema}",
     )
 )
-'''
 
 ACCEPTANCE = r'''
 import glob
@@ -157,13 +166,20 @@ sys.exit(0 if os.path.exists("alpha.py") and "work" in open("alpha.py").read() e
 '''
 
 STRUCTURER = """
+import json
 import os
 import sys
 
 here = os.path.dirname(os.path.abspath(__file__))
 sys.stdin.read()
 with open(os.path.join(here, "structure-reply.txt"), encoding="utf-8") as handle:
-    print(handle.read().strip())
+    reply = json.load(handle)
+print(json.dumps({
+    "type": "result",
+    "session_id": sys.argv[-1],
+    "result": "done",
+    "structured_output": {"reply": reply},
+}))
 """
 
 PULL_REQUEST = """
@@ -180,7 +196,11 @@ import sys
 
 with open(sys.argv[3], encoding="utf-8") as handle:
     facts = json.load(handle)
-print(json.dumps({"title": facts["title"], "body": "## Problem\\n" + " ".join(facts["problem"])}))
+body = (
+    "## Problem\\n" + " ".join(facts["problem"]) + "\\n\\n## Change\\n- Record the run.\\n\\n"
+    "## Impact\\nThe run is recorded.\\n\\n## Testing\\n| Check | Result |\\n|---|---|\\n| run | passed |"
+)
+print(json.dumps({"title": facts["title"], "body": body}))
 """
 
 
@@ -190,6 +210,16 @@ def write(root, relative, content):
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(content)
     return path
+
+
+SPEC_SECTION = "1.1"
+SPEC_DOCUMENT = "# Spec\n\n## 1.1 Build\n"
+
+
+def items_document(folder, items):
+    path = os.path.abspath(write(folder, "spec.md", SPEC_DOCUMENT))
+    source = {"path": path, "sha256": hashlib.sha256(SPEC_DOCUMENT.encode("utf-8")).hexdigest()}
+    return json.dumps([{**item, "source": item.get("source") or source} for item in items])
 
 
 def read_json(path):
@@ -215,7 +245,10 @@ def renderer(elsewhere):
 
 def worker(elsewhere, config=None, *placeholders):
     write(elsewhere, os.path.join("worker", "config.json"), json.dumps(config or {}))
-    return command(elsewhere, "worker.py", WORKER, "{task}", "{lane}", *placeholders)
+    rest = tuple(word for word in placeholders if word != "{session_id}")
+    return command(
+        elsewhere, "worker.py", WORKER, "{task}", "{lane}", "{session_id}", *rest, "{schema}"
+    )
 
 
 def acceptance(elsewhere, config=None):
@@ -224,11 +257,11 @@ def acceptance(elsewhere, config=None):
 
 
 def bare(name, **extra):
-    return {"name": name, "files": [name + ".py"], "source": None, "acceptance": [], **extra}
+    return {"name": name, "files": [name + ".py"], "source": None, "acceptance": [], "spec_ref": [SPEC_SECTION], **extra}
 
 
 def briefed(name, **extra):
-    return bare(name, task="do " + name, **extra)
+    return bare(name, task="Do %s." % name, **extra)
 
 
 def gated_alpha(**extra):
@@ -287,7 +320,7 @@ def invoke(root, argv):
 
 
 def items_run(root, run_dir, items, *extra):
-    write(root, "items.json", json.dumps(items))
+    write(root, "items.json", items_document(root, items))
     return invoke(root, ["--items", "items.json", "--run-dir", run_dir, *extra])
 
 
@@ -300,6 +333,8 @@ def build(root, elsewhere, items, template, *extra, accept=None, run_dir=None):
         "feature",
         "--dispatch-command",
         template,
+        "--reask-command",
+        REASK_COMMAND,
         "--acceptance-command",
         accept or acceptance(elsewhere),
         "--timeout",
@@ -532,7 +567,11 @@ class PlanOnly(unittest.TestCase):
                     "--run-dir",
                     os.path.join(elsewhere, "run"),
                     "--decompose-command",
-                    command(elsewhere, "structurer.py", STRUCTURER, "{document}"),
+                    command(
+                        elsewhere, "structurer.py", STRUCTURER, "{document}", "{schema}", "{session_id}"
+                    ),
+                    "--reask-command",
+                    REASK_COMMAND,
                     "--timeout",
                     "30",
                     "--plan-only",
@@ -1028,7 +1067,7 @@ class SuiteIsolation(unittest.TestCase):
             with unittest.mock.patch.dict(os.environ, chosen), unittest.mock.patch.object(
                 metrics_writer, "append_event", append_spy
             ), unittest.mock.patch.object(metrics_writer, "write_summary", summary_spy):
-                write(root, "items.json", json.dumps([briefed("alpha")]))
+                write(root, "items.json", items_document(root, [briefed("alpha")]))
                 code, out, err = helpers.invoke(
                     root, ["--items", "items.json", "--run-dir", os.path.join(elsewhere, "run"), "--plan-only"]
                 )

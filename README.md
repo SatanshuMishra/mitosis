@@ -21,6 +21,48 @@ mitosis takes exactly one of two inputs, and needs nothing else to run:
 
 Both converge on the same items format before anything downstream runs.
 
+The file `--items` names must meet h12, the owned schema
+`contracts/h12-interphase-items.schema.json`: every Step carries `name`,
+`task`, `files`, `source`, `acceptance` and `spec_ref`, the document's
+section numbers it builds, and nothing else beyond the optional fields h12
+lists. `source` names the document by absolute path and SHA-256. A file that
+fails h12 is refused with exit 3, its schema errors named, before anything is
+planned. Two Steps that build a validator and then its command-line flag:
+
+```json
+[
+  {
+    "name": "validate-manifest",
+    "task": "Add validate_manifest(path) to app/manifest.py, returning one error per missing key.",
+    "files": ["app/manifest.py", "tests/test_manifest.py"],
+    "source": {
+      "path": "/work/app/docs/specs/manifest.md",
+      "sha256": "4bc2c86cd92744fbb47c8f13e04a42d78fec19f8c032ab091e4a8255720346c8"
+    },
+    "acceptance": [
+      {"file": "tests/test_manifest.py", "test": "a_missing_key_is_reported_by_name"}
+    ],
+    "spec_ref": ["1.1"],
+    "complexity": "simple"
+  },
+  {
+    "name": "validate-flag",
+    "task": "Add --validate to app/cli.py, printing those errors and exiting 1 if any.",
+    "files": ["app/cli.py", "tests/test_cli.py"],
+    "source": {
+      "path": "/work/app/docs/specs/manifest.md",
+      "sha256": "4bc2c86cd92744fbb47c8f13e04a42d78fec19f8c032ab091e4a8255720346c8"
+    },
+    "acceptance": [
+      {"file": "tests/test_cli.py", "test": "validate_exits_one_on_a_bad_manifest"}
+    ],
+    "spec_ref": ["1.2"],
+    "after": ["validate-manifest"],
+    "complexity": "simple"
+  }
+]
+```
+
 ## What it never does
 
 mitosis does not merge. Merging is a judgment call — review passed, CI green,
@@ -43,14 +85,17 @@ claude plugin marketplace add SatanshuMishra/mitosis
 claude plugin install mitosis@mitosis
 ```
 
-The plugin carries the skill and the fourteen modules it runs — `core.py`,
+The plugin carries the skill and the fifteen modules it runs — `core.py`,
 `shape.py`, `decompose.py`, `briefs.py`, `run.py`, `isolation.py`, `pr_facts.py`,
 `mitosis.py`, `metrics.py`, `spend.py`, `metrics_writer.py`, `referee.py`,
-`mutants.py`, `outcomes.py` — and the two data files they read,
-`prices.json` and `catalogue.json`, which need Python 3.9 or later. A run
-that names `--pr-type` and `--pr-subject` also needs the pull-request
-command, 0.3.0 or later, on PATH or named with `--render-command`, because
-mitosis writes no pull-request text itself.
+`mutants.py`, `outcomes.py`, `handoff.py` — the two data files they read,
+`prices.json` and `catalogue.json`, and the `contracts/` folder beside the
+modules, which holds byte-identical copies of the program's
+`contracts/validator.py` and of every owned schema mitosis writes or reads.
+They need Python 3.9 or later. A run that names `--pr-type` and
+`--pr-subject` also needs the pull-request command, 0.3.0 or later, on PATH
+or named with `--render-command`, because mitosis writes no pull-request text
+itself.
 
 To update, refresh the marketplace, update the plugin, and restart:
 
@@ -64,9 +109,10 @@ release changes it; `CHANGELOG.md` lists them. The version is part of each
 plan's id, so finish a run before updating: it cannot be resumed on another
 release.
 
-Without Claude Code, copy the fourteen modules into one directory and invoke
-`mitosis.py` by path. They import one another, so they must stay side by
-side.
+Without Claude Code, copy the fifteen modules and the `contracts/` folder
+into one directory and invoke `mitosis.py` by path. The modules import one
+another and `handoff.py` loads `contracts/validator.py` and the schemas beside
+it, so they must stay side by side.
 
 ## A worked invocation
 
@@ -75,7 +121,8 @@ python3 mitosis.py \
   --items items.json \
   --charter CHARTER.md \
   --feature-branch main \
-  --dispatch-command "worker-cli --prompt {task} --model {model}" \
+  --dispatch-command "claude -p {task} --model {model} --session-id {session_id} --output-format json --json-schema {schema} --permission-mode bypassPermissions" \
+  --reask-command "claude -p {prompt} --resume {session_id} --model {model} --output-format json --json-schema {schema} --permission-mode bypassPermissions" \
   --acceptance-command "python3 -m unittest {test}" \
   --pr-command "open-pr --branch {branch} --base {base} --title {title} --body {body}" \
   --pr-type feat \
@@ -123,7 +170,8 @@ python3 mitosis.py \
   --items items.json \
   --charter CHARTER.md \
   --feature-branch main \
-  --dispatch-command "worker-cli --prompt {task} --model {model}" \
+  --dispatch-command "claude -p {task} --model {model} --session-id {session_id} --output-format json --json-schema {schema} --permission-mode bypassPermissions" \
+  --reask-command "claude -p {prompt} --resume {session_id} --model {model} --output-format json --json-schema {schema} --permission-mode bypassPermissions" \
   --acceptance-command "python3 -m unittest {test}" \
   --pr-type feat \
   --pr-subject "validate manifests from the command line" \
@@ -143,6 +191,46 @@ gate judges a property:
 | `--worker-write PATH` | one more path a sandboxed Worker, gate run or lock-stage check may write under; repeatable; a path that is, holds or lies inside the run directory, the repository or its git directory refuses the run with exit 3 |
 | `--suite-command TEMPLATE` | the project's full suite, run once with no mutant and then on each mutant every acceptance test of a property survives; exit 1 kills that mutant only when the run with no mutant passed, else the property stays `weak` with that reason, and a property whose every survivor is killed is covered-elsewhere instead of `weak` |
 | `--gate-classes PATH` | a JSON list of `{test, class, reason}` objects classing a property `not-applicable`, covered-elsewhere or `removed`, judged without a run and kept out of the plan id |
+
+## Model replies and owned hand-offs
+
+Every model call is a command template, and each reply has an owned schema
+in `contracts/`. `--dispatch-command`, `--decompose-command` and
+`--brief-command` must each carry `{schema}`, the call schema the reply must
+meet as structured output, as JSON text, and `{session_id}`, the session a
+re-ask resumes; a template missing either is refused with exit 3 before
+anything is built. Any run that calls a model also needs `--reask-command`,
+offered `{prompt}`, `{session_id}`, `{schema}` and `{model}`, and refused
+with exit 3 when it is absent or lacks one of the first three.
+
+mitosis reads each reply only from the structured_output field of the JSON
+object the command prints, never from prose. A reply that is missing or fails
+its owned schema is asked again once, through `--reask-command`, in the same
+session, with the schema errors as `{prompt}`. A reply that still fails ends
+that Worker's Lane, or that structure or brief call, as failed, naming the
+errors; it is never defaulted, skipped, coerced or cut short. With Claude
+Code, the two templates are:
+
+```
+claude -p {task} --model {model} --session-id {session_id} --output-format json --json-schema {schema} --permission-mode bypassPermissions
+claude -p {prompt} --resume {session_id} --model {model} --output-format json --json-schema {schema} --permission-mode bypassPermissions
+```
+
+The structure and brief templates take `{prompt}` in place of `{task}`, or
+read the prompt from stdin.
+
+Every hand-off mitosis writes is checked against its owned schema in
+`contracts/` immediately before it is written: h8 for the result line, h9 for
+the run state, k2 for the lock record, h15 for each pull request's facts file
+and k6 for each `--trajectory` outcome entry. Render's reply is read through
+h16, and Worker, structure and brief replies meet h10, h10b and h10c. A run
+state, result line or lock record that fails stops the run with exit 15, its
+schema errors named and nothing written for it. A facts file that fails is a
+render refusal, so its MSP ends `ship-failed` with the errors as its reason,
+and outcome entries that fail are not appended; the MSP records the errors as
+its trajectory error. A pull request is recorded only as
+the http or https URL the pull-request command prints on its last line; any
+other last line ends that MSP `ship-failed`.
 
 ## Workers build in their own clones
 
@@ -442,16 +530,15 @@ code or the last JSON line.
 
 mitosis gives every Worker dispatch, structure call and brief call a fresh
 session id, offered as the `{session_id}` placeholder on the dispatch,
-decompose and brief templates. Pass it to the model command so that call's
-transcript is named by it, and mitosis prices the call from that transcript
-when the summary is written:
+decompose and brief templates, each of which must carry it. The model
+command names that call's transcript by it, and mitosis prices the call from
+that transcript when the summary is written:
 
 ```
-claude -p {task} --model {model} --session-id {session_id} --permission-mode bypassPermissions
+claude -p {task} --model {model} --session-id {session_id} --output-format json --json-schema {schema} --permission-mode bypassPermissions
 ```
 
-A template without the placeholder still runs; its calls are counted in
-`sessions_missing` and add no spend. mitosis gives `PLUGIN_METRICS_PARENT`,
+mitosis gives `PLUGIN_METRICS_PARENT`,
 set to `mitosis/<run id>`, to every command it starts, so a run another tool
 records from inside one of them names its parent, is listed among the run's
 children, and keeps its spend apart from mitosis's own.

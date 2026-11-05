@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -40,6 +41,18 @@ WORK_SOURCE = "def value():\n    return 2\n"
 HIT_LIMIT = "You've hit your limit \u00b7 resets 3pm (America/Vancouver)"
 SSH_OPTIONS = "-o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
 HTTP_SETTINGS = (["http.lowSpeedLimit", "1"], ["http.lowSpeedTime", "60"])
+SPEC_SECTION = "1.1"
+SPEC_DOCUMENT = "# Spec\n\n## 1.1 Build\n"
+REASK_COMMAND = " ".join(
+    (
+        shlex.quote(sys.executable),
+        "-c",
+        shlex.quote("import sys; sys.stderr.write('no re-ask was expected\\n'); sys.exit(1)"),
+        "{prompt}",
+        "{session_id}",
+        "{schema}",
+    )
+)
 
 WORKER = r'''
 import json
@@ -50,6 +63,12 @@ import sys
 import time
 
 here = os.path.dirname(os.path.abspath(__file__))
+SESSION = sys.argv[-2]
+del sys.argv[-2:]
+
+
+def replied(reply):
+    print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": reply}))
 
 
 def at_end():
@@ -82,7 +101,7 @@ def put(path, content):
 
 
 def failed(name, why):
-    print(json.dumps({"item": name, "status": "failed", "files_changed": [], "notes": why}))
+    replied({"item": name, "status": "failed", "files_changed": [], "notes": why})
 
 
 with open(os.path.join(here, "worker.json"), encoding="utf-8") as handle:
@@ -127,7 +146,7 @@ if job.get("exit"):
 time.sleep(job.get("sleep", 0))
 for path, content in sorted(job.get("writes", {}).items()):
     put(path, content)
-print(json.dumps({"item": name, "status": "ok", "files_changed": sorted(job.get("writes", {})), "notes": "done"}))
+replied({"item": name, "status": "ok", "files_changed": sorted(job.get("writes", {})), "notes": "done"})
 '''
 
 ACCEPT = r'''
@@ -169,7 +188,7 @@ print("https://example.invalid/pull/1")
 
 RENDER = r'''
 import json
-print(json.dumps({"title": "feat: lock each MSP", "body": "## Problem\nCallers need it."}))
+print(json.dumps({"title": "feat: lock each MSP", "body": "## Problem\nCallers need it.\n\n## Change\n- Lock each MSP.\n\n## Impact\nEach MSP carries its own tests.\n\n## Testing\n| Check | Result |\n|---|---|\n| tests/test_per_msp_lock_run.py | passed |"}))
 '''
 
 PR_FLAGS = (
@@ -241,9 +260,8 @@ def crashing(path):
 def check_author(name, files, msp=None):
     found = {
         "name": name,
-        "task": "task-" + name,
+        "task": "Run task-" + name + ".",
         "files": list(files),
-        "source": None,
         "acceptance": [],
         "role": "check-author",
     }
@@ -253,9 +271,8 @@ def check_author(name, files, msp=None):
 def builder(name, files, msp, acceptance, after):
     return {
         "name": name,
-        "task": "task-" + name,
+        "task": "Run task-" + name + ".",
         "files": list(files),
-        "source": None,
         "acceptance": [{"file": path, "test": test_name(path)} for path in acceptance],
         "msp": msp,
         "after": list(after),
@@ -311,6 +328,12 @@ def put(path, content):
     with open(path, "wb") as handle:
         handle.write(content.encode("utf-8"))
     return path
+
+
+def owned_steps(steps, folder):
+    spec = put(os.path.join(folder, "spec.md"), SPEC_DOCUMENT)
+    source = {"path": os.path.abspath(spec), "sha256": hashlib.sha256(SPEC_DOCUMENT.encode("utf-8")).hexdigest()}
+    return [{**step, "source": source, "spec_ref": [SPEC_SECTION]} for step in steps]
 
 
 def tail(completed):
@@ -451,7 +474,7 @@ class Scratch:
         return self.git("merge-base", "--is-ancestor", commit, ref).returncode == 0
 
     def items(self, steps, name="items.json"):
-        return put(os.path.join(self.tmp, name), json.dumps(steps))
+        return put(os.path.join(self.tmp, name), json.dumps(owned_steps(steps, self.tmp)))
 
     def jobs(self, jobs):
         return put(os.path.join(self.stubs, "worker.json"), json.dumps(jobs))
@@ -487,7 +510,9 @@ class Scratch:
             "--feature-branch",
             "feature",
             "--dispatch-command",
-            self.stub("worker.py", "{task}"),
+            self.stub("worker.py", "{task}", "{session_id}", "{schema}"),
+            "--reask-command",
+            REASK_COMMAND,
             "--acceptance-command",
             self.stub("accept.py", "{file}", "{test}"),
             *extra,

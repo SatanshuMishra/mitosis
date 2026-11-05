@@ -13,7 +13,17 @@ sys.path.insert(0, HERE)
 
 import isolation
 import run
-from test_mutant_coverage import ADDS, CORRECT_ADD, TEST_FILE, Scratch, put, step, summary_of, tail
+from test_mutant_coverage import (
+    ADDS,
+    CORRECT_ADD,
+    REASK_COMMAND,
+    TEST_FILE,
+    Scratch,
+    put,
+    step,
+    summary_of,
+    tail,
+)
 from test_round1_receipts import EXACT_TEST
 
 LATE_ADD = "def add(a, b):\n    return b + a\n"
@@ -264,7 +274,7 @@ class Receipts(unittest.TestCase):
                         self.scratch.repo,
                         "feature",
                         self.scratch.run_dir,
-                        self.scratch.stub("worker.py", "{msp}", "{task}"),
+                        self.scratch.stub("worker.py", "{msp}", "{task}", "{session_id}", "{schema}"),
                         self.scratch.stub("accept.py", "unittest", "{file}", "{test}"),
                         None,
                         1,
@@ -273,6 +283,7 @@ class Receipts(unittest.TestCase):
                         env=self.scratch.env,
                         worker_sandbox=True,
                         worker_writes=(given,),
+                        reask_command=REASK_COMMAND,
                     )
                 self.assertIsInstance(raised.exception, run.ConfigError)
                 self.assertEqual(str(raised.exception), refusal(given, self.scratch.run_dir))
@@ -434,7 +445,7 @@ class ProtectedRoots(unittest.TestCase):
             self.scratch.repo,
             "feature",
             self.scratch.run_dir,
-            self.scratch.stub("worker.py", "{msp}", "{task}"),
+            self.scratch.stub("worker.py", "{msp}", "{task}", "{session_id}", "{schema}"),
             self.scratch.stub("accept.py", "unittest", "{file}", "{test}"),
             None,
             1,
@@ -444,6 +455,7 @@ class ProtectedRoots(unittest.TestCase):
             env=self.scratch.env,
             worker_sandbox=True,
             worker_writes=(given,),
+            reask_command=REASK_COMMAND,
         )
 
     def the_plan_refuses_a_worker_write_that_overlaps_a_mitosis_checkout_folder(self):
@@ -581,7 +593,9 @@ class Outlived(unittest.TestCase):
             "--feature-branch",
             "feature",
             "--dispatch-command",
-            self.scratch.stub("worker.py", "{msp}", "{task}"),
+            self.scratch.stub("worker.py", "{msp}", "{task}", "{session_id}", "{schema}"),
+            "--reask-command",
+            REASK_COMMAND,
             "--acceptance-command",
             acceptance,
             "--no-push",

@@ -6,7 +6,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-RELEASE = "0.12.0"
+RELEASED = (0, 12, 0)
 DOCS = ("README.md", os.path.join("skills", "mitosis", "SKILL.md"))
 VERSION_HEADING = re.compile(r"^## (\d+\.\d+\.\d+)\b", re.MULTILINE)
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
@@ -38,12 +38,13 @@ def says(text, *phrases):
 
 
 class Release012(unittest.TestCase):
-    def test_the_version_is_0_12_0_everywhere(self):
-        self.assertEqual(assigned_version(read("core.py")), RELEASE)
-        self.assertEqual(json.loads(read(os.path.join(".claude-plugin", "plugin.json"))).get("version"), RELEASE)
+    def test_the_version_is_above_0_12_0_everywhere(self):
+        version = assigned_version(read("core.py"))
+        self.assertGreater(tuple(int(part) for part in version.split(".")), RELEASED)
+        self.assertEqual(json.loads(read(os.path.join(".claude-plugin", "plugin.json"))).get("version"), version)
         headings = VERSION_HEADING.findall(read("CHANGELOG.md"))
         self.assertTrue(headings, "CHANGELOG.md holds no version heading")
-        self.assertEqual(headings[0], RELEASE)
+        self.assertEqual(headings[0], version)
 
     def test_the_docs_describe_per_msp_locks_and_no_timeout(self):
         for relative in DOCS:

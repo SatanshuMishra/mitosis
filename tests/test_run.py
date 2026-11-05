@@ -48,7 +48,7 @@ def read(path):
 def step(name, files, **extra):
     base = {
         "name": name,
-        "task": "do " + name,
+        "task": "Do %s." % name,
         "files": list(files),
         "source": None,
         "acceptance": [],
@@ -67,7 +67,7 @@ import subprocess
 import sys
 import time
 
-mode, marker_dir, lane, task = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+mode, marker_dir, lane, task, session = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 running = os.path.join(marker_dir, "running-%s" % lane)
 open(running, "w").close()
 if mode == "slow-" + lane:
@@ -112,13 +112,24 @@ if mode == "cross":
         handle.write("written across an MSP boundary by lane %s\n" % lane)
 if mode == "noisy":
     for i in range(5000):
-        print("prose line %d" % i)
+        print("prose line %d" % i, file=sys.stderr)
 status = "failed" if mode == "reports-failed" else "ok"
-notes = "n" * 500 if mode == "noisy" else "done"
+reply = {"item": "lane-%s" % lane, "status": status, "files_changed": reported, "notes": "done"}
 if mode != "silent":
-    print(json.dumps({"item": "lane-%s" % lane, "status": status, "files_changed": reported, "notes": notes}))
+    print(json.dumps({"type": "result", "session_id": session, "result": "done", "structured_output": reply}))
 os.remove(running)
 sys.exit(3 if mode in ("crash", "crash-" + lane) else 0)
+'''
+
+
+REASK_SCRIPT = r'''
+import json
+import os
+import sys
+
+marker_dir = sys.argv[1]
+with open(os.path.join(marker_dir, "reask"), "a") as handle:
+    handle.write(json.dumps(sys.argv[2:]) + "\n")
 '''
 
 
@@ -154,18 +165,26 @@ print("https://example.invalid/pull/%d" % len(open(os.path.join(marker_dir, "pr"
 '''
 
 
+FAKE_BODY = (
+    "## Problem\nFake problem.\n\n## Change\n- Fake change.\n\n## Impact\nFake impact.\n\n"
+    "## Testing\n| Check | Result |\n|---|---|\n| tests/t_impl.txt | passed |"
+)
+
+
 RENDER_SCRIPT = r'''
 import json
 import os
 import shutil
 import sys
 
+FAKE_BODY = %r
+
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "calls"), "a") as handle:
     handle.write(json.dumps(sys.argv) + "\n")
 shutil.copyfile(sys.argv[sys.argv.index("--fields") + 1], os.path.join(here, "fields.copy.json"))
-sys.stdout.write('{"title":"feat(ship): fake title","body":"## Problem\\nFake body."}\n')
-'''
+sys.stdout.write(json.dumps({"title": "feat(ship): fake title", "body": FAKE_BODY}) + "\n")
+''' % (FAKE_BODY,)
 
 
 REFUSING_RENDER_SCRIPT = r'''
@@ -185,6 +204,7 @@ HEADER = {
     "scope": "ship",
     "subject": "write pull requests in the house format",
     "why": ("Callers need it.",),
+    "impact": ("Callers notice nothing.",),
 }
 
 PR_STUB = object()
@@ -244,12 +264,27 @@ class RepoCase(unittest.TestCase):
         if not os.path.exists(script):
             write(script, WORKER_SCRIPT)
         os.makedirs(self.markers, exist_ok=True)
-        return "%s %s %s %s {lane} {task}" % (
+        return "%s %s %s %s {lane} {task} {session_id} {schema}" % (
             shlex.quote(sys.executable),
             shlex.quote(script),
             mode,
             shlex.quote(self.markers),
         )
+
+    def reask_command(self):
+        script = os.path.join(self.tmp, "reask.py")
+        if not os.path.exists(script):
+            write(script, REASK_SCRIPT)
+        os.makedirs(self.markers, exist_ok=True)
+        return "%s %s %s {prompt} {session_id} {schema}" % (
+            shlex.quote(sys.executable),
+            shlex.quote(script),
+            shlex.quote(self.markers),
+        )
+
+    def reask_calls(self):
+        path = os.path.join(self.markers, "reask")
+        return [json.loads(line) for line in read(path).splitlines()] if os.path.exists(path) else []
 
     def marker(self, lane):
         path = os.path.join(self.markers, "lane-%d" % lane)
@@ -287,7 +322,7 @@ class RepoCase(unittest.TestCase):
             self.acceptance_command(accept),
             self.pr_command() if pr is PR_STUB else pr,
             2,
-            trees_root=self.trees,
+            trees_root=self.trees, reask_command=self.reask_command(),
             **{
                 "header": HEADER,
                 "render_command": self.render_command,
@@ -317,7 +352,7 @@ class RepoCase(unittest.TestCase):
             self.run_dir,
             "main",
             prior=prior,
-            **extra,
+            **{"reask": self.reask_command(), **extra},
         )
 
     def build(self, plan, mode="ok"):
@@ -490,6 +525,28 @@ class Dispatch(RepoCase):
         self.assertEqual(records[0]["state"], "failed")
         self.assertEqual(records[0]["exit"], 0)
         self.assertIsNone(records[0]["returned"])
+        self.assertIn("h10-worker-return", records[0]["reason"])
+        self.assertTrue(records[0]["stdout"].endswith("0.reask.out"))
+        asked = self.reask_calls()
+        self.assertEqual(len(asked), 1)
+        self.assertEqual(asked[0][1], records[0]["session_id"])
+        self.assertEqual(asked[0][2], run.worker_schema())
+        self.assertIn("stdout is not one JSON object", asked[0][0])
+
+    def a_worker_with_a_valid_reply_is_never_reasked(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        records = self.dispatch(plan, trees, mode="reports-failed")
+        self.assertEqual(records[0]["returned"]["status"], "failed")
+        self.assertEqual(self.reask_calls(), [])
+
+    def a_dispatch_without_a_reask_command_is_refused_before_any_worker(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        with self.assertRaises(run.ConfigError) as refused:
+            self.dispatch(plan, trees, reask=None)
+        self.assertIn("--reask-command is required", str(refused.exception))
+        self.assertIsNone(self.marker(0))
 
     def a_slow_worker_is_waited_on_and_its_leftover_process_ended(self):
         plan = core.plan([step("a", ["a.txt"])])
@@ -498,6 +555,7 @@ class Dispatch(RepoCase):
         self.assertEqual(records[0]["state"], "ok", records[0])
         self.assertEqual(records[0]["exit"], 0)
         self.assertNotIn("timed_out", records[0])
+        self.assertEqual(self.reask_calls(), [])
         child = int(read(os.path.join(self.markers, "child-0")))
         with self.assertRaises(ProcessLookupError):
             os.kill(child, 0)
@@ -652,7 +710,7 @@ class Dispatch(RepoCase):
         )
         final = run.execute(
             plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command(),
-            self.pr_command(), 1, trees_root=self.trees, no_push=True,
+            self.pr_command(), 1, trees_root=self.trees, reask_command=self.reask_command(), no_push=True,
         )
         by_step = {plan["lanes"][int(i)]["steps"][0]: r["state"] for i, r in final["lanes"].items()}
         self.assertEqual(
@@ -843,7 +901,7 @@ class Dispatch(RepoCase):
         server, client = lane_named(plan, "server"), lane_named(plan, "client")
         state = run.execute(
             plan, self.repo, "main", self.run_dir, self.worker_command("sneak-%d" % server),
-            self.acceptance_command(), None, 2, trees_root=self.trees, no_push=True,
+            self.acceptance_command(), None, 2, trees_root=self.trees, reask_command=self.reask_command(), no_push=True,
         )
         suspects = {
             tuple(entry["suspects"])
@@ -863,7 +921,7 @@ class Dispatch(RepoCase):
         plan = self._interface_plan()
         state = run.execute(
             plan, self.repo, "main", self.run_dir, self.worker_command(),
-            self.acceptance_command(), None, 2, trees_root=self.trees, no_push=True,
+            self.acceptance_command(), None, 2, trees_root=self.trees, reask_command=self.reask_command(), no_push=True,
         )
         self.assertEqual(
             [record.get("foreign_writes") for record in state["lanes"].values()], [[], [], []]
@@ -876,8 +934,7 @@ class Dispatch(RepoCase):
         record = records[0]
         self.assertEqual(record["state"], "ok")
         self.assertLess(len(json.dumps(record)), 1500)
-        self.assertLessEqual(len(record["returned"]["notes"]), core.NOTES_CAP)
-        self.assertIn("prose line 4999", read(record["stdout"]))
+        self.assertIn("prose line 4999", read(record["stderr"]))
         self.assertTrue(record["stdout"].startswith(self.run_dir))
 
     def a_resumed_ok_lane_is_not_dispatched_again(self):
@@ -925,7 +982,21 @@ class Resume(RepoCase):
     def resume_refuses_a_different_plan(self):
         plan = core.plan([step("a", ["a.txt"])])
         os.makedirs(self.run_dir)
-        write(os.path.join(self.run_dir, run.STATE_FILE), json.dumps({"plan_id": "someoneelse", "lanes": {}, "msps": {}}))
+        other = {
+            "version": "0.12.0",
+            "plan_id": "someoneelse",
+            "feature_branch": "main",
+            "base_commit": "0" * 40,
+            "started": "2026-11-03T00:00:00+00:00",
+            "drift": None,
+            "worktrees": [],
+            "lanes": {},
+            "msps": {},
+            "stacking_exceptions": [],
+            "merge_danger": None,
+            "sandbox": "off",
+        }
+        write(os.path.join(self.run_dir, run.STATE_FILE), json.dumps(other))
         with self.assertRaises(run.ResumeError) as caught:
             self.execute(plan, resume=True)
         self.assertIn("someoneelse", str(caught.exception))
@@ -981,7 +1052,7 @@ class Resume(RepoCase):
         for record in second["msps"].values():
             self.assertEqual(record["state"], run.MSP_PUSHED)
             self.assertEqual(record["ship"]["title"], "feat(ship): fake title")
-            self.assertEqual(record["ship"]["body"], "## Problem\nFake body.")
+            self.assertEqual(record["ship"]["body"], FAKE_BODY)
         self.assertEqual(len(read(os.path.join(self.tmp, "render", "calls")).splitlines()), 2)
         self.assertEqual(self.pull_requests(), [])
 
@@ -1210,7 +1281,7 @@ class Gate(RepoCase):
             os.path.join(self.tmp, "no-such-runner") + " {file} {test}",
             self.pr_command(),
             2,
-            trees_root=self.trees,
+            trees_root=self.trees, reask_command=self.reask_command(),
             header=HEADER,
             render_command=self.render_command,
             env=spawn_env(),
@@ -1271,7 +1342,7 @@ class Gate(RepoCase):
         self.assertEqual(state["msps"]["0"]["state"], "shipped")
         self.assertEqual(state["msps"]["0"]["proven_head"], head)
         self.assertEqual(self.remote_heads(), ["mitosis/impl"])
-        self.assertEqual(self.fields(0)["change"], ["do impl"])
+        self.assertEqual(self.fields(0)["change"], ["Do impl."])
         self.assertEqual(
             self.fields(0)["testing"],
             [{"check": "tests/t_impl.txt::property", "result": "passes with and without the work"}],
@@ -1642,15 +1713,15 @@ class Ship(RepoCase):
         self.assertEqual(record["ship"]["pull_request"], "https://example.invalid/pull/1")
         self.assertEqual(
             self.pull_requests(),
-            [[record["ship"]["branch"], "main", "feat(ship): fake title", "## Problem\nFake body."]],
+            [[record["ship"]["branch"], "main", "feat(ship): fake title", FAKE_BODY]],
         )
         self.assertEqual(
             self.fields(0),
             {
                 "title": "feat(ship): write pull requests in the house format",
                 "problem": ["Callers need it."],
-                "change": ["do impl"],
-                "impact": [None],
+                "change": ["Do impl."],
+                "impact": ["Callers notice nothing."],
                 "testing": [
                     {
                         "check": "tests/t_impl.txt::property",
@@ -1676,7 +1747,7 @@ class Ship(RepoCase):
             self.assertEqual(record["ship"]["pull_request"], "")
             self.assertEqual(
                 (record["ship"]["title"], record["ship"]["body"]),
-                ("feat(ship): fake title", "## Problem\nFake body."),
+                ("feat(ship): fake title", FAKE_BODY),
             )
         self.assertEqual(
             self.fields(index["c"])["testing"],
@@ -1698,10 +1769,10 @@ class Ship(RepoCase):
     def a_resume_keeps_the_door_call_the_run_recorded(self):
         self.add_remote()
         plan = core.plan([step("a", ["a.txt"])])
-        guarded = {**HEADER, "door": "two-way", "blast_radius": "Docs only."}
+        guarded = {**HEADER, "impact": (), "door": "two-way", "blast_radius": "Docs only."}
         held = self.execute(plan, pr=None, header=guarded, no_push=True)
         self.assertEqual(held["merge_danger"], {"door": "two-way", "blast_radius": "Docs only."})
-        shipped = self.execute(plan, pr=None, header=HEADER, resume=True)
+        shipped = self.execute(plan, pr=None, header={**HEADER, "impact": ()}, resume=True)
         self.assertEqual(shipped["merge_danger"], held["merge_danger"])
         self.assertEqual(self.fields(0)["impact"], ["Docs only."])
         self.assertNotIn(
@@ -1712,7 +1783,7 @@ class Ship(RepoCase):
             self.execute(
                 plan,
                 pr=None,
-                header={**HEADER, "door": "one-way", "blast_radius": "Docs only."},
+                header={**HEADER, "impact": (), "door": "one-way", "blast_radius": "Docs only."},
                 resume=True,
             )
 
@@ -1773,7 +1844,7 @@ class Ship(RepoCase):
             self.acceptance_command(),
             None,
             2,
-            trees_root=self.trees,
+            trees_root=self.trees, reask_command=self.reask_command(),
             no_push=True,
         )
         by_step = lambda state: {plan["msps"][int(m)]["steps"][0]: r["state"] for m, r in state["msps"].items()}
@@ -1793,7 +1864,7 @@ class Ship(RepoCase):
         plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], after=["a"])])
         held = run.execute(
             plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command(),
-            None, 2, trees_root=self.trees, no_push=True,
+            None, 2, trees_root=self.trees, reask_command=self.reask_command(), no_push=True,
         )
         self.assertEqual({m["state"] for m in held["msps"].values()}, {run.MSP_COMMITTED})
         self.assertIn("ship", held["msps"]["1"])
@@ -1812,7 +1883,7 @@ class Ship(RepoCase):
         index = {plan["msps"][m]["steps"][0]: m for m in range(len(plan["msps"]))}
         held = run.execute(
             plan, self.repo, "main", self.run_dir, self.worker_command(), self.acceptance_command(),
-            None, 2, trees_root=self.trees, no_push=True,
+            None, 2, trees_root=self.trees, reask_command=self.reask_command(), no_push=True,
         )
         self.assertEqual([e["msp"] for e in held["stacking_exceptions"]], [index["c"]])
         sh(["git", "merge", "-q", "--no-edit", held["msps"][str(index["b"])]["ship"]["branch"]], self.repo)
@@ -1866,7 +1937,7 @@ class Ship(RepoCase):
             self.acceptance_command(),
             None,
             2,
-            trees_root=self.trees,
+            trees_root=self.trees, reask_command=self.reask_command(),
             no_push=True,
         )
         self.assertEqual({m["state"] for m in held["msps"].values()}, {run.MSP_COMMITTED})
@@ -1922,10 +1993,10 @@ class Ship(RepoCase):
         record = state["msps"]["0"]
         self.assertEqual(record["state"], "shipped")
         self.assertEqual(record["ship"]["title"], "feat(ship): fake title")
-        self.assertEqual(record["ship"]["body"], "## Problem\nFake body.")
+        self.assertEqual(record["ship"]["body"], FAKE_BODY)
         self.assertEqual(
             self.pull_requests(),
-            [[record["ship"]["branch"], "main", "feat(ship): fake title", "## Problem\nFake body."]],
+            [[record["ship"]["branch"], "main", "feat(ship): fake title", FAKE_BODY]],
         )
         fields = json.loads(read(os.path.join(self.run_dir, "ship", "msp-0", "fields.json")))
         self.assertIsInstance(fields, dict)
@@ -2033,7 +2104,7 @@ class Sessions(RepoCase):
         subjects = sh(["git", "log", "--reverse", "--format=%s", "main.." + branch], self.repo)
         bodies = sh(["git", "log", "--reverse", "--format=%b", "main.." + branch], self.repo)
         self.assertEqual(subjects.splitlines(), ["feat(ship): s0", "feat(ship): s1", "feat(ship): s2"])
-        self.assertEqual([line for line in bodies.splitlines() if line], ["do s0", "do s1", "do s2"])
+        self.assertEqual([line for line in bodies.splitlines() if line], ["Do s0.", "Do s1.", "Do s2."])
 
     def a_run_without_a_header_lands_chore_commits(self):
         plan = core.plan(session_items())

@@ -1,5 +1,6 @@
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -44,6 +45,9 @@ import os
 import subprocess
 import sys
 
+SESSION, SCHEMA = sys.argv[-2], sys.argv[-1]
+del sys.argv[-2:]
+
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "pinned-worker.json"), encoding="utf-8") as handle:
     job = json.load(handle)[sys.argv[1]]
@@ -71,8 +75,19 @@ for action in job["actions"]:
         sys.exit(action[1])
     else:
         sys.exit("unknown action %r" % (kind,))
-print(json.dumps({"item": job["step"], "status": "ok", "files_changed": job["declared"], "notes": "done"}))
+print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": job["step"], "status": "ok", "files_changed": job["declared"], "notes": "done"}}))
 '''
+
+REASK_COMMAND = " ".join(
+    (
+        shlex.quote(sys.executable),
+        "-c",
+        shlex.quote("import sys; sys.stderr.write('no re-ask was expected\\n'); sys.exit(1)"),
+        "{prompt}",
+        "{session_id}",
+        "{schema}",
+    )
+)
 
 
 def git_text(args, cwd):
@@ -120,7 +135,9 @@ class PinnedRefereeRun(unittest.TestCase):
             "--feature-branch",
             "feature",
             "--dispatch-command",
-            scratch.stub("pinned_worker.py", "{msp}"),
+            scratch.stub("pinned_worker.py", "{msp}", "{session_id}", "{schema}"),
+            "--reask-command",
+            REASK_COMMAND,
             "--acceptance-command",
             scratch.stub("accept.py", "unittest", "{file}", "{test}"),
             "--timeout",

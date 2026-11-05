@@ -9,7 +9,7 @@ import uuid
 
 import referee
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 PLAN_KEYS = (
     "version",
@@ -115,9 +115,13 @@ RETURN_KEYS = ("item", "status", "files_changed", "notes")
 
 NOTES_CAP = 200
 
+RETURN_SCHEMA = "h10-worker-return"
+
 RETURN_CONTRACT = (
-    '{"item":"<name>","status":"ok"|"failed",'
-    '"files_changed":["path",...],"notes":"<=200 chars"}'
+    "Return your reply as structured output meeting the Worker return schema %s, "
+    'shaped {"item":"<name>","status":"ok"|"failed","files_changed":["path",...],'
+    '"notes":"<=200 chars"}, with notes at most %d characters; it is read from '
+    "structured_output, never from a last JSON line." % (RETURN_SCHEMA, NOTES_CAP)
 )
 
 FLAG_NAMES = (
@@ -129,6 +133,7 @@ FLAG_NAMES = (
     "--resume",
     "--plan-only",
     "--dispatch-command",
+    "--reask-command",
     "--decompose-command",
     "--acceptance-command",
     "--gate-setup",
@@ -1413,7 +1418,7 @@ def brief_text(brief):
                 " (%d more not shown)" % brief["read_overflow"] if brief.get("read_overflow") else "",
             )
         )
-    footer.append("When finished, print one line of JSON and nothing after it:")
+    footer.append("When finished, return your reply as structured output:")
     footer.append(brief["return_contract"])
     return "\n\n".join("\n".join(part) for part in (header, body, footer)) + "\n"
 

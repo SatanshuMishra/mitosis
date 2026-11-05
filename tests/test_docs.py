@@ -423,15 +423,16 @@ class Docs(unittest.TestCase):
             with open(path, encoding="utf-8") as handle:
                 self.assertIn("--proven-head", handle.read(), os.path.relpath(path, ROOT))
 
-    def version_is_0_12_0(self):
+    def version_is_above_0_12_0(self):
         plugin, _ = _manifests(self)
-        self.assertEqual(core.__version__, "0.12.0")
-        self.assertEqual(plugin.get("version"), "0.12.0")
+        version = core.__version__
+        self.assertGreater(tuple(int(part) for part in version.split(".")), (0, 12, 0))
+        self.assertEqual(plugin.get("version"), version)
         path = _changelog_path(ROOT)
         self.assertIsNotNone(path, "the plugin carries no changelog")
         with open(path, encoding="utf-8") as handle:
             head = _changelog_head(handle.read())
-        self.assertTrue(head.startswith("## 0.12.0 "), head.splitlines()[0])
+        self.assertTrue(head.startswith("## %s " % version), head.splitlines()[0])
 
     def documents_the_render_hand_off(self):
         _in_plugin(self)

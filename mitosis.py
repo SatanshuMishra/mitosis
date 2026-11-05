@@ -4,12 +4,14 @@ import itertools
 import json
 import os
 import re
+import shlex
 import sys
 from datetime import datetime
 
 import briefs
 import core
 import decompose
+import handoff
 import isolation
 import metrics
 import referee
@@ -33,6 +35,8 @@ EXIT_REFEREE = 9
 EXIT_MANIFEST = 23
 
 TIMEOUT_NOTICE = "mitosis: --timeout is deprecated and ignored; mitosis has no wall-clock limit"
+
+EXIT_HANDOFF = 15
 
 LANE_EXIT = {
     "ok": EXIT_SHIPPED,
@@ -71,6 +75,8 @@ EXIT_MEANING = {
     EXIT_REFEREE: "a Worker wrote a referee path; mitosis restored it and held its MSP back",
     EXIT_MANIFEST: "a branch is pushed or a pull request open with a package manifest that "
     "exports nothing",
+    EXIT_HANDOFF: "a hand-off mitosis was about to write failed its owned schema; mitosis wrote "
+    "nothing for it and stopped",
     LANE_EXIT["failed"]: "a Lane failed",
     LANE_EXIT["blocked"]: "a Lane or MSP was blocked, by a predecessor or by a write across an "
     "MSP boundary",
@@ -124,16 +130,19 @@ NO_PLAN = (
     "--resume writes the briefs and builds the plan"
 )
 
-BRIEF_PLACEHOLDERS = ("prompt", "model", "step", "document", "session_id")
+BRIEF_PLACEHOLDERS = ("prompt", "model", "step", "document", "session_id", "schema")
 
-TEMPLATE_PLACEHOLDERS = {"brief": BRIEF_PLACEHOLDERS}
+DECOMPOSE_PLACEHOLDERS = ("prompt", "model", "document", "session_id", "schema")
+
+TEMPLATE_PLACEHOLDERS = {"brief": BRIEF_PLACEHOLDERS, "decompose": DECOMPOSE_PLACEHOLDERS}
 
 PLACEHOLDER_HELP = {
     "dispatch": (
         "{task} {model} {tier} {worktree} {branch} {lane} {msp} {charter} {document} {run_dir} "
-        "{session_id}"
+        "{session_id} {schema}"
     ),
-    "decompose": "{prompt} {model} {document} {session_id}",
+    "reask": " ".join("{%s}" % key for key in run.TEMPLATE_PLACEHOLDERS["reask"]),
+    "decompose": " ".join("{%s}" % key for key in DECOMPOSE_PLACEHOLDERS),
     "brief": " ".join("{%s}" % key for key in BRIEF_PLACEHOLDERS),
     "acceptance": "{file} {test} {worktree}",
     "gate-setup": "{worktree}",
@@ -224,18 +233,29 @@ FLAG_SPECS = {
     },
     "--dispatch-command": {
         "metavar": "TEMPLATE",
-        "help": "one Worker per Lane; placeholders %s; split into argv before substitution"
-        % PLACEHOLDER_HELP["dispatch"],
+        "help": "one Worker per Lane; placeholders %s; split into argv before substitution; "
+        "a run needs {schema}, the call schema the reply meets as structured output, and "
+        "{session_id}" % PLACEHOLDER_HELP["dispatch"],
+    },
+    "--reask-command": {
+        "metavar": "TEMPLATE",
+        "help": "asks a Worker, check-author, decompose or brief Worker whose reply fails its "
+        "owned schema once more, in the same session; placeholders %s; required for a run "
+        "that calls a model, whose command also needs {schema} and {session_id}; replies are "
+        "read from structured_output" % PLACEHOLDER_HELP["reask"],
     },
     "--decompose-command": {
         "metavar": "TEMPLATE",
-        "help": "the structure Worker; placeholders %s; the prompt also arrives on stdin"
-        % PLACEHOLDER_HELP["decompose"],
+        "help": "the structure Worker; placeholders %s; the prompt also arrives on stdin; "
+        "needs {schema} and {session_id}, and its reply meets %s as structured output"
+        % (PLACEHOLDER_HELP["decompose"], decompose.REPLY_SCHEMA),
     },
     "--brief-command": {
         "metavar": "TEMPLATE",
         "help": "one brief Worker per unbriefed Step; placeholders %s; the prompt also "
-        "arrives on stdin; required for the brief stage" % PLACEHOLDER_HELP["brief"],
+        "arrives on stdin; required for the brief stage; needs {schema} and {session_id}, and "
+        "its reply meets %s as structured output"
+        % (PLACEHOLDER_HELP["brief"], briefs.REPLY_SCHEMA),
     },
     "--decisions": {
         "metavar": "PATH",
@@ -524,6 +544,14 @@ def read_json(path, what):
         raise Refusal("%s %s is not valid JSON: %s" % (what, path, error))
 
 
+def read_items(path):
+    items = read_json(path, "--items")
+    try:
+        return handoff.require(ITEMS_SCHEMA, items, "the --items file %s" % path, "interphase")
+    except handoff.HandoffError as error:
+        raise Refusal(str(error))
+
+
 def file_digest(path):
     try:
         return run.sha256_file(path)
@@ -588,16 +616,42 @@ def unoffered_placeholders(name, template):
     return tuple(sorted(used - set(offered)))
 
 
-def check_template(name, template):
+TEMPLATE_FLAGS = {
+    "dispatch": "--dispatch-command",
+    "reask": "--reask-command",
+    "decompose": "--decompose-command",
+    "brief": "--brief-command",
+    "acceptance": "--acceptance-command",
+    "gate-setup": "--gate-setup",
+    "suite": "--suite-command",
+    "pull-request": "--pr-command",
+}
+
+
+def check_split(name, template):
+    if not isinstance(template, str) or not template.strip():
+        raise run.ConfigError("the %s command is empty" % name)
     try:
-        run.check_template(name, template)
+        shlex.split(template)
+    except ValueError as error:
+        raise run.ConfigError("the %s command does not split into argv: %s" % (name, error))
+
+
+def check_template(name, template):
+    flag = TEMPLATE_FLAGS[name]
+    try:
+        if name in TEMPLATE_PLACEHOLDERS:
+            check_split(name, template)
+        else:
+            run.check_template(name, template)
     except run.ConfigError as error:
-        raise Refusal(str(error))
+        raise Refusal("%s: %s" % (flag, error))
     unknown = unoffered_placeholders(name, template)
     if unknown:
         raise Refusal(
-            "the %s command uses %s, which it is never given; it offers %s"
+            "%s: the %s command uses %s, which it is never given; it offers %s"
             % (
+                flag,
                 name,
                 ", ".join("{%s}" % key for key in unknown),
                 ", ".join("{%s}" % key for key in TEMPLATE_PLACEHOLDERS[name]),
@@ -608,6 +662,7 @@ def check_template(name, template):
 def check_templates(args):
     for name, template in (
         ("dispatch", args.dispatch_command),
+        ("reask", args.reask_command),
         ("decompose", args.decompose_command),
         ("brief", args.brief_command),
         ("acceptance", args.acceptance_command),
@@ -618,6 +673,66 @@ def check_templates(args):
         if template is None:
             continue
         check_template(name, template)
+    if not args.plan_only and args.dispatch_command is not None:
+        try:
+            run.check_reply_templates(args.dispatch_command, args.reask_command)
+        except run.ConfigError as error:
+            raise Refusal(str(error))
+    called = called_model_templates(args)
+    for flag, template in called:
+        check_model_template(flag, template)
+    if called:
+        check_reask_template(args.reask_command, tuple(flag for flag, _ in called))
+
+
+def called_model_templates(args):
+    from_document = not args.items
+    decomposes = from_document and not args.resume and args.decompose_command is not None
+    briefing = (
+        from_document and args.brief_command is not None and (args.resume or not args.plan_only)
+    )
+    return tuple(
+        (flag, template)
+        for flag, template, calls in (
+            ("--decompose-command", args.decompose_command, decomposes),
+            ("--brief-command", args.brief_command, briefing),
+        )
+        if calls
+    )
+
+
+def missing_placeholders(template, needed):
+    used = {match.group(1) for match in run.PLACEHOLDER.finditer(template or "")}
+    return tuple("{%s}" % key for key in needed if key not in used)
+
+
+def check_model_template(flag, template):
+    missing = missing_placeholders(template, run.MODEL_TEMPLATE_NEEDS)
+    if missing:
+        raise Refusal(
+            "%s lacks %s; a model command must carry {schema}, the call schema its reply meets "
+            "as structured output, and {session_id}, the session a re-ask resumes"
+            % (flag, ", ".join(missing))
+        )
+
+
+def check_reask_template(reask, flags):
+    if reask is None:
+        raise Refusal(
+            "--reask-command is required: a reply from %s that fails its owned schema is asked "
+            "again in the same session through it, offered %s"
+            % (
+                " or ".join(flags),
+                ", ".join("{%s}" % key for key in run.TEMPLATE_PLACEHOLDERS[run.REASK_STEM]),
+            )
+        )
+    missing = missing_placeholders(reask, run.REASK_TEMPLATE_NEEDS)
+    if missing:
+        raise Refusal(
+            "--reask-command lacks %s; a re-ask must carry {prompt}, the errors to answer, "
+            "{session_id}, the session to resume, and {schema}, the call schema to meet"
+            % ", ".join(missing)
+        )
 
 
 def check_worker_writes(args, run_dir, repo):
@@ -724,6 +839,7 @@ def structure_document(args, root, run_dir, models, charter, graph, decisions, p
         prior=prior,
         env=run.process_environ(recorder.env, root),
         on_sessions=lambda sessions: recorder.stage_ended("structure", began, sessions),
+        reask=args.reask_command,
     )
     order = decompose.rank(results)
     chosen = chosen_sample(order, args.pick)
@@ -734,8 +850,10 @@ def structure_document(args, root, run_dir, models, charter, graph, decisions, p
     if result["errors"]:
         _print(("Coverage map:",) + tuple("  " + line for line in coverage_lines({}, result, root)))
         raise Refusal(
-            "the structure stage returned %s; the log is %s"
-            % (_n(len(result["errors"]), "contract error"), result["log"])
+            "the structure stage returned %s; the log is %s:\n" % (
+                _n(len(result["errors"]), "contract error"), result["log"]
+            )
+            + "\n".join("  " + line for line in result["errors"])
         )
     record = {key: result[key] for key in result if key != "items"}
     run.write_json(os.path.join(run_dir, DECOMPOSE_FILE), record)
@@ -756,15 +874,15 @@ def refuse_unmapped_briefs(template, pending, models):
 
 
 def brief_lines(written):
-    retried = written.get("retried") or []
+    reasked = written.get("reasked") or []
     lines = (
         "brief stage: %s written, %s reused"
         % (_n(len(written["written"]), "brief"), _n(len(written["reused"]), "brief")),
     )
-    if retried:
+    if reasked:
         lines = lines + (
-            "%s re-dispatched after a return that broke the contract: %s"
-            % (_n(len(retried), "brief"), ", ".join(retried)),
+            "%s re-asked in the same session after a reply that failed %s: %s"
+            % (_n(len(reasked), "brief"), briefs.REPLY_SCHEMA, ", ".join(reasked)),
         )
     return lines + tuple(written["errors"])
 
@@ -802,6 +920,7 @@ def brief_structure(args, items, root, run_dir, models, charter, graph, decision
             decisions=decisions,
             env=run.process_environ(recorder.env, root),
             on_sessions=lambda sessions: recorder.stage_ended("brief", began, sessions),
+            reask=args.reask_command,
         )
     except (ValueError, OSError) as error:
         raise Refusal("the brief stage could not run: %s" % error)
@@ -835,7 +954,7 @@ def input_run_dir(args, root):
 
 def resolve_input(args, root, repo, models, charter, graph, run_dir):
     if args.items:
-        items = read_json(os.path.abspath(args.items), "--items")
+        items = read_items(os.path.abspath(args.items))
         return staged(items, load_decomposed(run_dir), run_dir, None, True)
     document = check_document(args, root)
     decisions = load_decisions(args, root, document)
@@ -913,14 +1032,18 @@ def refuse_unbuildable(args, repo):
     missing = missing_run_flags(args)
     if missing:
         raise Refusal("a run needs %s; pass --plan-only to stop at the plan" % ", ".join(missing))
+    refuse_untitled(args)
+    if not run.branch_exists(repo, args.feature_branch):
+        raise Refusal("--feature-branch %s is not a branch of %s" % (args.feature_branch, repo))
+
+
+def refuse_untitled(args):
     unwritten = missing_push_flags(args)
     if unwritten:
         raise Refusal(
             "a run allowed to push needs %s to title and describe each pull request; pass "
             "--no-push to hold the branches instead" % ", ".join(unwritten)
         )
-    if not run.branch_exists(repo, args.feature_branch):
-        raise Refusal("--feature-branch %s is not a branch of %s" % (args.feature_branch, repo))
 
 
 def check_pull_request_flags(args):
@@ -963,7 +1086,7 @@ def run_header(args, plan, run_dir):
         return run.carried_header(
             pull_request_header(args), run.prior_state(run_dir, plan, args.resume)
         )
-    except run.ResumeError as error:
+    except (run.ResumeError, handoff.HandoffError) as error:
         raise Refusal(str(error))
 
 
@@ -971,6 +1094,8 @@ def refuse_unrenderable(args, plan, run_dir, repo=None):
     header = run_header(args, plan, run_dir)
     if header is None:
         return
+    if not header["why"]:
+        refuse_untitled(args)
     if not header["impact"] and header["blast_radius"] is None:
         raise Refusal(
             "a run that opens pull requests needs --pr-impact, what callers or users notice, "
@@ -1084,6 +1209,10 @@ def _n(count, noun):
 def _one_line(text):
     lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
     return lines[0] if lines else ""
+
+
+def _whole(text):
+    return "" if text is None else str(text)
 
 
 def read_document(path):
@@ -1545,7 +1674,7 @@ def gate_exit(record):
 
 
 def _finding(msp, lane, kind, code, detail):
-    return {"msp": msp, "lane": lane, "kind": kind, "exit": code, "detail": _one_line(detail)}
+    return {"msp": msp, "lane": lane, "kind": kind, "exit": code, "detail": _whole(detail)}
 
 
 def _lane_findings(plan, lane_records):
@@ -1573,7 +1702,7 @@ def _gate_detail(record):
         return record["gate_error"]
     gate = record.get("gate") or {}
     named = [
-        "%s::%s: %s" % (entry.get("file"), entry.get("test"), _one_line(entry.get("reason")))
+        "%s::%s: %s" % (entry.get("file"), entry.get("test"), _whole(entry.get("reason")))
         for entry in gate.get("properties") or []
         if entry.get("outcome") in run.GATE_STATES
     ]
@@ -1765,7 +1894,7 @@ def _lane_summary(plan, state):
             "steps": list(lane.get("steps") or ()),
             "session": list(lane["session"]) if lane.get("session") else None,
             "state": (records.get(str(index)) or {}).get("state"),
-            "reason": _one_line((records.get(str(index)) or {}).get("reason")),
+            "reason": _whole((records.get(str(index)) or {}).get("reason")),
             "notes": ((records.get(str(index)) or {}).get("returned") or {}).get("notes"),
             "foreign_writes": list((records.get(str(index)) or {}).get("foreign_writes") or ()),
             "stdout": (records.get(str(index)) or {}).get("stdout"),
@@ -1793,7 +1922,7 @@ def _msp_summary(plan, state):
             {
                 "msp": _label(plan, index),
                 "state": record.get("state"),
-                "reason": _one_line(record.get("reason")),
+                "reason": _whole(record.get("reason")),
                 "branch": shipped.get("branch"),
                 "base": shipped.get("base"),
                 "pull_request": shipped.get("pull_request") or None,
@@ -1995,15 +2124,23 @@ def summary(plan, state, run_dir, code, referee=None, troubles=()):
     }
 
 
+RESULT_SCHEMA = "h8-mitosis-result"
+ITEMS_SCHEMA = "h12-interphase-items"
+
+
 def _summarised(plan, state, run_dir, code, referee=None, troubles=()):
-    _print(
-        (
-            json.dumps(
-                summary(plan, state, run_dir, code, referee, troubles), separators=(",", ":")
-            ),
-        )
-    )
+    built = summary(plan, state, run_dir, code, referee, troubles)
+    try:
+        handoff.require(RESULT_SCHEMA, built, "the result line", "mitosis")
+    except handoff.HandoffError as error:
+        _print(_handoff_lines(error), sys.stderr)
+        return EXIT_HANDOFF
+    _print((json.dumps(built, separators=(",", ":")),))
     return code
+
+
+def _handoff_lines(error):
+    return ("mitosis: %s" % error, "exit %d: %s" % (EXIT_HANDOFF, EXIT_MEANING[EXIT_HANDOFF]))
 
 
 def referee_record(args, plan, repo, base, locked=None):
@@ -2052,7 +2189,7 @@ def pinned_base(args, plan, run_dir, repo):
     try:
         prior = run.prior_state(run_dir, plan, args.resume)
         return run.pinned_base(repo, args.feature_branch, prior)
-    except (run.ResumeError, run.GitError) as error:
+    except (run.ResumeError, run.GitError, handoff.HandoffError) as error:
         raise Refusal(str(error))
 
 
@@ -2119,6 +2256,7 @@ def execute(args, plan, models, run_dir, repo, root, base=None):
             worker_writes=tuple(args.worker_write),
             gate_classes=loaded_gate_classes(args)[0],
             gate_classes_sha256=loaded_gate_classes(args)[1],
+            reask_command=args.reask_command,
         ), None
     except (run.ConfigError, run.ResumeError) as error:
         raise Refusal(str(error))
@@ -2162,6 +2300,9 @@ def run_pipeline(args):
         raise
     except Refusal:
         recorder.ended(EXIT_REFUSED, EXIT_MEANING[EXIT_REFUSED])
+        raise
+    except handoff.HandoffError:
+        recorder.ended(EXIT_HANDOFF, EXIT_MEANING[EXIT_HANDOFF])
         raise
     except BaseException:
         recorder.ended(None, None)
@@ -2262,6 +2403,9 @@ def main(argv=None):
     except Refusal as refusal:
         _print(("mitosis: %s" % refusal, "exit %d: %s" % (EXIT_REFUSED, EXIT_MEANING[EXIT_REFUSED])), sys.stderr)
         return EXIT_REFUSED
+    except handoff.HandoffError as error:
+        _print(_handoff_lines(error), sys.stderr)
+        return EXIT_HANDOFF
 
 
 if __name__ == "__main__":

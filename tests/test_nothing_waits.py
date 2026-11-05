@@ -28,13 +28,15 @@ STARTERS = ("run", "Popen", "check_output", "check_call")
 CLOCKS = ("monotonic", "time", "perf_counter", "monotonic_ns", "time_ns")
 
 STRUCTURER = r'''
+import json
 import os
 import sys
 
 here = os.path.dirname(os.path.abspath(__file__))
 sys.stdin.read()
 with open(os.path.join(here, "structure-reply.txt"), encoding="utf-8") as handle:
-    print(handle.read().strip())
+    reply = json.load(handle)
+print(json.dumps({"type": "result", "session_id": sys.argv[-2], "result": "done", "structured_output": {"reply": reply}}))
 '''
 
 BRIEFER = r'''
@@ -42,7 +44,8 @@ import json
 import sys
 
 sys.stdin.read()
-print(json.dumps({"name": sys.argv[1], "task": "build " + sys.argv[1]}))
+reply = {"name": sys.argv[1], "task": "build " + sys.argv[1]}
+print(json.dumps({"type": "result", "session_id": sys.argv[-2], "result": "done", "structured_output": reply}))
 '''
 
 RENDER = r'''
@@ -52,7 +55,7 @@ import os
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "render-calls"), "a", encoding="utf-8") as handle:
     handle.write("render\n")
-print(json.dumps({"title": "feat(ship): fake title", "body": "## Problem\nFake body."}))
+print(json.dumps({"title": "feat(ship): fake title", "body": "## Problem\nBodies are composed twice.\n\n## Change\n- Hand facts to render.\n\n## Impact\nEvery new body changes shape.\n\n## Testing\n| Check | Result |\n|---|---|\n| tests/test_nothing_waits.py | passed |"}))
 '''
 
 
@@ -315,9 +318,13 @@ class NothingWaits(unittest.TestCase):
                 "--spec",
                 "docs/spec.md",
                 "--decompose-command",
-                self._command(root, "structurer.py", STRUCTURER, "{document}"),
+                self._command(root, "structurer.py", STRUCTURER, "{document}", "{session_id}", "{schema}"),
+                "--reask-command",
+                scaffold.REASK_COMMAND,
                 "--brief-command",
-                self._command(root, "briefer.py", BRIEFER, "{step}", "{document}"),
+                self._command(root, "briefer.py", BRIEFER, "{step}", "{document}", "{session_id}", "{schema}"),
+                "--reask-command",
+                scaffold.REASK_COMMAND,
                 "--plan-only",
                 "--run-dir",
                 os.path.join(root, "run"),
@@ -343,7 +350,9 @@ class NothingWaits(unittest.TestCase):
                 "docs/spec.md",
                 "--resume",
                 "--brief-command",
-                self._command(root, "briefer.py", BRIEFER, "{step}", "{document}"),
+                self._command(root, "briefer.py", BRIEFER, "{step}", "{document}", "{session_id}", "{schema}"),
+                "--reask-command",
+                scaffold.REASK_COMMAND,
                 "--plan-only",
                 "--run-dir",
                 os.path.join(root, "run"),
@@ -363,12 +372,11 @@ class NothingWaits(unittest.TestCase):
                 subprocess.run(argv, check=True, capture_output=True, env=env, stdin=subprocess.DEVNULL, timeout=scaffold.CALL_LIMIT)
             step = {
                 "name": "alpha",
-                "task": "do alpha",
+                "task": "Do alpha.",
                 "files": ["alpha.py", "alpha_check.txt"],
-                "source": None,
                 "acceptance": [{"file": "alpha_check.txt", "test": "property"}],
             }
-            put(os.path.join(root, "items.json"), json.dumps([step]))
+            put(os.path.join(root, "items.json"), json.dumps(scaffold.owned_steps([step], root)))
             render = put(os.path.join(root, "worker", "pull-request"), "#!%s\n%s" % (sys.executable, RENDER))
             os.chmod(render, 0o755)
             completed = self._stage(
@@ -380,7 +388,9 @@ class NothingWaits(unittest.TestCase):
                 "--feature-branch",
                 "feature",
                 "--dispatch-command",
-                self._command(root, "spawn.py", "print('spawned')\n", "{task}"),
+                self._command(root, "spawn.py", "print('spawned')\n", "{task}", "{session_id}", "{schema}"),
+                "--reask-command",
+                scaffold.REASK_COMMAND,
                 "--acceptance-command",
                 self._command(root, "accept.py", "import sys\nsys.exit(1)\n", "{file}", "{test}"),
                 "--plan-only",

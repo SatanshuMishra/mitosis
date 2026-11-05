@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import itertools
 import json
@@ -18,6 +19,17 @@ import decompose
 import mitosis
 import run
 import shape
+
+REASK_COMMAND = " ".join(
+    (
+        shlex.quote(sys.executable),
+        "-c",
+        shlex.quote("import sys; sys.stderr.write('no re-ask was expected\\n'); sys.exit(1)"),
+        "{prompt}",
+        "{session_id}",
+        "{schema}",
+    )
+)
 
 
 def lanes(*spans):
@@ -89,38 +101,6 @@ class AchievedParallelism(unittest.TestCase):
         self.assertEqual(counted, 9)
 
 
-class ReturnParsing(unittest.TestCase):
-    def _out(self, text):
-        import tempfile
-
-        path = os.path.join(tempfile.mkdtemp(), "out")
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        return path
-
-    RETURN = '{"item":"a","status":"ok","files_changed":["x.py"],"notes":"n"}'
-
-    def a_fenced_return_is_still_found(self):
-        got = run.last_return(self._out("prose\n```json\n" + self.RETURN + "\n```\n"))
-        self.assertEqual(got["item"], "a")
-
-    def prose_after_the_return_does_not_discard_it(self):
-        got = run.last_return(self._out(self.RETURN + "\nAll done.\n"))
-        self.assertEqual(got["status"], "ok")
-
-    def the_last_return_wins_when_there_are_several(self):
-        first = '{"item":"a","status":"failed","files_changed":[],"notes":""}'
-        got = run.last_return(self._out(first + "\n" + self.RETURN + "\n"))
-        self.assertEqual(got["status"], "ok")
-
-    def narration_that_merely_looks_like_json_is_skipped(self):
-        got = run.last_return(self._out(self.RETURN + "\n[1, 2, 3]\n\"a string\"\n"))
-        self.assertEqual(got["item"], "a")
-
-    def a_worker_that_returns_nothing_still_reports_nothing(self):
-        self.assertIsNone(run.last_return(self._out("no json here at all\n")))
-
-
 class RiskMarkers(unittest.TestCase):
     def a_marker_does_not_fire_inside_a_longer_word(self):
         self.assertEqual(core.tier_for(["src/waverider.py"], ["wav"], "simple", None), "cheap")
@@ -168,6 +148,7 @@ class CoverageReport(unittest.TestCase):
 
 
 STRUCTURER = """
+import json
 import os
 import sys
 
@@ -182,7 +163,13 @@ if os.path.isfile(os.path.join(here, "structure-reply-second.txt")):
     except FileExistsError:
         name = "structure-reply-second.txt"
 with open(os.path.join(here, name), encoding="utf-8") as handle:
-    print(handle.read().strip())
+    reply = json.load(handle)
+print(json.dumps({
+    "type": "result",
+    "session_id": sys.argv[2],
+    "result": "done",
+    "structured_output": {"reply": reply},
+}))
 """
 
 BRIEFER = """
@@ -196,7 +183,24 @@ with open(os.path.join(here, "brief-prompt-%s.txt" % step), "w", encoding="utf-8
     handle.write(sys.stdin.read())
 if os.path.isfile(os.path.join(here, "fail-%s" % step)):
     sys.exit(2)
-print(json.dumps({"name": step, "task": "build " + step}))
+print(json.dumps({
+    "type": "result",
+    "session_id": sys.argv[3],
+    "result": "done",
+    "structured_output": {"name": step, "task": "Build %s." % step},
+}))
+"""
+
+REASKER = """
+import json
+import os
+import sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "reask.log"), "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(sys.argv[1:]) + "\\n")
+sys.stdin.read()
+print(json.dumps({"type": "result", "session_id": sys.argv[2], "result": "still prose"}))
 """
 
 ISOLATED_GIT_ENV = {
@@ -218,6 +222,16 @@ def write(root, relative, content):
     return path
 
 
+SPEC_SECTION = "1.1"
+SPEC_DOCUMENT = "# Spec\n\n## 1.1 Build\n"
+
+
+def items_document(folder, items):
+    path = os.path.abspath(write(folder, "spec.md", SPEC_DOCUMENT))
+    source = {"path": path, "sha256": hashlib.sha256(SPEC_DOCUMENT.encode("utf-8")).hexdigest()}
+    return json.dumps([{**item, "source": item.get("source") or source} for item in items])
+
+
 def read_json(path):
     with open(path, encoding="utf-8") as handle:
         return json.load(handle)
@@ -232,13 +246,27 @@ def structurer(root, reply, second=None):
     write(root, "worker/structure-reply.txt", json.dumps(reply))
     if second is not None:
         write(root, "worker/structure-reply-second.txt", json.dumps(second))
-    return command(root, "structurer.py", STRUCTURER, "{document}")
+    return command(root, "structurer.py", STRUCTURER, "{document}", "{session_id}", "{schema}")
 
 
 def briefer(root, failing=()):
     for name in failing:
         write(root, "worker/fail-%s" % name, "")
-    return command(root, "briefer.py", BRIEFER, "{step}", "{document}")
+    return command(
+        root, "briefer.py", BRIEFER, "{step}", "{document}", "{session_id}", "{schema}"
+    )
+
+
+def reasker(root):
+    return command(root, "reasker.py", REASKER, "{prompt}", "{session_id}", "{schema}")
+
+
+def reasks(root):
+    path = os.path.join(root, "worker", "reask.log")
+    if not os.path.isfile(path):
+        return []
+    with open(path, encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
 
 
 def structure_prompts(root):
@@ -261,11 +289,11 @@ def briefed_steps(root):
 
 
 def bare(name, **extra):
-    return {"name": name, "files": [name + ".py"], "source": None, "acceptance": [], **extra}
+    return {"name": name, "files": [name + ".py"], "source": None, "acceptance": [], "spec_ref": [SPEC_SECTION], **extra}
 
 
 def briefed(name, **extra):
-    return bare(name, task="do " + name, **extra)
+    return bare(name, task="Do %s." % name, **extra)
 
 
 def structure_reply(*items):
@@ -331,6 +359,15 @@ PR_FLAGS = (
     IMPACT,
 )
 
+FAKE_BODY = (
+    "## Problem\nFake body.\n\n## Change\n- Fake change.\n\n## Impact\nFake impact.\n\n"
+    "## Testing\n| Check | Result |\n|---|---|\n| fake | passed |"
+)
+VERIFIED_BODY = (
+    "## Problem\nFake body.\n\n## Change\n- Fake change.\n\n## Impact\nFake impact.\n\n"
+    "## Testing\n| Check | Result |\n|---|---|\n| verification | %s |"
+)
+
 ACCEPTING_RENDER = r'''
 import json
 import os
@@ -341,8 +378,8 @@ here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "calls"), "a", encoding="utf-8") as handle:
     handle.write(json.dumps(sys.argv) + "\n")
 shutil.copyfile(sys.argv[sys.argv.index("--fields") + 1], os.path.join(here, "fields.copy.json"))
-print(json.dumps({"title": "feat(ship): fake title", "body": "## Problem\nFake body."}, separators=(",", ":")))
-'''
+print(json.dumps({"title": "feat(ship): fake title", "body": %r}, separators=(",", ":")))
+''' % FAKE_BODY
 
 
 def executable(folder, name, script):
@@ -429,16 +466,97 @@ class Flags(unittest.TestCase):
                 "--spec",
                 "x",
                 "--decompose-command",
-                "c {prompt} {model} {document}",
+                "c {prompt} {model} {document} {session_id} {schema}",
                 "--brief-command",
-                "b {prompt} {model} {step} {document}",
+                "b {prompt} {model} {step} {document} {session_id} {schema}",
+                "--reask-command",
+                "r {prompt} {session_id} {schema} {model}",
             ]
         )
         mitosis.check_templates(args)
 
+    def a_model_template_without_schema_or_session_is_refused_before_any_call(self):
+        cases = (
+            ("--decompose-command", "{session_id}", "{schema}", ()),
+            ("--decompose-command", "{schema}", "{session_id}", ()),
+            ("--brief-command", "{session_id}", "{schema}", ("--resume",)),
+            ("--brief-command", "{schema}", "{session_id}", ("--resume",)),
+        )
+        for flag, kept, missing, extra in cases:
+            with self.subTest(flag=flag, missing=missing), tempfile.TemporaryDirectory() as root:
+                write(root, "docs/spec.md", "# One\n\nbody\n")
+                write(root, "run/structure.json", json.dumps([bare("alpha")]))
+                template = command(root, "model.py", "", "{document}", kept)
+                code, _, err = invoke(
+                    root,
+                    [
+                        "--spec",
+                        "docs/spec.md",
+                        flag,
+                        template,
+                        "--reask-command",
+                        reasker(root),
+                        "--timeout",
+                        "20",
+                        "--plan-only",
+                        "--run-dir",
+                        os.path.join(root, "run"),
+                        *extra,
+                    ],
+                )
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                self.assertIn(flag, err)
+                self.assertIn(missing, err)
+                self.assertEqual(structure_prompts(root), 0)
+                self.assertEqual(briefed_steps(root), [])
+
+    def a_model_run_without_a_complete_reask_command_is_refused_before_any_call(self):
+        for reask, named in ((None, "--reask-command is required"), ("r {prompt} {schema}", "{session_id}")):
+            with self.subTest(reask=reask), tempfile.TemporaryDirectory() as root:
+                write(root, "docs/spec.md", "# One\n\nbody\n")
+                code, _, err = invoke(
+                    root,
+                    [
+                        "--spec",
+                        "docs/spec.md",
+                        "--decompose-command",
+                        structurer(root, structure_reply(bare("alpha"))),
+                        *(("--reask-command", reask) if reask else ()),
+                        "--timeout",
+                        "20",
+                        "--plan-only",
+                        "--run-dir",
+                        os.path.join(root, "run"),
+                    ],
+                )
+                self.assertEqual(code, mitosis.EXIT_REFUSED, err)
+                self.assertIn("--reask-command", err)
+                self.assertIn(named, err)
+                self.assertEqual(structure_prompts(root), 0)
+
+    def a_resume_that_calls_no_model_needs_no_reask_command(self):
+        with tempfile.TemporaryDirectory() as root:
+            write(root, "docs/spec.md", "# One\n\nbody\n")
+            write(root, "run/structure.json", json.dumps([bare("alpha")]))
+            code, _, err = invoke(
+                root,
+                [
+                    "--spec",
+                    "docs/spec.md",
+                    "--resume",
+                    "--decompose-command",
+                    "c {prompt}",
+                    "--plan-only",
+                    "--run-dir",
+                    os.path.join(root, "run"),
+                ],
+            )
+            self.assertNotIn("--reask-command", err)
+            self.assertNotIn("--decompose-command lacks", err)
+
     def revise_cannot_be_combined_with_items_or_resume(self):
         with tempfile.TemporaryDirectory() as root:
-            write(root, "items.json", json.dumps([briefed("alpha")]))
+            write(root, "items.json", items_document(root, [briefed("alpha")]))
             code, _, err = invoke(root, ["--items", "items.json", "--revise", "--plan-only"])
             self.assertEqual(code, mitosis.EXIT_USAGE)
             self.assertIn("--revise", err)
@@ -482,6 +600,8 @@ class Staging(unittest.TestCase):
                 structurer(root, reply, second),
                 "--brief-command",
                 briefer(root),
+                "--reask-command",
+                reasker(root),
                 "--plan-only",
                 "--run-dir",
                 os.path.join(root, "run"),
@@ -498,6 +618,8 @@ class Staging(unittest.TestCase):
                 "--resume",
                 "--brief-command",
                 briefer(root, failing),
+                "--reask-command",
+                reasker(root),
                 "--run-dir",
                 os.path.join(root, "run"),
                 *extra,
@@ -541,7 +663,7 @@ class Staging(unittest.TestCase):
             self.assertEqual(structure_prompts(root), 0)
             items = read_json(os.path.join(run_dir, mitosis.ITEMS_FILE))
             self.assertEqual(
-                [item["task"] for item in items], ["do alpha", "build beta", "build gamma"]
+                [item["task"] for item in items], ["Do alpha.", "Build beta.", "Build gamma."]
             )
             structure = read_json(os.path.join(run_dir, mitosis.STRUCTURE_FILE))
             self.assertEqual([step["task"] for step in structure], [item["task"] for item in items])
@@ -573,7 +695,9 @@ class Staging(unittest.TestCase):
                     "--feature-branch",
                     "feature",
                     "--dispatch-command",
-                    "worker {task}",
+                    "worker {task} {session_id} {schema}",
+                    "--reask-command",
+                    "reask {prompt} {session_id} {schema}",
                     "--acceptance-command",
                     "probe {file} {test}",
                     "--pr-command",
@@ -585,7 +709,7 @@ class Staging(unittest.TestCase):
             finally:
                 mitosis.execute = kept
             self.assertEqual(code, mitosis.EXIT_NO_BRANCHES, err)
-            self.assertEqual([item["task"] for item in seen["items"]], ["do alpha", "build beta"])
+            self.assertEqual([item["task"] for item in seen["items"]], ["Do alpha.", "Build beta."])
             self.assertEqual(briefed_steps(root), ["beta"])
             items = read_json(os.path.join(root, "run", mitosis.ITEMS_FILE))
             self.assertEqual([item["name"] for item in items], ["alpha", "beta"])
@@ -606,7 +730,9 @@ class Staging(unittest.TestCase):
                     "--feature-branch",
                     "feature",
                     "--dispatch-command",
-                    "worker {task}",
+                    "worker {task} {session_id} {schema}",
+                    "--reask-command",
+                    "reask {prompt} {session_id} {schema}",
                     "--acceptance-command",
                     "probe {file} {test}",
                     "--pr-command",
@@ -627,12 +753,13 @@ class Staging(unittest.TestCase):
             code, _, err = self._resume(root, "--plan-only", failing=("beta",))
             self.assertEqual(code, mitosis.EXIT_REFUSED)
             self.assertIn("beta", err)
+            self.assertEqual(len(reasks(root)), 1)
             self.assertNotIn("alpha", err.split("mitosis:")[-1].split("\n")[0])
             self.assertEqual(briefed_steps(root), ["alpha", "beta", "gamma"])
             self.assertFalse(os.path.isfile(os.path.join(run_dir, mitosis.ITEMS_FILE)))
             structure = read_json(os.path.join(run_dir, mitosis.STRUCTURE_FILE))
             self.assertEqual(
-                [step.get("task") for step in structure], ["build alpha", None, "build gamma"]
+                [step.get("task") for step in structure], ["Build alpha.", None, "Build gamma."]
             )
 
     def resume_without_a_structure_is_refused(self):
@@ -673,7 +800,7 @@ class Staging(unittest.TestCase):
             self.assertEqual(code, mitosis.EXIT_SHIPPED, err)
             structure = read_json(os.path.join(root, "run", mitosis.STRUCTURE_FILE))
             self.assertEqual([step["name"] for step in structure], ["alpha", "gamma"])
-            self.assertEqual(structure[0]["task"], "do alpha")
+            self.assertEqual(structure[0]["task"], "Do alpha.")
             self.assertNotIn("task", structure[1])
             self.assertEqual(briefed_steps(root), [])
             self.assertEqual(section(out, "Split shape")[0].split(", ")[0], "steps 2")
@@ -772,22 +899,22 @@ class ReconcileReporting(unittest.TestCase):
 
 class ItemsEntryPointRefusals(unittest.TestCase):
     CYCLIC = [
-        {"name": "x", "task": "t", "files": ["pkg/shared.py"], "source": None, "acceptance": []},
-        {"name": "y", "task": "t", "files": ["pkg/y.py"], "source": None,
+        {"name": "x", "task": "t", "files": ["pkg/shared.py"], "source": None, "spec_ref": [SPEC_SECTION], "acceptance": []},
+        {"name": "y", "task": "t", "files": ["pkg/y.py"], "source": None, "spec_ref": [SPEC_SECTION],
          "acceptance": [], "after": ["x"]},
-        {"name": "z", "task": "t", "files": ["pkg/shared.py"], "source": None,
+        {"name": "z", "task": "t", "files": ["pkg/shared.py"], "source": None, "spec_ref": [SPEC_SECTION],
          "acceptance": [], "after": ["y"]},
     ]
     EMPTY_MANIFEST = [
         {"name": "surface", "task": "t", "files": ["pkg/__init__.py", "pkg/g.py"],
-         "source": None, "acceptance": []},
-        {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None,
+         "source": None, "spec_ref": [SPEC_SECTION], "acceptance": []},
+        {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None, "spec_ref": [SPEC_SECTION],
          "acceptance": [], "after": ["surface"]},
     ]
 
     def _run(self, items):
         with tempfile.TemporaryDirectory() as root:
-            write(root, "items.json", json.dumps(items))
+            write(root, "items.json", items_document(root, items))
             return invoke(
                 root,
                 ["--items", "items.json", "--plan-only", "--run-dir", os.path.join(root, "run")],
@@ -799,11 +926,11 @@ class ItemsEntryPointRefusals(unittest.TestCase):
         self.assertEqual(len(core.msp_items(self.CYCLIC)), 1)
 
     GROUP_CYCLE = [
-        {"name": "a", "task": "t", "files": ["a.py"], "source": None,
+        {"name": "a", "task": "t", "files": ["a.py"], "source": None, "spec_ref": [SPEC_SECTION],
          "acceptance": [], "contract_group": "g"},
-        {"name": "x", "task": "t", "files": ["x.py"], "source": None,
+        {"name": "x", "task": "t", "files": ["x.py"], "source": None, "spec_ref": [SPEC_SECTION],
          "acceptance": [], "after": ["a"]},
-        {"name": "b", "task": "t", "files": ["b.py"], "source": None,
+        {"name": "b", "task": "t", "files": ["b.py"], "source": None, "spec_ref": [SPEC_SECTION],
          "acceptance": [], "contract_group": "g", "after": ["x"]},
     ]
 
@@ -823,9 +950,9 @@ class ItemsEntryPointRefusals(unittest.TestCase):
     def a_sound_plan_supplied_as_items_still_ships(self):
         code, out, err = self._run(
             [
-                {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None,
+                {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None, "spec_ref": [SPEC_SECTION],
                  "acceptance": []},
-                {"name": "surface", "task": "t", "files": ["pkg/__init__.py"], "source": None,
+                {"name": "surface", "task": "t", "files": ["pkg/__init__.py"], "source": None, "spec_ref": [SPEC_SECTION],
                  "acceptance": [], "after": ["parse"]},
             ]
         )
@@ -884,6 +1011,8 @@ HOLDING_WORKER = r'''
 import json
 import sys
 
+SESSION = sys.argv[2] if len(sys.argv) > 2 else ""
+
 prefix = "Write-set for this Lane, the only files you may edit: "
 paths = [
     path.strip()
@@ -895,7 +1024,8 @@ paths = [
 for path in paths:
     with open(path, "a") as handle:
         handle.write("work\n")
-print(json.dumps({"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"}))
+reply = {"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"}
+print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": reply}))
 '''
 
 
@@ -903,7 +1033,7 @@ class HeldRun(unittest.TestCase):
     def _run(self, *extra, worker=None):
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
             git_repo(root)
-            write(root, "items.json", json.dumps([briefed("alpha")]))
+            write(root, "items.json", items_document(root, [briefed("alpha")]))
             with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
                 return invoke(
                     root,
@@ -915,7 +1045,9 @@ class HeldRun(unittest.TestCase):
                         "--feature-branch",
                         "feature",
                         "--dispatch-command",
-                        command(elsewhere, "worker.py", worker or HOLDING_WORKER, "{task}"),
+                        command(elsewhere, "worker.py", worker or HOLDING_WORKER, "{task}", "{session_id}", "{schema}"),
+                        "--reask-command",
+                        REASK_COMMAND,
                         "--acceptance-command",
                         "probe {file} {test}",
                         *extra,
@@ -941,8 +1073,8 @@ class HeldRun(unittest.TestCase):
         self.assertEqual(code, 10, out + err)
         found = json.loads(out.splitlines()[-1])
         self.assertEqual(found["lanes"][0]["state"], "failed")
-        self.assertIn("exit 4", found["lanes"][0]["reason"])
-        self.assertTrue(found["lanes"][0]["stderr"].endswith("0.err"))
+        self.assertIn("exit 4 with no valid reply; re-asked once: exit 1", found["lanes"][0]["reason"])
+        self.assertTrue(found["lanes"][0]["stderr"].endswith("0.reask.err"))
         self.assertEqual(len(found["attention"]), 2)
         self.assertIn("Lane 0 (alpha) is failed", found["attention"][0])
         self.assertIn("MSP alpha is blocked", found["attention"][1])
@@ -993,7 +1125,7 @@ class PullRequestFlags(unittest.TestCase):
     def _attempt(self, *flags, items=None):
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
             git_repo(root)
-            write(root, "items.json", json.dumps(items or [briefed("alpha")]))
+            write(root, "items.json", items_document(root, items or [briefed("alpha")]))
             with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
                 code, out, err = invoke(
                     root,
@@ -1005,7 +1137,9 @@ class PullRequestFlags(unittest.TestCase):
                         "--feature-branch",
                         "feature",
                         "--dispatch-command",
-                        command(elsewhere, "worker.py", MARKING_WORKER, "{task}"),
+                        command(elsewhere, "worker.py", MARKING_WORKER, "{task}", "{session_id}", "{schema}"),
+                        "--reask-command",
+                        REASK_COMMAND,
                         "--acceptance-command",
                         "probe {file} {test}",
                         "--render-command",
@@ -1062,7 +1196,7 @@ class PushOnly(unittest.TestCase):
                 ["git", "-C", root, "remote", "add", "origin", remote],
             ):
                 subprocess.run(args, check=True, capture_output=True, env=env)
-            write(root, "items.json", json.dumps([briefed("alpha")]))
+            write(root, "items.json", items_document(root, [briefed("alpha")]))
             with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
                 code, out, err = invoke(
                     root,
@@ -1074,7 +1208,9 @@ class PushOnly(unittest.TestCase):
                         "--feature-branch",
                         "feature",
                         "--dispatch-command",
-                        command(elsewhere, "worker.py", HOLDING_WORKER, "{task}"),
+                        command(elsewhere, "worker.py", HOLDING_WORKER, "{task}", "{session_id}", "{schema}"),
+                        "--reask-command",
+                        REASK_COMMAND,
                         "--acceptance-command",
                         "probe {file} {test}",
                         *PR_FLAGS,
@@ -1097,7 +1233,7 @@ class PushOnly(unittest.TestCase):
         self.assertEqual(entry["branch"], "mitosis/alpha")
         self.assertIsNone(entry["pull_request"])
         self.assertEqual(entry["title"], "feat(ship): fake title")
-        self.assertEqual(entry["body"], "## Problem\nFake body.")
+        self.assertEqual(entry["body"], FAKE_BODY)
         self.assertEqual(heads, ["refs/heads/mitosis/alpha"])
         self.assertEqual(found["attention"], [])
         held = mitosis._msp_summary(
@@ -1137,8 +1273,8 @@ with open(os.path.join(here, "calls"), "a", encoding="utf-8") as handle:
     handle.write(json.dumps(sys.argv) + "\n")
 with open(sys.argv[sys.argv.index("--fields") + 1], encoding="utf-8") as handle:
     verified = json.load(handle)["testing"][-1]["result"]
-print(json.dumps({"title": "feat(ship): fake title", "body": "## Verification\n" + verified}))
-'''
+print(json.dumps({"title": "feat(ship): fake title", "body": %r %% verified}))
+''' % VERIFIED_BODY
 
 OPENING_PR = r'''
 import os
@@ -1171,7 +1307,7 @@ class ProvenHead(unittest.TestCase):
             files=["alpha.py", "alpha_check.txt"],
             acceptance=[{"file": "alpha_check.txt", "test": "property"}],
         )
-        write(self.root, "items.json", json.dumps([step]))
+        write(self.root, "items.json", items_document(self.root, [step]))
 
     def tearDown(self):
         subprocess.run(["rm", "-rf", self.root, self.elsewhere], check=True)
@@ -1188,7 +1324,9 @@ class ProvenHead(unittest.TestCase):
                     "--feature-branch",
                     "feature",
                     "--dispatch-command",
-                    command(self.elsewhere, "worker.py", HOLDING_WORKER, "{task}"),
+                    command(self.elsewhere, "worker.py", HOLDING_WORKER, "{task}", "{session_id}", "{schema}"),
+                    "--reask-command",
+                    REASK_COMMAND,
                     "--acceptance-command",
                     command(
                         self.elsewhere,
@@ -1255,8 +1393,8 @@ class ProvenHead(unittest.TestCase):
         self.assertEqual(found["state"], run.MSP_PUSHED)
         self.assertEqual(
             found["body"],
-            "## Verification\nNot run: the caller proved %s after mitosis gated %s"
-            % (new_head[:12], pushed[:12]),
+            VERIFIED_BODY
+            % ("Not run: the caller proved %s after mitosis gated %s" % (new_head[:12], pushed[:12])),
         )
 
     def test_a_later_proven_head_keeps_the_open_pull_request(self):
@@ -1274,8 +1412,8 @@ class ProvenHead(unittest.TestCase):
         self.assertEqual(found["pull_request"], "https://example.invalid/pull/1")
         self.assertEqual(
             found["body"],
-            "## Verification\nNot run: the caller proved %s after mitosis gated %s"
-            % (new_head[:12], pushed[:12]),
+            VERIFIED_BODY
+            % ("Not run: the caller proved %s after mitosis gated %s" % (new_head[:12], pushed[:12])),
         )
 
     def test_the_pushed_head_as_proven_head_pushes_nothing(self):
@@ -1404,7 +1542,7 @@ class RenderPreflight(unittest.TestCase):
             files=["alpha.py", "alpha_check.txt"],
             acceptance=[{"file": "alpha_check.txt", "test": "property"}],
         )
-        write(self.root, "items.json", json.dumps([step]))
+        write(self.root, "items.json", items_document(self.root, [step]))
 
     def tearDown(self):
         subprocess.run(["rm", "-rf", self.root, self.elsewhere], check=True)
@@ -1421,7 +1559,9 @@ class RenderPreflight(unittest.TestCase):
                     "--feature-branch",
                     "feature",
                     "--dispatch-command",
-                    command(self.elsewhere, "worker.py", worker, "{task}"),
+                    command(self.elsewhere, "worker.py", worker, "{task}", "{session_id}", "{schema}"),
+                    "--reask-command",
+                    REASK_COMMAND,
                     "--acceptance-command",
                     command(
                         self.elsewhere,
@@ -1607,7 +1747,7 @@ class RenderPreflight(unittest.TestCase):
         self.assertEqual(code, 0, out + err)
         entry = json.loads(out.splitlines()[-1])["msps"][0]
         self.assertEqual(entry["title"], "feat(ship): fake title")
-        self.assertEqual(entry["body"], "## Problem\nFake body.")
+        self.assertEqual(entry["body"], FAKE_BODY)
         path = os.path.join(self.run_dir, "ship", "msp-0", "fields.json")
         fields = read_json(path)
         self.assertEqual(fields["problem"], ["Bodies are composed twice.", "Reviewers skip them."])
@@ -1853,7 +1993,7 @@ class CouplingReport(unittest.TestCase):
 
     def _plan_only(self):
         with tempfile.TemporaryDirectory() as root:
-            write(root, "items.json", json.dumps(self.ITEMS))
+            write(root, "items.json", items_document(root, self.ITEMS))
             write(root, "graph.json", json.dumps({"src/a.py": ["src/b.py"]}))
             return invoke(
                 root,
@@ -1895,7 +2035,7 @@ class ReportSections(unittest.TestCase):
             write(
                 root,
                 "items.json",
-                json.dumps([briefed("alpha"), briefed("beta", after=["alpha"]), briefed("gamma")]),
+                items_document(root, [briefed("alpha"), briefed("beta", after=["alpha"]), briefed("gamma")]),
             )
             code, out, err = invoke(
                 root,
@@ -1954,15 +2094,18 @@ class BriefStageReport(unittest.TestCase):
 
     def a_brief_that_had_to_be_asked_again_is_named_in_the_report(self):
         lines = mitosis.brief_lines(
-            {"written": ["a", "b"], "reused": [], "retried": ["b"], "errors": []}
+            {"written": ["a", "b"], "reused": [], "reasked": ["b"], "errors": []}
         )
-        self.assertIn("1 brief re-dispatched after a return that broke the contract: b", lines)
+        self.assertIn(
+            "1 brief re-asked in the same session after a reply that failed h10c-brief-return: b",
+            lines,
+        )
 
     def a_run_where_every_brief_returned_cleanly_says_nothing_about_retries(self):
         lines = mitosis.brief_lines(
-            {"written": ["a"], "reused": [], "retried": [], "errors": []}
+            {"written": ["a"], "reused": [], "reasked": [], "errors": []}
         )
-        self.assertTrue(all("re-dispatched" not in line for line in lines))
+        self.assertTrue(all("re-asked" not in line for line in lines))
 
 
 class CoverageRendering(unittest.TestCase):
@@ -2058,9 +2201,12 @@ def shared_lane_items(count):
     return [briefed("s%d" % i, files=["shared.py", "f%d.py" % i]) for i in range(count)]
 
 
-def one_step_limit(items):
+def one_step_limit(items, root=None):
+    source = items[0].get("source") if items else None
+    shared = (source["path"],) if isinstance(source, dict) else ()
+    sizes = core.file_sizes(shared, root)
     return max(
-        core.estimate_tokens(items, (index,), {}, {}, earlier=tuple(range(index)))
+        core.estimate_tokens(items, (index,), sizes, {}, shared=shared, earlier=tuple(range(index)))
         for index in range(len(items))
     ) + 1
 
@@ -2068,16 +2214,29 @@ def one_step_limit(items):
 class SessionReport(unittest.TestCase):
     def _plan_only(self, items, *extra):
         with tempfile.TemporaryDirectory() as root:
-            write(root, "items.json", json.dumps(items))
+            write(root, "items.json", items_document(root, items))
             return invoke(
                 root,
                 ["--items", "items.json", "--plan-only", "--run-dir", os.path.join(root, "run"), *extra],
             )
 
     def the_plan_only_report_shows_an_oversized_lane_built_as_sessions(self):
-        items = shared_lane_items(3)
-        limit = one_step_limit(items)
-        code, out, err = self._plan_only(items, "--session-tokens", str(limit))
+        with tempfile.TemporaryDirectory() as root:
+            document = items_document(root, shared_lane_items(3))
+            limit = one_step_limit(json.loads(document), root)
+            write(root, "items.json", document)
+            code, out, err = invoke(
+                root,
+                [
+                    "--items",
+                    "items.json",
+                    "--plan-only",
+                    "--run-dir",
+                    os.path.join(root, "run"),
+                    "--session-tokens",
+                    str(limit),
+                ],
+            )
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
         body = section(out, "Split quality")
         self.assertIn(
@@ -2159,7 +2318,7 @@ class SessionReport(unittest.TestCase):
                 ["git", "-C", root, "branch", "feature"],
             ):
                 subprocess.run(args, check=True, capture_output=True, env=env)
-            write(elsewhere, "items.json", json.dumps([briefed("alpha")]))
+            write(elsewhere, "items.json", items_document(elsewhere, [briefed("alpha")]))
 
             def attempt(worker, *extra):
                 with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
@@ -2173,7 +2332,9 @@ class SessionReport(unittest.TestCase):
                             "--feature-branch",
                             "feature",
                             "--dispatch-command",
-                            command(elsewhere, "worker.py", worker, "{task}"),
+                            command(elsewhere, "worker.py", worker, "{task}", "{session_id}", "{schema}"),
+                            "--reask-command",
+                            REASK_COMMAND,
                             "--acceptance-command",
                             "probe {file} {test}",
                             "--no-push",
@@ -2282,7 +2443,6 @@ def load_tests(loader, tests, pattern):
     suite = unittest.TestSuite()
     for case in (
         AchievedParallelism,
-        ReturnParsing,
         RiskMarkers,
         TemplatePlaceholders,
         CoverageReport,

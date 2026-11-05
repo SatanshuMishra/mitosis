@@ -19,7 +19,21 @@ HEADER = {
 
 GATED = "1111111111111111111111111111111111111111"
 
-PRINTED = '{"title":"feat(ship): fake title","body":"## Problem\\nFake body."}'
+PRINTED_BODY = (
+    "## Problem\nBodies are composed twice.\n\n## Change\n- Wire render.\n\n"
+    "## Impact\nEvery new body changes shape.\n\n"
+    "## Testing\n| Check | Result |\n|---|---|\n| tests/test_pr_facts.py | passed |"
+)
+
+PRINTED = json.dumps({"title": "feat(ship): fake title", "body": PRINTED_BODY})
+
+FIELDS = {
+    "title": "feat(ship): hand facts to render",
+    "problem": ["Bodies are composed twice."],
+    "change": ["Wire render."],
+    "impact": ["Every new body changes shape."],
+    "testing": [{"check": "tests/test_pr_facts.py", "result": "passed"}],
+}
 
 
 def plan_of(msps, items):
@@ -322,13 +336,38 @@ class Render(unittest.TestCase):
             "print(%r)\n" % (copy, PRINTED),
         )
         path = os.path.join(self.tmp, "new", "f.json")
-        result = pr_facts.render(command, {"title": "feat: x", "problem": ["P."]}, path, None)
-        self.assertEqual(result, ("feat(ship): fake title", "## Problem\nFake body."))
+        result = pr_facts.render(command, FIELDS, path, None)
+        self.assertEqual(result, ("feat(ship): fake title", PRINTED_BODY))
         recorded = self._lines(calls)
         self.assertEqual(len(recorded), 1)
         self.assertEqual(json.loads(recorded[0])[-3:], ["render", "--fields", path])
         with open(copy, encoding="utf-8") as handle:
-            self.assertEqual(json.load(handle), {"title": "feat: x", "problem": ["P."]})
+            self.assertEqual(json.load(handle), FIELDS)
+
+    def refuses_facts_h15_refuses_before_writing_or_running(self):
+        import pr_facts
+
+        self._folder()
+        command, calls = self._script("render", "print(%r)\n" % PRINTED)
+        path = os.path.join(self.tmp, "facts", "f.json")
+        with self.assertRaises(pr_facts.RenderError) as raised:
+            pr_facts.render(command, {"title": "feat: x", "problem": ["P."]}, path, None)
+        message = str(raised.exception)
+        for text in (path, "mitosis", "h15-pr-fields", "change", "impact", "testing"):
+            self.assertIn(text, message)
+        self.assertFalse(os.path.exists(path))
+        self.assertFalse(os.path.exists(calls))
+
+    def refuses_a_reply_with_more_than_one_json_value(self):
+        import pr_facts
+
+        self._folder()
+        command, calls = self._script("render", "print('[]')\nprint(%r)\n" % PRINTED)
+        with self.assertRaises(pr_facts.RenderError) as raised:
+            pr_facts.render(command, FIELDS, os.path.join(self.tmp, "f.json"), None)
+        for text in ("pull-request render", "h16-pr-render"):
+            self.assertIn(text, str(raised.exception))
+        self.assertEqual(len(self._lines(calls)), 1)
 
     def waits_for_a_slow_render_to_print(self):
         import pr_facts
@@ -336,8 +375,8 @@ class Render(unittest.TestCase):
         self._folder()
         command, calls = self._script("slow", "time.sleep(2)\nprint(%r)\n" % PRINTED)
         path = os.path.join(self.tmp, "slow-facts", "f.json")
-        result = pr_facts.render(command, {"title": "feat: x"}, path, child_env())
-        self.assertEqual(result, ("feat(ship): fake title", "## Problem\nFake body."))
+        result = pr_facts.render(command, FIELDS, path, child_env())
+        self.assertEqual(result, ("feat(ship): fake title", PRINTED_BODY))
         self.assertEqual(len(self._lines(calls)), 1)
 
     def refuses_each_failure_and_runs_once(self):
@@ -371,11 +410,11 @@ class Render(unittest.TestCase):
                     "pull-request render: --impact: at least one value is required",
                 ),
             ),
-            (garbled[0], ("printed no title and body",)),
+            (garbled[0], ("printed no title and body", "pull-request render", "h16-pr-render")),
         )
         for command, expected in cases:
             with self.assertRaises(pr_facts.RenderError) as raised:
-                pr_facts.render(command, {"title": "feat: x"}, path, child_env())
+                pr_facts.render(command, FIELDS, path, child_env())
             for text in expected:
                 self.assertIn(text, str(raised.exception))
         for _, calls in (old, refused, garbled):

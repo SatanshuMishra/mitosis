@@ -103,3 +103,24 @@ One entry of the run's findings list: a Lane or MSP result that keeps the run fr
 
 **Outcome entry**:
 The line the gate appends to the trajectory file for one acceptance test, in the K6 shape receipts' trajectory store holds.
+
+## Hand-offs
+
+**Hand-off**:
+A file or value one tool writes and another reads, such as the result line, state.json, a Worker's reply or an items file, each with one owned schema.
+_Avoid_: interface file, output format
+
+**Owned schema**:
+The program's JSON Schema that fixes one hand-off's format, carried byte for byte in the contracts folder and checked by whoever writes and whoever reads the hand-off.
+_Avoid_: contract copy, format spec
+
+**Call schema**:
+The schema mitosis passes to a model command through the schema placeholder, derived from an owned schema and never wider than it.
+
+**Structured reply**:
+The value a model command returns as the structured_output of its JSON result, the only part of a model's output mitosis reads.
+_Avoid_: return line, last JSON line
+
+**Re-ask**:
+A second turn of the same model session, sent through the re-ask command with the schema errors of a reply that failed, whose reply is judged once more and never re-asked again.
+_Avoid_: retry, re-dispatch

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "harness-redesign/h10c-brief-return.schema.json",
+  "title": "H10c brief return",
+  "description": "The last JSON-object line a brief Worker prints: the Step it briefed, by exact name, and that Step's whole brief.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "task"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task": {
+      "type": "string",
+      "pattern": "\\S"
+    }
+  }
+}

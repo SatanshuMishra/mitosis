@@ -3,6 +3,36 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.13.0 - 2026-11-04
+
+Every hand-off mitosis writes or reads has one owned format, checked where it
+is produced.
+
+- mitosis vendors byte-identical copies of the program's validator and owned
+  schemas in `contracts/`, and `handoff.py` checks each hand-off against them.
+  mitosis owns h8, the result line, h9, the run state, h10, the Worker and
+  check-author reply, h10b, the structure reply, h10c, the brief reply, k2,
+  the lock record, and k6, each outcome entry; it checks h12, the items it
+  reads, h15, the pull request's facts file, and h16, render's reply, which
+  other plugins own. h8 and h9 accept the lock on each MSP, every lock state
+  and the finding kinds a stopped lock reports.
+- `--dispatch-command`, `--decompose-command` and `--brief-command` must carry
+  `{schema}`, the call schema as JSON text, and `{session_id}`; a template
+  without either is refused with exit 3, where one without `{session_id}`
+  used to run unpriced. Each reply is read only from the structured_output field of the JSON object
+  the command prints, never from the last JSON line of prose.
+- `--reask-command`, offered `{prompt}`, `{session_id}`, `{schema}` and
+  `{model}`, is required for any run that calls a model; a reply that fails its
+  owned schema is asked once more in the same session with the errors, and a
+  reply that still fails fails its call.
+- A run state, result line or lock record that fails its owned schema stops
+  the run with exit 15 and writes nothing for it. A reason in the result line
+  is no longer cut short.
+- The file `--items` names must meet h12, with `spec_ref` on every Step and
+  `source` naming the document, or the run is refused with exit 3.
+- A pull request is recorded only as the http or https URL the pull-request
+  command prints on its last line; any other line ends the MSP `ship-failed`.
+
 ## 0.12.0 - 2026-11-03
 
 Each MSP locks its own acceptance tests, and mitosis has no wall-clock limit.

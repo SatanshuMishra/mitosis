@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import re
@@ -10,9 +11,9 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-sys.path.insert(0, HERE)
+sys.path.insert(0, ROOT)
 
-import contract_schema
+import handoff
 
 MITOSIS = os.path.join(ROOT, "mitosis.py")
 CALL_LIMIT = 60
@@ -37,6 +38,9 @@ import shutil
 import subprocess
 import sys
 
+SESSION, SCHEMA = sys.argv[-2], sys.argv[-1]
+del sys.argv[-2:]
+
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "worker.json"), encoding="utf-8") as handle:
     jobs = json.load(handle)
@@ -49,7 +53,7 @@ named = [
 if len(named) > 1:
     named = [name for name in named if jobs[name].get("msp") in (None, sys.argv[1])]
 if len(named) != 1:
-    print(json.dumps({"item": "unknown", "status": "failed", "files_changed": [], "notes": "no job"}))
+    print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": "unknown", "status": "failed", "files_changed": [], "notes": "no job"}}))
     sys.exit(1)
 name = named[0]
 job = jobs[name]
@@ -104,7 +108,30 @@ with open(os.path.join(here, "records", name + ".json"), "w", encoding="utf-8") 
     json.dump(record, handle)
 touched = sorted(set(job.get("writes", {})) | set(job.get("links", {})) | set(job.get("deletes", [])))
 declared = job.get("declared", touched)
-print(json.dumps({"item": name, "status": "ok", "files_changed": declared, "notes": "done"}))
+print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": name, "status": "ok", "files_changed": declared, "notes": "done"}}))
+'''
+
+REASK_COMMAND = " ".join(
+    (
+        shlex.quote(sys.executable),
+        "-c",
+        shlex.quote("import sys; sys.stderr.write('no re-ask was expected\\n'); sys.exit(1)"),
+        "{prompt}",
+        "{session_id}",
+        "{schema}",
+    )
+)
+
+REASK_REPLY = r'''
+import json
+import os
+import sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(here, "reask.log"), "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(sys.argv[1:]) + "\n")
+reply = {"item": "check-author", "status": "ok", "files_changed": ["tests/test_calc.py"], "notes": "asked again"}
+print(json.dumps({"type": "result", "session_id": sys.argv[2], "result": "done", "structured_output": reply}))
 '''
 
 ACCEPT = r'''
@@ -128,7 +155,6 @@ except subprocess.TimeoutExpired:
 sys.exit(code if code in (0, 1) else 2)
 '''
 
-K2_SCHEMA = os.path.join(HERE, "fixtures", "contracts", "k2-locked.schema.json")
 TEST_FILE = "tests/test_calc.py"
 ADDS = {"file": TEST_FILE, "test": "Calc.adds"}
 CORRECT_ADD = "def add(a, b):\n    return a + b\n"
@@ -179,13 +205,17 @@ def read_bytes(path):
         return handle.read()
 
 
+SPEC_SECTION = "1.1"
+SPEC_DOCUMENT = "# Spec\n\n## 1.1 Build\n"
+
+
 def step(name, files, msp, acceptance=(), after=()):
     base = {
         "name": name,
         "task": "task-" + name,
         "files": list(files),
-        "source": None,
         "acceptance": list(acceptance),
+        "spec_ref": [SPEC_SECTION],
         "msp": msp,
     }
     return {**base, "after": list(after)} if after else base
@@ -274,8 +304,13 @@ class Scratch:
     def file(self, name, content):
         return put(os.path.join(self.tmp, name), content)
 
+    def source(self):
+        path = put(os.path.join(self.tmp, "spec.md"), SPEC_DOCUMENT)
+        return {"path": os.path.abspath(path), "sha256": hashlib.sha256(SPEC_DOCUMENT.encode("utf-8")).hexdigest()}
+
     def items(self, steps, name="items.json"):
-        return self.file(name, json.dumps(steps))
+        source = self.source()
+        return self.file(name, json.dumps([{**entry, "source": source} for entry in steps]))
 
     def jobs(self, jobs):
         return put(os.path.join(self.stubs, "worker.json"), json.dumps(jobs))
@@ -296,7 +331,7 @@ class Scratch:
             timeout=RUN_LIMIT,
         )
 
-    def build(self, items, *extra, acceptance="unittest", env=None):
+    def build(self, items, *extra, acceptance="unittest", env=None, reask=REASK_COMMAND):
         return self.mitosis(
             "--items",
             items,
@@ -305,7 +340,9 @@ class Scratch:
             "--feature-branch",
             "feature",
             "--dispatch-command",
-            self.stub("worker.py", "{msp}", "{task}"),
+            self.stub("worker.py", "{msp}", "{task}", "{session_id}", "{schema}"),
+            "--reask-command",
+            reask,
             "--acceptance-command",
             self.stub("accept.py", acceptance, "{file}", "{test}"),
             "--timeout",
@@ -362,7 +399,7 @@ class CheckAuthorLane(unittest.TestCase):
         self.assertIsNone(summary.get("referee"), "a run with no charter lock has no top-level referee")
         referee = self._msp(summary, "calc").get("referee")
         self.assertIsInstance(referee, dict, "MSP calc carries no referee object" + tail(completed))
-        self.assertEqual(contract_schema.errors(referee, contract_schema.load(K2_SCHEMA)), [])
+        self.assertEqual(handoff.errors("k2-locked", referee), ())
         return referee
 
     def _feature(self):
@@ -438,8 +475,8 @@ class CheckAuthorLane(unittest.TestCase):
             (
                 "shared-file",
                 [
-                    check_author(name="write-checks"),
-                    builder(files=("calc.py", TEST_FILE), after=("write-checks",)),
+                    check_author(),
+                    builder(files=("calc.py", TEST_FILE)),
                 ],
                 ("add",),
             ),
@@ -483,6 +520,37 @@ class CheckAuthorLane(unittest.TestCase):
         self.assertEqual(lock.get("probes"), ["calc.py"])
         self.assertEqual(scratch.dispatched(), ["check-author", "add"])
         self.assertEqual((self._msp(summary, "calc").get("gate") or {}).get("outcome"), "pass")
+
+    def a_check_author_reply_that_fails_h10_is_reasked_in_its_own_session(self):
+        scratch = self._scratch()
+        put(os.path.join(scratch.stubs, "reask.py"), REASK_REPLY)
+        items = scratch.items([check_author(), builder()])
+        scratch.jobs(
+            {
+                "check-author": {
+                    "writes": {TEST_FILE: EXACT_TEST, "calc.py": CORRECT_ADD},
+                    "msp": "lock",
+                    "declared": [""],
+                    "script": "record['session'] = SESSION",
+                },
+                "add": {"writes": {"calc.py": CORRECT_ADD}, "msp": "calc"},
+            }
+        )
+        completed = scratch.build(
+            items, reask=scratch.stub("reask.py", "{prompt}", "{session_id}", "{schema}")
+        )
+        with open(os.path.join(scratch.stubs, "reask.log"), encoding="utf-8") as handle:
+            asked = [json.loads(line) for line in handle if line.strip()]
+        self.assertEqual(len(asked), 1, tail(completed))
+        prompt, session, schema = asked[0]
+        self.assertEqual(session, scratch.record("check-author")["session"])
+        self.assertIn("h10-worker-return", prompt)
+        self.assertIn("#/files_changed/0", prompt)
+        self.assertEqual(json.loads(schema), handoff.call_schema("h10-worker-return"))
+        summary = summary_of(completed)
+        self.assertEqual(self._lock(summary, completed).get("state"), "ok")
+        self.assertEqual(scratch.dispatched(), ["check-author", "add"])
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
 
     def a_locked_test_that_passes_before_the_build_stops_it(self):
         scratch = self._scratch()
@@ -578,6 +646,7 @@ def load_tests(loader, standard, pattern):
                 "an_items_file_with_a_check_author_plans",
                 "a_malformed_check_author_is_refused",
                 "a_check_author_lane_locks_then_the_build_runs",
+                "a_check_author_reply_that_fails_h10_is_reasked_in_its_own_session",
                 "a_locked_test_that_passes_before_the_build_stops_it",
                 "a_check_author_write_outside_the_locked_paths_is_not_landed",
                 "locked_files_already_on_the_feature_branch_skip_the_lane",
