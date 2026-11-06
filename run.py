@@ -1008,7 +1008,6 @@ def _landed(plan, lane, tree, record, run_dir, header):
     commit, reason, outside = _land(plan, lane, tree, record, run_dir, header)
     if reason is not None:
         return {**record, "state": "failed", "reason": reason}
-    isolation.remove_lane_folders(isolation.lane_folders(run_dir, lane))
     return {**record, **outside, "commit": commit}
 
 
@@ -1105,6 +1104,8 @@ def dispatch(
                             ],
                         },
                     )
+                    if landed[lane]["state"] == "ok":
+                        isolation.discard_landed_folders(isolation.lane_folders(run_dir, lane))
                 held = {key: value for key, value in held.items() if key not in batch}
                 progressed = True
             if parked_by is not None:
@@ -4169,7 +4170,7 @@ def _msp_lock(plan, entry, settings, command, models, sandbox, base):
         return record
     landed = _landed_lock(plan, entry, settings, record, base)
     if landed["state"] == "ok":
-        isolation.remove_lane_folders(isolation.lock_folders(settings["run_dir"], entry["msp"]))
+        isolation.discard_landed_folders(isolation.lock_folders(settings["run_dir"], entry["msp"]))
     return landed
 
 

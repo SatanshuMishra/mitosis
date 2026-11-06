@@ -3,6 +3,16 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.13.1 - 2026-11-06
+
+A landed Lane stays landed when its clone cannot be removed.
+
+- mitosis records a Lane as landed before removing its clone, and a removal
+  that fails, as when a background process is still writing in the clone, now
+  leaves the clone behind with a warning instead of stopping the run. Before
+  this, a resume landed the half-removed clone again and committed the
+  deletions as the Worker's work.
+
 ## 0.13.0 - 2026-11-04
 
 Every hand-off mitosis writes or reads has one owned format, checked where it

@@ -1,4 +1,7 @@
+import contextlib
+import errno
 import hashlib
+import io
 import json
 import os
 import shlex
@@ -9,6 +12,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -744,6 +748,52 @@ class Dispatch(RepoCase):
         self.assertEqual(records[0]["state"], "ok")
         self.assertIsNotNone(self.marker(0))
         self.assertIn("a.txt", sh(["git", "show", "--name-only", "--format=", records[0]["commit"]], self.repo))
+
+    def held_lane_with_work(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        folders = isolation.lane_folders(self.run_dir, 0)
+        start = isolation.cut_clone(trees[0], folders)
+        write(os.path.join(folders["clone"], "a.txt"), "work left by a Worker\n")
+        prior = {0: {"lane": 0, "msp": 0, "state": run.LANE_HELD, "commit": None, "start": start}}
+        return plan, trees, folders, prior
+
+    def a_late_writer_stopping_a_clones_removal_leaves_the_landed_lane_landed(self):
+        plan, trees, folders, prior = self.held_lane_with_work()
+        real_removal = shutil.rmtree
+
+        def interrupted(path, *args, **kwargs):
+            if path != folders["clone"]:
+                return real_removal(path, *args, **kwargs)
+            os.remove(os.path.join(path, "a.txt"))
+            raise OSError(errno.ENOTEMPTY, "Directory not empty", os.path.join(path, "graphify-out"))
+
+        errors = io.StringIO()
+        with mock.patch.object(shutil, "rmtree", interrupted), contextlib.redirect_stderr(errors):
+            records = self.dispatch(plan, trees, prior=prior)
+        self.assertEqual(records[0]["state"], "ok")
+        self.assertIn(folders["clone"], errors.getvalue())
+        tip = sh(["git", "rev-parse", trees[0]["branch"]], self.repo)
+        resumed = self.dispatch(plan, trees, prior=records)
+        self.assertEqual(sh(["git", "rev-parse", trees[0]["branch"]], self.repo), tip)
+        self.assertEqual(resumed[0]["commit"], records[0]["commit"])
+        self.assertEqual(sh(["git", "show", tip + ":a.txt"], self.repo), "work left by a Worker")
+
+    def a_landed_lane_is_recorded_ok_before_its_clone_is_removed(self):
+        plan, trees, folders, prior = self.held_lane_with_work()
+        recorded = []
+        recorded_at_removal = []
+        real_removal = shutil.rmtree
+
+        def watched(path, *args, **kwargs):
+            if path == folders["clone"]:
+                recorded_at_removal.append(tuple(recorded))
+            return real_removal(path, *args, **kwargs)
+
+        with mock.patch.object(shutil, "rmtree", watched):
+            self.dispatch(plan, trees, prior=prior, on_lane=lambda lane, record: recorded.append(record["state"]))
+        self.assertEqual(recorded_at_removal, [("ok",)])
+        self.assertFalse(os.path.lexists(folders["clone"]))
 
     def a_lane_waiting_to_land_is_recorded_held_before_it_lands(self):
         plan = core.plan([step("a", ["a.txt"], msp="m"), step("b", ["b.txt"], msp="m")])
