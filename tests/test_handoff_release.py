@@ -8,6 +8,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SKILL_LIMIT = 20480
 RELEASED = (0, 11, 0)
+HANDOFF_RELEASE = "0.13.0"
 NAMED_IN_CHANGELOG = (
     "h8",
     "h9",
@@ -35,15 +36,14 @@ def read_text(relative):
         return handle.read()
 
 
-def top_entry(changelog):
+def changelog_entries(changelog):
     lines = changelog.splitlines()
     starts = [index for index, line in enumerate(lines) if line.startswith("## ")]
-    if not starts:
-        return None, ""
-    first = starts[0]
-    end = starts[1] if len(starts) > 1 else len(lines)
-    heading = lines[first][len("## ") :].split()
-    return (heading[0] if heading else None), "\n".join(lines[first:end])
+    ends = starts[1:] + [len(lines)]
+    return tuple(
+        (lines[start][len("## ") :].split()[0], "\n".join(lines[start:end]))
+        for start, end in zip(starts, ends)
+    )
 
 
 class Release(unittest.TestCase):
@@ -62,10 +62,11 @@ class Release(unittest.TestCase):
             plugin = json.load(handle)
         self.assertEqual(version, plugin["version"])
         self.assertGreater(tuple(int(part) for part in version.split(".")), RELEASED)
-        heading, entry = top_entry(read_text("CHANGELOG.md"))
-        self.assertEqual(heading, version)
+        entries = changelog_entries(read_text("CHANGELOG.md"))
+        self.assertEqual(entries[0][0], version)
+        handoff_release = dict(entries)[HANDOFF_RELEASE]
         for term in NAMED_IN_CHANGELOG:
-            self.assertIn(term, entry, term)
+            self.assertIn(term, handoff_release, term)
 
 
 class Loader(unittest.TestLoader):
