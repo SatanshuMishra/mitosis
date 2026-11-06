@@ -123,6 +123,15 @@ def remove_lane_folders(folders):
         _remove_left(folders[key])
 
 
+def discard_landed_folders(folders):
+    try:
+        remove_lane_folders(folders)
+    except OSError as error:
+        sys.stderr.write(
+            "mitosis: the work landed, but its clone stays at %s: %s\n" % (folders["clone"], error)
+        )
+
+
 def cut_clone(tree, folders):
     remove_lane_folders(folders)
     start = run.branch_commit(tree["path"], tree["branch"], required=True)
