@@ -2,6 +2,7 @@ import json
 import os
 import re
 import subprocess
+from collections import Counter
 
 import handoff
 import shape
@@ -15,6 +16,16 @@ UNNAMEABLE_WORDS = ("reverted", "speculative", "unverified")
 NAMED_LIMIT = 3
 
 TEST_ROW_LIMIT = 10
+
+CHANGE_LINE_LIMIT = 12
+
+CHANGE_WORD_LIMIT = 300
+
+TESTING_ROW_LIMIT = 12
+
+SENTENCE_RULE = "#/$defs/sentence"
+
+CHECK_RULE = "#/$defs/cell"
 
 PROBE_COMMIT = "0" * 40
 
@@ -123,35 +134,73 @@ def _passed(judged):
     return judged.get("outcome") == "pass" and not judged.get("class")
 
 
+def _check_label(label, stand_in):
+    return stand_in if handoff.errors_at(FIELDS_SCHEMA, CHECK_RULE, label) else label
+
+
 def _testing(plan, msp, outcome_of, fold, closing):
     steps = _steps(plan, msp)
+    numbered = tuple(enumerate(steps, 1))
     tests = tuple(
         (name, entry) for name, item in steps for entry in item.get("acceptance") or ()
     )
     if len(tests) <= TEST_ROW_LIMIT:
         proven = [
             {
-                "check": "%s::%s" % (entry.get("file"), entry.get("test")),
+                "check": _check_label(
+                    "%s::%s" % (entry.get("file"), entry.get("test")), "Acceptance test %d" % number
+                ),
                 "result": _result(outcome_of(name, entry)),
             }
-            for name, entry in tests
+            for number, (name, entry) in enumerate(tests, 1)
         ]
     else:
         proven = [
             {
-                "check": name,
+                "check": _check_label(name, "Step %d" % number),
                 "result": fold(
                     sum(1 for entry in item["acceptance"] if _passed(outcome_of(name, entry))),
                     len(item["acceptance"]),
                 ),
             }
-            for name, item in steps
+            for number, (name, item) in numbered
             if item.get("acceptance")
         ]
     untested = [
-        {"check": name, "result": NO_ACCEPTANCE} for name, item in steps if not item.get("acceptance")
+        {"check": _check_label(name, "Step %d" % number), "result": NO_ACCEPTANCE}
+        for number, (name, item) in numbered
+        if not item.get("acceptance")
     ]
-    return proven + untested + list(closing)
+    if len(proven) + len(untested) + len(closing) <= TESTING_ROW_LIMIT:
+        return proven + untested + list(closing)
+    return _folded_rows(tests, len(untested), outcome_of, fold) + list(closing)
+
+
+def _folded_rows(tests, untested, outcome_of, fold):
+    proven = (
+        [
+            {
+                "check": "Acceptance tests",
+                "result": fold(
+                    sum(1 for name, entry in tests if _passed(outcome_of(name, entry))), len(tests)
+                ),
+            }
+        ]
+        if tests
+        else []
+    )
+    missing = (
+        [
+            {
+                "check": "Steps with no acceptance test",
+                "result": "Not run: %s no acceptance test"
+                % _counted(untested, "Step names", "Steps name"),
+            }
+        ]
+        if untested
+        else []
+    )
+    return proven + missing
 
 
 def _proven_head_row(proven_head, gated):
@@ -256,11 +305,44 @@ def _tradeoffs(plan, msp, findings, exception, foreign):
     return [sentence for sentence in sentences if sentence]
 
 
+def _meets_format(line):
+    return not handoff.errors_at(FIELDS_SCHEMA, SENTENCE_RULE, line)
+
+
+def _step_line(name, number):
+    named = "Build the Step %s." % name
+    return named if _nameable(name) and _meets_format(named) else "Build Step %d." % number
+
+
+def _lines_by_step(steps):
+    lines = [_step_line(name, number) for number, (name, _) in enumerate(steps, 1)]
+    if len(lines) <= CHANGE_LINE_LIMIT:
+        return lines
+    kept = CHANGE_LINE_LIMIT - 1
+    return lines[:kept] + ["Build %d more Steps." % (len(lines) - kept)]
+
+
+def _change(steps):
+    openings = [first_sentence(item.get("task")) for _, item in steps]
+    times = Counter(opening.casefold() for opening in openings)
+    lines = [
+        opening
+        if times[opening.casefold()] == 1 and _meets_format(opening)
+        else _step_line(name, number)
+        for number, ((name, _), opening) in enumerate(zip(steps, openings), 1)
+    ]
+    fits = (
+        len(lines) <= CHANGE_LINE_LIMIT
+        and sum(len(line.split()) for line in lines) <= CHANGE_WORD_LIMIT
+    )
+    return lines if fits else _lines_by_step(steps)
+
+
 def _base(header, plan, msp):
     return {
         "title": _title(header, plan, msp),
         "problem": _problem(header),
-        "change": [first_sentence(item.get("task")) for _, item in _steps(plan, msp)],
+        "change": _change(_steps(plan, msp)),
         "impact": _impact(header),
     }
 
