@@ -510,6 +510,17 @@ class TemplateContract(ScratchCase):
             self.assertIn("--dispatch-command", completed.stderr, missing)
             self.assertIn(missing, completed.stderr)
 
+    def plan_refuses_the_worker_commands_a_build_would_refuse(self):
+        self._items_are_h12()
+        for options, named in (
+            ({"dispatch": self.scratch.dispatch_template("{task}", "{session_id}")}, "{schema}"),
+            ({"dispatch": self.scratch.dispatch_template("{task}", "{schema}")}, "{session_id}"),
+            ({"with_reask": False}, "--reask-command"),
+        ):
+            completed = self.scratch.mitosis(*self.scratch.build_flags("--plan-only", **options))
+            self.assertEqual(completed.returncode, 3, named + tail(completed))
+            self.assertIn(named, completed.stderr)
+
     def a_run_without_a_complete_reask_command_is_refused(self):
         self._items_are_h12()
         for options, named in (
