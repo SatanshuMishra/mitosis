@@ -97,6 +97,120 @@ class Facts(unittest.TestCase):
             },
         )
 
+    def steps_opening_with_one_sentence_each_get_their_own_line(self):
+        import handoff
+        import pr_facts
+
+        shared = "The repository is the pipeline Claude Code plugin. Then its own work."
+        plan = plan_of(
+            [{"label": "m", "steps": ["author", "naming", "feature-tip"]}],
+            [
+                {"name": "author", "task": "Write the tests first.", "files": ["t.py"], "acceptance": []},
+                {"name": "naming", "task": shared, "files": ["a.py"], "acceptance": []},
+                {"name": "feature-tip", "task": shared, "files": ["b.py"], "acceptance": []},
+            ],
+        )
+        result = pr_facts.probe_facts(HEADER, plan, 0)
+        self.assertEqual(handoff.errors("h15-pr-fields", result), ())
+        self.assertEqual(
+            result["change"],
+            ["Write the tests first.", "Build the Step naming.", "Build the Step feature-tip."],
+        )
+
+    def an_opening_the_format_refuses_gives_way_to_the_steps_name(self):
+        import handoff
+        import pr_facts
+
+        plan = plan_of(
+            [{"label": "m", "steps": ["home", "lower", "reverted-home"]}],
+            [
+                {"name": "home", "task": "A run home lives under ~/.mitosis/repo.", "files": ["a.py"], "acceptance": []},
+                {"name": "lower", "task": "pipeline clean removes links.", "files": ["b.py"], "acceptance": []},
+                {"name": "reverted-home", "task": "", "files": ["c.py"], "acceptance": []},
+            ],
+        )
+        result = pr_facts.probe_facts(HEADER, plan, 0)
+        self.assertEqual(handoff.errors("h15-pr-fields", result), ())
+        self.assertEqual(
+            result["change"],
+            ["Build the Step home.", "Build the Step lower.", "Build Step 3."],
+        )
+
+    def more_steps_than_the_format_lists_are_counted_in_a_last_line(self):
+        import handoff
+        import pr_facts
+
+        names = ["s%d" % number for number in range(1, 16)]
+        plan = plan_of(
+            [{"label": "m", "steps": names}],
+            [{"name": name, "task": "Do %s." % name, "files": [name], "acceptance": []} for name in names],
+        )
+        result = pr_facts.probe_facts(HEADER, plan, 0)
+        self.assertEqual(handoff.errors("h15-pr-fields", result), ())
+        self.assertEqual(len(result["change"]), 12)
+        self.assertEqual(result["change"][-1], "Build 4 more Steps.")
+
+    def openings_past_the_sections_word_ceiling_give_way_to_step_names(self):
+        import pr_facts
+
+        names = ["s%d" % number for number in range(1, 11)]
+        plan = plan_of(
+            [{"label": "m", "steps": names}],
+            [
+                {"name": name, "task": "Change %s %s." % (name, "word " * 60), "files": [name], "acceptance": []}
+                for name in names
+            ],
+        )
+        result = pr_facts.probe_facts(HEADER, plan, 0)
+        self.assertEqual(result["change"], ["Build the Step %s." % name for name in names])
+
+    def a_test_name_the_format_refuses_gives_way_to_a_numbered_check(self):
+        import handoff
+        import pr_facts
+
+        plan = plan_of(
+            [{"label": "m", "steps": ["a"]}],
+            [
+                {
+                    "name": "a",
+                    "task": "Build the facts.",
+                    "files": ["a.py"],
+                    "acceptance": [{"file": "tests/t.py", "test": "a_reverted_lane_lands_again"}],
+                },
+            ],
+        )
+        result = pr_facts.probe_facts(HEADER, plan, 0)
+        self.assertEqual(handoff.errors("h15-pr-fields", result), ())
+        self.assertEqual(result["testing"][0]["check"], "Acceptance test 1")
+
+    def more_rows_than_the_format_lists_fold_into_their_totals(self):
+        import pr_facts
+
+        names = ["s%d" % number for number in range(1, 15)]
+        plan = plan_of(
+            [{"label": "m", "steps": names}],
+            [
+                {
+                    "name": name,
+                    "task": "Do %s." % name,
+                    "files": [name],
+                    "acceptance": [{"file": "tests/t.py", "test": name}] if name == "s1" else [],
+                }
+                for name in names
+            ],
+        )
+        gate = {
+            "commit": GATED,
+            "properties": [{"step": "s1", "file": "tests/t.py", "test": "s1", "outcome": "pass"}],
+        }
+        self.assertEqual(
+            pr_facts.facts(HEADER, plan, 0, gate)["testing"],
+            [
+                {"check": "Acceptance tests", "result": "1 acceptance test passes with the work and fails without it"},
+                {"check": "Steps with no acceptance test", "result": "Not run: 13 Steps name no acceptance test"},
+            ],
+        )
+
     def blast_radius_stands_in_for_a_missing_impact(self):
         import pr_facts
 

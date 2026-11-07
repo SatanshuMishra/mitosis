@@ -3,6 +3,17 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.13.2 - 2026-11-06
+
+Any Steps now give a pull request that meets its owned format.
+
+- A Step's change line stands in with the Step's name when its opening sentence
+  repeats another Step's or breaks the format, and the list is shortened when it
+  passes twelve lines or three hundred words. Before this, Steps that opened with
+  the same project description stopped the run at plan.
+- A testing row stands in with a number when a test or Step name breaks the
+  format, and rows past twelve fold into their totals.
+
 ## 0.13.1 - 2026-11-06
 
 A landed Lane stays landed when its clone cannot be removed.
