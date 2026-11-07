@@ -673,7 +673,7 @@ def check_templates(args):
         if template is None:
             continue
         check_template(name, template)
-    if not args.plan_only and args.dispatch_command is not None:
+    if args.dispatch_command is not None:
         try:
             run.check_reply_templates(args.dispatch_command, args.reask_command)
         except run.ConfigError as error:

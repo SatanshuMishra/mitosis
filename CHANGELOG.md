@@ -3,6 +3,14 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.13.3 - 2026-11-06
+
+Plan refuses the worker commands a build would refuse.
+
+- `--plan-only` now checks `--dispatch-command` and `--reask-command` whenever a
+  dispatch command is given. Before this, a stale command passed plan and stopped
+  the run at build.
+
 ## 0.13.2 - 2026-11-06
 
 Any Steps now give a pull request that meets its owned format.
