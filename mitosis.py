@@ -162,6 +162,8 @@ STAGE_FLAG_NAMES = (
     "--no-trajectories",
     "--no-briefs",
     "--prompt-template",
+    "--max-output-bytes",
+    "--run-log",
 )
 
 GATE_CLASS_KEYS = ("class", "reason", "test")
@@ -468,6 +470,20 @@ FLAG_SPECS = {
         "placeholders {cluster} (the Lane's Steps), {spec} (its JSON leaves), {tier} and "
         "{contract} (the Worker return contract); check-author Lanes keep their brief, and "
         "the plan and its id never see the template",
+    },
+    "--max-output-bytes": {
+        "metavar": "N",
+        "type": int,
+        "default": run.MAX_OUTPUT,
+        "help": "keep the last N characters of a Lane's stdout as its record's output_tail "
+        "when the Worker and its re-ask return no valid structured reply (default: %d)"
+        % run.MAX_OUTPUT,
+    },
+    "--run-log": {
+        "metavar": "PATH",
+        "help": "when the run's build ends, including a stopped run, write PATH fresh as JSON "
+        "lines, one per Lane record in state.json ordered by its finished time, each carrying "
+        "the plan's plan_id",
     },
     "--worker-sandbox": {
         "action": "store_true",
@@ -2243,6 +2259,7 @@ def execute(args, plan, models, run_dir, repo, root, base=None):
             gate_classes_sha256=loaded_gate_classes(args)[1],
             reask_command=args.reask_command,
             prompt_template=args.prompt_template,
+            max_output=args.max_output_bytes,
         ), None
     except (run.ConfigError, run.ResumeError) as error:
         raise Refusal(str(error))
@@ -2333,6 +2350,8 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     else:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
         state, failure = {}, None
+    if args.run_log:
+        run.write_run_log(args.run_log, plan, state)
     code = exit_code(state, plan)
     if failure is not None and code == EXIT_SHIPPED:
         code = EXIT_INCOMPLETE
