@@ -163,6 +163,7 @@ STAGE_FLAG_NAMES = (
     "--gate-classes",
     "--pr-impact",
     "--render-command",
+    "--no-trajectories",
 )
 
 GATE_CLASS_KEYS = ("class", "reason", "test")
@@ -422,24 +423,36 @@ FLAG_SPECS = {
         "code in different files",
     },
     "--risk-markers": {
-        "metavar": "MARKER",
-        "nargs": "+",
-        "action": "extend",
-        "default": [],
-        "help": "path globs or substrings that force the top tier and count as a coupling signal",
+        "metavar": "MARKERS",
+        "default": "",
+        "help": "comma-separated path markers that force the top tier and count as a coupling "
+        "signal; a one-word marker matches a word of the path, any other marker a "
+        "case-insensitive substring; a repeated flag keeps the last value",
+    },
+    "--serial-verify-markers": {
+        "metavar": "MARKERS",
+        "dest": "serial_markers",
+        "default": "",
+        "help": "comma-separated path substrings; a Step with a file containing one verifies "
+        "serially, and such properties are counted not-applicable",
     },
     "--serial-markers": {
-        "metavar": "MARKER",
-        "nargs": "+",
-        "action": "extend",
-        "default": [],
-        "help": "path globs or substrings whose acceptance the probe cannot run headlessly; "
-        "such properties are counted not-applicable",
+        "metavar": "MARKERS",
+        "dest": "serial_markers",
+        "default": "",
+        "help": "the same as --serial-verify-markers",
     },
     "--trajectory": {
         "metavar": "PATH",
-        "help": "a JSONL file of prior outcomes; a recorded regression on a surface raises "
-        "its tier and never lowers one",
+        "help": "a JSONL file of prior outcomes to read history from and append gate outcomes "
+        "to; without it, history is read from FANOUT_TRAJECTORY_STORE or "
+        "~/.claude/mcp-servers/trajectory-kb/data/trajectories.jsonl and nothing is appended; "
+        "a missing file reads as no history, and a recorded revert, speculative ship, caused "
+        "regression or two prior traps on a surface raises its tier and never lowers one",
+    },
+    "--no-trajectories": {
+        "action": "store_true",
+        "help": "plan from no history, reading neither --trajectory's file nor the default store",
     },
     "--worker-sandbox": {
         "action": "store_true",
@@ -993,17 +1006,27 @@ def recorded_sizes(run_dir):
     return sizes if isinstance(sizes, dict) else None
 
 
+def marker_list(text):
+    return tuple(part for part in text.split(",") if part)
+
+
+def planning_history(args):
+    if args.no_trajectories:
+        return ()
+    return core.trajectory_store(args.trajectory or core.DEFAULT_TRAJECTORY_STORE)
+
+
 def build_plan(args, items, root, charter, graph, run_dir=None):
     try:
         return core.plan(
             items,
             charter=charter,
-            risk_markers=tuple(args.risk_markers or ()),
-            serial_markers=tuple(args.serial_markers or ()),
+            risk_markers=marker_list(args.risk_markers),
+            serial_markers=marker_list(args.serial_markers),
             graph=graph,
             hops=args.context_hops,
             cap=args.context_cap,
-            history=core.trajectory_store(args.trajectory),
+            history=planning_history(args),
             root=root,
             session_tokens=args.session_tokens,
             sizes=recorded_sizes(run_dir) if args.resume and run_dir else None,

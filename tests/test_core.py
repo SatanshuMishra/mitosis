@@ -19,6 +19,10 @@ def step(name, files, **extra):
     return {**base, **extra}
 
 
+def planned_tier(files, complexity, history):
+    return core.plan([step("a", files, complexity=complexity)], history=history)["tiers"]["a"]
+
+
 def lane_of(lanes, items, name):
     index = [item["name"] for item in items].index(name)
     return next(i for i, lane in enumerate(lanes) if index in lane)
@@ -364,43 +368,53 @@ class Validation(unittest.TestCase):
 
 class Tiering(unittest.TestCase):
     def assumptions_block_a_simple_rating(self):
-        self.assertEqual(core.tier_for(["a.py"], (), "simple", []), "cheap")
-        self.assertEqual(core.tier_for(["a.py"], (), "simple", ["took the narrow reading"]), "top")
+        self.assertEqual(core.tier_for(["a.py"], (), "simple"), "cheap")
+        plan = core.plan([step("a", ["a.py"], complexity="simple", assumptions=["took the narrow reading"])])
+        self.assertEqual(plan["tiers"]["a"], "cheap")
 
     def tier_needs_both_axes_to_be_cheap(self):
         markers = ("migrations/", "*.sql")
-        self.assertEqual(core.tier_for(["src/a.py"], markers, "simple", []), "cheap")
-        self.assertEqual(core.tier_for(["db/migrations/0001.py"], markers, "simple", []), "top")
-        self.assertEqual(core.tier_for(["schema.sql"], markers, "simple", []), "top")
-        self.assertEqual(core.tier_for(["src/a.py"], markers, "complex", []), "top")
-        self.assertEqual(core.tier_for(["src/a.py"], markers, None, []), "top")
-        self.assertEqual(core.tier_for(["db/migrations/0001.py"], markers, "complex", []), "top")
+        self.assertEqual(core.tier_for(["src/a.py"], markers, "simple"), "cheap")
+        self.assertEqual(core.tier_for(["db/migrations/0001.py"], markers, "simple"), "top")
+        self.assertEqual(core.tier_for(["schema.sql"], markers, "simple"), "cheap")
+        self.assertEqual(core.tier_for(["db/*.sql"], markers, "simple"), "top")
+        self.assertEqual(core.tier_for(["src/a.py"], markers, "complex"), "top")
+        self.assertEqual(core.tier_for(["src/a.py"], markers, None), "cheap")
+        self.assertEqual(core.tier_for(["src/a.py"], markers), "cheap")
+        self.assertEqual(core.tier_for(["src/a.py"], markers, "LOW"), "cheap")
+        self.assertEqual(core.tier_for(["src/a.py"], markers, "Mechanical"), "cheap")
+        self.assertEqual(core.tier_for(["db/migrations/0001.py"], markers, "complex"), "top")
 
     def history_only_ever_raises_a_tier(self):
-        regression = ({"files": ["src/a.py"], "outcome": "failed"},)
+        reverted = ({"files": ["src/a.py"], "outcome": "reverted"},)
+        failed = ({"files": ["src/a.py"], "outcome": "failed"},)
         clean = ({"files": ["src/a.py"], "outcome": "ok"},)
-        self.assertEqual(core.tier_for(["src/a.py"], (), "simple", []), "cheap")
-        self.assertEqual(core.tier_for(["src/a.py"], (), "simple", [], history=regression), "top")
-        self.assertEqual(core.tier_for(["src/a.py"], (), "simple", [], history=clean), "cheap")
-        self.assertEqual(core.tier_for(["src/a.py"], (), "complex", [], history=clean), "top")
-        self.assertEqual(core.tier_for(["src/b.py"], (), "simple", [], history=regression), "cheap")
-        nested = ({"files": ["src/auth/"], "outcome": "failed"},)
-        self.assertEqual(core.tier_for(["src/auth/login.py"], (), "simple", [], history=nested), "top")
+        self.assertEqual(core.tier_for(["src/a.py"], (), "simple"), "cheap")
+        self.assertEqual(planned_tier(["src/a.py"], "simple", reverted), "top")
+        self.assertEqual(planned_tier(["src/a.py"], "simple", failed), "cheap")
+        self.assertEqual(planned_tier(["src/a.py"], "simple", clean), "cheap")
+        self.assertEqual(planned_tier(["src/a.py"], "complex", clean), "top")
+        self.assertEqual(planned_tier(["src/b.py"], "simple", reverted), "cheap")
+        nested = ({"files": ["src/auth/"], "outcome": "reverted"},)
+        self.assertEqual(planned_tier(["src/auth/login.py"], "simple", nested), "cheap")
+        self.assertEqual(core.history_tier_bump(step("a", ["src/auth/login.py"]), nested), (False, ""))
 
     def only_a_record_that_went_wrong_raises_a_tier(self):
-        def tier(*records):
-            return core.tier_for(["src/a.py"], (), "simple", [], history=records)
+        def bump(*records):
+            return core.history_tier_bump(step("a", ["src/a.py"]), records)
 
-        self.assertEqual(tier({"files": ["src/a.py"], "outcome": "fixed"}), "cheap")
-        self.assertEqual(tier({"files": ["src/a.py"], "outcome": "unverified-reasoned"}), "cheap")
-        self.assertEqual(tier({"files": ["src/a.py"], "outcome": "reverted"}), "top")
-        self.assertEqual(tier({"files": ["src/a.py"], "outcome": "speculative"}), "top")
+        self.assertEqual(bump({"files": ["src/a.py"], "outcome": "fixed"}), (False, ""))
+        self.assertEqual(bump({"files": ["src/a.py"], "outcome": "unverified-reasoned"}), (False, ""))
+        self.assertEqual(bump({"files": ["src/a.py"], "outcome": "failed"}), (False, ""))
+        self.assertEqual(bump({"files": ["src/a.py"], "outcome": "reverted"}), (True, "1 reverted"))
+        self.assertEqual(bump({"files": ["src/a.py"], "outcome": "speculative"}), (True, "1 speculative"))
         self.assertEqual(
-            tier({"files": ["src/a.py"], "outcome": "fixed", "regressed": ["src/b.py"]}), "top"
+            bump({"files": ["src/a.py"], "outcome": "fixed", "regressed": ["src/b.py"]}),
+            (True, "1 caused-regression"),
         )
         trap = {"files": ["src/a.py"], "outcome": "fixed", "what_failed": ["patched the wrong layer"]}
-        self.assertEqual(tier(trap), "cheap")
-        self.assertEqual(tier(trap, dict(trap)), "top")
+        self.assertEqual(bump(trap), (False, ""))
+        self.assertEqual(bump(trap, dict(trap)), (True, "2 prior traps"))
 
     def a_superseded_record_is_not_read(self):
         with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
@@ -412,7 +426,7 @@ class Tiering(unittest.TestCase):
         finally:
             os.unlink(path)
         self.assertEqual([record["id"] for record in loaded], ["new"])
-        self.assertEqual(core.tier_for(["src/a.py"], (), "simple", [], history=loaded), "cheap")
+        self.assertEqual(planned_tier(["src/a.py"], "simple", loaded), "cheap")
 
     def a_recorded_breakage_couples_the_two_surfaces_and_a_fix_does_not(self):
         items = [step("a", ["src/a.py"]), step("b", ["src/b.py"])]
@@ -427,11 +441,15 @@ class Tiering(unittest.TestCase):
         self.assertTrue(core.marker_matches("app/Services/Auth/Login.php", "Services/Auth"))
         self.assertTrue(core.marker_matches("app/Services/Auth/Login.php", "services/auth"))
         self.assertTrue(core.marker_matches("db/Migrate/001.SQL", ".sql"))
+        self.assertFalse(core.risk_marker_matches("DB/0004_add.SQL", "db/*.sql"))
+        self.assertTrue(core.risk_marker_matches("legacy/DB/*.SQL.bak", "db/*.sql"))
+        self.assertTrue(core.risk_marker_matches("app/types/AuthResponse.ts", "auth"))
+        self.assertFalse(core.risk_marker_matches("src/waverider.py", "wav"))
         self.assertTrue(core.marker_matches("DB/0004_add.SQL", "db/*.sql"))
         self.assertTrue(core.marker_matches("app/types/AuthResponse.ts", "auth"))
         self.assertFalse(core.marker_matches("src/waverider.py", "wav"))
         self.assertEqual(
-            core.tier_for(["app/Services/Auth/Login.php"], ["Services/Auth"], "simple", None), "top"
+            core.tier_for(["app/Services/Auth/Login.php"], ["Services/Auth"], "simple"), "top"
         )
 
     def a_missing_trajectory_store_changes_nothing(self):
@@ -441,11 +459,9 @@ class Tiering(unittest.TestCase):
         self.assertFalse(os.path.exists(missing))
         history = core.trajectory_store(missing)
         self.assertEqual(history, ())
-        for complexity in ("simple", "complex"):
-            self.assertEqual(
-                core.tier_for(["src/a.py"], (), complexity, [], history=history),
-                core.tier_for(["src/a.py"], (), complexity, []),
-            )
+        for complexity, expected in (("simple", "cheap"), ("complex", "top")):
+            self.assertEqual(planned_tier(["src/a.py"], complexity, history), expected)
+            self.assertEqual(core.tier_for(["src/a.py"], (), complexity), expected)
         with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
             handle.write('{"files": ["src/a.py"], "outcome": "failed"}\n')
             handle.write("not json\n")
@@ -455,8 +471,11 @@ class Tiering(unittest.TestCase):
             loaded = core.trajectory_store(path)
         finally:
             os.unlink(path)
-        self.assertEqual(len(loaded), 2)
-        self.assertEqual(core.tier_for(["src/a.py"], (), "simple", [], history=loaded), "top")
+        self.assertEqual(
+            list(loaded),
+            [{"files": ["src/a.py"], "outcome": "failed"}, {"files": ["src/b.py"], "outcome": "ok"}],
+        )
+        self.assertEqual(planned_tier(["src/a.py"], "simple", loaded), "cheap")
 
     def same_migration_directory_is_flagged_for_review(self):
         items = [
@@ -538,7 +557,11 @@ class Tiering(unittest.TestCase):
             step("flow", ["src/api/flow.py"], acceptance=[{"file": "tests/ui/flow_test.py", "test": "F.t"}]),
         ]
         modes = core.verify_modes(items, ("ui/",))
-        self.assertEqual(modes, {"page": "serial", "api": "offload", "flow": "serial"})
+        self.assertEqual(modes, {"page": "serial", "api": "offload", "flow": "offload"})
+        self.assertEqual(
+            core.verify_modes([step("x", ["app/unauthenticated/x.ts"])], ("auth",)), {"x": "serial"}
+        )
+        self.assertEqual(core.verify_modes([step("x", ["src/UI/page.tsx"])], ("ui/",)), {"x": "offload"})
         self.assertEqual(set(modes.values()) <= set(core.VERIFY_MODES), True)
         self.assertEqual(core.verify_modes(items, ()), {"page": "offload", "api": "offload", "flow": "offload"})
 
@@ -650,7 +673,9 @@ def rich_items():
 class Plan(unittest.TestCase):
     def the_plan_emits_exactly_the_declared_keys(self):
         result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
-        self.assertEqual(set(result), set(core.PLAN_KEYS) - {"coupling_order", "locked", "check_authors"})
+        self.assertEqual(
+            set(result), set(core.PLAN_KEYS) - {"coupling_order", "locked", "check_authors", "tier_notes"}
+        )
         self.assertEqual(list(result), [key for key in core.PLAN_KEYS if key in result])
         self.assertEqual(result["version"], core.__version__)
         self.assertEqual(result["source"], SOURCE)
@@ -658,7 +683,7 @@ class Plan(unittest.TestCase):
         self.assertEqual(len(result["lanes"]), 5)
         self.assertEqual(sorted(len(c) for c in result["clusters"]), [1, 2])
         self.assertEqual(result["counts"]["assumptions"], 1)
-        self.assertEqual(result["tiers"]["docs-skill"], "top")
+        self.assertEqual(result["tiers"]["docs-skill"], "cheap")
         self.assertEqual(result["tiers"]["docs-readme"], "cheap")
         self.assertTrue(result["coupling_review"])
         self.assertTrue(result["lane_after"])
@@ -730,7 +755,9 @@ class Plan(unittest.TestCase):
         self.assertIsNone(re.search(r"\bgit\b", source))
         with mock.patch.object(builtins, "open", side_effect=AssertionError("plan opened a file")):
             result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
-        self.assertEqual(set(result), set(core.PLAN_KEYS) - {"coupling_order", "locked", "check_authors"})
+        self.assertEqual(
+            set(result), set(core.PLAN_KEYS) - {"coupling_order", "locked", "check_authors", "tier_notes"}
+        )
 
     def plan_refuses_invalid_items_with_messages(self):
         with self.assertRaises(core.ValidationError) as caught:
@@ -1316,8 +1343,8 @@ class CheckAuthor(unittest.TestCase):
     def the_lock_tier_joins_the_plan_tiers(self):
         with_author = core.plan([check_author(), calc_builder()])
         without = core.plan([calc_builder(after=())])
-        self.assertEqual(core.plan_tiers(with_author), ("top",))
-        self.assertEqual(core.plan_tiers(without), ("top",))
+        self.assertEqual(core.plan_tiers(with_author), ("cheap", "top"))
+        self.assertEqual(core.plan_tiers(without), ("cheap",))
         cheap = core.plan([step("a", ["a.py"], complexity="simple")])
         self.assertEqual(core.plan_tiers(cheap), ("cheap",))
         cheap_locked = core.plan(

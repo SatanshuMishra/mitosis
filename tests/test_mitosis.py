@@ -103,26 +103,27 @@ class AchievedParallelism(unittest.TestCase):
 
 class RiskMarkers(unittest.TestCase):
     def a_marker_does_not_fire_inside_a_longer_word(self):
-        self.assertEqual(core.tier_for(["src/waverider.py"], ["wav"], "simple", None), "cheap")
+        self.assertEqual(core.tier_for(["src/waverider.py"], ["wav"], "simple"), "cheap")
         self.assertEqual(
-            core.tier_for(["app/(unauthenticated)/page.tsx"], ["auth"], "simple", None), "cheap"
+            core.tier_for(["app/(unauthenticated)/page.tsx"], ["auth"], "simple"), "cheap"
         )
 
     def a_marker_fires_on_a_path_segment(self):
-        self.assertEqual(core.tier_for(["bleep/wav.py"], ["wav"], "simple", None), "top")
-        self.assertEqual(core.tier_for(["src/wav/writer.py"], ["wav"], "simple", None), "top")
+        self.assertEqual(core.tier_for(["bleep/wav.py"], ["wav"], "simple"), "top")
+        self.assertEqual(core.tier_for(["src/wav/writer.py"], ["wav"], "simple"), "top")
 
     def a_marker_fires_on_a_camel_case_word(self):
         self.assertEqual(
-            core.tier_for(["app/types/AuthResponse.ts"], ["auth"], "simple", None), "top"
+            core.tier_for(["app/types/AuthResponse.ts"], ["auth"], "simple"), "top"
         )
 
     def a_marker_carrying_a_separator_keeps_substring_behaviour(self):
-        self.assertEqual(core.tier_for(["api/auth/login.py"], ["api/auth"], "simple", None), "top")
-        self.assertEqual(core.tier_for(["db/0004_add.sql"], [".sql"], "simple", None), "top")
+        self.assertEqual(core.tier_for(["api/auth/login.py"], ["api/auth"], "simple"), "top")
+        self.assertEqual(core.tier_for(["db/0004_add.sql"], [".sql"], "simple"), "top")
 
-    def a_glob_marker_still_matches(self):
-        self.assertEqual(core.tier_for(["db/0004_add.sql"], ["db/*.sql"], "simple", None), "top")
+    def a_glob_marker_matches_only_as_a_substring(self):
+        self.assertEqual(core.tier_for(["db/0004_add.sql"], ["db/*.sql"], "simple"), "cheap")
+        self.assertEqual(core.tier_for(["legacy/DB/*.SQL"], ["db/*.sql"], "simple"), "top")
 
 
 class TemplatePlaceholders(unittest.TestCase):

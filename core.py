@@ -22,6 +22,7 @@ PLAN_KEYS = (
     "lane_after",
     "clusters",
     "tiers",
+    "tier_notes",
     "verify_modes",
     "context_packs",
     "lane_order",
@@ -153,6 +154,7 @@ FLAG_NAMES = (
     "--session-tokens",
     "--graph",
     "--risk-markers",
+    "--serial-verify-markers",
     "--serial-markers",
     "--trajectory",
     "--version",
@@ -754,6 +756,11 @@ def validate(items, root=None, required=None):
 
 GLOB_CHARACTERS = "*?["
 
+DEFAULT_TRAJECTORY_STORE = os.environ.get(
+    "FANOUT_TRAJECTORY_STORE",
+    os.path.expanduser("~/.claude/mcp-servers/trajectory-kb/data/trajectories.jsonl"),
+)
+
 CONTEXT_CAP = 40
 
 SESSION_TOKENS = 150000
@@ -768,10 +775,6 @@ EDIT_PASSES = 2
 
 NEW_FILE_TOKENS = 2000
 
-RISKY_OUTCOMES = ("reverted", "speculative", "failed", "regressed")
-
-TRAPS_FOR_RISK = 2
-
 WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
 
 
@@ -784,75 +787,102 @@ def path_words(path):
     }
 
 
-def marker_matches(path, marker):
+def risk_marker_matches(path, marker):
     if not isinstance(marker, str) or not marker.strip():
         return False
     normalized = _norm(path)
     candidate = marker.strip().lower()
-    if any(character in candidate for character in GLOB_CHARACTERS):
-        return fnmatch.fnmatchcase(normalized.lower(), candidate)
     if not candidate.isalnum():
         return candidate in normalized.lower()
     return candidate in path_words(normalized)
+
+
+def marker_matches(path, marker):
+    if isinstance(marker, str) and any(character in marker for character in GLOB_CHARACTERS):
+        return fnmatch.fnmatchcase(_norm(path).lower(), marker.strip().lower())
+    return risk_marker_matches(path, marker)
 
 
 def _marker_hits(paths, markers):
     return tuple(
         marker
         for marker in (markers or ())
-        if any(marker_matches(path, marker) for path in paths)
+        if any(risk_marker_matches(path, marker) for path in paths)
     )
 
 
-def _touches(record_path, path):
-    a = _norm(record_path).rstrip("/")
-    b = _norm(path).rstrip("/")
-    return a == b or b.startswith(a + "/") or a.startswith(b + "/")
+def _paths_match(a, b):
+    return a == b or a.endswith("/" + b) or b.endswith("/" + a)
 
 
-def _record_files(record):
-    if not isinstance(record, dict):
-        return ()
-    files = record.get("files")
-    if not isinstance(files, list):
-        return ()
-    return tuple(f for f in files if isinstance(f, str))
+def _basename(p):
+    return p.rsplit("/", 1)[-1]
 
 
-def _strings(record, key):
-    values = record.get(key) if isinstance(record, dict) else None
-    return tuple(v for v in values if isinstance(v, str)) if isinstance(values, list) else ()
+def _ref_matches_item(ref, item):
+    if not ref:
+        return False
+    r = str(ref).lower()
+    for f in item["files"]:
+        if _paths_match(str(ref), f):
+            return True
+        bn = _basename(f).lower()
+        if bn and bn in r:
+            return True
+        stem = bn.rsplit(".", 1)[0]
+        if len(stem) >= 4 and stem in r:
+            return True
+    nm = item["name"].lower()
+    return len(nm) >= 4 and nm in r
 
 
-def _is_regression(record):
-    return isinstance(record, dict) and (
-        record.get("outcome") in RISKY_OUTCOMES or bool(_strings(record, "regressed"))
+def _entry_matches_item(entry, item):
+    for ef in (entry.get("files") or []):
+        for itf in item["files"]:
+            if _paths_match(str(ef), itf):
+                return True
+    hay = (entry.get("surface") or "") + " " + " ".join(entry.get("tags") or [])
+    return _ref_matches_item(hay, item)
+
+
+def _entry_regresses_item(entry, target_item):
+    return any(_ref_matches_item(r, target_item) for r in (entry.get("regressed") or []))
+
+
+def history_tier_bump(item, trajectories):
+    matched = [e for e in trajectories if _entry_matches_item(e, item)]
+    if not matched:
+        return False, ""
+    reverts = sum(1 for e in matched if e.get("outcome") == "reverted")
+    spec = sum(1 for e in matched if e.get("outcome") == "speculative")
+    regressed = sum(1 for e in matched if (e.get("regressed") or []))
+    traps = sum(1 for e in matched if (e.get("what_failed") or []))
+    parts = (
+        (("%d reverted" % reverts,) if reverts else ())
+        + (("%d speculative" % spec,) if spec else ())
+        + (("%d caused-regression" % regressed,) if regressed else ())
+        + (("%d prior traps" % traps,) if traps >= 2 else ())
     )
+    return bool(parts), ", ".join(parts)
 
 
-def _about(record, paths):
-    return any(_touches(recorded, path) for recorded in _record_files(record) for path in paths)
+def _surface(paths):
+    return {"name": "", "files": sorted(paths)}
 
 
-def _names(reference, path):
-    text = reference.strip()
-    base = os.path.basename(_norm(path))
-    return _touches(text, path) or bool(base) and text.lower().endswith("/" + base.lower())
-
-
-def surface_history(history, paths):
-    matched = tuple(record for record in (history or ()) if _about(record, paths))
-    risky = tuple(record for record in matched if _is_regression(record))
-    trapped = tuple(record for record in matched if _strings(record, "what_failed"))
-    return risky + (trapped if len(trapped) >= TRAPS_FOR_RISK else ())
+def _went_wrong(entry):
+    return entry.get("outcome") in ("reverted", "speculative", "failed", "regressed") or bool(
+        entry.get("regressed")
+    )
 
 
 def _regression_links(history, left, right):
+    a, b = _surface(left), _surface(right)
     return any(
-        (_about(record, left) and any(_names(ref, p) for ref in _strings(record, "regressed") for p in right))
-        or (_about(record, right) and any(_names(ref, p) for ref in _strings(record, "regressed") for p in left))
-        or (_is_regression(record) and _about(record, left) and _about(record, right))
-        for record in (history or ())
+        (_entry_matches_item(entry, a) and _entry_regresses_item(entry, b))
+        or (_entry_matches_item(entry, b) and _entry_regresses_item(entry, a))
+        or (_went_wrong(entry) and _entry_matches_item(entry, a) and _entry_matches_item(entry, b))
+        for entry in (history or ())
     )
 
 
@@ -875,11 +905,21 @@ def trajectory_store(path):
     return tuple(record for record in records if record.get("id") not in superseded)
 
 
-def tier_for(write_set, risk_markers, complexity, assumptions, history=()):
-    paths = tuple(write_set or ())
-    mechanical = complexity == "simple" and not assumptions
-    low_blast = not _marker_hits(paths, risk_markers) and not surface_history(history, paths)
-    return "cheap" if mechanical and low_blast else "top"
+def tier_for(file_paths, risk_markers, complexity=None):
+    for f in file_paths:
+        if any(risk_marker_matches(f, m) for m in risk_markers):
+            return "top"
+    if complexity is not None and str(complexity).lower() not in ("simple", "low", "mechanical"):
+        return "top"
+    return "cheap"
+
+
+def _tiered(item, risk_markers, history):
+    tier = tier_for(_files(item), risk_markers, item.get("complexity"))
+    if tier == "top" or not history:
+        return tier, None
+    bump, reason = history_tier_bump(item, history)
+    return ("top", "history: " + reason) if bump else (tier, None)
 
 
 def _numbered(path):
@@ -979,12 +1019,10 @@ def _acceptance_files(item):
 
 
 def verify_modes(items, serial_markers):
-    modes = {}
-    for item in items:
-        surface = _files(item) + _acceptance_files(item)
-        serial = bool(_marker_hits(surface, serial_markers))
-        modes = {**modes, item["name"]: "serial" if serial else "offload"}
-    return modes
+    return {
+        it["name"]: ("serial" if any(m in f for m in serial_markers for f in it["files"]) else "offload")
+        for it in items
+    }
 
 
 def item_cost(item):
@@ -1746,12 +1784,9 @@ def plan(
     if slice_errors:
         raise ValidationError(slice_errors)
     whole = lane_items(items)
-    tiers = {
-        item["name"]: tier_for(
-            _files(item), risk_markers, item.get("complexity"), item.get("assumptions"), history
-        )
-        for item in items
-    }
+    tiered = {item["name"]: _tiered(item, risk_markers, history) for item in items}
+    tiers = {name: tier for name, (tier, _) in tiered.items()}
+    tier_notes = {name: note for name, (_, note) in tiered.items() if note}
     packs = context_packs(items, graph, hops, cap)
     labels = tuple(_msp_label(items, msp) for msp in msps)
     source = items[0].get("source") if items else None
@@ -1808,6 +1843,7 @@ def plan(
         "lane_after": lane_edges,
         "clusters": [list(group) for group in clusters(items, lanes)],
         "tiers": tiers,
+        "tier_notes": tier_notes,
         "verify_modes": verify_modes(items, serial_markers),
         "context_packs": packs,
         "lane_order": list(lane_order(lanes, edges, items)),
