@@ -164,7 +164,11 @@ STAGE_FLAG_NAMES = (
     "--prompt-template",
     "--max-output-bytes",
     "--run-log",
+    "--dry-run",
+    "--plan-file",
 )
+
+SAVED_PLAN_KEYS = ("msps", "lanes", "briefs")
 
 GATE_CLASS_KEYS = ("class", "reason", "test")
 
@@ -484,6 +488,17 @@ FLAG_SPECS = {
         "help": "when the run's build ends, including a stopped run, write PATH fresh as JSON "
         "lines, one per Lane record in state.json ordered by its finished time, each carrying "
         "the plan's plan_id",
+    },
+    "--dry-run": {
+        "action": "store_true",
+        "help": "print each Lane's dispatch argv in dispatch order and build nothing: no "
+        "Worker, branch, worktree, clone, state.json or plan.json; needs --dispatch-command",
+    },
+    "--plan-file": {
+        "metavar": "PATH",
+        "help": "build the saved plan at PATH as written, its briefs and plan_id included, "
+        "instead of computing one, with --plan-only as with a run; every lock --charter derives "
+        "and every check-author Step's files are merged back into its locked list",
     },
     "--worker-sandbox": {
         "action": "store_true",
@@ -1022,7 +1037,9 @@ def resolve_input(args, root, repo, models, charter, graph, run_dir):
         return staged(items, load_decomposed(run_dir), run_dir, None, True)
     document = check_document(args, root)
     decisions = load_decisions(args, root, document)
-    if not args.plan_only:
+    if args.dry_run and not args.plan_only:
+        refuse_undispatchable(args)
+    elif not args.plan_only:
         refuse_unbuildable(args, repo)
     if args.resume:
         items = load_structure(run_dir, root, "nothing to resume")
@@ -1076,6 +1093,92 @@ def build_plan(args, items, root, charter, graph):
         raise Refusal(
             "the Steps did not validate:\n" + "\n".join("  " + line for line in error.errors)
         )
+
+
+def saved_plan(path, items, charter, root):
+    loaded = read_json(path, "--plan-file")
+    if not isinstance(loaded, dict):
+        raise Refusal("--plan-file %s does not hold a JSON object" % path)
+    missing = tuple(key for key in SAVED_PLAN_KEYS if key not in loaded)
+    if missing:
+        raise Refusal("--plan-file %s lacks %s" % (path, ", ".join(missing)))
+    authors = core.check_author_steps(items)
+    if authors and not loaded.get("check_authors"):
+        raise Refusal(
+            "--plan-file %s has no check_authors, but the items hold the check-author Step %s"
+            % (path, authors[0].get("name"))
+        )
+    charter_locked, lock_errors = core.charter_locks(charter, root)
+    if lock_errors:
+        raise Refusal("; ".join(lock_errors))
+    locked = core._merged_locks(
+        core._merged_locks(loaded.get("locked") or (), charter_locked),
+        tuple(path for author in authors for path in core._files(author)),
+    )
+    if not locked and "locked" not in loaded:
+        return loaded
+    return {**loaded, "locked": list(locked)}
+
+
+def planned(args, items, root, charter, graph):
+    if args.plan_file is None:
+        return build_plan(args, items, root, charter, graph)
+    return saved_plan(args.plan_file, items, charter, root)
+
+
+def refuse_undispatchable(args):
+    if args.dispatch_command is None:
+        raise Refusal(
+            "--dry-run needs --dispatch-command to print the argv each Lane would be "
+            "dispatched with"
+        )
+
+
+def dispatch_order(plan):
+    lanes = plan.get("lanes") or []
+    edges = run.lane_edges(plan)
+    listed = [int(lane) for lane in plan.get("lane_order") or range(len(lanes))]
+    pending = tuple(listed + [lane for lane in range(len(lanes)) if lane not in listed])
+    order = ()
+    while pending:
+        ready = next(
+            (lane for lane in pending if all(producer in order for producer in edges.get(lane, ()))),
+            None,
+        )
+        if ready is None:
+            raise Refusal(
+                "Lanes %s wait on producers that never run"
+                % ", ".join(str(lane) for lane in pending)
+            )
+        order = order + (ready,)
+        pending = tuple(lane for lane in pending if lane != ready)
+    return order
+
+
+def dry_run_lines(args, plan, models, run_dir):
+    slugs = run.msp_slugs(plan["msps"])
+    lines = ()
+    for lane in dispatch_order(plan):
+        msp = plan["lanes"][lane]["msp"]
+        entry = plan["msps"][msp]
+        tree = {
+            "msp": msp,
+            "label": entry.get("label") if isinstance(entry, dict) else None,
+            "branch": "%s/%s" % (run.BRANCH_PREFIX, slugs[msp]),
+            "path": isolation.lane_folders(run_dir, lane)["clone"],
+        }
+        values = run._worker_values(
+            plan, lane, tree, models, run_dir, core.new_session_id(), args.prompt_template
+        )
+        lines = lines + (
+            "dry run: Lane %d (%s): %s"
+            % (
+                lane,
+                ", ".join(plan["lanes"][lane]["steps"]),
+                json.dumps(run.build_argv(args.dispatch_command, values)),
+            ),
+        )
+    return lines
 
 
 def missing_run_flags(args):
@@ -2326,7 +2429,7 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
             )
         )
         return _summarised({"items": items}, None, run_dir, EXIT_SHIPPED)
-    plan = build_plan(args, items, root, charter, graph)
+    plan = planned(args, items, root, charter, graph)
     recorder.planned(plan, lane_width(plan), len(empty_manifests(plan.get("items") or [])))
     proven_heads(args.proven_head, plan)
     args = argparse.Namespace(
@@ -2336,6 +2439,15 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     if args.plan_only:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
         run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
+        _print(
+            report(plan, None, decomposed, root, run_dir, EXIT_SHIPPED, from_items, decisions)
+        )
+        locked, troubles = planned_referee(args, plan, repo)
+        return _summarised(plan, None, run_dir, EXIT_SHIPPED, locked, troubles)
+    if args.dry_run:
+        refuse_undispatchable(args)
+        refuse_unmapped(plan, args.dispatch_command, models)
+        _print(dry_run_lines(args, plan, models, run_dir))
         _print(
             report(plan, None, decomposed, root, run_dir, EXIT_SHIPPED, from_items, decisions)
         )
