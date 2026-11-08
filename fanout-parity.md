@@ -1,6 +1,6 @@
 # fanout-parity: Mitosis plans and builds as fanout does (fanout parity)
 Status: parked
-Updated: 2026-11-08T22:32:17.848Z
+Updated: 2026-11-08T22:47:02.254Z
 Next ids: c2 D9 R1 S1
 
 ## Goal
@@ -9,7 +9,7 @@ Mitosis's planning and execution match fanout's behaviour wherever no measured e
 
 ## Done when
 
-- [ ] c1 The fanout-parity MSP pull request is open with review green or its blockers listed
+- [x] c1 The fanout-parity MSP pull request is open with review green or its blockers listed evidence: The FEATURE pull request merged into main at 1beed93 on 2026-11-08, main CI passed, and clean-up archived the run and installed mitosis 0.14.1.
 
 ## Where things stand
 
@@ -17,7 +17,7 @@ Not started.
 
 ## Next step
 
-The drive entered clean-up and runs it next.
+Nothing is left to build: close this thread from a session in the mitosis repository.
 
 ## Decisions in force
 
