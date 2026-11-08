@@ -1619,6 +1619,43 @@ def referee_errors(items, locked):
     )
 
 
+LockedSteps = collections.namedtuple(
+    "LockedSteps", ("counts", "authors", "locked", "items", "msps", "placed")
+)
+
+
+def locked_steps(items, charter=None, root=None):
+    charter_locked, lock_errors = charter_locks(charter, root)
+    checked = validate(items, root=root)
+    if checked["errors"] or lock_errors:
+        raise ValidationError(tuple(checked["errors"]) + lock_errors)
+    authors = check_author_steps(items)
+    locked = _merged_locks(charter_locked, tuple(path for author in authors for path in _files(author)))
+    built = without_locked_acceptance(without_check_author(items), locked)
+    refused = referee_errors(built, locked)
+    if refused:
+        raise ValidationError(refused)
+    msps = msp_items(built)
+    slice_errors, placed = check_author_slices(authors, built, msps)
+    if slice_errors:
+        raise ValidationError(slice_errors)
+    return LockedSteps(checked["counts"], authors, locked, built, msps, placed)
+
+
+def saved_slice_errors(entries, steps):
+    owned = {
+        (steps.authors[position]["name"], referee.normalised(path))
+        for _, position, path in steps.placed
+    }
+    return tuple(
+        "%s: its slice claims %s, which no check-author Step of the loaded items writes; "
+        "a %s slice holds only its Steps' placed files" % (entry.get("name"), path, CHECK_AUTHOR)
+        for entry in entries
+        for path in entry.get("slice") or ()
+        if not any((name, referee.normalised(path)) in owned for name in entry.get("steps") or ())
+    )
+
+
 def plan(
     items,
     charter=None,
@@ -1633,20 +1670,7 @@ def plan(
     coalesce_max=4,
     briefs=True,
 ):
-    charter_locked, lock_errors = charter_locks(charter, root)
-    checked = validate(items, root=root)
-    if checked["errors"] or lock_errors:
-        raise ValidationError(tuple(checked["errors"]) + lock_errors)
-    authors = check_author_steps(items)
-    locked = _merged_locks(charter_locked, tuple(path for author in authors for path in _files(author)))
-    items = without_locked_acceptance(without_check_author(items), locked)
-    refused = referee_errors(items, locked)
-    if refused:
-        raise ValidationError(refused)
-    msps = msp_items(items)
-    slice_errors, placed = check_author_slices(authors, items, msps)
-    if slice_errors:
-        raise ValidationError(slice_errors)
+    counts, authors, locked, items, msps, placed = locked_steps(items, charter, root)
     whole = lane_items(items)
     tiered = {item["name"]: _tiered(item, risk_markers, history) for item in items}
     tiers = {name: tier for name, (tier, _) in tiered.items()}
@@ -1707,7 +1731,7 @@ def plan(
         ),
         "coupling_review": review,
         "verdict_groups": verdict_groups(review),
-        "counts": checked["counts"],
+        "counts": counts,
         "briefs": [
             _brief(
                 items,
