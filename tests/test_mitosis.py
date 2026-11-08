@@ -964,11 +964,16 @@ class GraphLoading(unittest.TestCase):
     def _load(self, graph):
         with tempfile.TemporaryDirectory() as root:
             path = write(root, "graph.json", json.dumps(graph))
-            return mitosis.load_graph(path, root)
+            return mitosis.load_graph(path)
+
+    def _refused(self, graph):
+        with self.assertRaises(mitosis.Refusal) as caught:
+            self._load(graph)
+        self.assertIn("must be a node-link graph with nodes and links", str(caught.exception))
 
     def a_node_link_graph_is_read_as_the_files_its_code_links(self):
         graph = {
-            "directed": False,
+            "directed": True,
             "nodes": [
                 {"id": "f", "file_type": "code", "source_file": "src/parse.py"},
                 {"id": "g", "file_type": "code", "source_file": "src/emit.py"},
@@ -977,35 +982,40 @@ class GraphLoading(unittest.TestCase):
             "links": [{"source": "f", "target": "g"}, {"source": "d", "target": "f"}],
         }
         self.assertEqual(
-            self._load(graph), {"src/emit.py": ["src/parse.py"], "src/parse.py": ["src/emit.py"]}
+            self._load(graph),
+            {
+                "src/parse.py": ["README.md", "src/emit.py"],
+                "src/emit.py": ["src/parse.py"],
+                "README.md": ["src/parse.py"],
+            },
         )
 
     def a_mapping_is_still_read_as_it_is(self):
-        self.assertEqual(self._load({"a.py": ["b.py"]}), {"a.py": ["b.py"]})
+        self._refused({"a.py": ["b.py"]})
 
     def a_mapping_carrying_metadata_and_nulls_is_read_without_them(self):
-        graph = {"version": "1", "a.py": ["b.py", None, 3], "b.py": None}
-        self.assertEqual(self._load(graph), {"a.py": ["b.py"]})
+        self._refused({"version": "1", "a.py": ["b.py", None, 3], "b.py": None})
 
     def a_nodes_list_without_links_is_refused_rather_read_as_a_mapping(self):
         for graph in (
             {"nodes": [{"id": "a", "source_file": "a.py"}], "meta": []},
-            {"nodes": [{"id": "a"}], "connections": [], "languages": ["python"]},
+            {"nodes": [{"id": "a"}], "edges": [], "languages": ["python"]},
         ):
-            with self.assertRaises(mitosis.Refusal) as caught:
-                self._load(graph)
-            self.assertIn("no links or edges list", str(caught.exception))
+            self._refused(graph)
 
     def an_object_that_is_neither_shape_is_refused_by_name(self):
-        with self.assertRaises(mitosis.Refusal) as caught:
-            self._load({"directed": False, "graph": {}, "nodes": "not a list"})
-        self.assertIn("node-link", str(caught.exception))
+        for graph in (
+            {"directed": False, "graph": {}, "nodes": "not a list"},
+            ["a.py"],
+            {"nodes": ["a"], "links": []},
+            {"nodes": [{"id": "a", "source_file": 3}], "links": []},
+            {"nodes": [{"id": "a"}], "links": [{"source": ["a"], "target": "a"}]},
+        ):
+            self._refused(graph)
 
     def a_node_link_graph_that_names_no_file_is_refused(self):
         graph = {"nodes": [{"id": "x"}, {"id": "y"}], "links": [{"source": "x", "target": "y"}]}
-        with self.assertRaises(mitosis.Refusal) as caught:
-            self._load(graph)
-        self.assertIn("source_file", str(caught.exception))
+        self.assertEqual(self._load(graph), {})
 
 
 HOLDING_WORKER = r'''
@@ -1995,7 +2005,16 @@ class CouplingReport(unittest.TestCase):
     def _plan_only(self):
         with tempfile.TemporaryDirectory() as root:
             write(root, "items.json", items_document(root, self.ITEMS))
-            write(root, "graph.json", json.dumps({"src/a.py": ["src/b.py"]}))
+            write(
+                root,
+                "graph.json",
+                json.dumps(
+                    {
+                        "nodes": [{"id": "a", "source_file": "src/a.py"}, {"id": "b", "source_file": "src/b.py"}],
+                        "links": [{"source": "a", "target": "b"}],
+                    }
+                ),
+            )
             write(root, "no-history.jsonl", "")
             with unittest.mock.patch.object(
                 core, "DEFAULT_TRAJECTORY_STORE", os.path.join(root, "no-history.jsonl")

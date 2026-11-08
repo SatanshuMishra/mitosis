@@ -405,7 +405,7 @@ FLAG_SPECS = {
         "metavar": "N",
         "type": int,
         "default": core.CONTEXT_CAP,
-        "help": "most graph neighbours kept per Step and per Lane; the overflow is counted "
+        "help": "most graph neighbours kept per Step; the overflow is counted "
         "(default: %d)" % core.CONTEXT_CAP,
     },
     "--coalesce-below": {
@@ -600,30 +600,48 @@ def check_charter(charter):
     return absolute
 
 
-def load_graph(path, root):
+GRAPH_SHAPE = "--graph %s must be a node-link graph with nodes and links"
+
+GRAPH_KEY_TYPES = (str, int, float, bool, type(None))
+
+
+def _graph_node(node):
+    return (
+        isinstance(node, dict)
+        and isinstance(node.get("id"), GRAPH_KEY_TYPES)
+        and isinstance(node.get("source_file"), (str, type(None)))
+    )
+
+
+def _graph_link(link):
+    return (
+        isinstance(link, dict)
+        and isinstance(link.get("source"), GRAPH_KEY_TYPES)
+        and isinstance(link.get("target"), GRAPH_KEY_TYPES)
+    )
+
+
+def node_link_graph(graph):
+    return (
+        isinstance(graph, dict)
+        and isinstance(graph.get("nodes"), list)
+        and isinstance(graph.get("links"), list)
+        and all(_graph_node(node) for node in graph["nodes"])
+        and all(_graph_link(link) for link in graph["links"])
+    )
+
+
+def load_graph(path):
     if path is None:
         return None
     graph = read_json(path, "--graph")
-    nodes = graph.get("nodes") if isinstance(graph, dict) else None
-    if isinstance(nodes, list) and any(isinstance(node, dict) for node in nodes):
-        if core.node_link_edges(graph) is None:
-            raise Refusal(
-                "--graph %s has a list of nodes but no links or edges list, so it cannot say "
-                "which files are linked" % path
-            )
-    if core.node_link_edges(graph) is not None:
-        if not any(core.node_files(graph, root).values()):
-            raise Refusal(
-                "--graph %s is a node-link graph, but none of its code nodes names a "
-                "source_file under %s, so it cannot say which files are linked" % (path, root)
-            )
-        return core.adjacency_from_node_links(graph, root)
-    if not core.is_adjacency(graph):
-        raise Refusal(
-            "--graph %s is neither a JSON object mapping each path to a list of the paths it "
-            "imports nor a node-link graph with nodes and links" % path
-        )
-    return core.clean_adjacency(graph)
+    if not node_link_graph(graph):
+        raise Refusal(GRAPH_SHAPE % path)
+    nodes_by_id = {node["id"]: node for node in graph["nodes"]}
+    return {
+        file: sorted(neighbours)
+        for file, neighbours in core.build_file_coupling(nodes_by_id, graph["links"]).items()
+    }
 
 
 def unoffered_placeholders(name, template):
@@ -2256,7 +2274,7 @@ def run_pipeline(args):
     check_templates(args)
     check_pull_request_flags(args)
     charter = check_charter(args.charter)
-    graph = load_graph(args.graph, root)
+    graph = load_graph(args.graph)
     run_dir = input_run_dir(args, root)
     check_worker_writes(args, run_dir, repo)
     recorder = metrics.opened(args, repo, root, run_dir, models, achieved_parallelism)
