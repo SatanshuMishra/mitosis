@@ -1,7 +1,7 @@
 # fanout-parity: Mitosis plans and builds as fanout does (fanout parity)
 Status: parked
-Updated: 2026-11-08T21:11:07.172Z
-Next ids: c2 D8 R1 S1
+Updated: 2026-11-08T21:41:23.633Z
+Next ids: c2 D9 R1 S1
 
 ## Goal
 
@@ -28,6 +28,7 @@ The drive entered awaiting-merge: pull requests are ready to merge; it resumes o
 - D5 repair: clear the weak-gate park by classing three rows and resuming at review round 3: class the three rows with --gate-classes, restore plan ad0951f2d793, move the dropped tests to unlocked files and resume at review round 3
 - D6 repair: ship fail: park: ship: run.zsh --resume exited with code 6, and its reconcile names more than the records pipeline commit-records committed: undeclared ".claude-plugin/plugin.json"; undeclared "tests/test_accept_planning_coupling.py"; undeclared "tests/test_accept_ports.py"; undeclared "tests/test_glob_risk_markers.py"; undeclared "tests/test_saved_plan_slices.py"; repair: The five paths are the review fix pass's own commits on the branch: round 1's 0.14.0 version bump in plugin.json, round 1's regression tests written into the locked test_accept_planning_coupling.py and test_accept_ports.py, and round 3's move of those tests into the new unlocked files test_glob_risk_markers.py and test_saved_plan_slices.py. Mitosis's reconcile reads every commit in the git log, so the locked files still show up even though round 3 put them back. The drive's unexpected_reconcile only excuses the records commit's six files, so a rerun or re-entered ship refuses the same way. An amended spec cannot declare referee-locked files, and the new plan it brings back makes build refuse with exit 3, as it did before. The worker rules, the charter and the --pr- lines do not reach reconcile. Only the owner can clear this, by squashing the locked-file edit and its revert out of the branch history, by having the drive excuse fix-pass files, or by opening the pull request by hand.
 - D7 repair: excuse the review fix passes files in the ship reconcile and re-enter ship: add the five fix-pass files to the drive records list and re-enter ship
+- D8 repair: move the run to branches and text the release check accepts: feat/plan-parity holds the merged commits with reworded messages; mitosis#43 carries the rename and version 0.14.1; feature.json, run.zsh, mitosis state and drive heads name the new branches.
 
 ## Open risks
 
