@@ -65,6 +65,11 @@ owned schema is re-asked once in that session, then fails its call. Every
 hand-off mitosis writes is checked against `contracts/` first; a state, result
 or lock record that fails exits 15.
 
+A brief holds fanout's Task line and JSON leaves inside the Lane header and
+the clone, referee and return lines. `--prompt-template` replaces a build
+Lane's brief after its Lane line, filling cluster, spec, tier and contract.
+`--no-briefs` drops the briefs, only with `--plan-only`; else exit 2.
+
 Tiers are labels; with `{model}` in the template, map every tier the plan
 assigns, or mitosis refuses to start:
 
@@ -190,12 +195,6 @@ unclaimed sections and assumptions, each keeping its Step from `simple`.
 No finding stops a run; each is printed, put in its pull request and given an
 exit code.
 
-`manifest-exports-nothing` means a package's export file is written before the
-modules it exports; give it a Step with an `after` edge reaching them.
-
-`lane-cycle` means Lanes waited on each other, so mitosis fuses them;
-`lane_cycles` and `fused_without_overlap` count the cost.
-
 An assumption you would decide differently goes into the decisions file,
 `--decisions PATH` (default: `<document without extension>.decisions.md` when
 it exists), which binds every later structure dispatch and brief.
@@ -224,8 +223,7 @@ Every Step of a Lane is its own Worker session, in Step order on its MSP's
 branch, and lands one commit: subject `<type>(<scope>): <step>` (chore, no
 scope, if absent), body its task's first sentence. Each starts once the one
 before lands, may edit what earlier ones wrote and is told which Steps they
-built; a resume starts at the first not `ok`. `--session-tokens` only sizes
-the estimate; a Step above it is named.
+built; a resume starts at the first not `ok`.
 
 Each session builds in its own clone of the MSP branch under the run
 directory's `clones` folder, never in the MSP worktree.

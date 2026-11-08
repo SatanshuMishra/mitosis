@@ -103,26 +103,27 @@ class AchievedParallelism(unittest.TestCase):
 
 class RiskMarkers(unittest.TestCase):
     def a_marker_does_not_fire_inside_a_longer_word(self):
-        self.assertEqual(core.tier_for(["src/waverider.py"], ["wav"], "simple", None), "cheap")
+        self.assertEqual(core.tier_for(["src/waverider.py"], ["wav"], "simple"), "cheap")
         self.assertEqual(
-            core.tier_for(["app/(unauthenticated)/page.tsx"], ["auth"], "simple", None), "cheap"
+            core.tier_for(["app/(unauthenticated)/page.tsx"], ["auth"], "simple"), "cheap"
         )
 
     def a_marker_fires_on_a_path_segment(self):
-        self.assertEqual(core.tier_for(["bleep/wav.py"], ["wav"], "simple", None), "top")
-        self.assertEqual(core.tier_for(["src/wav/writer.py"], ["wav"], "simple", None), "top")
+        self.assertEqual(core.tier_for(["bleep/wav.py"], ["wav"], "simple"), "top")
+        self.assertEqual(core.tier_for(["src/wav/writer.py"], ["wav"], "simple"), "top")
 
     def a_marker_fires_on_a_camel_case_word(self):
         self.assertEqual(
-            core.tier_for(["app/types/AuthResponse.ts"], ["auth"], "simple", None), "top"
+            core.tier_for(["app/types/AuthResponse.ts"], ["auth"], "simple"), "top"
         )
 
     def a_marker_carrying_a_separator_keeps_substring_behaviour(self):
-        self.assertEqual(core.tier_for(["api/auth/login.py"], ["api/auth"], "simple", None), "top")
-        self.assertEqual(core.tier_for(["db/0004_add.sql"], [".sql"], "simple", None), "top")
+        self.assertEqual(core.tier_for(["api/auth/login.py"], ["api/auth"], "simple"), "top")
+        self.assertEqual(core.tier_for(["db/0004_add.sql"], [".sql"], "simple"), "top")
 
-    def a_glob_marker_still_matches(self):
-        self.assertEqual(core.tier_for(["db/0004_add.sql"], ["db/*.sql"], "simple", None), "top")
+    def a_glob_marker_matches_only_as_a_substring(self):
+        self.assertEqual(core.tier_for(["db/0004_add.sql"], ["db/*.sql"], "simple"), "cheap")
+        self.assertEqual(core.tier_for(["legacy/DB/*.SQL"], ["db/*.sql"], "simple"), "top")
 
 
 class TemplatePlaceholders(unittest.TestCase):
@@ -920,10 +921,10 @@ class ItemsEntryPointRefusals(unittest.TestCase):
                 ["--items", "items.json", "--plan-only", "--run-dir", os.path.join(root, "run")],
             )
 
-    def a_plan_whose_packages_wait_on_each_other_is_planned_as_one(self):
+    def a_plan_whose_packages_wait_on_each_other_is_planned_as_two(self):
         code, out, err = self._run(self.CYCLIC)
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
-        self.assertEqual(len(core.msp_items(self.CYCLIC)), 1)
+        self.assertEqual(core.msp_items(self.CYCLIC), ((0, 2), (1,)))
 
     GROUP_CYCLE = [
         {"name": "a", "task": "t", "files": ["a.py"], "source": None, "spec_ref": [SPEC_SECTION],
@@ -937,15 +938,15 @@ class ItemsEntryPointRefusals(unittest.TestCase):
     def a_cycle_through_an_unpinned_group_is_built_by_one_worker(self):
         code, out, err = self._run(self.GROUP_CYCLE)
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
-        self.assertEqual(len(core.lane_items(self.GROUP_CYCLE)), 1)
+        self.assertEqual(core.lane_items(self.GROUP_CYCLE), ((0, 2), (1,)))
 
     def a_package_supplied_as_items_that_would_ship_empty_is_planned_and_reported(self):
         code, out, err = self._run(self.EMPTY_MANIFEST)
-        self.assertEqual(code, mitosis.EXIT_MANIFEST, err + out)
-        self.assertIn("manifest-exports-nothing", out)
+        self.assertEqual(code, 0, err + out)
+        self.assertNotIn("manifest-exports-nothing", out)
         found = json.loads(out.splitlines()[-1])
-        self.assertEqual(found["exit"], mitosis.EXIT_MANIFEST)
-        self.assertIn("nothing exported", found["attention"][0])
+        self.assertEqual(found["exit"], 0)
+        self.assertEqual([line for line in found["attention"] if "nothing exported" in line], [])
 
     def a_sound_plan_supplied_as_items_still_ships(self):
         code, out, err = self._run(
@@ -963,11 +964,16 @@ class GraphLoading(unittest.TestCase):
     def _load(self, graph):
         with tempfile.TemporaryDirectory() as root:
             path = write(root, "graph.json", json.dumps(graph))
-            return mitosis.load_graph(path, root)
+            return mitosis.load_graph(path)
+
+    def _refused(self, graph):
+        with self.assertRaises(mitosis.Refusal) as caught:
+            self._load(graph)
+        self.assertIn("must be a node-link graph with nodes and links", str(caught.exception))
 
     def a_node_link_graph_is_read_as_the_files_its_code_links(self):
         graph = {
-            "directed": False,
+            "directed": True,
             "nodes": [
                 {"id": "f", "file_type": "code", "source_file": "src/parse.py"},
                 {"id": "g", "file_type": "code", "source_file": "src/emit.py"},
@@ -976,35 +982,40 @@ class GraphLoading(unittest.TestCase):
             "links": [{"source": "f", "target": "g"}, {"source": "d", "target": "f"}],
         }
         self.assertEqual(
-            self._load(graph), {"src/emit.py": ["src/parse.py"], "src/parse.py": ["src/emit.py"]}
+            self._load(graph),
+            {
+                "src/parse.py": ["README.md", "src/emit.py"],
+                "src/emit.py": ["src/parse.py"],
+                "README.md": ["src/parse.py"],
+            },
         )
 
     def a_mapping_is_still_read_as_it_is(self):
-        self.assertEqual(self._load({"a.py": ["b.py"]}), {"a.py": ["b.py"]})
+        self._refused({"a.py": ["b.py"]})
 
     def a_mapping_carrying_metadata_and_nulls_is_read_without_them(self):
-        graph = {"version": "1", "a.py": ["b.py", None, 3], "b.py": None}
-        self.assertEqual(self._load(graph), {"a.py": ["b.py"]})
+        self._refused({"version": "1", "a.py": ["b.py", None, 3], "b.py": None})
 
     def a_nodes_list_without_links_is_refused_rather_read_as_a_mapping(self):
         for graph in (
             {"nodes": [{"id": "a", "source_file": "a.py"}], "meta": []},
-            {"nodes": [{"id": "a"}], "connections": [], "languages": ["python"]},
+            {"nodes": [{"id": "a"}], "edges": [], "languages": ["python"]},
         ):
-            with self.assertRaises(mitosis.Refusal) as caught:
-                self._load(graph)
-            self.assertIn("no links or edges list", str(caught.exception))
+            self._refused(graph)
 
     def an_object_that_is_neither_shape_is_refused_by_name(self):
-        with self.assertRaises(mitosis.Refusal) as caught:
-            self._load({"directed": False, "graph": {}, "nodes": "not a list"})
-        self.assertIn("node-link", str(caught.exception))
+        for graph in (
+            {"directed": False, "graph": {}, "nodes": "not a list"},
+            ["a.py"],
+            {"nodes": ["a"], "links": []},
+            {"nodes": [{"id": "a", "source_file": 3}], "links": []},
+            {"nodes": [{"id": "a"}], "links": [{"source": ["a"], "target": "a"}]},
+        ):
+            self._refused(graph)
 
     def a_node_link_graph_that_names_no_file_is_refused(self):
         graph = {"nodes": [{"id": "x"}, {"id": "y"}], "links": [{"source": "x", "target": "y"}]}
-        with self.assertRaises(mitosis.Refusal) as caught:
-            self._load(graph)
-        self.assertIn("source_file", str(caught.exception))
+        self.assertEqual(self._load(graph), {})
 
 
 HOLDING_WORKER = r'''
@@ -1013,14 +1024,10 @@ import sys
 
 SESSION = sys.argv[2] if len(sys.argv) > 2 else ""
 
-prefix = "Write-set for this Lane, the only files you may edit: "
-paths = [
-    path.strip()
-    for line in sys.argv[1].splitlines()
-    if line.startswith(prefix)
-    for path in line[len(prefix):].split(",")
-    if path.strip()
-]
+lines = sys.argv[1].splitlines()
+opened = lines.index("{")
+spec = json.loads("\n".join(lines[opened : lines.index("}", opened) + 1]))
+paths = list(dict.fromkeys(path for leaf in spec["leaves"] for path in leaf["edit"]))
 for path in paths:
     with open(path, "a") as handle:
         handle.write("work\n")
@@ -1985,8 +1992,8 @@ class GateExit(unittest.TestCase):
 
 class CouplingReport(unittest.TestCase):
     ITEMS = [
-        briefed("seven", files=["db/migrations/0007_x.sql"]),
-        briefed("eight", files=["db/migrations/0008_y.sql"]),
+        briefed("seven", files=["db/migrations/0007_x.py"]),
+        briefed("eight", files=["db/migrations/0008_y.py"]),
         briefed("plain-a", files=["src/a.py"]),
         briefed("plain-b", files=["src/b.py"]),
     ]
@@ -1994,39 +2001,90 @@ class CouplingReport(unittest.TestCase):
     def _plan_only(self):
         with tempfile.TemporaryDirectory() as root:
             write(root, "items.json", items_document(root, self.ITEMS))
-            write(root, "graph.json", json.dumps({"src/a.py": ["src/b.py"]}))
-            return invoke(
+            write(
                 root,
-                ["--items", "items.json", "--graph", "graph.json", "--plan-only",
-                 "--run-dir", os.path.join(root, "run")],
+                "graph.json",
+                json.dumps(
+                    {
+                        "nodes": [{"id": "a", "source_file": "src/a.py"}, {"id": "b", "source_file": "src/b.py"}],
+                        "links": [{"source": "a", "target": "b"}],
+                    }
+                ),
             )
+            write(root, "no-history.jsonl", "")
+            with unittest.mock.patch.object(
+                core, "DEFAULT_TRAJECTORY_STORE", os.path.join(root, "no-history.jsonl")
+            ):
+                return invoke(
+                    root,
+                    ["--items", "items.json", "--graph", "graph.json", "--plan-only",
+                     "--run-dir", os.path.join(root, "run")],
+                )
 
-    def a_strong_signal_is_ordered_and_an_import_link_is_named_before_the_build(self):
+    def a_strong_signal_awaits_a_verdict_and_an_import_link_is_named_before_the_build(self):
         code, out, err = self._plan_only()
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
         body = section(out, "Coupling")
-        self.assertIn("seven then eight: put in order because of same-migration-directory", body)
-        self.assertTrue(any(line.startswith("plain-a and plain-b") and "run in parallel" in line for line in body))
-        found = json.loads(out.splitlines()[-1])
-        self.assertEqual(
-            [(entry["first"], entry["then"]) for entry in found["coupling"]["ordered"]], [("seven", "eight")]
+        self.assertIn(
+            "seven and eight (Lanes 0, 1) run in parallel awaiting the orchestrator's verdict on "
+            "same-migration-app:db, default serialize; add an after edge to serialize them",
+            body,
         )
-        self.assertEqual(found["coupling"]["parallel"], [{"steps": ["plain-a", "plain-b"], "signals": ["import-adjacency"]}])
+        self.assertIn(
+            "plain-a and plain-b (Lanes 2, 3) run in parallel with only import-adjacent between them; "
+            "add an after edge if one needs the other's output",
+            body,
+        )
+        found = json.loads(out.splitlines()[-1])
+        self.assertEqual(found["coupling"]["ordered"], [])
+        self.assertEqual(
+            found["coupling"]["parallel"],
+            [
+                {"steps": ["seven", "eight"], "signals": ["same-migration-app:db"]},
+                {"steps": ["plain-a", "plain-b"], "signals": ["import-adjacent"]},
+            ],
+        )
         self.assertEqual(
             found["attention"],
-            ["1 pair of Steps run in parallel with only import-adjacency between them: plain-a+plain-b; "
-             "add an after edge where one needs the other's output"],
+            [
+                "1 pair of Steps run in parallel with only import-adjacent between them: plain-a+plain-b; "
+                "add an after edge where one needs the other's output",
+                "1 pair of Steps await the orchestrator's verdict on same-migration-app:db, default "
+                "serialize: seven+eight; add an after edge to serialize them",
+            ],
         )
 
     def many_parallel_pairs_are_named_in_one_line_with_the_rest_counted(self):
-        coupling = {
-            "ordered": [],
-            "parallel": [{"steps": ["a%d" % n, "b%d" % n], "signals": ["import-adjacency"]} for n in range(10)],
-        }
-        lines = mitosis._coupling_attention(coupling)
+        review = [
+            {"steps": ["a%d" % n, "b%d" % n], "signals": ["import-adjacent"], "default": "parallel"}
+            for n in range(10)
+        ]
+        lines = mitosis._coupling_attention(review)
         self.assertEqual(len(lines), 1)
-        self.assertIn("10 pairs of Steps", lines[0])
+        self.assertIn("10 pairs of Steps run in parallel with only import-adjacent", lines[0])
         self.assertIn("and 2 more", lines[0])
+
+    def serialize_pairs_await_a_verdict_in_their_own_line(self):
+        review = [
+            {"steps": ["a", "b"], "signals": ["shared-risk-marker:auth"], "default": "serialize"},
+            {"steps": ["a", "c"], "signals": ["shared-risk-marker:auth"], "default": "serialize"},
+            {"steps": ["d", "e"], "signals": ["shared-risk-marker:auth"], "default": "parallel"},
+        ]
+        self.assertEqual(
+            mitosis._coupling_attention(review),
+            [
+                "1 pair of Steps run in parallel with only shared-risk-marker:auth between them: d+e; "
+                "add an after edge where one needs the other's output",
+                "2 pairs of Steps await the orchestrator's verdict on shared-risk-marker:auth, default "
+                "serialize: a+b, a+c; add an after edge to serialize them",
+            ],
+        )
+
+    def a_pair_with_an_unknown_default_is_refused_by_name(self):
+        with self.assertRaises(ValueError) as caught:
+            mitosis._coupling_attention([{"steps": ["a", "b"], "signals": ["import-adjacent"], "default": "later"}])
+        self.assertIn("a+b", str(caught.exception))
+        self.assertIn("'later'", str(caught.exception))
 
 
 class ReportSections(unittest.TestCase):
@@ -2147,15 +2205,13 @@ class LaneCycleFusion(unittest.TestCase):
          "after": ["a"]},
     ]
 
-    def a_cycle_spanning_msps_is_planned_as_one_msp_and_never_refused(self):
-        self.assertEqual(mitosis.manifest_lines(self.CYCLIC), ())
-        self.assertEqual(mitosis.planned_code(self.CYCLIC), mitosis.EXIT_SHIPPED)
-        self.assertEqual(len(core.msp_items(self.CYCLIC)), 1)
-        self.assertEqual(len(core.lane_items(self.CYCLIC)), 1)
+    def a_cycle_spanning_msps_stays_two_msps_and_is_never_refused(self):
+        self.assertEqual(mitosis.findings(None, {"items": self.CYCLIC}), [])
+        self.assertEqual(core.msp_items(self.CYCLIC), ((0, 2), (1,)))
+        self.assertEqual(core.lane_items(self.CYCLIC), ((0, 2), (1,)))
 
     def a_plan_without_a_cycle_keeps_its_msps_apart(self):
-        self.assertEqual(mitosis.manifest_lines(self.CLEAN), ())
-        self.assertEqual(mitosis.planned_code(self.CLEAN), mitosis.EXIT_SHIPPED)
+        self.assertEqual(mitosis.findings(None, {"items": self.CLEAN}), [])
         self.assertEqual(len(core.msp_items(self.CLEAN)), 2)
 
     def a_manifest_that_can_export_nothing_is_reported_not_refused(self):
@@ -2165,11 +2221,17 @@ class LaneCycleFusion(unittest.TestCase):
             {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None,
              "acceptance": [], "after": ["gregorian"]},
         ]
-        reported = mitosis.manifest_lines(items)
-        self.assertEqual(len(reported), 1)
-        self.assertIn("pkg/__init__.py would ship with nothing exported", reported[0])
-        self.assertIn("gregorian owns it", reported[0])
-        self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_MANIFEST)
+        self.assertEqual(mitosis.findings(None, {"items": items}), [])
+        self.assertEqual(
+            mitosis.empty_manifests(items),
+            [
+                {"owner": 0, "manifest": "pkg/__init__.py", "siblings": 1, "reached": 0,
+                 "missing": ["parse"]}
+            ],
+        )
+        self.assertEqual(
+            [line for line in mitosis.shape_lines(items) if "manifest-exports-nothing" in line], []
+        )
 
     def a_manifest_written_last_is_never_refused(self):
         items = [
@@ -2178,15 +2240,18 @@ class LaneCycleFusion(unittest.TestCase):
             {"name": "surface", "task": "t", "files": ["pkg/__init__.py"], "source": None,
              "acceptance": [], "after": ["parse"]},
         ]
-        self.assertEqual(mitosis.manifest_lines(items), ())
-        self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_SHIPPED)
+        self.assertEqual(mitosis.findings(None, {"items": items}), [])
+        self.assertEqual(mitosis.empty_manifests(items), [])
 
     def a_cycle_inside_one_msp_is_contracted_and_never_refused(self):
         items = [{**step, "msp": "m"} for step in self.CYCLIC]
-        self.assertEqual(mitosis.manifest_lines(items), ())
-        self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_SHIPPED)
+        self.assertEqual(mitosis.findings(None, {"items": items}), [])
+        self.assertEqual(
+            [line for line in mitosis.shape_lines(items) if line.startswith("lane-cycle")], []
+        )
 
     def an_outcome_line_states_the_meaning_of_every_exit_code(self):
+        self.assertNotIn(23, mitosis.EXIT_MEANING)
         for code, meaning in mitosis.EXIT_MEANING.items():
             with self.subTest(code=code):
                 lines = mitosis.outcome_lines(None, None, "/run", code)
@@ -2201,42 +2266,21 @@ def shared_lane_items(count):
     return [briefed("s%d" % i, files=["shared.py", "f%d.py" % i]) for i in range(count)]
 
 
-def one_step_limit(items, root=None):
-    source = items[0].get("source") if items else None
-    shared = (source["path"],) if isinstance(source, dict) else ()
-    sizes = core.file_sizes(shared, root)
-    return max(
-        core.estimate_tokens(items, (index,), sizes, {}, shared=shared, earlier=tuple(range(index)))
-        for index in range(len(items))
-    ) + 1
-
-
 class SessionReport(unittest.TestCase):
     def _plan_only(self, items, *extra):
         with tempfile.TemporaryDirectory() as root:
             write(root, "items.json", items_document(root, items))
-            return invoke(
-                root,
-                ["--items", "items.json", "--plan-only", "--run-dir", os.path.join(root, "run"), *extra],
-            )
+            write(root, "no-history.jsonl", "")
+            with unittest.mock.patch.object(
+                core, "DEFAULT_TRAJECTORY_STORE", os.path.join(root, "no-history.jsonl")
+            ):
+                return invoke(
+                    root,
+                    ["--items", "items.json", "--plan-only", "--run-dir", os.path.join(root, "run"), *extra],
+                )
 
-    def the_plan_only_report_shows_an_oversized_lane_built_as_sessions(self):
-        with tempfile.TemporaryDirectory() as root:
-            document = items_document(root, shared_lane_items(3))
-            limit = one_step_limit(json.loads(document), root)
-            write(root, "items.json", document)
-            code, out, err = invoke(
-                root,
-                [
-                    "--items",
-                    "items.json",
-                    "--plan-only",
-                    "--run-dir",
-                    os.path.join(root, "run"),
-                    "--session-tokens",
-                    str(limit),
-                ],
-            )
+    def the_plan_only_report_shows_a_shared_lane_built_as_sessions(self):
+        code, out, err = self._plan_only(shared_lane_items(3))
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
         body = section(out, "Split quality")
         self.assertIn(
@@ -2247,8 +2291,8 @@ class SessionReport(unittest.TestCase):
         lane_lines = [line for line in body if line.startswith("Lane ")]
         self.assertEqual(len(lane_lines), 3)
         for index, line in enumerate(lane_lines):
-            self.assertTrue(line.endswith(", session %d of 3: s%d" % (index + 1, index)), line)
-            self.assertIn(", about ", line)
+            self.assertTrue(line.endswith(", cost 2, session %d of 3: s%d" % (index + 1, index)), line)
+            self.assertNotIn("tokens", line)
         found = json.loads(out.splitlines()[-1])
         self.assertEqual([lane["session"] for lane in found["lanes"]], [[1, 3], [2, 3], [3, 3]])
         self.assertEqual(found["attention"], [])
@@ -2284,73 +2328,10 @@ class SessionReport(unittest.TestCase):
             ("every Lane holds one Step and runs as one Worker session",),
         )
 
-    def a_step_alone_above_the_limit_is_named_for_attention(self):
-        code, out, err = self._plan_only([briefed("big")], "--session-tokens", "1")
-        self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
-        body = section(out, "Split quality")
-        self.assertFalse(any(line.startswith("every Lane fits") for line in body))
-        found = json.loads(out.splitlines()[-1])
-        self.assertEqual(len(found["attention"]), 1)
-        self.assertTrue(found["attention"][0].startswith("Lane 0 holds Step big alone at about "))
-        self.assertIn(found["attention"][0], body)
-        code, out, err = self._plan_only(shared_lane_items(2), "--session-tokens", "1")
-        self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
-        found = json.loads(out.splitlines()[-1])
-        self.assertEqual(len(found["attention"]), 2)
-        for index, line in enumerate(found["attention"]):
-            self.assertTrue(line.startswith("Lane %d holds Step s%d alone at about " % (index, index)), line)
-            self.assertIn("above the 1 one session should hold", line)
-        self.assertIn(found["attention"][0], section(out, "Split quality"))
-
-    def a_session_limit_below_one_is_a_usage_error(self):
-        code, _, err = self._plan_only(shared_lane_items(1), "--session-tokens", "0")
+    def a_coalesce_cap_below_one_is_a_usage_error(self):
+        code, _, err = self._plan_only(shared_lane_items(1), "--coalesce-max", "0")
         self.assertEqual(code, mitosis.EXIT_USAGE)
-        self.assertIn("--session-tokens", err)
-
-    def a_resume_plans_from_the_sizes_the_run_recorded(self):
-        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
-            env = {**os.environ, **ISOLATED_GIT_ENV}
-            write(root, "alpha.py", "a" * 100)
-            for args in (
-                ["git", "init", "-q", root],
-                ["git", "-C", root, "add", "-A"],
-                ["git", "-C", root, "commit", "-q", "-m", "seed"],
-                ["git", "-C", root, "branch", "feature"],
-            ):
-                subprocess.run(args, check=True, capture_output=True, env=env)
-            write(elsewhere, "items.json", items_document(elsewhere, [briefed("alpha")]))
-
-            def attempt(worker, *extra):
-                with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
-                    return invoke(
-                        root,
-                        [
-                            "--items",
-                            os.path.join(elsewhere, "items.json"),
-                            "--run-dir",
-                            os.path.join(elsewhere, "run"),
-                            "--feature-branch",
-                            "feature",
-                            "--dispatch-command",
-                            command(elsewhere, "worker.py", worker, "{task}", "{session_id}", "{schema}"),
-                            "--reask-command",
-                            REASK_COMMAND,
-                            "--acceptance-command",
-                            "probe {file} {test}",
-                            "--no-push",
-                            *extra,
-                        ],
-                    )
-
-            code, out, err = attempt("import sys\nsys.exit(4)\n")
-            self.assertEqual(code, 10, out + err)
-            failed = json.loads(out.splitlines()[-1])
-            write(root, "alpha.py", "a" * 400000)
-            code, out, err = attempt(HOLDING_WORKER, "--resume")
-            self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
-            resumed = json.loads(out.splitlines()[-1])
-            self.assertEqual(resumed["plan_id"], failed["plan_id"])
-            self.assertEqual([lane["state"] for lane in resumed["lanes"]], ["ok"])
+        self.assertIn("--coalesce-max must be at least 1", err)
 
 
 class GateClassRefusals(unittest.TestCase):

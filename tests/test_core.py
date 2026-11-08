@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -17,6 +18,10 @@ def step(name, files, **extra):
         "acceptance": [],
     }
     return {**base, **extra}
+
+
+def planned_tier(files, complexity, history):
+    return core.plan([step("a", files, complexity=complexity)], history=history)["tiers"]["a"]
 
 
 def lane_of(lanes, items, name):
@@ -86,14 +91,14 @@ class Grouping(unittest.TestCase):
         self.assertEqual(core.lane_items(items), ((0, 1, 2),))
         self.assertEqual(core.pinned_groups(items), frozenset())
 
-    def a_group_with_two_contract_steps_is_not_pinned(self):
+    def a_group_with_two_contract_steps_is_pinned(self):
         items = [
             step("shape-a", ["a.py"], type="contract", contract_group="g"),
             step("shape-b", ["b.py"], type="contract", contract_group="g"),
             step("user", ["u.py"], contract_group="g", after=["shape-a", "shape-b"]),
         ]
-        self.assertEqual(core.pinned_groups(items), frozenset())
-        self.assertEqual(len(core.lane_items(items)), 1)
+        self.assertEqual(core.pinned_groups(items), frozenset({"g"}))
+        self.assertEqual(core.lane_items(items), ((0,), (1,), (2,)))
 
     def a_member_that_never_waits_on_the_contract_unpins_the_group(self):
         items = [
@@ -104,17 +109,17 @@ class Grouping(unittest.TestCase):
         self.assertEqual(core.pinned_groups(items), frozenset())
         self.assertEqual(len(core.lane_items(items)), 1)
 
-    def a_member_waiting_on_the_contract_through_another_step_keeps_the_group_pinned(self):
+    def a_member_waiting_on_the_contract_through_another_step_unpins_the_group(self):
         items = [
             step("iface", ["iface.py"], type="contract", contract_group="g"),
             step("server", ["server.py"], contract_group="g", after=["iface"]),
             step("adapter", ["adapter.py"], contract_group="g", after=["iface"]),
             step("client", ["client.py"], contract_group="g", after=["adapter"]),
         ]
-        self.assertEqual(core.pinned_groups(items), frozenset({"g"}))
+        self.assertEqual(core.pinned_groups(items), frozenset())
         self.assertEqual(len(core.msp_items(items)), 1)
         lanes = core.lane_items(items)
-        self.assertNotEqual(lane_of(lanes, items, "server"), lane_of(lanes, items, "client"))
+        self.assertEqual(lanes, ((0, 2, 1, 3),))
         self.assertEqual(core.lane_cycles(items, lanes), ())
 
     def a_cycle_inside_one_msp_is_contracted_so_the_plan_can_still_run(self):
@@ -124,11 +129,7 @@ class Grouping(unittest.TestCase):
             step("p2", ["p2.py"], msp="m", after=["core"]),
             step("tail", ["tail.py", "shared.py"], msp="m", after=["p1", "p2"]),
         ]
-        by_name = core._by_name(items)
-        uncontracted = tuple(
-            core._walk_order(items, group, by_name)
-            for group in core.union_find(len(items), core._shared(items, core._files))
-        )
+        uncontracted = core.uncontracted_lanes(items)
         self.assertEqual(len(uncontracted), 3)
         self.assertEqual(len(core.lane_cycles(items, uncontracted)), 1)
 
@@ -136,27 +137,23 @@ class Grouping(unittest.TestCase):
         self.assertEqual(len(lanes), 1)
         self.assertEqual(core.lane_cycles(items, lanes), ())
         walked = [items[index]["name"] for index in lanes[0]]
-        self.assertLess(walked.index("core"), walked.index("p1"))
-        self.assertLess(walked.index("p1"), walked.index("tail"))
-        self.assertLess(walked.index("p2"), walked.index("tail"))
+        self.assertEqual(walked, ["core", "p1", "p2", "tail"])
 
-    def msps_that_wait_on_each_other_are_fused_into_one_msp_and_built_in_order(self):
+    def msps_that_wait_on_each_other_stay_two_msps(self):
         items = [
             step("core", ["core.py", "shared.py"]),
             step("mid", ["mid.py"], after=["core"]),
             step("tail", ["tail.py", "shared.py"], after=["mid"]),
         ]
         lanes = core.lane_items(items)
-        self.assertEqual(len(core.msp_items(items)), 1)
-        self.assertEqual(len(lanes), 1)
-        self.assertEqual(core.lane_cycles(items, lanes), ())
-        walked = [items[index]["name"] for index in lanes[0]]
-        self.assertEqual(walked, ["core", "mid", "tail"])
+        self.assertEqual(core.msp_items(items), ((0, 2), (1,)))
+        self.assertEqual(lanes, ((0, 2), (1,)))
+        self.assertEqual(core.lane_cycles(items, lanes), ((0, 1),))
 
-    def two_steps_that_wait_on_each_other_are_fused_into_one_lane(self):
+    def two_steps_that_wait_on_each_other_stay_in_two_msps_and_two_lanes(self):
         items = [step("a", ["a.py"], after=["b"]), step("b", ["b.py"], after=["a"])]
-        self.assertEqual(len(core.msp_items(items)), 1)
-        self.assertEqual(len(core.lane_items(items)), 1)
+        self.assertEqual(core.msp_items(items), ((0,), (1,)))
+        self.assertEqual(core.lane_items(items), ((0,), (1,)))
 
     def contraction_never_puts_two_msps_in_one_lane(self):
         items = [
@@ -181,10 +178,11 @@ class Grouping(unittest.TestCase):
             step("a3", ["pkg/a.py"], after=["b2"]),
         ]
         self.assertEqual(core.cycles(items), ())
+        self.assertEqual(core.msp_items(items), ((0, 1, 6), (2, 3), (4,), (5,)))
         found = core.lane_cycles(items, core.uncontracted_lanes(items))
         self.assertEqual(len(found), 1)
         self.assertEqual(len(found[0]), 2)
-        self.assertEqual(core.lane_cycles(items, core.lane_items(items)), ())
+        self.assertEqual(len(core.lane_cycles(items, core.lane_items(items))), 1)
 
     def a_plan_without_a_loop_reports_no_lane_cycle(self):
         items = [step("a", ["a.py"]), step("b", ["b.py"], after=["a"])]
@@ -364,43 +362,53 @@ class Validation(unittest.TestCase):
 
 class Tiering(unittest.TestCase):
     def assumptions_block_a_simple_rating(self):
-        self.assertEqual(core.tier_for(["a.py"], (), "simple", []), "cheap")
-        self.assertEqual(core.tier_for(["a.py"], (), "simple", ["took the narrow reading"]), "top")
+        self.assertEqual(core.tier_for(["a.py"], (), "simple"), "cheap")
+        plan = core.plan([step("a", ["a.py"], complexity="simple", assumptions=["took the narrow reading"])])
+        self.assertEqual(plan["tiers"]["a"], "cheap")
 
     def tier_needs_both_axes_to_be_cheap(self):
         markers = ("migrations/", "*.sql")
-        self.assertEqual(core.tier_for(["src/a.py"], markers, "simple", []), "cheap")
-        self.assertEqual(core.tier_for(["db/migrations/0001.py"], markers, "simple", []), "top")
-        self.assertEqual(core.tier_for(["schema.sql"], markers, "simple", []), "top")
-        self.assertEqual(core.tier_for(["src/a.py"], markers, "complex", []), "top")
-        self.assertEqual(core.tier_for(["src/a.py"], markers, None, []), "top")
-        self.assertEqual(core.tier_for(["db/migrations/0001.py"], markers, "complex", []), "top")
+        self.assertEqual(core.tier_for(["src/a.py"], markers, "simple"), "cheap")
+        self.assertEqual(core.tier_for(["db/migrations/0001.py"], markers, "simple"), "top")
+        self.assertEqual(core.tier_for(["schema.sql"], markers, "simple"), "cheap")
+        self.assertEqual(core.tier_for(["db/*.sql"], markers, "simple"), "top")
+        self.assertEqual(core.tier_for(["src/a.py"], markers, "complex"), "top")
+        self.assertEqual(core.tier_for(["src/a.py"], markers, None), "cheap")
+        self.assertEqual(core.tier_for(["src/a.py"], markers), "cheap")
+        self.assertEqual(core.tier_for(["src/a.py"], markers, "LOW"), "cheap")
+        self.assertEqual(core.tier_for(["src/a.py"], markers, "Mechanical"), "cheap")
+        self.assertEqual(core.tier_for(["db/migrations/0001.py"], markers, "complex"), "top")
 
     def history_only_ever_raises_a_tier(self):
-        regression = ({"files": ["src/a.py"], "outcome": "failed"},)
+        reverted = ({"files": ["src/a.py"], "outcome": "reverted"},)
+        failed = ({"files": ["src/a.py"], "outcome": "failed"},)
         clean = ({"files": ["src/a.py"], "outcome": "ok"},)
-        self.assertEqual(core.tier_for(["src/a.py"], (), "simple", []), "cheap")
-        self.assertEqual(core.tier_for(["src/a.py"], (), "simple", [], history=regression), "top")
-        self.assertEqual(core.tier_for(["src/a.py"], (), "simple", [], history=clean), "cheap")
-        self.assertEqual(core.tier_for(["src/a.py"], (), "complex", [], history=clean), "top")
-        self.assertEqual(core.tier_for(["src/b.py"], (), "simple", [], history=regression), "cheap")
-        nested = ({"files": ["src/auth/"], "outcome": "failed"},)
-        self.assertEqual(core.tier_for(["src/auth/login.py"], (), "simple", [], history=nested), "top")
+        self.assertEqual(core.tier_for(["src/a.py"], (), "simple"), "cheap")
+        self.assertEqual(planned_tier(["src/a.py"], "simple", reverted), "top")
+        self.assertEqual(planned_tier(["src/a.py"], "simple", failed), "cheap")
+        self.assertEqual(planned_tier(["src/a.py"], "simple", clean), "cheap")
+        self.assertEqual(planned_tier(["src/a.py"], "complex", clean), "top")
+        self.assertEqual(planned_tier(["src/b.py"], "simple", reverted), "cheap")
+        nested = ({"files": ["src/auth/"], "outcome": "reverted"},)
+        self.assertEqual(planned_tier(["src/auth/login.py"], "simple", nested), "cheap")
+        self.assertEqual(core.history_tier_bump(step("a", ["src/auth/login.py"]), nested), (False, ""))
 
     def only_a_record_that_went_wrong_raises_a_tier(self):
-        def tier(*records):
-            return core.tier_for(["src/a.py"], (), "simple", [], history=records)
+        def bump(*records):
+            return core.history_tier_bump(step("a", ["src/a.py"]), records)
 
-        self.assertEqual(tier({"files": ["src/a.py"], "outcome": "fixed"}), "cheap")
-        self.assertEqual(tier({"files": ["src/a.py"], "outcome": "unverified-reasoned"}), "cheap")
-        self.assertEqual(tier({"files": ["src/a.py"], "outcome": "reverted"}), "top")
-        self.assertEqual(tier({"files": ["src/a.py"], "outcome": "speculative"}), "top")
+        self.assertEqual(bump({"files": ["src/a.py"], "outcome": "fixed"}), (False, ""))
+        self.assertEqual(bump({"files": ["src/a.py"], "outcome": "unverified-reasoned"}), (False, ""))
+        self.assertEqual(bump({"files": ["src/a.py"], "outcome": "failed"}), (False, ""))
+        self.assertEqual(bump({"files": ["src/a.py"], "outcome": "reverted"}), (True, "1 reverted"))
+        self.assertEqual(bump({"files": ["src/a.py"], "outcome": "speculative"}), (True, "1 speculative"))
         self.assertEqual(
-            tier({"files": ["src/a.py"], "outcome": "fixed", "regressed": ["src/b.py"]}), "top"
+            bump({"files": ["src/a.py"], "outcome": "fixed", "regressed": ["src/b.py"]}),
+            (True, "1 caused-regression"),
         )
         trap = {"files": ["src/a.py"], "outcome": "fixed", "what_failed": ["patched the wrong layer"]}
-        self.assertEqual(tier(trap), "cheap")
-        self.assertEqual(tier(trap, dict(trap)), "top")
+        self.assertEqual(bump(trap), (False, ""))
+        self.assertEqual(bump(trap, dict(trap)), (True, "2 prior traps"))
 
     def a_superseded_record_is_not_read(self):
         with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
@@ -412,7 +420,7 @@ class Tiering(unittest.TestCase):
         finally:
             os.unlink(path)
         self.assertEqual([record["id"] for record in loaded], ["new"])
-        self.assertEqual(core.tier_for(["src/a.py"], (), "simple", [], history=loaded), "cheap")
+        self.assertEqual(planned_tier(["src/a.py"], "simple", loaded), "cheap")
 
     def a_recorded_breakage_couples_the_two_surfaces_and_a_fix_does_not(self):
         items = [step("a", ["src/a.py"]), step("b", ["src/b.py"])]
@@ -420,18 +428,22 @@ class Tiering(unittest.TestCase):
         broke = ({"files": ["src/a.py"], "outcome": "fixed", "regressed": ["src/b.py"]},)
         fixed = ({"files": ["src/a.py", "src/b.py"], "outcome": "fixed"},)
         signals = {tuple(e["steps"]): e["signals"] for e in core.coupling_review(items, lanes, None, history=broke)}
-        self.assertEqual(signals[("a", "b")], ["recorded-regression"])
+        self.assertEqual(signals[("a", "b")], ["regression-history"])
         self.assertEqual(core.coupling_review(items, lanes, None, history=fixed), [])
 
     def a_marker_matches_a_mixed_case_path(self):
         self.assertTrue(core.marker_matches("app/Services/Auth/Login.php", "Services/Auth"))
         self.assertTrue(core.marker_matches("app/Services/Auth/Login.php", "services/auth"))
         self.assertTrue(core.marker_matches("db/Migrate/001.SQL", ".sql"))
+        self.assertFalse(core.risk_marker_matches("DB/0004_add.SQL", "db/*.sql"))
+        self.assertTrue(core.risk_marker_matches("legacy/DB/*.SQL.bak", "db/*.sql"))
+        self.assertTrue(core.risk_marker_matches("app/types/AuthResponse.ts", "auth"))
+        self.assertFalse(core.risk_marker_matches("src/waverider.py", "wav"))
         self.assertTrue(core.marker_matches("DB/0004_add.SQL", "db/*.sql"))
         self.assertTrue(core.marker_matches("app/types/AuthResponse.ts", "auth"))
         self.assertFalse(core.marker_matches("src/waverider.py", "wav"))
         self.assertEqual(
-            core.tier_for(["app/Services/Auth/Login.php"], ["Services/Auth"], "simple", None), "top"
+            core.tier_for(["app/Services/Auth/Login.php"], ["Services/Auth"], "simple"), "top"
         )
 
     def a_missing_trajectory_store_changes_nothing(self):
@@ -441,11 +453,9 @@ class Tiering(unittest.TestCase):
         self.assertFalse(os.path.exists(missing))
         history = core.trajectory_store(missing)
         self.assertEqual(history, ())
-        for complexity in ("simple", "complex"):
-            self.assertEqual(
-                core.tier_for(["src/a.py"], (), complexity, [], history=history),
-                core.tier_for(["src/a.py"], (), complexity, []),
-            )
+        for complexity, expected in (("simple", "cheap"), ("complex", "top")):
+            self.assertEqual(planned_tier(["src/a.py"], complexity, history), expected)
+            self.assertEqual(core.tier_for(["src/a.py"], (), complexity), expected)
         with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
             handle.write('{"files": ["src/a.py"], "outcome": "failed"}\n')
             handle.write("not json\n")
@@ -455,13 +465,20 @@ class Tiering(unittest.TestCase):
             loaded = core.trajectory_store(path)
         finally:
             os.unlink(path)
-        self.assertEqual(len(loaded), 2)
-        self.assertEqual(core.tier_for(["src/a.py"], (), "simple", [], history=loaded), "top")
+        self.assertEqual(
+            list(loaded),
+            [{"files": ["src/a.py"], "outcome": "failed"}, {"files": ["src/b.py"], "outcome": "ok"}],
+        )
+        self.assertEqual(planned_tier(["src/a.py"], "simple", loaded), "cheap")
 
     def same_migration_directory_is_flagged_for_review(self):
         items = [
-            step("seven", ["db/migrations/0007_add_x.sql"]),
-            step("eight", ["db/migrations/0008_add_y.sql"]),
+            step("seven", ["db/migrations/0007_add_x.py"]),
+            step("eight", ["db/migrations/0008_add_y.py"]),
+            step("sql-seven", ["db/0007_a.sql"]),
+            step("sql-eight", ["db/0008_b.sql"]),
+            step("root-one", ["migrations/0001_one.py"]),
+            step("root-two", ["migrations/0002_two.py"]),
             step("plain-a", ["src/a.py"]),
             step("plain-b", ["src/b.py"]),
             step("auth-a", ["src/auth/a.py"]),
@@ -473,58 +490,80 @@ class Tiering(unittest.TestCase):
         graph = {"src/a.py": ["src/b.py"]}
         history = ({"files": ["src/a.py", "lib/auth/b.py"], "outcome": "failed"},)
         review = core.coupling_review(items, lanes, graph, risk_markers=("auth/",), history=history)
-        by_pair = {tuple(entry["steps"]): entry["signals"] for entry in review}
-        self.assertEqual(by_pair[("seven", "eight")], ["same-migration-directory"])
-        self.assertEqual(by_pair[("plain-a", "plain-b")], ["import-adjacency"])
-        self.assertEqual(by_pair[("auth-a", "auth-b")], ["shared-risk-marker"])
-        self.assertEqual(by_pair[("plain-a", "auth-b")], ["recorded-regression"])
+        by_pair = {tuple(entry["steps"]): (entry["signals"], entry["default"]) for entry in review}
+        self.assertEqual(by_pair[("seven", "eight")], (["same-migration-app:db"], "serialize"))
+        self.assertEqual(by_pair[("root-one", "root-two")], (["same-migration-app:<root>"], "serialize"))
+        self.assertEqual(by_pair[("plain-a", "plain-b")], (["import-adjacent"], "parallel"))
+        self.assertEqual(by_pair[("auth-a", "auth-b")], (["shared-risk-marker:auth/"], "serialize"))
+        self.assertNotIn(("sql-seven", "sql-eight"), by_pair)
+        self.assertNotIn(("plain-a", "auth-b"), by_pair)
         self.assertNotIn(("shared-a", "shared-b"), by_pair)
         self.assertNotIn(("seven", "plain-a"), by_pair)
+        self.assertEqual(len(review), 4)
         for entry in review:
             self.assertEqual(len(entry["lanes"]), 2)
             self.assertNotEqual(entry["lanes"][0], entry["lanes"][1])
-        self.assertEqual(core.coupling_review(items, lanes, None), [
-            entry for entry in review if entry["signals"] == ["same-migration-directory"]
-        ])
+        self.assertEqual(
+            [(tuple(entry["steps"]), entry["signals"]) for entry in core.coupling_review(items, lanes, None)],
+            [
+                (("seven", "eight"), ["same-migration-app:db"]),
+                (("root-one", "root-two"), ["same-migration-app:<root>"]),
+            ],
+        )
 
-    def a_strong_coupling_signal_orders_the_pair_and_an_import_link_leaves_it_parallel(self):
+    def a_strong_coupling_signal_flags_the_pair_serialize_and_an_import_link_leaves_it_parallel(self):
         items = [
-            step("seven", ["db/migrations/0007_add_x.sql"]),
-            step("eight", ["db/migrations/0008_add_y.sql"]),
+            step("seven", ["db/migrations/0007_add_x.py"]),
+            step("eight", ["db/migrations/0008_add_y.py"]),
             step("plain-a", ["src/a.py"]),
             step("plain-b", ["src/b.py"]),
             step("auth-a", ["src/auth/a.py"]),
             step("auth-b", ["lib/auth/b.py"]),
         ]
-        history = ({"files": ["src/a.py", "src/auth/a.py"], "outcome": "failed"},)
+        history = ({"files": ["src/a.py"], "outcome": "fixed", "regressed": ["src/auth/a.py"]},)
         plan = core.plan(items, graph={"src/a.py": ["src/b.py"]}, risk_markers=("auth/",), history=history)
-        ordered = {(entry["first"], entry["then"]): entry["signals"] for entry in plan["coupling_order"]}
-        self.assertEqual(ordered[("seven", "eight")], ["same-migration-directory"])
-        self.assertEqual(ordered[("auth-a", "auth-b")], ["shared-risk-marker"])
-        self.assertEqual(ordered[("plain-a", "auth-a")], ["recorded-regression"])
-        by_name = {item["name"]: item for item in plan["items"]}
-        self.assertEqual(by_name["eight"]["after"], ["seven"])
-        self.assertEqual(by_name["auth-b"]["after"], ["auth-a"])
-        review = {tuple(entry["steps"]): entry for entry in plan["coupling_review"]}
-        self.assertEqual(review[("plain-a", "plain-b")]["default"], "parallel")
-        self.assertEqual(review[("plain-a", "plain-b")]["signals"], ["import-adjacency"])
-        self.assertNotIn(("seven", "eight"), review)
+        self.assertNotIn("coupling_order", plan)
+        self.assertNotIn("lane_after", plan)
+        self.assertFalse(any("after" in item for item in plan["items"]))
+        review = {tuple(entry["steps"]): (entry["signals"], entry["default"]) for entry in plan["coupling_review"]}
+        self.assertEqual(
+            review,
+            {
+                ("seven", "eight"): (["same-migration-app:db"], "serialize"),
+                ("plain-a", "plain-b"): (["import-adjacent"], "parallel"),
+                ("plain-a", "auth-a"): (["regression-history"], "serialize"),
+                ("auth-a", "auth-b"): (["shared-risk-marker:auth/"], "serialize"),
+            },
+        )
         self.assertFalse(any("after" in item for item in items))
 
-    def an_added_order_never_closes_a_loop(self):
-        items = [
-            step("a", ["m/0001_a.sql"], after=["c"]),
-            step("b", ["m/0002_b.sql"]),
-            step("c", ["m/0003_c.sql"]),
-        ]
-        plan = core.plan(items)
-        self.assertEqual(core.cycles(plan["items"]), ())
+    def an_import_listed_only_under_the_later_step_is_import_adjacent(self):
+        items = [step("plain-a", ["src/app/a.py"]), step("plain-b", ["src/app/b.py"])]
+        lanes = core.lane_items(items)
         self.assertEqual(
-            [(entry["first"], entry["then"]) for entry in plan["coupling_order"]], [("a", "b")]
+            core.coupling_review(items, lanes, {"app/b.py": ["app/a.py"]}),
+            [{"steps": ["plain-a", "plain-b"], "lanes": [0, 1], "signals": ["import-adjacent"], "default": "parallel"}],
         )
-        by_name = core._by_name(plan["items"])
-        for x, y in (("a", "b"), ("a", "c"), ("b", "c")):
-            self.assertTrue(core._ordered(plan["items"], by_name[x], by_name[y], by_name), (x, y))
+
+    def verdict_groups_bucket_pairs_by_signals_and_default_biggest_first(self):
+        review = [
+            {"steps": ["a", "b"], "lanes": [0, 1], "signals": ["import-adjacent"], "default": "parallel"},
+            {"steps": ["c", "d"], "lanes": [2, 3], "signals": ["shared-risk-marker:auth"], "default": "serialize"},
+            {"steps": ["c", "e"], "lanes": [2, 4], "signals": ["shared-risk-marker:auth"], "default": "serialize"},
+        ]
+        self.assertEqual(
+            core.verdict_groups(review),
+            [
+                {
+                    "signals": ["shared-risk-marker:auth"],
+                    "default": "serialize",
+                    "count": 2,
+                    "pairs": [["c", "d"], ["c", "e"]],
+                },
+                {"signals": ["import-adjacent"], "default": "parallel", "count": 1, "pairs": [["a", "b"]]},
+            ],
+        )
+        self.assertEqual(core.verdict_groups([]), [])
 
     def a_pair_already_ordered_by_an_after_edge_gets_no_verdict(self):
         items = [step("a", ["src/a.py"]), step("b", ["src/b.py"], after=["a"])]
@@ -538,29 +577,28 @@ class Tiering(unittest.TestCase):
             step("flow", ["src/api/flow.py"], acceptance=[{"file": "tests/ui/flow_test.py", "test": "F.t"}]),
         ]
         modes = core.verify_modes(items, ("ui/",))
-        self.assertEqual(modes, {"page": "serial", "api": "offload", "flow": "serial"})
+        self.assertEqual(modes, {"page": "serial", "api": "offload", "flow": "offload"})
+        self.assertEqual(
+            core.verify_modes([step("x", ["app/unauthenticated/x.ts"])], ("auth",)), {"x": "serial"}
+        )
+        self.assertEqual(core.verify_modes([step("x", ["src/UI/page.tsx"])], ("ui/",)), {"x": "offload"})
         self.assertEqual(set(modes.values()) <= set(core.VERIFY_MODES), True)
         self.assertEqual(core.verify_modes(items, ()), {"page": "offload", "api": "offload", "flow": "offload"})
 
 
 class Cost(unittest.TestCase):
-    def coalesce_never_groups_across_msps(self):
+    def coalesce_groups_cheap_steps_of_one_wave_by_name_whatever_their_msp(self):
         items = [
-            step("a1", ["a1.py"], msp="a"),
-            step("a2", ["a2.py"], msp="a"),
-            step("b1", ["b1.py"], msp="b"),
-            step("b2", ["b2.py"], msp="b"),
+            step("a1", ["a1.py"], msp="a", complexity="simple"),
+            step("a2", ["a2.py"], msp="a", complexity="simple"),
+            step("b1", ["b1.py"], msp="b", complexity="simple"),
+            step("b2", ["b2.py"], msp="b", complexity="simple"),
         ]
-        lanes = core.lane_items(items)
-        owners = core.lane_msps(items, lanes)
-        tiers = {item["name"]: "cheap" for item in items}
-        groups = core.coalesce(items, lanes, tiers, budget=4)
-        self.assertEqual(len(groups), 2)
-        for group in groups:
-            self.assertEqual(len({owners[lane] for lane in group}), 1)
-        singles = [step("x", ["x.py"]), step("y", ["y.py"])]
-        single_lanes = core.lane_items(singles)
-        self.assertEqual(core.coalesce(singles, single_lanes, {"x": "cheap", "y": "cheap"}, budget=4), [])
+        self.assertEqual(core.plan(items)["coalesce"], {"0": [["a1", "a2", "b1", "b2"]]})
+        self.assertEqual(core.plan(items, coalesce_max=3)["coalesce"], {"0": [["a1", "a2", "b1"]]})
+        self.assertNotIn("coalesce", core.plan(items, coalesce_below=0))
+        wide = [step("w%d" % i, ["w%d.py" % i, "v%d.py" % i, "u%d.py" % i], complexity="simple") for i in range(2)]
+        self.assertNotIn("coalesce", core.plan(wide))
 
     def coalesce_never_takes_a_top_tier_step(self):
         items = [
@@ -569,48 +607,37 @@ class Cost(unittest.TestCase):
             step("risky", ["risky.py"], msp="m"),
             step("c3", ["c3.py"], msp="m"),
         ]
-        lanes = core.lane_items(items)
-        tiers = {"c1": "cheap", "c2": "cheap", "risky": "top", "c3": "cheap"}
-        groups = core.coalesce(items, lanes, tiers, budget=10)
-        risky = lane_of(lanes, items, "risky")
-        self.assertEqual(groups, [[lane for lane in range(len(lanes)) if lane != risky]])
+        result = core.plan([{**item, "complexity": "simple"} for item in items], risk_markers=("risky",))
+        self.assertEqual(result["tiers"]["risky"], "top")
+        self.assertEqual(result["coalesce"], {"0": [["c1", "c2", "c3"]]})
         dependent = [
-            step("p", ["p.py"], msp="m"),
-            step("q", ["q.py"], msp="m", after=["p"]),
-            step("r", ["r.py"], msp="m", after=["p"]),
-            step("s", ["s.py"], msp="m"),
-            step("t", ["t.py"], msp="m"),
+            step("p", ["p.py"], msp="m", complexity="simple"),
+            step("q", ["q.py"], msp="m", after=["p"], complexity="simple"),
+            step("r", ["r.py"], msp="m", after=["p"], complexity="simple"),
+            step("s", ["s.py"], msp="m", complexity="simple"),
+            step("t", ["t.py"], msp="m", complexity="simple"),
         ]
-        dependent_lanes = core.lane_items(dependent)
-        edges = core.lane_after(dependent, dependent_lanes)
-        groups = core.coalesce(dependent, dependent_lanes, dict.fromkeys("pqrst", "cheap"), edges=edges, budget=10)
-        self.assertEqual(groups, [[lane_of(dependent_lanes, dependent, "s"), lane_of(dependent_lanes, dependent, "t")]])
-        budgeted = core.coalesce(items, lanes, tiers, budget=2)
-        self.assertTrue(all(len(group) == 2 for group in budgeted))
-        self.assertTrue(all(risky not in group for group in budgeted))
+        self.assertEqual(core.plan(dependent)["coalesce"], {"0": [["p", "s", "t"]], "1": [["q", "r"]]})
 
     def context_pack_reports_truncation_instead_of_hiding_it(self):
         items = [step("a", ["a.py"])]
-        adjacency = {"a.py": ["n1.py", "n2.py", "n3.py", "n4.py", "n5.py"], "n1.py": ["far.py"]}
+        adjacency = {"a.py": ["n5.py", "n1.py", "n4.py", "n2.py", "n3.py"], "n1.py": ["far.py"]}
         capped = core.context_packs(items, adjacency, 1, 2)["a"]
-        self.assertEqual(capped["paths"], ["a.py", "n1.py", "n2.py"])
-        self.assertEqual(capped["overflow"], 3)
-        full = core.context_packs(items, adjacency, 1, None)["a"]
-        self.assertEqual(full["paths"], ["a.py", "n1.py", "n2.py", "n3.py", "n4.py", "n5.py"])
-        self.assertEqual(full["overflow"], 0)
-        two_hops = core.context_packs(items, adjacency, 2, None)["a"]
-        self.assertIn("far.py", two_hops["paths"])
-        self.assertEqual(two_hops["paths"][-1], "far.py")
+        self.assertEqual(capped, {"edit": ["a.py"], "read": ["n1.py", "n2.py"], "read_truncated": 3})
+        full = core.context_packs(items, adjacency, 1, 40)["a"]
+        self.assertEqual(full, {"edit": ["a.py"], "read": ["n1.py", "n2.py", "n3.py", "n4.py", "n5.py"]})
+        two_hops = core.context_packs(items, adjacency, 2, 40)["a"]
+        self.assertEqual(
+            two_hops,
+            {"edit": ["a.py"], "read": ["far.py", "n1.py", "n2.py", "n3.py", "n4.py", "n5.py"]},
+        )
 
     def context_pack_works_without_a_graph(self):
         items = [step("a", ["a.py", "b.py"]), step("c", ["c.py"])]
         packs = core.context_packs(items, None, 2, 10)
-        self.assertEqual(packs, {
-            "a": {"paths": ["a.py", "b.py"], "overflow": 0},
-            "c": {"paths": ["c.py"], "overflow": 0},
-        })
+        self.assertEqual(packs, {"a": {"edit": ["a.py", "b.py"]}, "c": {"edit": ["c.py"]}})
         zero_hops = core.context_packs(items, {"a.py": ["z.py"]}, 0, 10)
-        self.assertEqual(zero_hops["a"]["paths"], ["a.py", "b.py"])
+        self.assertEqual(zero_hops["a"], {"edit": ["a.py", "b.py"]})
 
     def the_lane_unblocking_the_most_work_goes_first(self):
         items = [
@@ -650,19 +677,23 @@ def rich_items():
 class Plan(unittest.TestCase):
     def the_plan_emits_exactly_the_declared_keys(self):
         result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
-        self.assertEqual(set(result), set(core.PLAN_KEYS) - {"coupling_order", "locked", "check_authors"})
+        self.assertEqual(
+            set(result), set(core.PLAN_KEYS) - {"locked", "check_authors", "tier_notes", "shared_context"}
+        )
         self.assertEqual(list(result), [key for key in core.PLAN_KEYS if key in result])
-        self.assertEqual(result["version"], core.__version__)
+        for gone in ("version", "clusters", "session_tokens", "sizes"):
+            self.assertNotIn(gone, core.PLAN_KEYS)
         self.assertEqual(result["source"], SOURCE)
         self.assertEqual(len(result["msps"]), 3)
         self.assertEqual(len(result["lanes"]), 5)
-        self.assertEqual(sorted(len(c) for c in result["clusters"]), [1, 2])
         self.assertEqual(result["counts"]["assumptions"], 1)
-        self.assertEqual(result["tiers"]["docs-skill"], "top")
+        self.assertEqual(result["tiers"]["docs-skill"], "cheap")
         self.assertEqual(result["tiers"]["docs-readme"], "cheap")
         self.assertTrue(result["coupling_review"])
         self.assertTrue(result["lane_after"])
-        self.assertEqual(len(result["coalesce"]), 1)
+        self.assertEqual(
+            result["coalesce"], {"0": [["core-vocab", "docs-readme", "docs-skill", "docs-lint"]]}
+        )
 
     def empty_sections_are_omitted_not_padded(self):
         result = core.plan([step("only", ["only.py"], complexity="simple")])
@@ -703,6 +734,9 @@ class Plan(unittest.TestCase):
             self.assertEqual(brief["text"], core.brief_text(brief))
             for s in brief["steps"]:
                 self.assertIn(s["task"], brief["text"])
+            self.assertIn(brief["spec"], brief["text"])
+            self.assertIn("Edit ONLY the files listed under `edit`.", brief["text"])
+            self.assertNotIn("Write-set for this Lane", brief["text"])
             self.assertIn("docs/charter.md", brief["text"])
             self.assertIn(SOURCE["path"], brief["text"])
             self.assertIn(core.RETURN_CONTRACT, brief["text"])
@@ -730,7 +764,16 @@ class Plan(unittest.TestCase):
         self.assertIsNone(re.search(r"\bgit\b", source))
         with mock.patch.object(builtins, "open", side_effect=AssertionError("plan opened a file")):
             result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
-        self.assertEqual(set(result), set(core.PLAN_KEYS) - {"coupling_order", "locked", "check_authors"})
+        self.assertEqual(
+            set(result), set(core.PLAN_KEYS) - {"locked", "check_authors", "tier_notes", "shared_context"}
+        )
+
+    def a_shape_only_plan_holds_no_briefs(self):
+        shaped = core.plan([check_author(), calc_builder()], briefs=False)
+        self.assertNotIn("briefs", shaped)
+        self.assertNotIn("check_authors", shaped)
+        self.assertEqual(shaped["lanes"][0]["steps"], ["add"])
+        self.assertEqual(shaped["plan_id"], core.plan_id_for(shaped))
 
     def plan_refuses_invalid_items_with_messages(self):
         with self.assertRaises(core.ValidationError) as caught:
@@ -740,7 +783,7 @@ class Plan(unittest.TestCase):
         self.assertIn("ghost", str(caught.exception))
 
 
-def node_link(links, directed=False, key="links"):
+def node_link(links):
     nodes = [
         {"id": "a1", "file_type": "code", "source_file": "pkg/a.py"},
         {"id": "a2", "file_type": "code", "source_file": "pkg/a.py"},
@@ -749,7 +792,7 @@ def node_link(links, directed=False, key="links"):
         {"id": "doc", "file_type": "document", "source_file": "README.md"},
         {"id": "ext", "file_type": "concept", "source_file": ""},
     ]
-    return {"directed": directed, "nodes": nodes, key: [
+    return {"directed": True, "nodes": nodes, "links": [
         {"source": source, "target": target, "relation": "calls"} for source, target in links
     ]}
 
@@ -761,7 +804,9 @@ class ReadSetCap(unittest.TestCase):
         brief = plan["briefs"][0]
         self.assertEqual(len(brief["read_set"]), core.CONTEXT_CAP)
         self.assertEqual(brief["read_overflow"], 120 - core.CONTEXT_CAP)
-        self.assertIn("(%d more not shown)" % (120 - core.CONTEXT_CAP), brief["text"])
+        self.assertNotIn("more not shown", brief["text"])
+        self.assertIn('"read": [\n        "n000.py",', brief["text"])
+        self.assertNotIn('"n%03d.py"' % core.CONTEXT_CAP, brief["text"])
         self.assertEqual(core.CONTEXT_CAP, 40)
 
     def every_session_of_a_lane_is_capped_on_its_own(self):
@@ -781,6 +826,22 @@ class ReadSetCap(unittest.TestCase):
         brief = core.plan([step("edit-hub", ["hub.py"])], graph=graph, cap=5)["briefs"][0]
         self.assertEqual((len(brief["read_set"]), brief["read_overflow"]), (5, 7))
 
+    def a_check_author_brief_keeps_each_steps_capped_read_list_whole(self):
+        graph = {
+            "tests/test_a.py": ["n1.py", "n2.py", "n5.py"],
+            "tests/test_b.py": ["n3.py", "n4.py", "n6.py"],
+        }
+        items = [
+            step("a", ["a.py", "shared.py"], msp="x", acceptance=[{"file": "tests/test_a.py", "test": "a_works"}]),
+            step("b", ["b.py", "shared.py"], msp="y", acceptance=[{"file": "tests/test_b.py", "test": "b_works"}]),
+            step("check-author-x", ["tests/test_a.py"], msp="x", role="check-author"),
+            step("check-author-y", ["tests/test_b.py"], msp="y", role="check-author"),
+        ]
+        authors = core.plan(items, graph=graph, cap=2)["check_authors"]
+        self.assertEqual(len(authors), 1)
+        self.assertEqual(authors[0]["brief"]["read_set"], ["n1.py", "n2.py", "n3.py", "n4.py"])
+        self.assertEqual(authors[0]["brief"]["read_overflow"], 2)
+
 
 class OwnClone(unittest.TestCase):
     def every_lane_brief_says_the_worker_builds_in_its_own_clone(self):
@@ -789,112 +850,51 @@ class OwnClone(unittest.TestCase):
             self.assertIn(core.CLONE_LINE, brief["text"])
             self.assertIn("changes the repository's index or history", brief["text"])
             self.assertNotIn("same worktree", brief["text"])
+            self.assertNotIn("Other agents are working in this tree", brief["text"])
+            self.assertIn("Edit ONLY the files listed under `edit`.\n\n" + core.CLONE_LINE, brief["text"])
 
 
 class GraphInput(unittest.TestCase):
     LINKS = [("a1", "b1"), ("a2", "a1"), ("doc", "a1"), ("ext", "b1"), ("b1", "c1"), ("a1", "gone")]
 
-    def links_between_code_in_two_files_become_neighbours_both_ways(self):
-        adjacency = core.adjacency_from_node_links(node_link(self.LINKS), "/repo")
-        self.assertEqual(
-            adjacency,
-            {"pkg/a.py": ["pkg/b.py"], "pkg/b.py": ["pkg/a.py", "pkg/c.py"], "pkg/c.py": ["pkg/b.py"]},
-        )
-        self.assertTrue(core.is_adjacency(adjacency))
+    def _coupling(self):
+        graph = node_link(self.LINKS)
+        return core.build_file_coupling({node["id"]: node for node in graph["nodes"]}, graph["links"])
 
-    def a_directed_graph_keeps_its_direction(self):
-        adjacency = core.adjacency_from_node_links(node_link(self.LINKS, directed=True), "/repo")
-        self.assertEqual(adjacency, {"pkg/a.py": ["pkg/b.py"], "pkg/b.py": ["pkg/c.py"]})
-
-    def the_edges_key_is_read_like_the_links_key(self):
+    def links_between_files_become_neighbours_both_ways_whatever_the_node_type(self):
         self.assertEqual(
-            core.adjacency_from_node_links(node_link(self.LINKS, key="edges"), "/repo"),
-            core.adjacency_from_node_links(node_link(self.LINKS), "/repo"),
-        )
-
-    def an_absolute_source_file_is_made_relative_and_one_outside_the_root_is_dropped(self):
-        graph = {
-            "nodes": [
-                {"id": "in", "source_file": "/repo/src/x.py"},
-                {"id": "out", "source_file": "/elsewhere/y.py"},
-                {"id": "local", "source_file": "src/z.py"},
-            ],
-            "links": [{"source": "in", "target": "local"}, {"source": "out", "target": "local"}],
-        }
-        self.assertEqual(
-            core.adjacency_from_node_links(graph, "/repo"),
-            {"src/x.py": ["src/z.py"], "src/z.py": ["src/x.py"]},
+            self._coupling(),
+            {
+                "pkg/a.py": {"pkg/b.py", "README.md"},
+                "pkg/b.py": {"pkg/a.py", "pkg/c.py"},
+                "README.md": {"pkg/a.py"},
+                "pkg/c.py": {"pkg/b.py"},
+            },
         )
 
     def a_read_set_reaches_a_neighbour_named_only_by_a_node_link_graph(self):
-        adjacency = core.adjacency_from_node_links(node_link(self.LINKS), "/repo")
-        plan = core.plan([step("edit-a", ["pkg/a.py"])], graph=adjacency)
-        self.assertIn("pkg/b.py", plan["briefs"][0]["read_set"])
+        adjacency = {path: sorted(neighbours) for path, neighbours in self._coupling().items()}
+        plan = core.plan([step("edit-c", ["pkg/c.py"])], graph=adjacency)
+        self.assertEqual(plan["briefs"][0]["read_set"], ["pkg/b.py"])
+        self.assertEqual(plan["context_packs"]["edit-c"], {"edit": ["pkg/c.py"], "read": ["pkg/b.py"]})
 
-    def a_mapping_is_an_adjacency_when_any_path_lists_its_neighbours(self):
-        self.assertTrue(core.is_adjacency({"a.py": ["b.py"], "b.py": []}))
-        self.assertTrue(core.is_adjacency({"version": "1", "a.py": ["b.py", None], "b.py": None}))
-        self.assertTrue(core.is_adjacency({}))
-        self.assertFalse(core.is_adjacency({"a.py": "b.py", "version": 2}))
-        self.assertTrue(core.is_adjacency({"a.py": ["b.py", {"x": 1}], "nodes": [{"id": "a"}]}))
-        self.assertEqual(core.clean_adjacency({"a.py": ["b.py", {"x": 1}]}), {"a.py": ["b.py"]})
-        self.assertFalse(core.is_adjacency({"nodes": [{"id": "a"}], "meta": []}))
-        self.assertFalse(core.is_adjacency({"a.py": [["b.py"]]}))
-        self.assertTrue(core.is_adjacency({"a.py": [], "b.py": []}))
-        self.assertFalse(core.is_adjacency(["a.py"]))
-        self.assertIsNone(core.node_link_edges({"a.py": ["b.py"]}))
-        self.assertIsNone(core.node_link_edges({"nodes": [], "links": "x"}))
 
-    def a_source_file_with_a_nul_byte_is_dropped_not_raised(self):
-        graph = {
-            "nodes": [
-                {"id": "bad", "source_file": "/elsewhere/a\x00.py"},
-                {"id": "ok", "source_file": "src/b.py"},
-                {"id": "ok2", "source_file": "src/c.py"},
-            ],
-            "links": [{"source": "bad", "target": "ok"}, {"source": "ok", "target": "ok2"}],
+class SharedContext(unittest.TestCase):
+    def a_file_two_steps_of_one_wave_read_is_shared_under_that_wave(self):
+        packs = {
+            "a": {"edit": ["a.py"], "read": ["hub.py", "x.py"]},
+            "b": {"edit": ["b.py"], "read": ["hub.py"]},
+            "c": {"edit": ["c.py"], "read": ["x.py"]},
         }
-        self.assertEqual(
-            core.adjacency_from_node_links(graph, "/repo"),
-            {"src/b.py": ["src/c.py"], "src/c.py": ["src/b.py"]},
-        )
+        self.assertEqual(core.shared_context(packs, [["a", "b"], ["c"]]), {"0": ["hub.py"]})
+        self.assertEqual(core.shared_context(packs, [["a"], ["b", "c"]]), {})
 
-    def a_node_id_of_any_json_shape_is_matched_to_its_links(self):
-        graph = {
-            "nodes": [
-                {"id": ["pkg", "a"], "source_file": "pkg/a.py"},
-                {"id": {"k": 1}, "source_file": "pkg/b.py"},
-                {"id": 7, "source_file": "pkg/c.py"},
-            ],
-            "links": [
-                {"source": ["pkg", "a"], "target": {"k": 1}},
-                {"source": 7, "target": ["pkg", "a"]},
-            ],
-        }
-        self.assertEqual(
-            core.adjacency_from_node_links(graph, "/repo"),
-            {"pkg/a.py": ["pkg/b.py", "pkg/c.py"], "pkg/b.py": ["pkg/a.py"], "pkg/c.py": ["pkg/a.py"]},
-        )
-
-    def a_path_reaching_the_root_through_a_symlink_is_kept_and_one_climbing_out_is_dropped(self):
-        with tempfile.TemporaryDirectory() as scratch:
-            real = os.path.realpath(os.path.join(scratch, "real"))
-            os.makedirs(real)
-            link = os.path.join(scratch, "link")
-            os.symlink(real, link)
-            graph = {
-                "nodes": [
-                    {"id": "via-link", "source_file": os.path.join(link, "src", "a.py")},
-                    {"id": "local", "source_file": "./src/b.py"},
-                    {"id": "outside", "source_file": "../elsewhere/c.py"},
-                ],
-                "links": [
-                    {"source": "via-link", "target": "local"},
-                    {"source": "outside", "target": "local"},
-                ],
-            }
-            adjacency = core.adjacency_from_node_links(graph, real)
-        self.assertEqual(adjacency, {"src/a.py": ["src/b.py"], "src/b.py": ["src/a.py"]})
+    def a_plan_carries_shared_context_only_when_some_wave_shares_a_file(self):
+        graph = {"a.py": ["hub.py"], "c.py": ["hub.py"], "hub.py": ["a.py", "c.py"]}
+        shared = core.plan([step("a", ["a.py"]), step("c", ["c.py"])], graph=graph)
+        self.assertEqual(shared["shared_context"], {"0": ["hub.py"]})
+        alone = core.plan([step("a", ["a.py"])], graph=graph)
+        self.assertNotIn("shared_context", alone)
 
 
 def shared_lane(count, **extra):
@@ -921,7 +921,7 @@ class Sessions(unittest.TestCase):
         )
 
     def a_large_session_limit_still_splits_every_step(self):
-        result = core.plan(shared_lane(6, complexity="simple"), session_tokens=10**9)
+        result = core.plan(shared_lane(6, complexity="simple"))
         self.assertEqual(lane_steps(result), [["s0"], ["s1"], ["s2"], ["s3"], ["s4"], ["s5"]])
         self.assertEqual(result["lane_order"], [0, 1, 2, 3, 4, 5])
 
@@ -931,15 +931,9 @@ class Sessions(unittest.TestCase):
         self.assertNotIn("session", result["briefs"][0])
         self.assertNotIn("Session ", result["briefs"][0]["text"])
 
-    def each_session_carries_its_own_estimate(self):
-        result = core.plan(shared_lane(3))
-        self.assertEqual([lane["tokens"] for lane in result["lanes"]], [34002, 36002, 38002])
-        self.assertEqual(result["session_tokens"], 150000)
-
     def an_oversized_lane_is_split_in_step_order_into_sessions_that_run_in_a_row(self):
         items = shared_lane(6, complexity="simple")
-        limit = core.estimate_tokens(items, (4, 5), {}, {}, earlier=(0, 1, 2, 3)) + 1
-        result = core.plan(items, session_tokens=limit)
+        result = core.plan(items)
         self.assertEqual(lane_steps(result), [["s0"], ["s1"], ["s2"], ["s3"], ["s4"], ["s5"]])
         self.assertEqual(
             [lane["session"] for lane in result["lanes"]],
@@ -949,8 +943,7 @@ class Sessions(unittest.TestCase):
         self.assertEqual(len(result["msps"]), 1)
         self.assertEqual(result["lane_after"], {"1": [0], "2": [1], "3": [2], "4": [3], "5": [4]})
         self.assertEqual(result["lane_order"], [0, 1, 2, 3, 4, 5])
-        for lane in result["lanes"]:
-            self.assertLessEqual(lane["tokens"], limit)
+        self.assertNotIn("tokens", result["lanes"][0])
 
     def a_lane_takes_its_steps_in_dependency_order_before_it_is_split(self):
         items = [
@@ -958,8 +951,7 @@ class Sessions(unittest.TestCase):
             step("early", ["shared.py", "early.py"]),
             step("middle", ["shared.py", "middle.py"], after=["early"]),
         ]
-        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
-        result = core.plan(items, session_tokens=limit)
+        result = core.plan(items)
         self.assertEqual(lane_steps(result), [["early"], ["late"], ["middle"]])
         self.assertEqual(result["lane_after"], {"1": [0], "2": [0, 1]})
 
@@ -967,16 +959,14 @@ class Sessions(unittest.TestCase):
         items = shared_lane(2, complexity="simple") + [
             step("risky", ["shared.py", "auth.py"], complexity="simple")
         ]
-        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
-        result = core.plan(items, risk_markers=("auth",), session_tokens=limit)
+        result = core.plan(items, risk_markers=("auth",))
         self.assertEqual(len(result["lanes"]), 3)
         self.assertEqual([lane["tier"] for lane in result["lanes"]], ["top", "top", "top"])
         self.assertEqual(result["tiers"]["s0"], "cheap")
 
     def a_later_session_owns_what_earlier_sessions_wrote_and_is_told_what_they_built(self):
         items = shared_lane(3)
-        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
-        result = core.plan(items, session_tokens=limit)
+        result = core.plan(items)
         first, second, third = result["briefs"]
         self.assertEqual(first["write_set"], ["shared.py", "f0.py"])
         self.assertEqual(second["write_set"], ["shared.py", "f1.py", "f0.py"])
@@ -989,83 +979,31 @@ class Sessions(unittest.TestCase):
         self.assertNotIn("Left for later sessions", third["text"])
         self.assertNotIn("earlier sessions", first["text"])
         self.assertEqual(second["text"], core.brief_text(second))
+        self.assertIn("Task: do s1", second["text"].splitlines())
+        self.assertIn(
+            json.dumps(
+                {"leaves": [{"name": "s1", "task": "do s1", "edit": ["shared.py", "f1.py", "f0.py"], "read": []}]},
+                indent=2,
+            ),
+            second["text"],
+        )
+        self.assertIn(
+            json.dumps(
+                {"leaves": [{"name": "s0", "task": "do s0", "edit": ["shared.py", "f0.py"], "read": []}]},
+                indent=2,
+            ),
+            first["text"],
+        )
 
     def a_lane_waiting_on_a_split_lane_waits_for_its_last_session(self):
         items = shared_lane(3) + [step("after", ["after.py"], after=["s0"])]
-        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
-        result = core.plan(items, session_tokens=limit)
+        result = core.plan(items)
         consumer = next(i for i, lane in enumerate(result["lanes"]) if lane["steps"] == ["after"])
         self.assertEqual(result["lane_after"][str(consumer)], [2])
 
-    def file_sizes_task_length_and_the_charter_raise_the_estimate(self):
-        with tempfile.TemporaryDirectory() as root:
-            with open(os.path.join(root, "big.py"), "w") as handle:
-                handle.write("x" * 40000)
-            with open(os.path.join(root, "charter.md"), "w") as handle:
-                handle.write("y" * 8000)
-            small = core.plan([step("a", ["big.py"])], root=None)["lanes"][0]["tokens"]
-            sized = core.plan([step("a", ["big.py"])], root=root)
-            self.assertEqual(sized["sizes"], {"big.py": 40000})
-            self.assertEqual(
-                sized["lanes"][0]["tokens"] - small,
-                core.EDIT_PASSES * 10000 - core.NEW_FILE_TOKENS,
-            )
-            chartered = core.plan([step("a", ["big.py"])], root=root, charter="charter.md")
-            self.assertEqual(chartered["lanes"][0]["tokens"] - sized["lanes"][0]["tokens"], 2000)
-            wordy = core.plan([step("a", ["big.py"], task="t" * 4000)], root=root)
-            self.assertEqual(wordy["lanes"][0]["tokens"] - sized["lanes"][0]["tokens"], 1000 - 1)
-
-    def a_read_set_counts_toward_the_estimate(self):
-        with tempfile.TemporaryDirectory() as root:
-            with open(os.path.join(root, "near.py"), "w") as handle:
-                handle.write("z" * 4000)
-            alone = core.plan([step("a", ["a.py"])], root=root)
-            reading = core.plan([step("a", ["a.py"])], root=root, graph={"a.py": ["near.py"]})
-            self.assertEqual(reading["lanes"][0]["tokens"] - alone["lanes"][0]["tokens"], 1000)
-
-    def a_later_session_counts_what_earlier_sessions_wrote(self):
-        with tempfile.TemporaryDirectory() as root:
-            for index in range(3):
-                with open(os.path.join(root, "f%d.py" % index), "w") as handle:
-                    handle.write("x" * 40000)
-            items = [step("s%d" % i, ["shared.py", "f%d.py" % i]) for i in range(3)]
-            result = core.plan(items, root=root, session_tokens=1)
-        alone = core.SESSION_BASE_TOKENS + core.STEP_TOKENS + core._tokens(len("do s0"))
-        alone = alone + core.NEW_FILE_TOKENS + core.EDIT_PASSES * 10000
-        self.assertEqual(
-            [lane["tokens"] for lane in result["lanes"]], [alone, alone + 10000, alone + 20000]
-        )
-
-    def a_step_alone_above_the_limit_is_its_own_session(self):
-        items = shared_lane(3)
-        result = core.plan(items, session_tokens=1)
-        self.assertEqual(lane_steps(result), [["s0"], ["s1"], ["s2"]])
-        self.assertTrue(all(lane["tokens"] > 1 for lane in result["lanes"]))
-
-    def recorded_sizes_win_over_the_files_on_disk_so_a_resume_plans_the_same(self):
-        with tempfile.TemporaryDirectory() as root:
-            path = os.path.join(root, "a.py")
-            with open(path, "w") as handle:
-                handle.write("a" * 100)
-            first = core.plan([step("a", ["a.py"])], root=root)
-            with open(path, "a") as handle:
-                handle.write("a" * 100000)
-            grown = core.plan([step("a", ["a.py"])], root=root)
-            again = core.plan([step("a", ["a.py"])], root=root, sizes=first["sizes"])
-        self.assertNotEqual(grown["plan_id"], first["plan_id"])
-        self.assertEqual(again["plan_id"], first["plan_id"])
-        self.assertEqual(again["sizes"], {"a.py": 100})
-
-    def a_recorded_size_that_is_not_a_byte_count_reads_as_unknown(self):
-        self.assertEqual(
-            core.file_sizes(("a.py", "b.py", "c.py"), None, {"a.py": -1, "b.py": True, "c.py": 7}),
-            {"a.py": None, "b.py": None, "c.py": 7},
-        )
-
     def a_coupling_pair_names_the_sessions_its_steps_run_in(self):
         items = shared_lane(3) + [step("near", ["near.py"])]
-        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
-        result = core.plan(items, graph={"f2.py": ["near.py"]}, session_tokens=limit)
+        result = core.plan(items, graph={"f2.py": ["near.py"]})
         pairs = result["coupling_review"]
         self.assertEqual([pair["steps"] for pair in pairs], [["s2", "near"]])
         self.assertEqual(pairs[0]["lanes"], [2, 3])
@@ -1075,8 +1013,7 @@ class Sessions(unittest.TestCase):
             step("a", ["shared.py", "a.py"]),
             step("b", ["shared.py", "b.py"]),
         ]
-        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
-        result = core.plan(items, graph={"a.py": ["b.py"]}, session_tokens=limit)
+        result = core.plan(items, graph={"a.py": ["b.py"]})
         self.assertEqual(len(result["lanes"]), 2)
         self.assertNotIn("coupling_review", result)
 
@@ -1152,6 +1089,10 @@ class Referee(unittest.TestCase):
             "write and holds the MSP back.",
             brief["text"],
         )
+        self.assertIn("Task: do build", brief["text"].splitlines())
+        self.assertIn('"edit": [\n        "calc.py"\n      ],', brief["text"])
+        self.assertIn("Edit ONLY the files listed under `edit`.", brief["text"])
+        self.assertNotIn("Write-set for this Lane", brief["text"])
 
     def the_plan_refuses_a_step_writing_a_referee_path(self):
         with self.assertRaises(core.ValidationError) as caught:
@@ -1217,8 +1158,25 @@ class CheckAuthor(unittest.TestCase):
     def the_check_author_brief_names_its_files_and_probe_files_without_the_referee_line(self):
         text = core.plan([check_author(), calc_builder()])["check_authors"][0]["brief"]["text"]
         self.assertTrue(text.startswith("Lane check-author of MSP calc\n"))
-        self.assertIn("Task: do write-checks", text)
-        self.assertIn("the only files you may edit: tests/test_calc.py", text)
+        self.assertIn("Task: do write-checks", text.splitlines())
+        self.assertIn(
+            json.dumps(
+                {
+                    "leaves": [
+                        {
+                            "name": "write-checks",
+                            "task": "do write-checks",
+                            "edit": ["tests/test_calc.py"],
+                            "read": [],
+                        }
+                    ]
+                },
+                indent=2,
+            ),
+            text,
+        )
+        self.assertIn("Edit ONLY the files listed under `edit`.", text)
+        self.assertNotIn("Write-set for this Lane", text)
         self.assertIn("Probe files, the only files your probe may write: calc.py (and no others).", text)
         self.assertIn("leave the probe in place in the clone and never commit it", text)
         self.assertNotIn("are read-only", text)
@@ -1316,8 +1274,8 @@ class CheckAuthor(unittest.TestCase):
     def the_lock_tier_joins_the_plan_tiers(self):
         with_author = core.plan([check_author(), calc_builder()])
         without = core.plan([calc_builder(after=())])
-        self.assertEqual(core.plan_tiers(with_author), ("top",))
-        self.assertEqual(core.plan_tiers(without), ("top",))
+        self.assertEqual(core.plan_tiers(with_author), ("cheap", "top"))
+        self.assertEqual(core.plan_tiers(without), ("cheap",))
         cheap = core.plan([step("a", ["a.py"], complexity="simple")])
         self.assertEqual(core.plan_tiers(cheap), ("cheap",))
         cheap_locked = core.plan(
@@ -1354,7 +1312,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, OwnClone, ReadSetCap, Sessions, Referee, CheckAuthor):
+    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, SharedContext, OwnClone, ReadSetCap, Sessions, Referee, CheckAuthor):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

@@ -139,7 +139,10 @@ LANE_RECORD_KEYS = (
     "seeded",
     "seed_skipped",
     "seed_seconds",
+    "output_tail",
 )
+
+MAX_OUTPUT = 4000
 
 
 INSTALLED_FOLDERS = frozenset(("node_modules",))
@@ -783,6 +786,45 @@ def commit_paths(tree, paths, message, branch=None):
     return branch_commit(tree, msp_branch, required=True)
 
 
+def cluster_label(steps, index):
+    return steps[0] if len(steps) == 1 else "cluster-%d" % index
+
+
+def fanout_environ(env, steps, files, label, plan_id, tier, branch):
+    return {
+        **(os.environ if env is None else env),
+        "FANOUT_BRANCH": branch or "",
+        "FANOUT_CLUSTER": label,
+        "FANOUT_ITEM": steps[0],
+        "FANOUT_ITEMS": ",".join(steps),
+        "FANOUT_PLAN_ID": plan_id,
+        "FANOUT_TIER": tier or "",
+        "FANOUT_FILES": ",".join(sorted(set(files))),
+    }
+
+
+def _lane_environ(plan, lane, branch, env):
+    steps = list(plan["lanes"][lane]["steps"])
+    by_name = _steps_by_name(plan)
+    return fanout_environ(
+        env,
+        steps,
+        [path for name in steps for path in (by_name.get(name) or {}).get("files") or ()],
+        cluster_label(steps, lane),
+        plan["plan_id"],
+        plan["lanes"][lane].get("tier"),
+        branch,
+    )
+
+
+def output_tail(called, max_output):
+    if called["returned"] is not None:
+        return None
+    with open(called["stdout"], encoding="utf-8", errors="replace") as handle:
+        text = handle.read()
+    return text[-max_output:] if text else None
+
+
 def lane_record(lane, msp, state, **fields):
     base = dict.fromkeys(LANE_RECORD_KEYS)
     return {
@@ -795,35 +837,64 @@ def lane_record(lane, msp, state, **fields):
     }
 
 
-def _cross_producers(plan, lane, producers, trees, records):
+def _producer_msps(plan, lane, producers):
     lanes = plan["lanes"]
     own = lanes[lane]["msp"]
-    seen = ()
-    for producer in producers:
-        msp = lanes[producer]["msp"]
-        if msp == own or any(entry["msp"] == msp for entry in seen):
-            continue
-        seen = seen + (
-            {
-                "msp": msp,
-                "branch": trees[msp]["branch"],
-                "commit": records.get(producer, {}).get("commit"),
-            },
-        )
-    return seen
+    return tuple(sorted({lanes[producer]["msp"] for producer in producers} - {own}))
 
 
-def _worker_values(plan, lane, tree, models, run_dir, session_id):
+def _msp_lanes(plan, msp):
+    return tuple(index for index, entry in enumerate(plan["lanes"]) if entry["msp"] == msp)
+
+
+def _msp_head(tree, plan, msp, records):
+    commits = [
+        records[index]["commit"]
+        for index in _msp_lanes(plan, msp)
+        if records.get(index, {}).get("commit")
+    ]
+    head = None
+    for commit in commits:
+        if head is None or git_ok(["merge-base", "--is-ancestor", head, commit], tree):
+            head = commit
+    return head
+
+
+def _cross_producers(plan, lane, producers, trees, records):
+    tree = trees[plan["lanes"][lane]["msp"]]["path"]
+    return tuple(
+        {
+            "msp": msp,
+            "branch": trees[msp]["branch"],
+            "commit": _msp_head(tree, plan, msp, records),
+        }
+        for msp in _producer_msps(plan, lane, producers)
+    )
+
+
+def templated_task(plan, lane, label, template):
+    brief = plan["briefs"][lane]
+    rendered = (
+        template.replace("{cluster}", ", ".join(plan["lanes"][lane]["steps"]))
+        .replace("{spec}", brief["spec"])
+        .replace("{tier}", str(plan["lanes"][lane].get("tier") or ""))
+        .replace("{contract}", core.RETURN_CONTRACT)
+    )
+    return "Lane %d of MSP %s\n%s" % (lane, label, rendered)
+
+
+def _worker_values(plan, lane, tree, models, run_dir, session_id, template=None):
     brief = plan["briefs"][lane]
     tier = plan["lanes"][lane].get("tier")
+    label = tree.get("label") or tree["msp"]
     return {
-        "task": brief["text"],
+        "task": brief["text"] if template is None else templated_task(plan, lane, label, template),
         "model": (models or {}).get(tier, ""),
         "tier": tier,
         "worktree": tree["path"],
         "branch": tree["branch"],
         "lane": lane,
-        "msp": tree.get("label") or tree["msp"],
+        "msp": label,
         "charter": brief.get("charter"),
         "document": brief.get("document"),
         "run_dir": run_dir,
@@ -918,7 +989,7 @@ def _lane_outcome(called):
     return (judged, why) if limit is None else (LANE_PARKED, "usage limit: %s" % limit)
 
 
-def _verdict(lane, tree, started, merged, called, session_id):
+def _verdict(lane, tree, started, merged, called, session_id, max_output=MAX_OUTPUT):
     state, reason = _lane_outcome(called)
     return lane_record(
         lane,
@@ -934,6 +1005,7 @@ def _verdict(lane, tree, started, merged, called, session_id):
         started=started,
         finished=now(),
         session_id=session_id,
+        output_tail=output_tail(called, max_output),
     )
 
 
@@ -1044,6 +1116,8 @@ def dispatch(
     seeds=None,
     reask=None,
     stopped=None,
+    prompt_template=None,
+    max_output=MAX_OUTPUT,
 ):
     check_reply_templates(command, reask)
     check_models(plan, command, models)
@@ -1083,8 +1157,7 @@ def dispatch(
     with ThreadPoolExecutor(max_workers=cap) as pool:
         while pending or running or held:
             progressed = False
-            busy = {lanes[entry[0]]["msp"] for entry in running.values()}
-            for msp in sorted({lanes[lane]["msp"] for lane in held} - busy):
+            for msp in sorted({lanes[lane]["msp"] for lane in held}):
                 batch = [lane for lane in held if lanes[lane]["msp"] == msp]
                 landed, records = _land_batch(
                     plan, msp, tree_of[msp], batch, held, records, run_dir, settle, header
@@ -1122,7 +1195,6 @@ def dispatch(
                     )
                 pending = []
             waiting = ()
-            holding = {lanes[lane]["msp"] for lane in held}
             for lane in pending:
                 msp = lanes[lane]["msp"]
                 producers = edges.get(lane, ())
@@ -1145,7 +1217,7 @@ def dispatch(
                     )
                     progressed = True
                     continue
-                if len(running) >= cap or msp in holding:
+                if len(running) >= cap:
                     waiting = waiting + (lane,)
                     continue
                 bad = [p for p in producers if records[p].get("state") != "ok"]
@@ -1159,6 +1231,27 @@ def dispatch(
                             "blocked",
                             reason="producer Lane %d is %s"
                             % (bad[0], records[bad[0]].get("state")),
+                        ),
+                    )
+                    progressed = True
+                    continue
+                awaited = [
+                    member
+                    for producer_msp in _producer_msps(plan, lane, producers)
+                    for member in _msp_lanes(plan, producer_msp)
+                ]
+                if any(member not in records for member in awaited):
+                    waiting = waiting + (lane,)
+                    continue
+                if any(records[member].get("state") != "ok" for member in awaited):
+                    records = settle(
+                        records,
+                        lane,
+                        lane_record(
+                            lane,
+                            msp,
+                            "blocked",
+                            reason="dependencies can no longer be satisfied",
                         ),
                     )
                     progressed = True
@@ -1178,7 +1271,13 @@ def dispatch(
                 session = core.new_session_id()
                 folders = isolation.lane_folders(run_dir, lane)
                 values = _worker_values(
-                    plan, lane, {**tree, "path": folders["clone"]}, models, run_dir, session
+                    plan,
+                    lane,
+                    {**tree, "path": folders["clone"]},
+                    models,
+                    run_dir,
+                    session,
+                    prompt_template,
                 )
                 argv = build_argv(command, values)
                 asked = {"template": reask, "values": reask_values(values)}
@@ -1203,7 +1302,13 @@ def dispatch(
                     progressed = True
                     continue
                 future = pool.submit(
-                    worker_call, argv, asked, folders["clone"], files, env, confinement
+                    worker_call,
+                    argv,
+                    asked,
+                    folders["clone"],
+                    files,
+                    _lane_environ(plan, lane, tree["branch"], env),
+                    confinement,
                 )
                 running = {
                     **running,
@@ -1232,7 +1337,7 @@ def dispatch(
                     called = future.result()
                     tree = tree_of[lanes[lane]["msp"]]
                     judged = {
-                        **_verdict(lane, tree, started, merged, called, session),
+                        **_verdict(lane, tree, started, merged, called, session, max_output),
                         "clone": clone,
                         "start": start,
                         **_seed_fields(seeding),
@@ -1279,6 +1384,25 @@ def write_state(run_dir, state):
     path = os.path.join(run_dir, STATE_FILE)
     write_json(path, handoff.require(STATE_SCHEMA, state, path, "mitosis"))
     return state
+
+
+def _logged_order(entry):
+    index, record = entry
+    finished = record.get("finished")
+    return (finished is None, finished or "", index)
+
+
+def run_log_lines(plan, state):
+    entries = sorted(
+        ((int(index), record) for index, record in (state.get("lanes") or {}).items()),
+        key=_logged_order,
+    )
+    return tuple(json.dumps({**record, "plan_id": plan["plan_id"]}) for _, record in entries)
+
+
+def write_run_log(path, plan, state):
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.writelines(line + "\n" for line in run_log_lines(plan, state))
 
 
 def load_state(run_dir):
@@ -1419,17 +1543,14 @@ UNCHANGED_REASON = (
 )
 
 
-def _property_verdict(name, modes, unchanged):
+def _property_verdict(name, unchanged):
     if name in unchanged:
         return "not-applicable", UNCHANGED_REASON
-    if modes.get(name) == "serial":
-        return "not-applicable", "serial surface; the probe cannot run it headlessly"
     return None, None
 
 
 def msp_properties(plan, msp, unchanged=frozenset()):
     steps = _steps_by_name(plan)
-    modes = plan.get("verify_modes") or {}
     found = ()
     for name in plan["msps"][msp]["steps"]:
         acceptance = steps[name].get("acceptance") or []
@@ -1444,7 +1565,7 @@ def msp_properties(plan, msp, unchanged=frozenset()):
                 },
             )
             continue
-        outcome, reason = _property_verdict(name, modes, unchanged)
+        outcome, reason = _property_verdict(name, unchanged)
         for entry in acceptance:
             check = {"check": entry["check"]} if "check" in entry else {}
             found = found + (
@@ -3879,6 +4000,19 @@ def _lock_name(entry):
     return "%s-%d" % (LOCK_DIR, entry["msp"])
 
 
+def _check_author_environ(entry, plan_id, branch, env):
+    steps = list(entry["steps"])
+    return fanout_environ(
+        env,
+        steps,
+        entry["slice"],
+        cluster_label(steps, entry["msp"]),
+        plan_id,
+        core.LOCK_TIER,
+        branch,
+    )
+
+
 def _dispatch_check_author(entry, settings, command, models, sandbox, base):
     run_dir = settings["run_dir"]
     folders = isolation.lock_folders(run_dir, entry["msp"])
@@ -3907,7 +4041,16 @@ def _dispatch_check_author(entry, settings, command, models, sandbox, base):
             session_id=carried,
             **seeded,
         )
-    called = worker_call(argv, asked, folders["clone"], files, settings["env"], confinement)
+    called = worker_call(
+        argv,
+        asked,
+        folders["clone"],
+        files,
+        _check_author_environ(
+            entry, settings["plan_id"], settings["feature_branch"], settings["env"]
+        ),
+        confinement,
+    )
     judged, why = called_verdict(called)
     ran = {
         "stdout": called["stdout"],
@@ -4393,6 +4536,8 @@ def execute(
     gate_classes=None,
     gate_classes_sha256=None,
     reask_command=None,
+    prompt_template=None,
+    max_output=MAX_OUTPUT,
 ):
     prior = prior_state(run_dir, plan, resume)
     header = carried_header(header, prior)
@@ -4448,6 +4593,7 @@ def execute(
         "sandbox": sandbox,
         "seeds": seeds,
         "reask_command": reask_command,
+        "plan_id": plan["plan_id"],
     }
     os.makedirs(run_dir, exist_ok=True)
     write_json(os.path.join(run_dir, PLAN_FILE), plan)
@@ -4534,6 +4680,8 @@ def execute(
         seeds=seeds,
         reask=reask_command,
         stopped=stopped,
+        prompt_template=prompt_template,
+        max_output=max_output,
     )
     notify(
         observer,
