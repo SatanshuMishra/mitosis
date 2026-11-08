@@ -3,6 +3,27 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.14.0 - 2026-11-08
+
+Planning drops the estimates and findings that proved unreliable, and markers
+take one comma-separated value. This release breaks compatibility.
+
+- Install the pipeline release that accepts this result and run state before
+  installing this one; an older pipeline refuses mitosis's result and state.
+- The --session-tokens flag is removed, along with the token estimate on each Lane,
+  the session limit and the MSP dependency groups.
+- The plan no longer carries the version, clusters, coupling_order,
+  session_tokens or sizes keys, and the plan id no longer hashes a version key.
+  It adds `tier_notes`, `shared_context` and `verdict_groups`.
+- The lane-cycle and manifest-exports-nothing findings are removed, and exit 23
+  with them; an empty manifest now exits 0.
+- `--risk-markers` and `--serial-markers` take one comma-separated value, such
+  as `--risk-markers auth,billing`, and a repeated flag keeps the last value.
+  The old space-separated form, `--risk-markers auth billing`, now exits 2.
+  `--serial-verify-markers` is the new name for `--serial-markers`, which
+  stays as an alias.
+- `--dry-run` prints each Worker's command and builds nothing.
+
 ## 0.13.3 - 2026-11-06
 
 Plan refuses the worker commands a build would refuse.
