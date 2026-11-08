@@ -1073,6 +1073,12 @@ def planning_history(args):
     return core.trajectory_store(args.trajectory or core.DEFAULT_TRAJECTORY_STORE)
 
 
+def refused_steps(error):
+    return Refusal(
+        "the Steps did not validate:\n" + "\n".join("  " + line for line in error.errors)
+    )
+
+
 def build_plan(args, items, root, charter, graph):
     try:
         return core.plan(
@@ -1090,9 +1096,7 @@ def build_plan(args, items, root, charter, graph):
             briefs=not args.no_briefs,
         )
     except core.ValidationError as error:
-        raise Refusal(
-            "the Steps did not validate:\n" + "\n".join("  " + line for line in error.errors)
-        )
+        raise refused_steps(error)
 
 
 def saved_plan(path, items, charter, root):
@@ -1102,19 +1106,19 @@ def saved_plan(path, items, charter, root):
     missing = tuple(key for key in SAVED_PLAN_KEYS if key not in loaded)
     if missing:
         raise Refusal("--plan-file %s lacks %s" % (path, ", ".join(missing)))
-    authors = core.check_author_steps(items)
-    if authors and not loaded.get("check_authors"):
+    try:
+        steps = core.locked_steps(items, charter, root)
+    except core.ValidationError as error:
+        raise refused_steps(error)
+    if steps.authors and not loaded.get("check_authors"):
         raise Refusal(
             "--plan-file %s has no check_authors, but the items hold the check-author Step %s"
-            % (path, authors[0].get("name"))
+            % (path, steps.authors[0].get("name"))
         )
-    charter_locked, lock_errors = core.charter_locks(charter, root)
-    if lock_errors:
-        raise Refusal("; ".join(lock_errors))
-    locked = core._merged_locks(
-        core._merged_locks(loaded.get("locked") or (), charter_locked),
-        tuple(path for author in authors for path in core._files(author)),
-    )
+    claimed = core.saved_slice_errors(loaded.get("check_authors") or (), steps)
+    if claimed:
+        raise Refusal("--plan-file %s: %s" % (path, "; ".join(claimed)))
+    locked = core._merged_locks(loaded.get("locked") or (), steps.locked)
     if not locked and "locked" not in loaded:
         return loaded
     return {**loaded, "locked": list(locked)}
