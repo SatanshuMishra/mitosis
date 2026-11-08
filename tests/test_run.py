@@ -851,7 +851,7 @@ class Dispatch(RepoCase):
             self.assertEqual(by_step["later-%d" % n]["state"], "ok")
             self.assertEqual(by_step["refused-%d" % n]["state"], "failed")
 
-    def a_finished_lane_lands_only_when_no_sibling_is_writing_in_its_worktree(self):
+    def a_finished_lane_lands_while_a_sibling_still_runs(self):
         overlap = os.path.join(self.markers, "overlap")
         hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
         write(
@@ -864,9 +864,12 @@ class Dispatch(RepoCase):
         final = self.execute(plan, mode="slow-%d" % lane_named(plan, "b"))
         self.assertEqual({r["state"] for r in final["lanes"].values()}, {"ok"})
         self.assertTrue(all(r["commit"] for r in final["lanes"].values()))
-        self.assertFalse(os.path.exists(overlap), read(overlap) if os.path.exists(overlap) else "")
+        self.assertEqual(
+            read(overlap).splitlines(),
+            [os.path.join(self.markers, "running-%d" % lane_named(plan, "b"))],
+        )
 
-    def no_lane_starts_in_an_msp_while_one_of_its_lanes_waits_to_land(self):
+    def the_next_lane_of_an_msp_starts_while_a_sibling_still_runs(self):
         plan = core.plan(
             [step("a", ["a.txt"], msp="m"), step("c", ["c.txt"], msp="m"), step("e", ["e.txt"], msp="m")]
         )
@@ -874,7 +877,34 @@ class Dispatch(RepoCase):
         self.assertEqual({r["state"] for r in final["lanes"].values()}, {"ok"})
         branch = final["worktrees"][0]["branch"]
         landed = sh(["git", "log", "--reverse", "--format=%s", "main.." + branch], self.repo).splitlines()
-        self.assertEqual(landed, ["feat(ship): a", "feat(ship): c", "feat(ship): e"])
+        self.assertEqual(landed, ["feat(ship): a", "feat(ship): e", "feat(ship): c"])
+        lanes = final["lanes"]
+        self.assertLess(
+            lanes[str(lane_named(plan, "e"))]["started"], lanes[str(lane_named(plan, "c"))]["finished"]
+        )
+
+    def a_cross_msp_consumer_merges_the_head_its_producers_msp_landed(self):
+        plan = core.plan(
+            [
+                step("p", ["p.txt"], msp="P"),
+                step("q", ["q.txt"], msp="P", after=["p"]),
+                step("c", ["c.txt"], msp="C", after=["p"]),
+            ]
+        )
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        p, q, c = (lane_named(plan, name) for name in ("p", "q", "c"))
+        producer_tree = trees[plan["lanes"][p]["msp"]]
+        first = self.commit_file(producer_tree["path"], "p.txt", "produced\n")
+        second = self.commit_file(producer_tree["path"], "q.txt", "produced\n")
+        records = {
+            q: {"state": "ok", "commit": second},
+            p: {"state": "ok", "commit": first},
+        }
+        cross = run._cross_producers(plan, c, [p], trees, records)
+        self.assertEqual(
+            cross,
+            ({"msp": plan["lanes"][p]["msp"], "branch": producer_tree["branch"], "commit": second},),
+        )
 
     def a_step_waiting_on_a_held_lane_in_its_own_msp_runs_after_it_lands(self):
         plan = core.plan(
@@ -1293,16 +1323,18 @@ class Gate(RepoCase):
         self.assertEqual(len(plan["msps"]), 1)
         self.assertEqual(run.implementation_paths(plan, 0), ["impl.txt", "other.txt"])
 
-    def a_serial_acceptance_property_is_counted_not_run(self):
+    def a_serial_acceptance_property_is_run_and_judged_like_any_other(self):
         plan = core.plan([gated_step()], serial_markers=["impl.txt"])
         self.assertEqual(plan["verify_modes"]["impl"], "serial")
         trees = self.build(plan)
-        result = self.gate(plan, trees, accept="inert")
-        self.assertEqual(result["outcome"], "not-applicable")
+        result = self.gate(plan, trees, accept="real")
+        self.assertEqual(result["outcome"], "pass")
         self.assertFalse(result["blocks"])
-        self.assertEqual(result["counts"]["not-applicable"], 1)
-        self.assertIn("serial", result["properties"][0]["reason"])
-        self.assertEqual(self.gate_runs(), [])
+        self.assertEqual(
+            result["counts"], {"pass": 1, "weak": 0, "inert": 0, "inconclusive": 0, "not-applicable": 0}
+        )
+        self.assertEqual([p["outcome"] for p in result["properties"]], ["pass"])
+        self.assertEqual(len(self.gate_runs()), 3)
 
     def an_empty_acceptance_list_is_counted_and_does_not_block(self):
         plan = core.plan([step("a", ["a.txt"])])
