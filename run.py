@@ -813,17 +813,29 @@ def _cross_producers(plan, lane, producers, trees, records):
     return seen
 
 
-def _worker_values(plan, lane, tree, models, run_dir, session_id):
+def templated_task(plan, lane, label, template):
+    brief = plan["briefs"][lane]
+    rendered = (
+        template.replace("{cluster}", ", ".join(plan["lanes"][lane]["steps"]))
+        .replace("{spec}", brief["spec"])
+        .replace("{tier}", str(plan["lanes"][lane].get("tier") or ""))
+        .replace("{contract}", core.RETURN_CONTRACT)
+    )
+    return "Lane %d of MSP %s\n%s" % (lane, label, rendered)
+
+
+def _worker_values(plan, lane, tree, models, run_dir, session_id, template=None):
     brief = plan["briefs"][lane]
     tier = plan["lanes"][lane].get("tier")
+    label = tree.get("label") or tree["msp"]
     return {
-        "task": brief["text"],
+        "task": brief["text"] if template is None else templated_task(plan, lane, label, template),
         "model": (models or {}).get(tier, ""),
         "tier": tier,
         "worktree": tree["path"],
         "branch": tree["branch"],
         "lane": lane,
-        "msp": tree.get("label") or tree["msp"],
+        "msp": label,
         "charter": brief.get("charter"),
         "document": brief.get("document"),
         "run_dir": run_dir,
@@ -1044,6 +1056,7 @@ def dispatch(
     seeds=None,
     reask=None,
     stopped=None,
+    prompt_template=None,
 ):
     check_reply_templates(command, reask)
     check_models(plan, command, models)
@@ -1178,7 +1191,13 @@ def dispatch(
                 session = core.new_session_id()
                 folders = isolation.lane_folders(run_dir, lane)
                 values = _worker_values(
-                    plan, lane, {**tree, "path": folders["clone"]}, models, run_dir, session
+                    plan,
+                    lane,
+                    {**tree, "path": folders["clone"]},
+                    models,
+                    run_dir,
+                    session,
+                    prompt_template,
                 )
                 argv = build_argv(command, values)
                 asked = {"template": reask, "values": reask_values(values)}
@@ -4393,6 +4412,7 @@ def execute(
     gate_classes=None,
     gate_classes_sha256=None,
     reask_command=None,
+    prompt_template=None,
 ):
     prior = prior_state(run_dir, plan, resume)
     header = carried_header(header, prior)
@@ -4534,6 +4554,7 @@ def execute(
         seeds=seeds,
         reask=reask_command,
         stopped=stopped,
+        prompt_template=prompt_template,
     )
     notify(
         observer,

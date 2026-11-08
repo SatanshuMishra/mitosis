@@ -160,6 +160,8 @@ STAGE_FLAG_NAMES = (
     "--pr-impact",
     "--render-command",
     "--no-trajectories",
+    "--no-briefs",
+    "--prompt-template",
 )
 
 GATE_CLASS_KEYS = ("class", "reason", "test")
@@ -454,6 +456,18 @@ FLAG_SPECS = {
     "--no-trajectories": {
         "action": "store_true",
         "help": "plan from no history, reading neither --trajectory's file nor the default store",
+    },
+    "--no-briefs": {
+        "action": "store_true",
+        "help": "write plan.json without briefs or check-author briefs, a shape-only plan; "
+        "accepted only with --plan-only, since a run dispatches every Lane from its brief",
+    },
+    "--prompt-template": {
+        "metavar": "TEXT",
+        "help": "replaces each build Lane's brief with TEXT after its 'Lane N of MSP L' line; "
+        "placeholders {cluster} (the Lane's Steps), {spec} (its JSON leaves), {tier} and "
+        "{contract} (the Worker return contract); check-author Lanes keep their brief, and "
+        "the plan and its id never see the template",
     },
     "--worker-sandbox": {
         "action": "store_true",
@@ -1040,6 +1054,7 @@ def build_plan(args, items, root, charter, graph):
             root=root,
             coalesce_below=args.coalesce_below,
             coalesce_max=args.coalesce_max,
+            briefs=not args.no_briefs,
         )
     except core.ValidationError as error:
         raise Refusal(
@@ -2227,6 +2242,7 @@ def execute(args, plan, models, run_dir, repo, root, base=None):
             gate_classes=loaded_gate_classes(args)[0],
             gate_classes_sha256=loaded_gate_classes(args)[1],
             reask_command=args.reask_command,
+            prompt_template=args.prompt_template,
         ), None
     except (run.ConfigError, run.ResumeError) as error:
         raise Refusal(str(error))
@@ -2339,6 +2355,8 @@ def main(argv=None):
         parser.error("--revise revises the structure in the run directory, which --items never writes")
     if args.resume and args.revise:
         parser.error("--revise runs the structure stage, which --resume skips; run --plan-only --revise first")
+    if args.no_briefs and not args.plan_only:
+        parser.error("--no-briefs omits the briefs a run dispatches from; use it with --plan-only")
     if args.coalesce_max < 1:
         parser.error("--coalesce-max must be at least 1")
     if args.structure_samples < 1:

@@ -33,6 +33,8 @@ PLAN_KEYS = (
     "check_authors",
 )
 
+BRIEF_KEYS = ("briefs", "check_authors")
+
 ITEM_FIELDS = (
     "name",
     "task",
@@ -1217,9 +1219,22 @@ def _msp_label(items, msp):
     return tags[0] if tags else items[msp[0]]["name"]
 
 
-def _step_brief(item):
-    keys = ("name", "task", "files", "file_notes", "acceptance", "after", "assumptions", "spec_ref")
-    return {key: item[key] for key in keys if key in item}
+def _step_brief(item, pack, edit=None):
+    files = list(edit) if edit else list(pack.get("edit") or item.get("files") or [])
+    notes = {path: note for path, note in (item.get("file_notes") or {}).items() if path in files}
+    return {
+        "name": item["name"],
+        "task": item.get("task") or item.get("text") or item["name"],
+        "edit": files,
+        "read": list(pack.get("read") or []),
+        **({"acceptance": item["acceptance"]} if item.get("acceptance") else {}),
+        **({"file_notes": notes} if notes else {}),
+        **({"assumptions": item["assumptions"]} if item.get("assumptions") else {}),
+    }
+
+
+def brief_spec(leaves):
+    return json.dumps({"leaves": list(leaves)}, indent=2)
 
 
 def _lane_read_set(items, lane, packs, owned=()):
@@ -1267,6 +1282,18 @@ def probe_line(paths):
     return PROBE_LINE % ", ".join(paths)
 
 
+EDIT_RULE = "Edit ONLY the files listed under `edit`."
+
+
+def _task_line(leaves):
+    if len(leaves) == 1:
+        return "Task: " + leaves[0]["task"]
+    return (
+        "You own %d related pieces of work. Do them IN THE ORDER GIVEN - a later one may build "
+        "on an earlier one." % len(leaves)
+    )
+
+
 def brief_text(brief):
     header = ["Lane %s of MSP %s" % (brief["lane"], brief["msp_label"])]
     if brief.get("charter"):
@@ -1292,44 +1319,14 @@ def brief_text(brief):
             header.append(
                 "Left for later sessions, do not start them: %s" % ", ".join(session["later"])
             )
-    body = ["Steps, in this order:"]
-    for position, item in enumerate(brief["steps"], 1):
-        body.append("")
-        body.append("%d. %s" % (position, item["name"]))
-        body.append("   Task: %s" % item["task"])
-        body.append("   Write-set: %s" % ", ".join(item.get("files", ())))
-        for path, note in (item.get("file_notes") or {}).items():
-            body.append("   Note for %s: %s" % (path, note))
-        acceptance = item.get("acceptance") or []
-        if acceptance:
-            body.append(
-                "   Acceptance: %s"
-                % ", ".join("%s::%s" % (entry["file"], entry["test"]) for entry in acceptance)
-            )
-        else:
-            body.append("   Acceptance: none declared")
-        for assumption in item.get("assumptions") or []:
-            body.append("   Assumption: %s" % assumption)
-    footer = [
-        "Write-set for this Lane, the only files you may edit: %s" % ", ".join(brief["write_set"]),
-        CLONE_LINE,
-    ] + (
+    body = [_task_line(brief["steps"]), "", brief["spec"], "", EDIT_RULE]
+    footer = [CLONE_LINE] + (
         [probe_line(brief["probe_files"])] if brief.get("probe_files") is not None else []
     ) + (
         [referee_line(brief.get("locked") or ())]
         if brief.get("role") != CHECK_AUTHOR or brief.get("locked")
         else []
-    )
-    if brief.get("read_set"):
-        footer.append(
-            "Read-set, context only, never edit: %s%s"
-            % (
-                ", ".join(brief["read_set"]),
-                " (%d more not shown)" % brief["read_overflow"] if brief.get("read_overflow") else "",
-            )
-        )
-    footer.append("When finished, return your reply as structured output:")
-    footer.append(brief["return_contract"])
+    ) + ["When finished, return your reply as structured output:", brief["return_contract"]]
     return "\n\n".join("\n".join(part) for part in (header, body, footer)) + "\n"
 
 
@@ -1350,11 +1347,14 @@ def _brief(
         dict.fromkeys(path for i in tuple(lane) + tuple(earlier) for path in _files(items[i]))
     )
     read_set, read_overflow = _lane_read_set(items, lane, packs, write_set)
+    edit = write_set if tuple(earlier) else None
+    leaves = [_step_brief(items[i], packs.get(items[i]["name"], {}), edit) for i in lane]
     partial = {
         "lane": lane_index,
         "msp": msp_index,
         "msp_label": msp_label,
-        "steps": [_step_brief(items[i]) for i in lane],
+        "steps": leaves,
+        "spec": brief_spec(leaves),
         "write_set": list(write_set),
         "read_set": read_set,
         "read_overflow": read_overflow,
@@ -1373,12 +1373,14 @@ def _check_author_brief(parts, msp, label, probe, packs, charter, source, locked
     own = frozenset(referee.normalised(path) for path in write_set)
     others = [path for path in locked if referee.normalised(path) not in own]
     read_set, read_overflow = _lane_read_set(steps, tuple(range(len(steps))), packs, write_set)
+    leaves = [_step_brief(step, packs.get(step["name"], {}), step["files"]) for step in steps]
     partial = {
         "lane": CHECK_AUTHOR_LANE,
         "msp": msp,
         "msp_label": label,
         "role": CHECK_AUTHOR,
-        "steps": [_step_brief(step) for step in steps],
+        "steps": leaves,
+        "spec": brief_spec(leaves),
         "write_set": write_set,
         "read_set": read_set,
         "read_overflow": read_overflow,
@@ -1629,6 +1631,7 @@ def plan(
     root=None,
     coalesce_below=2.0,
     coalesce_max=4,
+    briefs=True,
 ):
     charter_locked, lock_errors = charter_locks(charter, root)
     checked = validate(items, root=root)
@@ -1737,7 +1740,8 @@ def plan(
             if parts
         ],
     }
-    kept = {key: body[key] for key in PLAN_KEYS if key in body and _present(body[key])}
+    shaped = body if briefs else {key: value for key, value in body.items() if key not in BRIEF_KEYS}
+    kept = {key: shaped[key] for key in PLAN_KEYS if key in shaped and _present(shaped[key])}
     identified = {**kept, "plan_id": plan_id_for(kept)}
     return {key: identified[key] for key in PLAN_KEYS if key in identified}
 

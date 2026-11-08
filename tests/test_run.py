@@ -76,11 +76,10 @@ running = os.path.join(marker_dir, "running-%s" % lane)
 open(running, "w").close()
 if mode == "slow-" + lane:
     time.sleep(1.5)
-prefix = "Write-set for this Lane, the only files you may edit: "
-write_set = []
-for line in task.splitlines():
-    if line.startswith(prefix):
-        write_set = [p.strip() for p in line[len(prefix):].split(",") if p.strip()]
+lines = task.splitlines()
+opened = lines.index("{")
+spec = json.loads("\n".join(lines[opened : lines.index("}", opened) + 1]))
+write_set = list(dict.fromkeys(path for leaf in spec["leaves"] for path in leaf["edit"]))
 with open(os.path.join(marker_dir, "lane-%s" % lane), "a") as handle:
     handle.write("ran; saw " + " ".join(sorted(os.listdir("."))) + "\n")
 if mode == "outlive":
@@ -413,6 +412,18 @@ class RepoCase(unittest.TestCase):
             for line in out.splitlines()
             if line.startswith("worktree ")
         )
+
+
+class PromptTemplate(unittest.TestCase):
+    def a_build_lane_task_is_the_lane_line_then_the_filled_template(self):
+        plan = core.plan(
+            [{"name": "a", "task": "do a", "files": ["a.py"], "source": None, "acceptance": [], "complexity": "simple"}],
+            history=(),
+        )
+        tree = {"msp": 0, "label": "a", "branch": "mitosis/a", "path": "/clone"}
+        values = run._worker_values(plan, 0, tree, {}, "/run", "s-1", "<{cluster}|{tier}>\n{contract}")
+        self.assertEqual(values["task"], "Lane 0 of MSP a\n<a|cheap>\n" + core.RETURN_CONTRACT)
+        self.assertEqual(run._worker_values(plan, 0, tree, {}, "/run", "s-1")["task"], plan["briefs"][0]["text"])
 
 
 class Worktrees(RepoCase):
@@ -2314,6 +2325,7 @@ def load_tests(loader, tests, pattern):
         Ship,
         Sessions,
         Clones,
+        PromptTemplate,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite

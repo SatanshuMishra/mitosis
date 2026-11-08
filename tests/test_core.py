@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -733,6 +734,9 @@ class Plan(unittest.TestCase):
             self.assertEqual(brief["text"], core.brief_text(brief))
             for s in brief["steps"]:
                 self.assertIn(s["task"], brief["text"])
+            self.assertIn(brief["spec"], brief["text"])
+            self.assertIn("Edit ONLY the files listed under `edit`.", brief["text"])
+            self.assertNotIn("Write-set for this Lane", brief["text"])
             self.assertIn("docs/charter.md", brief["text"])
             self.assertIn(SOURCE["path"], brief["text"])
             self.assertIn(core.RETURN_CONTRACT, brief["text"])
@@ -764,6 +768,13 @@ class Plan(unittest.TestCase):
             set(result), set(core.PLAN_KEYS) - {"locked", "check_authors", "tier_notes", "shared_context"}
         )
 
+    def a_shape_only_plan_holds_no_briefs(self):
+        shaped = core.plan([check_author(), calc_builder()], briefs=False)
+        self.assertNotIn("briefs", shaped)
+        self.assertNotIn("check_authors", shaped)
+        self.assertEqual(shaped["lanes"][0]["steps"], ["add"])
+        self.assertEqual(shaped["plan_id"], core.plan_id_for(shaped))
+
     def plan_refuses_invalid_items_with_messages(self):
         with self.assertRaises(core.ValidationError) as caught:
             core.plan([step("a", ["a.py"], after=["ghost"])])
@@ -793,7 +804,9 @@ class ReadSetCap(unittest.TestCase):
         brief = plan["briefs"][0]
         self.assertEqual(len(brief["read_set"]), core.CONTEXT_CAP)
         self.assertEqual(brief["read_overflow"], 120 - core.CONTEXT_CAP)
-        self.assertIn("(%d more not shown)" % (120 - core.CONTEXT_CAP), brief["text"])
+        self.assertNotIn("more not shown", brief["text"])
+        self.assertIn('"read": [\n        "n000.py",', brief["text"])
+        self.assertNotIn('"n%03d.py"' % core.CONTEXT_CAP, brief["text"])
         self.assertEqual(core.CONTEXT_CAP, 40)
 
     def every_session_of_a_lane_is_capped_on_its_own(self):
@@ -837,6 +850,8 @@ class OwnClone(unittest.TestCase):
             self.assertIn(core.CLONE_LINE, brief["text"])
             self.assertIn("changes the repository's index or history", brief["text"])
             self.assertNotIn("same worktree", brief["text"])
+            self.assertNotIn("Other agents are working in this tree", brief["text"])
+            self.assertIn("Edit ONLY the files listed under `edit`.\n\n" + core.CLONE_LINE, brief["text"])
 
 
 class GraphInput(unittest.TestCase):
@@ -964,6 +979,21 @@ class Sessions(unittest.TestCase):
         self.assertNotIn("Left for later sessions", third["text"])
         self.assertNotIn("earlier sessions", first["text"])
         self.assertEqual(second["text"], core.brief_text(second))
+        self.assertIn("Task: do s1", second["text"].splitlines())
+        self.assertIn(
+            json.dumps(
+                {"leaves": [{"name": "s1", "task": "do s1", "edit": ["shared.py", "f1.py", "f0.py"], "read": []}]},
+                indent=2,
+            ),
+            second["text"],
+        )
+        self.assertIn(
+            json.dumps(
+                {"leaves": [{"name": "s0", "task": "do s0", "edit": ["shared.py", "f0.py"], "read": []}]},
+                indent=2,
+            ),
+            first["text"],
+        )
 
     def a_lane_waiting_on_a_split_lane_waits_for_its_last_session(self):
         items = shared_lane(3) + [step("after", ["after.py"], after=["s0"])]
@@ -1059,6 +1089,10 @@ class Referee(unittest.TestCase):
             "write and holds the MSP back.",
             brief["text"],
         )
+        self.assertIn("Task: do build", brief["text"].splitlines())
+        self.assertIn('"edit": [\n        "calc.py"\n      ],', brief["text"])
+        self.assertIn("Edit ONLY the files listed under `edit`.", brief["text"])
+        self.assertNotIn("Write-set for this Lane", brief["text"])
 
     def the_plan_refuses_a_step_writing_a_referee_path(self):
         with self.assertRaises(core.ValidationError) as caught:
@@ -1124,8 +1158,25 @@ class CheckAuthor(unittest.TestCase):
     def the_check_author_brief_names_its_files_and_probe_files_without_the_referee_line(self):
         text = core.plan([check_author(), calc_builder()])["check_authors"][0]["brief"]["text"]
         self.assertTrue(text.startswith("Lane check-author of MSP calc\n"))
-        self.assertIn("Task: do write-checks", text)
-        self.assertIn("the only files you may edit: tests/test_calc.py", text)
+        self.assertIn("Task: do write-checks", text.splitlines())
+        self.assertIn(
+            json.dumps(
+                {
+                    "leaves": [
+                        {
+                            "name": "write-checks",
+                            "task": "do write-checks",
+                            "edit": ["tests/test_calc.py"],
+                            "read": [],
+                        }
+                    ]
+                },
+                indent=2,
+            ),
+            text,
+        )
+        self.assertIn("Edit ONLY the files listed under `edit`.", text)
+        self.assertNotIn("Write-set for this Lane", text)
         self.assertIn("Probe files, the only files your probe may write: calc.py (and no others).", text)
         self.assertIn("leave the probe in place in the clone and never commit it", text)
         self.assertNotIn("are read-only", text)

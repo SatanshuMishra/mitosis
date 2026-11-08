@@ -65,6 +65,11 @@ owned schema is re-asked once in that session, then fails its call. Every
 hand-off mitosis writes is checked against `contracts/` first; a state, result
 or lock record that fails exits 15.
 
+A brief holds fanout's Task line and JSON leaves inside the Lane header and
+the clone, referee and return lines. `--prompt-template` replaces a build
+Lane's brief after its Lane line, filling cluster, spec, tier and contract.
+`--no-briefs` drops the briefs, only with `--plan-only`; else exit 2.
+
 Tiers are labels; with `{model}` in the template, map every tier the plan
 assigns, or mitosis refuses to start:
 
