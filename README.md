@@ -85,10 +85,10 @@ claude plugin marketplace add SatanshuMishra/mitosis
 claude plugin install mitosis@mitosis
 ```
 
-The plugin carries the skill and the fifteen modules it runs — `core.py`,
+The plugin carries the skill and the seventeen modules it runs — `core.py`,
 `shape.py`, `decompose.py`, `briefs.py`, `run.py`, `isolation.py`, `pr_facts.py`,
 `mitosis.py`, `metrics.py`, `spend.py`, `metrics_writer.py`, `referee.py`,
-`mutants.py`, `outcomes.py`, `handoff.py` — the two data files they read,
+`mutants.py`, `outcomes.py`, `handoff.py`, `recon_text.py`, `step_names.py` — the two data files they read,
 `prices.json` and `catalogue.json`, and the `contracts/` folder beside the
 modules, which holds byte-identical copies of the program's
 `contracts/validator.py` and of every owned schema mitosis writes or reads.

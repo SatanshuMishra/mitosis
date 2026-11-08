@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import core
 import decompose
+import recon_text
 import shape
 
 
@@ -686,9 +687,20 @@ class Structure(unittest.TestCase):
     def a_structure_prompt_omits_the_decisions_block_when_there_are_none(self):
         document = frozen("docs/specs/change.md", "# Alpha\n\ntext\n\n# Omega\n\nmore\n")
         codebase = {"root": "/repo", "paths": ["core.py"], "overflow": 0}
+        charter_line = (
+            "Charter: CHARTER.md (binding on every Step; every Worker receives it unchanged)"
+        )
         expected = decompose.render_prompt(
             document, codebase, graph="graph.json", charter="CHARTER.md"
-        ).replace(decompose.CONTRACT, decompose.STRUCTURE_CONTRACT)
+        ).replace(decompose.CONTRACT, decompose.STRUCTURE_CONTRACT).replace(
+            charter_line,
+            charter_line
+            + "\n\n"
+            + "\n".join(recon_text.SPEC_LINES)
+            + "\n\nNo graphify graph is available, so fall back to the codebase: grep for the"
+            " surface the request names, then follow imports; for net-new work read the directory"
+            " structure and place it beside its neighbours.",
+        )
         self.assertNotEqual(expected, decompose.render_prompt(document, codebase))
         for decisions in (None, "", {"path": "d.md", "text": "", "count": 0}):
             for prior in (None, [], ()):
@@ -1493,6 +1505,112 @@ class PlainNumberedSections(unittest.TestCase):
         self.assertEqual(covered["claimed"], ["3.1"])
 
 
+RECON_RECORDER = """
+import json
+import os
+import sys
+
+here = os.path.dirname(os.path.abspath(__file__))
+sys.stdin.read()
+with open(os.path.join(here, "recon.json"), "w", encoding="utf-8") as handle:
+    json.dump({key: value for key, value in os.environ.items() if key.startswith("MITOSIS_RECON")}, handle)
+with open(os.path.join(here, "reply.txt"), encoding="utf-8") as handle:
+    reply = json.loads(handle.read())
+print(json.dumps({"type": "result", "session_id": "", "result": "done", "structured_output": {"reply": reply}}))
+"""
+
+
+def clean_environment():
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key not in ("CLAUDE_CODE_SESSION_ID", "PLUGIN_METRICS_PARENT", "SHIP")
+        and not key.startswith("MITOSIS_RECON")
+    }
+
+
+class ReconStructure(unittest.TestCase):
+    def the_structure_prompt_carries_the_recon_text_after_its_header(self):
+        document = frozen("docs/specs/change.md", "# Alpha\n\ntext\n")
+        codebase = {"root": "/repo", "paths": ["core.py"], "overflow": 0}
+        rendered = decompose.render_structure_prompt(document, codebase)
+        self.assertIn(
+            "\n\n  files           every file the work will EDIT. Include whatever this project\n",
+            rendered,
+        )
+        self.assertIn(
+            "\n\nNo graphify graph is available, so fall back to the codebase: grep for the"
+            " surface the request names, then follow imports; for net-new work read the directory"
+            " structure and place it beside its neighbours.\n\n",
+            rendered,
+        )
+        found = rendered.index("HOW TO FIND THE FILES")
+        self.assertGreater(found, rendered.index("sha256:"))
+        self.assertLess(found, rendered.index("Codebase root"))
+        self.assertNotIn("HOW TO FIND THE FILES", decompose.render_prompt(document, codebase))
+
+    def an_existing_graph_names_its_path_in_the_structure_prompt(self):
+        document = frozen("docs/specs/change.md", "# Alpha\n\ntext\n")
+        codebase = {"root": "/repo", "paths": ["core.py"], "overflow": 0}
+        with tempfile.TemporaryDirectory() as root:
+            graph_path = write(root, "graphify-out/graph.json", "{}")
+            rendered = decompose.render_structure_prompt(document, codebase, graph_path=graph_path)
+        self.assertIn(
+            "A graphify graph IS available at "
+            + graph_path
+            + " - query it FIRST, before grepping. It is the difference between a predicted file"
+            " list and a guessed one.",
+            rendered,
+        )
+
+    def a_prompt_template_replaces_the_structure_prompt(self):
+        reply = {"items": [bare("a")], "assumptions": [], "constraints": []}
+        with tempfile.TemporaryDirectory() as root:
+            result = run_structure(
+                root,
+                "# One\n\nbody\n",
+                reply,
+                prompt_template="ASK<{ask}>GRAPH<{graph}>SRC<{source}>",
+                env=clean_environment(),
+            )
+            prompt = received(root, "prompt.txt")
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(
+            prompt,
+            "ASK<# One\n\nbody\n>GRAPH<>SRC<No graphify graph is available, so fall back to the"
+            " codebase: grep for the surface the request names, then follow imports; for net-new"
+            " work read the directory structure and place it beside its neighbours.>",
+        )
+
+    def the_structure_call_carries_the_recon_environment(self):
+        reply = {"items": [bare("a")], "assumptions": [], "constraints": []}
+        with tempfile.TemporaryDirectory() as root:
+            document = write(root, "docs/spec.md", "# One\n\nbody\n")
+            result = decompose.structure(
+                document, worker(root, reply, RECON_RECORDER), root, env=clean_environment()
+            )
+            recorded = json.loads(received(root, "recon.json"))
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(
+            recorded,
+            {"MITOSIS_RECON": "1", "MITOSIS_RECON_ASK": "# One\n\nbody\n", "MITOSIS_RECON_GRAPH": ""},
+        )
+
+    def repeated_structure_names_get_a_dash_two_suffix(self):
+        reply = {
+            "items": [bare("dup"), bare("dup"), bare("dup"), bare("tail", after=["dup"])],
+            "assumptions": [],
+            "constraints": [],
+        }
+        with tempfile.TemporaryDirectory() as root:
+            result = run_structure(root, "# One\n\nbody\n", reply, env=clean_environment())
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(
+            [step["name"] for step in result["items"]], ["dup", "dup-2", "dup-2-2", "tail"]
+        )
+        self.assertEqual(result["items"][3]["after"], ["dup"])
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -1519,6 +1637,7 @@ def load_tests(loader, tests, pattern):
         SpawnReplies,
         StructureReask,
         PlainNumberedSections,
+        ReconStructure,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite

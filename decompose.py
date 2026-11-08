@@ -9,8 +9,10 @@ import subprocess
 
 import core
 import handoff
+import recon_text
 import run
 import shape
+import step_names
 
 RETURN_KEYS = ("items", "assumptions", "constraints")
 
@@ -538,9 +540,14 @@ def _prior_lines(prior):
     return [PRIOR_HEADING, json.dumps(list(prior), separators=(",", ":"))]
 
 
-def _render(document, codebase, graph, charter, decisions, prior, contract):
+def _recon_parts(graph_path):
+    return [list(recon_text.SPEC_LINES), [recon_text.source_line(graph_path)]]
+
+
+def _render(document, codebase, graph, charter, decisions, prior, contract, recon=()):
     parts = [
         _header_lines(document, charter),
+        *recon,
         _codebase_lines(codebase),
         _graph_lines(graph),
         _decisions_lines(decisions),
@@ -557,10 +564,12 @@ def render_prompt(document, codebase, graph=None, charter=None):
 
 
 def render_structure_prompt(
-    document, codebase, graph=None, charter=None, decisions=None, prior=None
+    document, codebase, graph=None, charter=None, decisions=None, prior=None, graph_path=None
 ):
     contract = DELTA_CONTRACT if prior else STRUCTURE_CONTRACT
-    return _render(document, codebase, graph, charter, decisions, prior, contract)
+    return _render(
+        document, codebase, graph, charter, decisions, prior, contract, _recon_parts(graph_path)
+    )
 
 
 def build_argv(template, substitutions):
@@ -1057,6 +1066,11 @@ def _delta_return(prior, value):
     return {"items": items, **carried, "errors": errors}
 
 
+def _renamed_return(value):
+    parsed = parse_return(value)
+    return {**parsed, "items": step_names.renamed(list(parsed["items"]))}
+
+
 def _assemble_structure(frozen, spawned, log, root, prior=None):
     if prior:
         return _assemble(
@@ -1067,7 +1081,9 @@ def _assemble_structure(frozen, spawned, log, root, prior=None):
             core.STRUCTURE_ITEM_FIELDS,
             parse=lambda value: _delta_return(prior, value),
         )
-    assembled = _assemble(frozen, spawned, log, root, core.STRUCTURE_ITEM_FIELDS)
+    assembled = _assemble(
+        frozen, spawned, log, root, core.STRUCTURE_ITEM_FIELDS, parse=_renamed_return
+    )
     return {**assembled, "errors": assembled["errors"] + _task_errors(assembled["items"])}
 
 
@@ -1093,12 +1109,22 @@ def sample_structures(
     env=None,
     on_sessions=None,
     reask=None,
+    graph_path=None,
+    prompt_template=None,
 ):
     count = samples if isinstance(samples, int) and samples > 0 else 1
     frozen = freeze(document)
-    prompt = render_structure_prompt(
-        frozen, inventory(root, cap), graph, charter, decisions, prior
+    prompt = (
+        recon_text.prompt(frozen["text"], graph_path, prompt_template, STRUCTURE_CONTRACT)
+        if prompt_template and not prior
+        else render_structure_prompt(
+            frozen, inventory(root, cap), graph, charter, decisions, prior, graph_path
+        )
     )
+    recon_env = {
+        **(os.environ if env is None else env),
+        **recon_text.environment(frozen["text"], graph_path),
+    }
     schema = call_schema_text()
     logs = _sample_logs(log, count)
     jobs = [
@@ -1114,7 +1140,7 @@ def sample_structures(
         for sample_log in logs
     ]
     read = _reader(parse_delta if prior else parse_return)
-    spawned = spawn_replies(jobs, count, root, read, REPLY_SCHEMA, reask=reask, env=env)
+    spawned = spawn_replies(jobs, count, root, read, REPLY_SCHEMA, reask=reask, env=recon_env)
     if on_sessions is not None:
         on_sessions([one["session_id"] for one in spawned])
     return [
@@ -1136,6 +1162,8 @@ def structure(
     prior=None,
     reask=None,
     env=None,
+    graph_path=None,
+    prompt_template=None,
 ):
     return sample_structures(
         1,
@@ -1151,6 +1179,8 @@ def structure(
         prior=prior,
         reask=reask,
         env=env,
+        graph_path=graph_path,
+        prompt_template=prompt_template,
     )[0]
 
 
