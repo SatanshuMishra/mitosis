@@ -28,7 +28,7 @@ PLAN_KEYS = (
     "lane_order",
     "coalesce",
     "coupling_review",
-    "coupling_order",
+    "verdict_groups",
     "counts",
     "session_tokens",
     "sizes",
@@ -100,15 +100,6 @@ COMPLEXITY_VALUES = ("simple", "complex")
 TIERS = ("top", "cheap")
 
 VERIFY_MODES = ("serial", "offload")
-
-COUPLING_SIGNALS = (
-    "import-adjacency",
-    "shared-risk-marker",
-    "recorded-regression",
-    "same-migration-directory",
-)
-
-SERIALIZING_SIGNALS = ("shared-risk-marker", "recorded-regression", "same-migration-directory")
 
 COUNT_KEYS = ("missing_paths", "no_acceptance", "assumptions")
 
@@ -803,14 +794,6 @@ def marker_matches(path, marker):
     return risk_marker_matches(path, marker)
 
 
-def _marker_hits(paths, markers):
-    return tuple(
-        marker
-        for marker in (markers or ())
-        if any(risk_marker_matches(path, marker) for path in paths)
-    )
-
-
 def _paths_match(a, b):
     return a == b or a.endswith("/" + b) or b.endswith("/" + a)
 
@@ -866,23 +849,9 @@ def history_tier_bump(item, trajectories):
     return bool(parts), ", ".join(parts)
 
 
-def _surface(paths):
-    return {"name": "", "files": sorted(paths)}
-
-
-def _went_wrong(entry):
-    return entry.get("outcome") in ("reverted", "speculative", "failed", "regressed") or bool(
-        entry.get("regressed")
-    )
-
-
-def _regression_links(history, left, right):
-    a, b = _surface(left), _surface(right)
-    return any(
-        (_entry_matches_item(entry, a) and _entry_regresses_item(entry, b))
-        or (_entry_matches_item(entry, b) and _entry_regresses_item(entry, a))
-        or (_went_wrong(entry) and _entry_matches_item(entry, a) and _entry_matches_item(entry, b))
-        for entry in (history or ())
+def _regression_links(left, right):
+    return any(_entry_regresses_item(e, right["item"]) for e in left["matched"]) or any(
+        _entry_regresses_item(e, left["item"]) for e in right["matched"]
     )
 
 
@@ -922,78 +891,83 @@ def _tiered(item, risk_markers, history):
     return ("top", "history: " + reason) if bump else (tier, None)
 
 
-def _numbered(path):
-    return bool(re.match(r"\d+", os.path.basename(_norm(path))))
+def _item_graph_files(file_paths, adj_keys):
+    return {k for f in file_paths for k in adj_keys if _paths_match(f, k)}
 
 
-def _adjacent(graph, left, right):
-    return any(n in right for a in left for n in _neighbours(graph, a)) or any(
-        n in left for b in right for n in _neighbours(graph, b)
+def _migration_apps(file_paths):
+    return {
+        norm.split("migrations/")[0].rstrip("/")
+        for norm in (f.replace("\\", "/") for f in file_paths)
+        if "migrations/" in norm and norm.endswith(".py")
+    }
+
+
+def _file_coupling(graph):
+    linked = sorted(
+        {
+            pair
+            for path in (graph or {})
+            for neighbour in _neighbours(graph, path)
+            if neighbour != _norm(path)
+            for pair in ((_norm(path), neighbour), (neighbour, _norm(path)))
+        }
     )
+    return {
+        path: frozenset(neighbour for _, neighbour in group)
+        for path, group in itertools.groupby(linked, key=lambda pair: pair[0])
+    }
 
 
-def _pair_signals(left, right, graph, risk_markers, history):
-    signals = []
-    if _adjacent(graph, left, right):
-        signals.append("import-adjacency")
-    if set(_marker_hits(left, risk_markers)) & set(_marker_hits(right, risk_markers)):
-        signals.append("shared-risk-marker")
-    if _regression_links(history, left, right):
-        signals.append("recorded-regression")
-    left_dirs = {os.path.dirname(p) for p in left if _numbered(p)}
-    right_dirs = {os.path.dirname(p) for p in right if _numbered(p)}
-    if left_dirs & right_dirs:
-        signals.append("same-migration-directory")
-    return signals
+def _coupling_side(item, adj_keys, history):
+    files = frozenset(_files(item))
+    return {
+        "item": item,
+        "files": files,
+        "graph_files": _item_graph_files(files, adj_keys),
+        "matched": tuple(e for e in history if _entry_matches_item(e, item)),
+    }
 
 
-def coupling_default(signals):
-    return "serialize" if any(s in SERIALIZING_SIGNALS for s in signals) else "parallel"
+def _pair_signals(left, right, graph, risk_markers):
+    adjacent = any(
+        bf in graph.get(af, ()) for af in left["graph_files"] for bf in right["graph_files"]
+    )
+    shared = sorted(
+        {
+            m
+            for m in risk_markers
+            if any(marker_matches(f, m) for f in left["files"])
+            and any(marker_matches(f, m) for f in right["files"])
+        }
+    )
+    regression = _regression_links(left, right)
+    mig = sorted(_migration_apps(left["files"]) & _migration_apps(right["files"]))
+    signals = (
+        (("import-adjacent",) if adjacent else ())
+        + tuple("shared-risk-marker:" + m for m in shared)
+        + (("regression-history",) if regression else ())
+        + tuple("same-migration-app:" + (m or "<root>") for m in mig)
+    )
+    return list(signals), "serialize" if (shared or regression or mig) else "parallel"
 
 
 def _ordered(items, a, b, by_name):
     return _waits_on(items, a, b, by_name) or _waits_on(items, b, a, by_name)
 
 
-def _disjoint_signals(items, a, b, graph, risk_markers, history):
-    left = frozenset(_files(items[a]))
-    right = frozenset(_files(items[b]))
-    if left & right:
-        return []
-    return _pair_signals(left, right, graph, risk_markers, history)
-
-
-def order_coupled(items, graph=None, risk_markers=(), history=()):
-    lane_of = _owners(lane_items(items), len(items))
-    current = list(items)
-    added = ()
-    for a in range(len(items)):
-        for b in range(a + 1, len(items)):
-            if lane_of[a] == lane_of[b]:
-                continue
-            signals = _disjoint_signals(items, a, b, graph, risk_markers, history)
-            if coupling_default(signals) != "serialize":
-                continue
-            if _ordered(current, a, b, _by_name(current)):
-                continue
-            first, then = items[a]["name"], items[b]["name"]
-            current = [
-                {**item, "after": list(_after(item)) + [first]} if index == b else item
-                for index, item in enumerate(current)
-            ]
-            added = added + ({"first": first, "then": then, "signals": signals},)
-    return current, list(added)
-
-
 def coupling_review(items, lanes, graph, risk_markers=(), history=()):
     lane_of = _owners(lanes, len(items))
     by_name = _by_name(items)
+    adjacency = _file_coupling(graph)
+    adj_keys = list(adjacency)
+    sides = [_coupling_side(item, adj_keys, history or ()) for item in items]
     review = []
     for a in range(len(items)):
         for b in range(a + 1, len(items)):
-            if lane_of[a] == lane_of[b]:
+            if lane_of[a] == lane_of[b] or sides[a]["files"] & sides[b]["files"]:
                 continue
-            signals = _disjoint_signals(items, a, b, graph, risk_markers, history)
+            signals, default = _pair_signals(sides[a], sides[b], adjacency, risk_markers or ())
             if not signals or _ordered(items, a, b, by_name):
                 continue
             review.append(
@@ -1001,10 +975,21 @@ def coupling_review(items, lanes, graph, risk_markers=(), history=()):
                     "steps": [items[a]["name"], items[b]["name"]],
                     "lanes": [lane_of[a], lane_of[b]],
                     "signals": signals,
-                    "default": coupling_default(signals),
+                    "default": default,
                 }
             )
     return review
+
+
+def verdict_groups(review):
+    buckets = {}
+    for e in review:
+        buckets.setdefault((tuple(e["signals"]), e["default"]), []).append(e["steps"])
+    out = [
+        {"signals": list(sig), "default": dflt, "count": len(pairs), "pairs": pairs}
+        for (sig, dflt), pairs in buckets.items()
+    ]
+    return sorted(out, key=lambda g: (-g["count"], g["signals"]))
 
 
 def _acceptance_files(item):
@@ -1778,7 +1763,6 @@ def plan(
     refused = referee_errors(items, locked)
     if refused:
         raise ValidationError(refused)
-    items, ordered = order_coupled(items, graph, risk_markers, history)
     msps = msp_items(items)
     slice_errors, placed = check_author_slices(authors, items, msps)
     if slice_errors:
@@ -1801,6 +1785,7 @@ def plan(
     )
     groups = tuple(session_batches(lane) for lane in whole)
     lanes = tuple(batch for group in groups for batch in group)
+    review = _session_review(coupling_review(items, whole, graph, risk_markers, history), items, lanes)
     places = _session_places(groups)
     group_tiers = tuple(
         "top" if any(tiers[items[i]["name"]] == "top" for i in lane) else "cheap" for lane in whole
@@ -1848,10 +1833,8 @@ def plan(
         "context_packs": packs,
         "lane_order": list(lane_order(lanes, edges, items)),
         "coalesce": coalesce(items, lanes, tiers, edges, budget),
-        "coupling_review": _session_review(
-            coupling_review(items, whole, graph, risk_markers, history), items, lanes
-        ),
-        "coupling_order": ordered,
+        "coupling_review": review,
+        "verdict_groups": verdict_groups(review),
         "counts": checked["counts"],
         "session_tokens": session_tokens,
         "sizes": measured,
