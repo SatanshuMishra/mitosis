@@ -113,7 +113,7 @@ class Coalesce(accept.Case):
 
 
 class PlanId(accept.Case):
-    def plan_id_is_fanouts_hash_of_the_plan(self):
+    def plan_id_is_a_hash_of_the_plan(self):
         completed, plan = self.planned([S("a", ["a.py"])])
         self.assertNotIn("version", plan.keys())
         expected = hashlib.sha256(

@@ -790,23 +790,23 @@ def cluster_label(steps, index):
     return steps[0] if len(steps) == 1 else "cluster-%d" % index
 
 
-def fanout_environ(env, steps, files, label, plan_id, tier, branch):
+def worker_environ(env, steps, files, label, plan_id, tier, branch):
     return {
         **(os.environ if env is None else env),
-        "FANOUT_BRANCH": branch or "",
-        "FANOUT_CLUSTER": label,
-        "FANOUT_ITEM": steps[0],
-        "FANOUT_ITEMS": ",".join(steps),
-        "FANOUT_PLAN_ID": plan_id,
-        "FANOUT_TIER": tier or "",
-        "FANOUT_FILES": ",".join(sorted(set(files))),
+        "MITOSIS_BRANCH": branch or "",
+        "MITOSIS_CLUSTER": label,
+        "MITOSIS_ITEM": steps[0],
+        "MITOSIS_ITEMS": ",".join(steps),
+        "MITOSIS_PLAN_ID": plan_id,
+        "MITOSIS_TIER": tier or "",
+        "MITOSIS_FILES": ",".join(sorted(set(files))),
     }
 
 
 def _lane_environ(plan, lane, branch, env):
     steps = list(plan["lanes"][lane]["steps"])
     by_name = _steps_by_name(plan)
-    return fanout_environ(
+    return worker_environ(
         env,
         steps,
         [path for name in steps for path in (by_name.get(name) or {}).get("files") or ()],
@@ -4002,7 +4002,7 @@ def _lock_name(entry):
 
 def _check_author_environ(entry, plan_id, branch, env):
     steps = list(entry["steps"])
-    return fanout_environ(
+    return worker_environ(
         env,
         steps,
         entry["slice"],

@@ -454,7 +454,7 @@ FLAG_SPECS = {
     "--trajectory": {
         "metavar": "PATH",
         "help": "a JSONL file of prior outcomes to read history from and append gate outcomes "
-        "to; without it, history is read from FANOUT_TRAJECTORY_STORE or "
+        "to; without it, history is read from MITOSIS_TRAJECTORY_STORE or "
         "~/.claude/mcp-servers/trajectory-kb/data/trajectories.jsonl and nothing is appended; "
         "a missing file reads as no history, and a recorded revert, speculative ship, caused "
         "regression or two prior traps on a surface raises its tier and never lowers one",

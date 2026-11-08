@@ -105,19 +105,19 @@ class PromptTemplate(accept.Case):
 
 
 class WorkerEnvironment(accept.Case):
-    def a_worker_sees_fanouts_variables(self):
+    def a_worker_sees_the_plan_variables(self):
         completed = self.scratch.full_run([S("a", ["a.py", "b.py"], complexity="simple")])
         state = self.state(completed)
         lines = self.stderr_of(self.lane("a", completed), completed).splitlines()
         branch = ((state.get("worktrees") or [{}])[0]).get("branch")
         for line in (
-            "FANOUT_ITEM=a",
-            "FANOUT_ITEMS=a",
-            "FANOUT_CLUSTER=a",
-            "FANOUT_TIER=cheap",
-            "FANOUT_FILES=a.py,b.py",
-            "FANOUT_PLAN_ID=%s" % state.get("plan_id"),
-            "FANOUT_BRANCH=%s" % branch,
+            "MITOSIS_ITEM=a",
+            "MITOSIS_ITEMS=a",
+            "MITOSIS_CLUSTER=a",
+            "MITOSIS_TIER=cheap",
+            "MITOSIS_FILES=a.py,b.py",
+            "MITOSIS_PLAN_ID=%s" % state.get("plan_id"),
+            "MITOSIS_BRANCH=%s" % branch,
         ):
             self.assertIn(line, lines, tail(completed))
 
