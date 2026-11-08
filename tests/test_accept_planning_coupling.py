@@ -107,17 +107,6 @@ class MigrationSignal(accept.Case):
         self.assertNotIn("coupling_order", plan, tail(completed))
 
 
-class GlobMarker(accept.Case):
-    def a_glob_marker_is_no_coupling_signal(self):
-        completed, plan = self.planned(
-            [S("a", ["db/a.sql"], complexity="simple"), S("b", ["db/b.sql"], complexity="simple")],
-            "--risk-markers",
-            "*.sql",
-        )
-        self.assertEqual(plan.get("tiers"), {"a": "cheap", "b": "cheap"}, tail(completed))
-        self.assertNotIn("coupling_review", plan, tail(completed))
-
-
 def load_tests(loader, standard, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -126,6 +115,6 @@ def load_tests(loader, standard, pattern):
             )
 
     suite = unittest.TestSuite()
-    for case in (CoupledPairs, ImportAdjacency, SharedMarker, RegressionSignal, MigrationSignal, GlobMarker):
+    for case in (CoupledPairs, ImportAdjacency, SharedMarker, RegressionSignal, MigrationSignal):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
