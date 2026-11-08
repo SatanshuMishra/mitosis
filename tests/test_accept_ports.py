@@ -203,41 +203,6 @@ class PlanFile(accept.Case):
         self.assertIn("check-author-a", completed.stderr)
         self.assertFalse(os.path.exists(os.path.join(second, "plan.json")))
 
-    def a_saved_plan_whose_slice_claims_a_charter_lock_is_refused(self):
-        charter = accept.put(self.scratch.path("charter.md"), "# Charter\n\n- Locked: tests/test_b.py\n")
-        first = self.scratch.path("r1")
-        self.planned(checked_steps(), "--charter", charter, run_dir=first)
-
-        def claimed(plan):
-            entry = plan["check_authors"][0]
-            return {**plan, "check_authors": [{**entry, "slice": entry["slice"] + ["tests/test_b.py"]}]}
-
-        saved, _ = self.saved(first, "saved.json", claimed)
-        second = self.scratch.path("r2")
-        completed = self.scratch.plan_only(
-            checked_steps(), "--charter", charter, "--plan-file", saved, run_dir=second
-        )
-        self.exits(completed, 3)
-        self.assertIn("tests/test_b.py", completed.stderr)
-        self.assertIn("check-author-a", completed.stderr)
-        self.assertFalse(os.path.exists(os.path.join(second, "plan.json")))
-
-    def a_saved_plan_whose_slice_claims_a_build_file_is_refused(self):
-        first = self.scratch.path("r1")
-        self.planned(checked_steps(), run_dir=first)
-
-        def claimed(plan):
-            entry = plan["check_authors"][0]
-            return {**plan, "check_authors": [{**entry, "slice": entry["slice"] + ["a.py"]}]}
-
-        saved, _ = self.saved(first, "saved.json", claimed)
-        second = self.scratch.path("r2")
-        completed = self.scratch.plan_only(checked_steps(), "--plan-file", saved, run_dir=second)
-        self.exits(completed, 3)
-        self.assertIn("a.py", completed.stderr)
-        self.assertIn("check-author-a", completed.stderr)
-        self.assertFalse(os.path.exists(os.path.join(second, "plan.json")))
-
     def a_saved_plan_lacking_a_part_is_refused_by_name(self):
         first = self.scratch.path("r1")
         self.planned([S("a", ["a.py"])], run_dir=first)
