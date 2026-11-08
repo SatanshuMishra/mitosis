@@ -1,7 +1,7 @@
 # any-input-decompose: Mitosis takes any input fanout takes (asks, specs, items)
 Status: parked
-Updated: 2026-11-08T01:01:13.471Z
-Next ids: c2 D2 R1 S1
+Updated: 2026-11-08T22:52:21.132Z
+Next ids: c2 D3 R1 S1
 
 ## Goal
 
@@ -22,6 +22,7 @@ After the fanout-parity pull request merges, sync main, rerun lock_feasibility o
 ## Decisions in force
 
 - D1 hand-off: build any-input-decompose unattended after fanout-parity merges: Hand off any-input-decompose once fanout-parity merges, from the merged main.
+- D2 hand-off: build the handed-off any-input spec unattended from a clean clone: Build from a clean clone at ~/.mitosis/mitosis/checkouts/any-input-decompose/mitosis, the drive carrying every stage unattended.
 
 ## Open risks
 
