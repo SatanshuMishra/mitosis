@@ -1,6 +1,6 @@
 # any-input-decompose: Mitosis takes any input fanout takes (asks, specs, items)
-Status: active
-Updated: 2026-11-08T01:01:10.493Z
+Status: parked
+Updated: 2026-11-08T01:01:13.471Z
 Next ids: c2 D2 R1 S1
 
 ## Goal
