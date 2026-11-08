@@ -1,5 +1,0 @@
-# A departure from fanout needs measured evidence
-
-Status: accepted
-
-mitosis is built from fanout and takes, plans and builds an input as fanout's code does. A behaviour that differs from fanout's, whether mitosis already has it or would add it, stays only when a measurement, or a reproduction run on a scratch repository with scripted Workers, shows fanout's behaviour failing where mitosis's does not; a rationale, a code-reading cross-reference or a changelog line does not back it. An audit of 133 differences backed 14 and reverted 36 to fanout's behaviour, among them tiering, coupling review, plan shape, context packs, two plan findings and cross-MSP scheduling, while the gate, the locks, reconcile and isolation stay because they are what mitosis adds. We chose evidence over judgement because fanout works on real inputs and most departures, once replayed, changed plans and builds with nothing to show they helped. fanout's no-return-contract and no-branches flags are not ported, because they would undo structured replies and leave the gate no commit to test.

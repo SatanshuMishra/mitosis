@@ -3,6 +3,14 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.14.1 - 2026-11-08
+
+Names only; plans and builds are unchanged.
+
+- A Worker's variables are now MITOSIS_BRANCH, MITOSIS_CLUSTER, MITOSIS_ITEM,
+  MITOSIS_ITEMS, MITOSIS_PLAN_ID, MITOSIS_TIER and MITOSIS_FILES.
+- MITOSIS_TRAJECTORY_STORE overrides the default history store.
+
 ## 0.14.0 - 2026-11-08
 
 Planning drops the estimates and findings that proved unreliable, and markers

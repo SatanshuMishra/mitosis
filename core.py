@@ -9,7 +9,7 @@ import uuid
 
 import referee
 
-__version__ = "0.14.0"
+__version__ = "0.14.1"
 
 PLAN_KEYS = (
     "plan_id",
@@ -825,7 +825,7 @@ def validate(items, root=None, required=None):
 GLOB_CHARACTERS = "*?["
 
 DEFAULT_TRAJECTORY_STORE = os.environ.get(
-    "FANOUT_TRAJECTORY_STORE",
+    "MITOSIS_TRAJECTORY_STORE",
     os.path.expanduser("~/.claude/mcp-servers/trajectory-kb/data/trajectories.jsonl"),
 )
 

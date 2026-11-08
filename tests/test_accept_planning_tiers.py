@@ -30,7 +30,7 @@ class TwoAxisTier(accept.Case):
 
 class HistoryStore(accept.Case):
     def default_store(self):
-        return {"FANOUT_TRAJECTORY_STORE": store(self.scratch, {"files": ["a.py"], "outcome": "reverted"})}
+        return {"MITOSIS_TRAJECTORY_STORE": store(self.scratch, {"files": ["a.py"], "outcome": "reverted"})}
 
     def the_default_store_raises_a_tier(self):
         completed, plan = self.planned(

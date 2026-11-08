@@ -138,7 +138,7 @@ _Avoid_: design doc, plan
 ## Plans
 
 **Departure**:
-A behaviour in which mitosis differs from fanout; it stays only when a measurement or a reproduction shows fanout's behaviour failing where mitosis's does not.
+A behaviour in which mitosis differs from the reference planner, the planner mitosis is built from; it stays only when a measurement or a reproduction shows the reference planner's behaviour failing where mitosis's does not.
 _Avoid_: improvement, divergence
 
 **Tier note**:

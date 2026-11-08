@@ -22,7 +22,16 @@ STRIPPED = (
     "SHIP",
     "PAGER",
     "GH_PROMPT_DISABLED",
-    "FANOUT_TRAJECTORY_STORE",
+    "MITOSIS_TRAJECTORY_STORE",
+)
+WORKER_VARIABLES = (
+    "MITOSIS_BRANCH",
+    "MITOSIS_CLUSTER",
+    "MITOSIS_ITEM",
+    "MITOSIS_ITEMS",
+    "MITOSIS_PLAN_ID",
+    "MITOSIS_TIER",
+    "MITOSIS_FILES",
 )
 GIT_IDENTITY = {
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -47,7 +56,7 @@ prompt = sys.argv[1]
 session = sys.argv[2]
 sys.stderr.write(prompt + "\n")
 for key in sorted(os.environ):
-    if key.startswith("FANOUT_") and key != "FANOUT_TRAJECTORY_STORE":
+    if key.startswith("MITOSIS_") and key != "MITOSIS_TRAJECTORY_STORE":
         sys.stderr.write("%s=%s\n" % (key, os.environ[key]))
 sys.stderr.flush()
 
@@ -221,7 +230,7 @@ def kept_environment():
     return {
         key: value
         for key, value in os.environ.items()
-        if key not in STRIPPED and not key.startswith("GIT_") and not key.startswith("FANOUT_")
+        if key not in STRIPPED and not key.startswith("GIT_") and key not in WORKER_VARIABLES
     }
 
 
@@ -251,7 +260,7 @@ class Scratch:
             "HOME": os.path.join(self.tmp, "home"),
             "PLUGIN_METRICS_DIR": os.path.join(self.tmp, "metrics"),
             "PYTHONDONTWRITEBYTECODE": "1",
-            "FANOUT_TRAJECTORY_STORE": self.no_history,
+            "MITOSIS_TRAJECTORY_STORE": self.no_history,
         }
         self.labels = 0
         os.makedirs(self.env["HOME"])
@@ -435,7 +444,7 @@ class EntryDirectory(Case):
 
 
 class BriefFormat(Case):
-    def a_lane_brief_carries_fanouts_task_line_and_json_spec(self):
+    def a_lane_brief_carries_a_task_line_and_json_spec(self):
         completed, plan = self.planned([S("a", ["a.py"], task="Build a")])
         briefs = plan.get("briefs") or []
         self.assertTrue(briefs, "plan.json holds no briefs" + tail(completed))
