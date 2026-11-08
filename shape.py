@@ -76,8 +76,6 @@ def scalars(items):
 
 
 FINDING_KINDS = (
-    "lane-cycle",
-    "manifest-exports-nothing",
     "shared-directory-manifest",
     "group-is-a-chain",
     "fused-without-overlap",
@@ -297,25 +295,6 @@ def manifest_gaps(items):
     return found
 
 
-def _manifest_findings_export(items):
-    return [
-        {
-            "kind": "manifest-exports-nothing",
-            "detail": "%s owns %s but is built before %d of the %d Steps whose modules it must "
-            "export, so it cannot export them: %s"
-            % (
-                _name(items, gap["owner"]),
-                gap["manifest"],
-                gap["siblings"] - gap["reached"],
-                gap["siblings"],
-                ", ".join(gap["missing"][:4])
-                + ("" if len(gap["missing"]) <= 4 else " and %d more" % (len(gap["missing"]) - 4)),
-            ),
-        }
-        for gap in manifest_gaps(items)
-    ]
-
-
 def _directory(path):
     return path.rpartition("/")[0]
 
@@ -343,27 +322,6 @@ def _manifest_findings(items):
                     }
                 )
     return found
-
-
-def _cycle_findings(items, _lanes):
-    lanes = core.uncontracted_lanes(items)
-    return [
-        {
-            "kind": "lane-cycle",
-            "detail": "%d Lanes waited on each other, so one Worker builds them all in one"
-            " sitting; the first three are %s%s"
-            % (
-                len(component),
-                "; ".join(
-                    "Lane %d holds %s"
-                    % (lane, ", ".join(_name(items, i) for i in lanes[lane]))
-                    for lane in component[:3]
-                ),
-                "" if len(component) <= 3 else ", and %d more are not listed" % (len(component) - 3),
-            ),
-        }
-        for component in core.lane_cycles(items, lanes)
-    ]
 
 
 def _capped(found):
@@ -401,9 +359,7 @@ def findings(items):
         return []
     groups = _groups(items)
     found = (
-        _cycle_findings(items, lanes)
-        + _manifest_findings_export(items)
-        + _chain_findings(items, groups, by_name)
+        _chain_findings(items, groups, by_name)
         + _fused_findings(items, lanes, by_name)
         + _manifest_findings(items)
     )

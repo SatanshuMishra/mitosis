@@ -190,12 +190,6 @@ unclaimed sections and assumptions, each keeping its Step from `simple`.
 No finding stops a run; each is printed, put in its pull request and given an
 exit code.
 
-`manifest-exports-nothing` means a package's export file is written before the
-modules it exports; give it a Step with an `after` edge reaching them.
-
-`lane-cycle` means Lanes waited on each other, so mitosis fuses them;
-`lane_cycles` and `fused_without_overlap` count the cost.
-
 An assumption you would decide differently goes into the decisions file,
 `--decisions PATH` (default: `<document without extension>.decisions.md` when
 it exists), which binds every later structure dispatch and brief.

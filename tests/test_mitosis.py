@@ -942,11 +942,11 @@ class ItemsEntryPointRefusals(unittest.TestCase):
 
     def a_package_supplied_as_items_that_would_ship_empty_is_planned_and_reported(self):
         code, out, err = self._run(self.EMPTY_MANIFEST)
-        self.assertEqual(code, mitosis.EXIT_MANIFEST, err + out)
-        self.assertIn("manifest-exports-nothing", out)
+        self.assertEqual(code, 0, err + out)
+        self.assertNotIn("manifest-exports-nothing", out)
         found = json.loads(out.splitlines()[-1])
-        self.assertEqual(found["exit"], mitosis.EXIT_MANIFEST)
-        self.assertIn("nothing exported", found["attention"][0])
+        self.assertEqual(found["exit"], 0)
+        self.assertEqual([line for line in found["attention"] if "nothing exported" in line], [])
 
     def a_sound_plan_supplied_as_items_still_ships(self):
         code, out, err = self._run(
@@ -2210,14 +2210,12 @@ class LaneCycleFusion(unittest.TestCase):
     ]
 
     def a_cycle_spanning_msps_stays_two_msps_and_is_never_refused(self):
-        self.assertEqual(mitosis.manifest_lines(self.CYCLIC), ())
-        self.assertEqual(mitosis.planned_code(self.CYCLIC), mitosis.EXIT_SHIPPED)
+        self.assertEqual(mitosis.findings(None, {"items": self.CYCLIC}), [])
         self.assertEqual(core.msp_items(self.CYCLIC), ((0, 2), (1,)))
         self.assertEqual(core.lane_items(self.CYCLIC), ((0, 2), (1,)))
 
     def a_plan_without_a_cycle_keeps_its_msps_apart(self):
-        self.assertEqual(mitosis.manifest_lines(self.CLEAN), ())
-        self.assertEqual(mitosis.planned_code(self.CLEAN), mitosis.EXIT_SHIPPED)
+        self.assertEqual(mitosis.findings(None, {"items": self.CLEAN}), [])
         self.assertEqual(len(core.msp_items(self.CLEAN)), 2)
 
     def a_manifest_that_can_export_nothing_is_reported_not_refused(self):
@@ -2227,11 +2225,17 @@ class LaneCycleFusion(unittest.TestCase):
             {"name": "parse", "task": "t", "files": ["pkg/parse.py"], "source": None,
              "acceptance": [], "after": ["gregorian"]},
         ]
-        reported = mitosis.manifest_lines(items)
-        self.assertEqual(len(reported), 1)
-        self.assertIn("pkg/__init__.py would ship with nothing exported", reported[0])
-        self.assertIn("gregorian owns it", reported[0])
-        self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_MANIFEST)
+        self.assertEqual(mitosis.findings(None, {"items": items}), [])
+        self.assertEqual(
+            mitosis.empty_manifests(items),
+            [
+                {"owner": 0, "manifest": "pkg/__init__.py", "siblings": 1, "reached": 0,
+                 "missing": ["parse"]}
+            ],
+        )
+        self.assertEqual(
+            [line for line in mitosis.shape_lines(items) if "manifest-exports-nothing" in line], []
+        )
 
     def a_manifest_written_last_is_never_refused(self):
         items = [
@@ -2240,15 +2244,18 @@ class LaneCycleFusion(unittest.TestCase):
             {"name": "surface", "task": "t", "files": ["pkg/__init__.py"], "source": None,
              "acceptance": [], "after": ["parse"]},
         ]
-        self.assertEqual(mitosis.manifest_lines(items), ())
-        self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_SHIPPED)
+        self.assertEqual(mitosis.findings(None, {"items": items}), [])
+        self.assertEqual(mitosis.empty_manifests(items), [])
 
     def a_cycle_inside_one_msp_is_contracted_and_never_refused(self):
         items = [{**step, "msp": "m"} for step in self.CYCLIC]
-        self.assertEqual(mitosis.manifest_lines(items), ())
-        self.assertEqual(mitosis.planned_code(items), mitosis.EXIT_SHIPPED)
+        self.assertEqual(mitosis.findings(None, {"items": items}), [])
+        self.assertEqual(
+            [line for line in mitosis.shape_lines(items) if line.startswith("lane-cycle")], []
+        )
 
     def an_outcome_line_states_the_meaning_of_every_exit_code(self):
+        self.assertNotIn(23, mitosis.EXIT_MEANING)
         for code, meaning in mitosis.EXIT_MEANING.items():
             with self.subTest(code=code):
                 lines = mitosis.outcome_lines(None, None, "/run", code)

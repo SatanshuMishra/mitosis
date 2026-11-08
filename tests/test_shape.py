@@ -157,8 +157,8 @@ class Scalars(unittest.TestCase):
 
     def two_steps_that_wait_on_each_other_score_as_one_lane(self):
         items = [
-            step("a", ["a.py"], after=["b"]),
-            step("b", ["b.py"], after=["a"]),
+            step("a", ["a.py"], after=["b"], msp="m"),
+            step("b", ["b.py"], after=["a"], msp="m"),
         ]
         result = shape.scalars(items)
         self.assertEqual(result["lanes"], 1)
@@ -374,39 +374,28 @@ class Findings(unittest.TestCase):
 
     def findings_are_ordered_by_severity_so_a_cause_precedes_its_symptoms(self):
         items = [
-            step("a1", ["pkg/a.py"]),
-            step("a2", ["pkg/a.py"]),
-            step("b1", ["pkg/b.py"], after=["a1"]),
-            step("b2", ["pkg/b.py"]),
-            step("c", ["c.py"], after=["a1"]),
-            step("d", ["d.py"], after=["b2"]),
-            step("a3", ["pkg/a.py"], after=["b2"]),
-            step("surface", ["pkg/__init__.py"]),
+            step("x", ["pkg/__init__.py", "pkg/x.py"]),
+            step("y", ["pkg/__init__.py", "pkg/y.py"]),
+            step("z", ["pkg/y.py", "z.py"]),
         ]
         found = shape.findings(items)
         listed = [entry["kind"] for entry in found]
-        self.assertEqual(
-            listed[:3], ["lane-cycle", "manifest-exports-nothing", "fused-without-overlap"]
-        )
+        self.assertEqual(listed, ["shared-directory-manifest", "fused-without-overlap"])
         self.assertNotEqual(listed, sorted(listed))
         order = [shape.FINDING_KINDS.index(entry["kind"]) for entry in found]
         self.assertEqual(order, sorted(order))
 
     def a_lane_cycle_names_the_lanes_that_wait_on_each_other(self):
         items = [
-            step("a1", ["pkg/a.py"]),
-            step("a2", ["pkg/a.py"]),
-            step("b1", ["pkg/b.py"], after=["a1"]),
-            step("b2", ["pkg/b.py"]),
-            step("c", ["c.py"], after=["a1"]),
-            step("d", ["d.py"], after=["b2"]),
-            step("a3", ["pkg/a.py"], after=["b2"]),
+            step("a1", ["pkg/a.py"], msp="m"),
+            step("a2", ["pkg/a.py"], msp="m"),
+            step("b1", ["pkg/b.py"], after=["a1"], msp="m"),
+            step("b2", ["pkg/b.py"], msp="m"),
+            step("c", ["c.py"], after=["a1"], msp="m"),
+            step("d", ["d.py"], after=["b2"], msp="m"),
+            step("a3", ["pkg/a.py"], after=["b2"], msp="m"),
         ]
-        cycles = of_kind(shape.findings(items), "lane-cycle")
-        self.assertEqual(len(cycles), 1)
-        self.assertIn("one Worker builds them all in one sitting", cycles[0]["detail"])
-        self.assertIn("a1", cycles[0]["detail"])
-        self.assertIn("b1", cycles[0]["detail"])
+        self.assertEqual(of_kind(shape.findings(items), "lane-cycle"), [])
         self.assertEqual(shape.scalars(items)["lane_cycles"], 2)
         self.assertEqual(len(core.lane_items(items)), 3)
 
@@ -463,10 +452,14 @@ class ManifestExport(unittest.TestCase):
             step("parse", ["pkg/parse.py"], after=["gregorian"]),
             step("format", ["pkg/format.py"], after=["gregorian"]),
         ]
-        found = of_kind(shape.findings(items), "manifest-exports-nothing")
-        self.assertEqual(len(found), 1)
-        self.assertIn("pkg/__init__.py", found[0]["detail"])
-        self.assertIn("parse", found[0]["detail"])
+        self.assertEqual(
+            shape.manifest_gaps(items),
+            [
+                {"owner": 0, "manifest": "pkg/__init__.py", "siblings": 2, "reached": 0,
+                 "missing": ["format", "parse"]}
+            ],
+        )
+        self.assertNotIn("manifest-exports-nothing", kinds(shape.findings(items)))
 
     def a_manifest_owner_that_reaches_every_module_is_not_reported(self):
         items = [
@@ -474,7 +467,7 @@ class ManifestExport(unittest.TestCase):
             step("format", ["pkg/format.py"]),
             step("surface", ["pkg/__init__.py"], after=["parse", "format"]),
         ]
-        self.assertEqual(of_kind(shape.findings(items), "manifest-exports-nothing"), [])
+        self.assertEqual(shape.manifest_gaps(items), [])
 
     def reachability_through_another_step_counts(self):
         items = [
@@ -482,11 +475,11 @@ class ManifestExport(unittest.TestCase):
             step("parser", ["pkg/parser.py"], after=["lexer"]),
             step("surface", ["pkg/__init__.py"], after=["parser"]),
         ]
-        self.assertEqual(of_kind(shape.findings(items), "manifest-exports-nothing"), [])
+        self.assertEqual(shape.manifest_gaps(items), [])
 
     def a_package_whose_only_module_is_the_manifest_is_not_reported(self):
         items = [step("solo", ["pkg/__init__.py"]), step("other", ["elsewhere/thing.py"])]
-        self.assertEqual(of_kind(shape.findings(items), "manifest-exports-nothing"), [])
+        self.assertEqual(shape.manifest_gaps(items), [])
 
     def a_late_co_owner_repairs_an_early_one_and_nothing_is_reported(self):
         items = [
@@ -494,7 +487,7 @@ class ManifestExport(unittest.TestCase):
             step("parse", ["pkg/parse.py"], after=["skeleton"]),
             step("surface", ["pkg/__init__.py"], after=["parse"]),
         ]
-        self.assertEqual(of_kind(shape.findings(items), "manifest-exports-nothing"), [])
+        self.assertEqual(shape.manifest_gaps(items), [])
 
     def a_manifest_with_no_owner_that_reaches_its_modules_is_still_reported(self):
         items = [
@@ -502,8 +495,13 @@ class ManifestExport(unittest.TestCase):
             step("also-early", ["pkg/__init__.py"]),
             step("parse", ["pkg/parse.py"], after=["skeleton"]),
         ]
-        found = of_kind(shape.findings(items), "manifest-exports-nothing")
-        self.assertEqual(len(found), 1)
+        self.assertEqual(
+            shape.manifest_gaps(items),
+            [
+                {"owner": 0, "manifest": "pkg/__init__.py", "siblings": 1, "reached": 0,
+                 "missing": ["parse"]}
+            ],
+        )
 
     def one_manifest_file_yields_at_most_one_finding(self):
         items = [
@@ -512,7 +510,13 @@ class ManifestExport(unittest.TestCase):
             step("c", ["pkg/__init__.py"]),
             step("mod", ["pkg/mod.py"], after=["a"]),
         ]
-        self.assertEqual(len(of_kind(shape.findings(items), "manifest-exports-nothing")), 1)
+        self.assertEqual(
+            shape.manifest_gaps(items),
+            [
+                {"owner": 0, "manifest": "pkg/__init__.py", "siblings": 1, "reached": 0,
+                 "missing": ["mod"]}
+            ],
+        )
 
     def a_manifest_at_the_repository_root_still_finds_its_siblings(self):
         items = [
@@ -520,20 +524,24 @@ class ManifestExport(unittest.TestCase):
             step("parser", ["parser.ts"], after=["skeleton"]),
             step("writer", ["writer.ts"], after=["skeleton"]),
         ]
-        found = of_kind(shape.findings(items), "manifest-exports-nothing")
-        self.assertEqual(len(found), 1)
-        self.assertIn("index.ts", found[0]["detail"])
+        self.assertEqual(
+            shape.manifest_gaps(items),
+            [
+                {"owner": 0, "manifest": "index.ts", "siblings": 2, "reached": 0,
+                 "missing": ["parser", "writer"]}
+            ],
+        )
 
     def a_root_manifest_does_not_claim_files_in_subdirectories(self):
         items = [
             step("skeleton", ["index.ts"]),
             step("nested", ["src/deep.ts"], after=["skeleton"]),
         ]
-        self.assertEqual(of_kind(shape.findings(items), "manifest-exports-nothing"), [])
+        self.assertEqual(shape.manifest_gaps(items), [])
 
     def a_manifest_owner_that_owns_the_modules_itself_is_not_reported(self):
         items = [step("all", ["pkg/__init__.py", "pkg/a.py", "pkg/b.py"])]
-        self.assertEqual(of_kind(shape.findings(items), "manifest-exports-nothing"), [])
+        self.assertEqual(shape.manifest_gaps(items), [])
 
     def the_check_covers_other_ecosystems_manifest_names(self):
         for manifest in ("index.ts", "mod.rs", "index.js"):
@@ -543,7 +551,11 @@ class ManifestExport(unittest.TestCase):
                     step("leaf", ["pkg/leaf.x"], after=["root"]),
                 ]
                 self.assertEqual(
-                    len(of_kind(shape.findings(items), "manifest-exports-nothing")), 1
+                    shape.manifest_gaps(items),
+                    [
+                        {"owner": 0, "manifest": "pkg/" + manifest, "siblings": 1,
+                         "reached": 0, "missing": ["leaf"]}
+                    ],
                 )
 
     def a_manifest_finding_outranks_the_symptoms_it_causes(self):
@@ -552,8 +564,8 @@ class ManifestExport(unittest.TestCase):
             step("parse", ["pkg/parse.py"], after=["gregorian"]),
             step("format", ["pkg/format.py"], after=["gregorian"]),
         ]
-        listed = [entry["kind"] for entry in shape.findings(items)]
-        self.assertEqual(listed[0], "manifest-exports-nothing")
+        self.assertEqual(len(shape.manifest_gaps(items)), 1)
+        self.assertNotIn("manifest-exports-nothing", kinds(shape.findings(items)))
 
 
 def load_tests(loader, tests, pattern):
