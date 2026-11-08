@@ -3,6 +3,35 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.14.1 - 2026-11-08
+
+Names only; plans and builds are unchanged.
+
+- A Worker's variables are now MITOSIS_BRANCH, MITOSIS_CLUSTER, MITOSIS_ITEM,
+  MITOSIS_ITEMS, MITOSIS_PLAN_ID, MITOSIS_TIER and MITOSIS_FILES.
+- MITOSIS_TRAJECTORY_STORE overrides the default history store.
+
+## 0.14.0 - 2026-11-08
+
+Planning drops the estimates and findings that proved unreliable, and markers
+take one comma-separated value. This release breaks compatibility.
+
+- Install the pipeline release that accepts this result and run state before
+  installing this one; an older pipeline refuses mitosis's result and state.
+- The --session-tokens flag is removed, along with the token estimate on each Lane,
+  the session limit and the MSP dependency groups.
+- The plan no longer carries the version, clusters, coupling_order,
+  session_tokens or sizes keys, and the plan id no longer hashes a version key.
+  It adds `tier_notes`, `shared_context` and `verdict_groups`.
+- The lane-cycle and manifest-exports-nothing findings are removed, and exit 23
+  with them; an empty manifest now exits 0.
+- `--risk-markers` and `--serial-markers` take one comma-separated value, such
+  as `--risk-markers auth,billing`, and a repeated flag keeps the last value.
+  The old space-separated form, `--risk-markers auth billing`, now exits 2.
+  `--serial-verify-markers` is the new name for `--serial-markers`, which
+  stays as an alias.
+- `--dry-run` prints each Worker's command and builds nothing.
+
 ## 0.13.3 - 2026-11-06
 
 Plan refuses the worker commands a build would refuse.
@@ -215,8 +244,7 @@ own commit.
 - Every Step of a Lane is its own Worker session, run in Step order on its
   MSP's branch, and lands its own commit with the subject
   `<type>(<scope>): <step>`, or chore with no scope when the run names no
-  type, and its task's first sentence as the body. `--session-tokens` only
-  sizes the estimate.
+  type, and its task's first sentence as the body.
 
 ## 0.8.0 - 2026-10-28
 
@@ -365,12 +393,6 @@ in a row on its MSP's branch.
   its Step count, the length of each task, the sizes of its write-set and
   read-set files, the charter and document every session reads, and, for a
   later session of a split Lane, the files the earlier sessions wrote.
-- A Lane estimated above the new `--session-tokens` flag, 150000 by default,
-  is split in its Step order into consecutive Lanes. Each waits on the one
-  before it, runs once that one has landed, may edit every file the earlier
-  sessions wrote, and its brief names the Steps they built and the Steps left
-  for later sessions. A Lane waiting on a split Lane waits on its last
-  session.
 - The plan-stage report prints each Lane's estimate, names every split Lane
   and its sessions, and names a Step whose estimate alone is above the limit.
   The JSON summary gives each Lane its session position.

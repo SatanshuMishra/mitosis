@@ -124,3 +124,43 @@ _Avoid_: return line, last JSON line
 **Re-ask**:
 A second turn of the same model session, sent through the re-ask command with the schema errors of a reply that failed, whose reply is judged once more and never re-asked again.
 _Avoid_: retry, re-dispatch
+
+## Inputs
+
+**Ask**:
+A plain-text request for work, from one line to a few paragraphs, given one per line; mitosis plans each ask on its own and in parallel.
+_Avoid_: task, prompt, crude input
+
+**Spec**:
+A document with sections that describes work, written by any author in any format.
+_Avoid_: design doc, plan
+
+## Plans
+
+**Departure**:
+A behaviour in which mitosis differs from the reference planner, the planner mitosis is built from; it stays only when a measurement or a reproduction shows the reference planner's behaviour failing where mitosis's does not.
+_Avoid_: improvement, divergence
+
+**Tier note**:
+A line of a plan that says why a Step's tier was raised: its blast radius, its complexity, a risk marker or a recorded breakage.
+_Avoid_: tier reason, bump reason
+
+**Coupled pair**:
+Two Lanes a coupling signal links, which mitosis flags for a verdict and never orders itself.
+_Avoid_: ordered pair, conflict
+
+**Verdict group**:
+The coupled pairs that share one set of coupling signals, answered by one verdict.
+_Avoid_: pair group, cluster
+
+**Shared context**:
+A file two or more Steps read but none edits, listed once for all of them.
+_Avoid_: common files
+
+**Saved plan**:
+A plan file mitosis builds as written, with the charter's locks and its check authors' files merged back into its locked list.
+_Avoid_: plan replay
+
+**Output tail**:
+The end of a Worker's last reply, kept in its Lane record when no valid reply came back.
+_Avoid_: raw output, log tail

@@ -32,8 +32,6 @@ EXIT_FOREIGN = 8
 
 EXIT_REFEREE = 9
 
-EXIT_MANIFEST = 23
-
 TIMEOUT_NOTICE = "mitosis: --timeout is deprecated and ignored; mitosis has no wall-clock limit"
 
 EXIT_HANDOFF = 15
@@ -59,7 +57,7 @@ MSP_EXIT = {
 
 GATE_EXIT = {"gate-inert": 20, "gate-inconclusive": 21, "gate-weak": 24}
 
-EXIT_SEVERITY = (9, 7, 8, 24, 20, 21, 23, 22, 10, 12, 11, 13, 6, 4)
+EXIT_SEVERITY = (9, 7, 8, 24, 20, 21, 22, 10, 12, 11, 13, 6, 4)
 
 EXIT_MEANING = {
     EXIT_SHIPPED: "every MSP reached shipped, pushed, unchanged or committed, and reconcile found "
@@ -73,8 +71,6 @@ EXIT_MEANING = {
     "owns and also changes",
     EXIT_FOREIGN: "a Lane changed a file another Lane of its MSP owns and had already committed",
     EXIT_REFEREE: "a Worker wrote a referee path; mitosis restored it and held its MSP back",
-    EXIT_MANIFEST: "a branch is pushed or a pull request open with a package manifest that "
-    "exports nothing",
     EXIT_HANDOFF: "a hand-off mitosis was about to write failed its owned schema; mitosis wrote "
     "nothing for it and stopped",
     LANE_EXIT["failed"]: "a Lane failed",
@@ -163,7 +159,16 @@ STAGE_FLAG_NAMES = (
     "--gate-classes",
     "--pr-impact",
     "--render-command",
+    "--no-trajectories",
+    "--no-briefs",
+    "--prompt-template",
+    "--max-output-bytes",
+    "--run-log",
+    "--dry-run",
+    "--plan-file",
 )
+
+SAVED_PLAN_KEYS = ("msps", "lanes", "briefs")
 
 GATE_CLASS_KEYS = ("class", "reason", "test")
 
@@ -404,16 +409,21 @@ FLAG_SPECS = {
         "metavar": "N",
         "type": int,
         "default": core.CONTEXT_CAP,
-        "help": "most graph neighbours kept per Step and per Lane; the overflow is counted "
+        "help": "most graph neighbours kept per Step; the overflow is counted "
         "(default: %d)" % core.CONTEXT_CAP,
     },
-    "--session-tokens": {
+    "--coalesce-below": {
+        "metavar": "COST",
+        "type": float,
+        "default": 2.0,
+        "help": "cheap-tier Steps at or below this cost may be grouped into one Worker "
+        "(0 disables; default: 2)",
+    },
+    "--coalesce-max": {
         "metavar": "N",
         "type": int,
-        "default": core.SESSION_TOKENS,
-        "help": "the estimated tokens one Worker session should hold; every Step of a Lane is its "
-        "own Worker session, built in Step order in a row on its MSP's branch, and a Step "
-        "estimated above this is named for attention (default: %d)" % core.SESSION_TOKENS,
+        "default": 4,
+        "help": "most Steps in one coalesced group (default: 4)",
     },
     "--graph": {
         "metavar": "PATH",
@@ -422,24 +432,73 @@ FLAG_SPECS = {
         "code in different files",
     },
     "--risk-markers": {
-        "metavar": "MARKER",
-        "nargs": "+",
-        "action": "extend",
-        "default": [],
-        "help": "path globs or substrings that force the top tier and count as a coupling signal",
+        "metavar": "MARKERS",
+        "default": "",
+        "help": "comma-separated path markers that force the top tier and count as a coupling "
+        "signal; a one-word marker matches a word of the path, any other marker a "
+        "case-insensitive substring; a repeated flag keeps the last value",
+    },
+    "--serial-verify-markers": {
+        "metavar": "MARKERS",
+        "dest": "serial_markers",
+        "default": "",
+        "help": "comma-separated path substrings; a Step with a file containing one verifies "
+        "serially, and such properties are counted not-applicable",
     },
     "--serial-markers": {
-        "metavar": "MARKER",
-        "nargs": "+",
-        "action": "extend",
-        "default": [],
-        "help": "path globs or substrings whose acceptance the probe cannot run headlessly; "
-        "such properties are counted not-applicable",
+        "metavar": "MARKERS",
+        "dest": "serial_markers",
+        "default": "",
+        "help": "the same as --serial-verify-markers",
     },
     "--trajectory": {
         "metavar": "PATH",
-        "help": "a JSONL file of prior outcomes; a recorded regression on a surface raises "
-        "its tier and never lowers one",
+        "help": "a JSONL file of prior outcomes to read history from and append gate outcomes "
+        "to; without it, history is read from MITOSIS_TRAJECTORY_STORE or "
+        "~/.claude/mcp-servers/trajectory-kb/data/trajectories.jsonl and nothing is appended; "
+        "a missing file reads as no history, and a recorded revert, speculative ship, caused "
+        "regression or two prior traps on a surface raises its tier and never lowers one",
+    },
+    "--no-trajectories": {
+        "action": "store_true",
+        "help": "plan from no history, reading neither --trajectory's file nor the default store",
+    },
+    "--no-briefs": {
+        "action": "store_true",
+        "help": "write plan.json without briefs or check-author briefs, a shape-only plan; "
+        "accepted only with --plan-only, since a run dispatches every Lane from its brief",
+    },
+    "--prompt-template": {
+        "metavar": "TEXT",
+        "help": "replaces each build Lane's brief with TEXT after its 'Lane N of MSP L' line; "
+        "placeholders {cluster} (the Lane's Steps), {spec} (its JSON leaves), {tier} and "
+        "{contract} (the Worker return contract); check-author Lanes keep their brief, and "
+        "the plan and its id never see the template",
+    },
+    "--max-output-bytes": {
+        "metavar": "N",
+        "type": int,
+        "default": run.MAX_OUTPUT,
+        "help": "keep the last N characters of a Lane's stdout as its record's output_tail "
+        "when the Worker and its re-ask return no valid structured reply (default: %d)"
+        % run.MAX_OUTPUT,
+    },
+    "--run-log": {
+        "metavar": "PATH",
+        "help": "when the run's build ends, including a stopped run, write PATH fresh as JSON "
+        "lines, one per Lane record in state.json ordered by its finished time, each carrying "
+        "the plan's plan_id",
+    },
+    "--dry-run": {
+        "action": "store_true",
+        "help": "print each Lane's dispatch argv in dispatch order and build nothing: no "
+        "Worker, branch, worktree, clone, state.json or plan.json; needs --dispatch-command",
+    },
+    "--plan-file": {
+        "metavar": "PATH",
+        "help": "build the saved plan at PATH as written, its briefs and plan_id included, "
+        "instead of computing one, with --plan-only as with a run; every lock --charter derives "
+        "and every check-author Step's files are merged back into its locked list",
     },
     "--worker-sandbox": {
         "action": "store_true",
@@ -582,30 +641,48 @@ def check_charter(charter):
     return absolute
 
 
-def load_graph(path, root):
+GRAPH_SHAPE = "--graph %s must be a node-link graph with nodes and links"
+
+GRAPH_KEY_TYPES = (str, int, float, bool, type(None))
+
+
+def _graph_node(node):
+    return (
+        isinstance(node, dict)
+        and isinstance(node.get("id"), GRAPH_KEY_TYPES)
+        and isinstance(node.get("source_file"), (str, type(None)))
+    )
+
+
+def _graph_link(link):
+    return (
+        isinstance(link, dict)
+        and isinstance(link.get("source"), GRAPH_KEY_TYPES)
+        and isinstance(link.get("target"), GRAPH_KEY_TYPES)
+    )
+
+
+def node_link_graph(graph):
+    return (
+        isinstance(graph, dict)
+        and isinstance(graph.get("nodes"), list)
+        and isinstance(graph.get("links"), list)
+        and all(_graph_node(node) for node in graph["nodes"])
+        and all(_graph_link(link) for link in graph["links"])
+    )
+
+
+def load_graph(path):
     if path is None:
         return None
     graph = read_json(path, "--graph")
-    nodes = graph.get("nodes") if isinstance(graph, dict) else None
-    if isinstance(nodes, list) and any(isinstance(node, dict) for node in nodes):
-        if core.node_link_edges(graph) is None:
-            raise Refusal(
-                "--graph %s has a list of nodes but no links or edges list, so it cannot say "
-                "which files are linked" % path
-            )
-    if core.node_link_edges(graph) is not None:
-        if not any(core.node_files(graph, root).values()):
-            raise Refusal(
-                "--graph %s is a node-link graph, but none of its code nodes names a "
-                "source_file under %s, so it cannot say which files are linked" % (path, root)
-            )
-        return core.adjacency_from_node_links(graph, root)
-    if not core.is_adjacency(graph):
-        raise Refusal(
-            "--graph %s is neither a JSON object mapping each path to a list of the paths it "
-            "imports nor a node-link graph with nodes and links" % path
-        )
-    return core.clean_adjacency(graph)
+    if not node_link_graph(graph):
+        raise Refusal(GRAPH_SHAPE % path)
+    nodes_by_id = {node["id"]: node for node in graph["nodes"]}
+    return {
+        file: sorted(neighbours)
+        for file, neighbours in core.build_file_coupling(nodes_by_id, graph["links"]).items()
+    }
 
 
 def unoffered_placeholders(name, template):
@@ -751,7 +828,9 @@ def check_document(args, root):
 
 def load_decisions(args, root, document):
     try:
-        return decompose.load_decisions(root, args.decisions, document)
+        return decompose.load_decisions(
+            args.working_directory, args.decisions, os.path.join(root, document)
+        )
     except ValueError as error:
         raise Refusal(str(error))
     except OSError as error:
@@ -947,7 +1026,7 @@ def staged(items, decomposed, run_dir, decisions, briefed):
 
 def input_run_dir(args, root):
     if args.run_dir:
-        return os.path.abspath(args.run_dir)
+        return os.path.abspath(os.path.join(root, args.run_dir))
     kind, path = ("items", args.items) if args.items else ("spec", args.spec)
     return os.path.abspath(default_run_dir(root, kind, file_digest(os.path.abspath(path))))
 
@@ -958,7 +1037,9 @@ def resolve_input(args, root, repo, models, charter, graph, run_dir):
         return staged(items, load_decomposed(run_dir), run_dir, None, True)
     document = check_document(args, root)
     decisions = load_decisions(args, root, document)
-    if not args.plan_only:
+    if args.dry_run and not args.plan_only:
+        refuse_undispatchable(args)
+    elif not args.plan_only:
         refuse_unbuildable(args, repo)
     if args.resume:
         items = load_structure(run_dir, root, "nothing to resume")
@@ -982,34 +1063,126 @@ def resolve_input(args, root, repo, models, charter, graph, run_dir):
     return staged(items, decomposed, run_dir, decisions, True)
 
 
-def recorded_sizes(run_dir):
-    try:
-        recorded = run.read_json(os.path.join(run_dir, run.PLAN_FILE))
-    except (OSError, ValueError):
-        return None
-    sizes = recorded.get("sizes") if isinstance(recorded, dict) else None
-    return sizes if isinstance(sizes, dict) else None
+def marker_list(text):
+    return tuple(part for part in text.split(",") if part)
 
 
-def build_plan(args, items, root, charter, graph, run_dir=None):
+def planning_history(args):
+    if args.no_trajectories:
+        return ()
+    return core.trajectory_store(args.trajectory or core.DEFAULT_TRAJECTORY_STORE)
+
+
+def refused_steps(error):
+    return Refusal(
+        "the Steps did not validate:\n" + "\n".join("  " + line for line in error.errors)
+    )
+
+
+def build_plan(args, items, root, charter, graph):
     try:
         return core.plan(
             items,
             charter=charter,
-            risk_markers=tuple(args.risk_markers or ()),
-            serial_markers=tuple(args.serial_markers or ()),
+            risk_markers=marker_list(args.risk_markers),
+            serial_markers=marker_list(args.serial_markers),
             graph=graph,
             hops=args.context_hops,
             cap=args.context_cap,
-            history=core.trajectory_store(args.trajectory),
+            history=planning_history(args),
             root=root,
-            session_tokens=args.session_tokens,
-            sizes=recorded_sizes(run_dir) if args.resume and run_dir else None,
+            coalesce_below=args.coalesce_below,
+            coalesce_max=args.coalesce_max,
+            briefs=not args.no_briefs,
         )
     except core.ValidationError as error:
+        raise refused_steps(error)
+
+
+def saved_plan(path, items, charter, root):
+    loaded = read_json(path, "--plan-file")
+    if not isinstance(loaded, dict):
+        raise Refusal("--plan-file %s does not hold a JSON object" % path)
+    missing = tuple(key for key in SAVED_PLAN_KEYS if key not in loaded)
+    if missing:
+        raise Refusal("--plan-file %s lacks %s" % (path, ", ".join(missing)))
+    try:
+        steps = core.locked_steps(items, charter, root)
+    except core.ValidationError as error:
+        raise refused_steps(error)
+    if steps.authors and not loaded.get("check_authors"):
         raise Refusal(
-            "the Steps did not validate:\n" + "\n".join("  " + line for line in error.errors)
+            "--plan-file %s has no check_authors, but the items hold the check-author Step %s"
+            % (path, steps.authors[0].get("name"))
         )
+    claimed = core.saved_slice_errors(loaded.get("check_authors") or (), steps)
+    if claimed:
+        raise Refusal("--plan-file %s: %s" % (path, "; ".join(claimed)))
+    locked = core._merged_locks(loaded.get("locked") or (), steps.locked)
+    if not locked and "locked" not in loaded:
+        return loaded
+    return {**loaded, "locked": list(locked)}
+
+
+def planned(args, items, root, charter, graph):
+    if args.plan_file is None:
+        return build_plan(args, items, root, charter, graph)
+    return saved_plan(args.plan_file, items, charter, root)
+
+
+def refuse_undispatchable(args):
+    if args.dispatch_command is None:
+        raise Refusal(
+            "--dry-run needs --dispatch-command to print the argv each Lane would be "
+            "dispatched with"
+        )
+
+
+def dispatch_order(plan):
+    lanes = plan.get("lanes") or []
+    edges = run.lane_edges(plan)
+    listed = [int(lane) for lane in plan.get("lane_order") or range(len(lanes))]
+    pending = tuple(listed + [lane for lane in range(len(lanes)) if lane not in listed])
+    order = ()
+    while pending:
+        ready = next(
+            (lane for lane in pending if all(producer in order for producer in edges.get(lane, ()))),
+            None,
+        )
+        if ready is None:
+            raise Refusal(
+                "Lanes %s wait on producers that never run"
+                % ", ".join(str(lane) for lane in pending)
+            )
+        order = order + (ready,)
+        pending = tuple(lane for lane in pending if lane != ready)
+    return order
+
+
+def dry_run_lines(args, plan, models, run_dir):
+    slugs = run.msp_slugs(plan["msps"])
+    lines = ()
+    for lane in dispatch_order(plan):
+        msp = plan["lanes"][lane]["msp"]
+        entry = plan["msps"][msp]
+        tree = {
+            "msp": msp,
+            "label": entry.get("label") if isinstance(entry, dict) else None,
+            "branch": "%s/%s" % (run.BRANCH_PREFIX, slugs[msp]),
+            "path": isolation.lane_folders(run_dir, lane)["clone"],
+        }
+        values = run._worker_values(
+            plan, lane, tree, models, run_dir, core.new_session_id(), args.prompt_template
+        )
+        lines = lines + (
+            "dry run: Lane %d (%s): %s"
+            % (
+                lane,
+                ", ".join(plan["lanes"][lane]["steps"]),
+                json.dumps(run.build_argv(args.dispatch_command, values)),
+            ),
+        )
+    return lines
 
 
 def missing_run_flags(args):
@@ -1312,24 +1485,6 @@ def drift_lines(plan, root):
     return ("none: %s still hashes to %s" % (found["path"], found["actual"]),)
 
 
-def _depths(count, producers_of):
-    depth = {}
-    for index in range(count):
-        depth = {**depth, index: _depth(index, producers_of, depth, ())}
-    return depth
-
-
-def _depth(index, producers_of, known, trail):
-    if index in known:
-        return known[index]
-    if index in trail:
-        return 0
-    producers = [p for p in producers_of.get(index, ()) if p != index]
-    if not producers:
-        return 0
-    return 1 + max(_depth(p, producers_of, known, trail + (index,)) for p in producers)
-
-
 def lane_width(plan):
     return shape.scalars(plan.get("items") or [])["parallelism"]
 
@@ -1342,30 +1497,6 @@ def shape_lines(items):
 
 def empty_manifests(items):
     return [gap for gap in shape.manifest_gaps(items) if gap["reached"] == 0]
-
-
-def planned_code(items):
-    return EXIT_MANIFEST if empty_manifests(items) else EXIT_SHIPPED
-
-
-def manifest_lines(items):
-    gaps = empty_manifests(items)
-    if not gaps:
-        return ()
-    return tuple(
-        "%s would ship with nothing exported: %s owns it and is built before all %d Steps whose "
-        "modules it should export"
-        % (gap["manifest"], items[gap["owner"]].get("name"), gap["siblings"])
-        for gap in gaps
-    )
-
-
-def cluster_depths(plan):
-    producers = core.msp_producers(plan)
-    depths = _depths(len(plan.get("msps") or []), producers)
-    return tuple(
-        max((depths[msp] for msp in cluster), default=0) + 1 for cluster in plan.get("clusters") or []
-    )
 
 
 def _moment(value):
@@ -1402,41 +1533,16 @@ def session_runs(plan):
     return runs
 
 
-def oversized_sessions(plan):
-    limit = plan.get("session_tokens")
-    if limit is None:
-        return ()
-    return tuple(
-        (index, lane["steps"][0], lane["tokens"])
-        for index, lane in enumerate(plan.get("lanes") or [])
-        if len(lane.get("steps") or ()) == 1 and (lane.get("tokens") or 0) > limit
-    )
-
-
-def oversized_lines(plan):
-    return tuple(
-        "Lane %d holds Step %s alone at about %d estimated tokens, above the %d one session "
-        "should hold, and a session holds at least one Step"
-        % (index, name, tokens, plan["session_tokens"])
-        for index, name, tokens in oversized_sessions(plan)
-    )
-
-
 def session_lines(plan):
-    limit = plan.get("session_tokens")
-    if limit is None:
-        return ()
     runs = session_runs(plan)
     if not runs:
-        if oversized_sessions(plan):
-            return oversized_lines(plan)
         return ("every Lane holds one Step and runs as one Worker session",)
     return tuple(
         "Lanes %d to %d are the Steps of one Lane of MSP %s, each built in its own Worker session "
         "in a row on its branch and landing its own commit"
         % (start, start + count - 1, _label(plan, plan["lanes"][start]["msp"]))
         for start, count in runs
-    ) + oversized_lines(plan)
+    )
 
 
 def lock_stage_lines(plan):
@@ -1453,34 +1559,27 @@ def split_lines(plan, state):
         return (NO_PLAN,)
     lanes = plan.get("lanes") or []
     msps = plan.get("msps") or []
-    clusters = plan.get("clusters") or []
     counts = plan.get("counts") or {}
     total = len(plan.get("items") or [])
     lines = (
-        "%s in %s across %s in %s"
-        % (_n(total, "Step"), _n(len(lanes), "Lane"), _n(len(msps), "MSP"), _n(len(clusters), "Cluster")),
+        "%s in %s across %s"
+        % (_n(total, "Step"), _n(len(lanes), "Lane"), _n(len(msps), "MSP")),
         "%d of %s declare no acceptance property; %s do not exist yet"
         % (counts.get("no_acceptance", 0), _n(total, "Step"), _n(counts.get("missing_paths", 0), "write-set path")),
     )
     lines = lines + session_lines(plan) + lock_stage_lines(plan)
     lines = lines + tuple(
-        "Lane %d (MSP %s, %s): %s, cost %s, about %s tokens%s: %s"
+        "Lane %d (MSP %s, %s): %s, cost %s%s: %s"
         % (
             index,
             _label(plan, lane["msp"]),
             lane.get("tier"),
             _n(len(lane.get("steps") or []), "Step"),
             lane.get("cost"),
-            lane.get("tokens"),
             ", session %d of %d" % tuple(lane["session"]) if lane.get("session") else "",
             ", ".join(lane.get("steps") or []),
         )
         for index, lane in enumerate(lanes)
-    )
-    lines = lines + tuple(
-        "Cluster %d: depth %d, MSPs %s"
-        % (index, depth, ", ".join(_label(plan, m) for m in cluster))
-        for index, (cluster, depth) in enumerate(zip(clusters, cluster_depths(plan)))
     )
     lines = lines + ("parallelism available: up to %s at once" % _n(lane_width(plan), "Lane"),)
     if state is None:
@@ -1603,27 +1702,28 @@ def reconcile_lines(plan, state):
 def coupling_lines(plan, state):
     if plan is None:
         return (NO_PLAN,)
-    ordered = plan.get("coupling_order") or []
     pairs = plan.get("coupling_review") or []
-    if not ordered and not pairs:
+    if not pairs:
         return ("none: no write-set-disjoint pair in different Lanes shares a coupling signal",)
     verb = "ran" if state is not None else "run"
-    return tuple(
-        "%s then %s: put in order because of %s"
-        % (entry["first"], entry["then"], ", ".join(entry["signals"]))
-        for entry in ordered
-    ) + tuple(
-        "%s and %s (Lanes %s) %s in parallel with only %s between them; add an after edge if "
-        "one needs the other's output"
-        % (
-            pair["steps"][0],
-            pair["steps"][1],
-            ", ".join(str(lane) for lane in pair.get("lanes") or []),
-            verb,
-            " and ".join(pair.get("signals") or []),
-        )
-        for pair in pairs
+    return tuple(_coupling_pair_line(pair, verb) for pair in pairs)
+
+
+def _coupling_pair_line(pair, verb):
+    named = "%s and %s (Lanes %s) %s in parallel" % (
+        pair["steps"][0],
+        pair["steps"][1],
+        ", ".join(str(lane) for lane in pair.get("lanes") or []),
+        verb,
     )
+    return COUPLING_LINE[_coupling_form(pair)] % (named, " and ".join(pair.get("signals") or []))
+
+
+COUPLING_LINE = {
+    "parallel": "%s with only %s between them; add an after edge if one needs the other's output",
+    "serialize": "%s awaiting the orchestrator's verdict on %s, default serialize; add an after edge "
+    "to serialize them",
+}
 
 
 def stacking_lines(plan, state):
@@ -1801,12 +1901,8 @@ def _lock_findings(state, plan):
 
 
 def findings(state, plan):
-    manifests = [
-        _finding(None, None, "manifest", EXIT_MANIFEST, line)
-        for line in manifest_lines(plan.get("items") or [])
-    ]
     if state is None:
-        return manifests
+        return []
     lane_records = state.get("lanes") or {}
     msp_records = state.get("msps") or {}
     msps = [
@@ -1814,7 +1910,7 @@ def findings(state, plan):
         for index in range(len(plan.get("msps") or []))
         for entry in _msp_findings(plan, index, msp_records.get(str(index)), lane_records)
     ]
-    return _lock_findings(state, plan) + _lane_findings(plan, lane_records) + msps + manifests
+    return _lock_findings(state, plan) + _lane_findings(plan, lane_records) + msps
 
 
 def exit_code(state, plan):
@@ -2068,29 +2164,43 @@ COUPLING_NAMED = 8
 
 def _coupling_summary(plan):
     return {
-        "ordered": [dict(entry) for entry in plan.get("coupling_order") or []],
+        "ordered": [],
         "parallel": [
             {"steps": list(pair["steps"]), "signals": list(pair["signals"])}
             for pair in plan.get("coupling_review") or []
-            if pair.get("default") == "parallel"
         ],
     }
 
 
-def _coupling_attention(coupling):
-    keyed = sorted((tuple(pair["signals"]), "+".join(pair["steps"])) for pair in coupling["parallel"])
+COUPLING_ATTENTION = {
+    "parallel": "%s run in parallel with only %s between them: %s%s; add an after edge where one "
+    "needs the other's output",
+    "serialize": "%s await the orchestrator's verdict on %s, default serialize: %s%s; add an after "
+    "edge to serialize them",
+}
+
+
+def _coupling_form(pair):
+    if pair.get("default") not in COUPLING_ATTENTION:
+        raise ValueError(
+            "coupling pair %s has an unknown default %r" % ("+".join(pair["steps"]), pair.get("default"))
+        )
+    return pair["default"]
+
+
+def _coupling_attention(review):
+    keyed = sorted(((_coupling_form(pair), tuple(pair["signals"])), "+".join(pair["steps"])) for pair in review)
     return [
-        "%s run in parallel with only %s between them: %s%s; add an after edge where one needs "
-        "the other's output"
+        COUPLING_ATTENTION[default]
         % (
             _n(len(names), "pair") + " of Steps",
             " and ".join(signals),
             ", ".join(names[:COUPLING_NAMED]),
             " and %d more" % (len(names) - COUPLING_NAMED) if len(names) > COUPLING_NAMED else "",
         )
-        for signals, names in (
-            (signals, [name for _, name in group])
-            for signals, group in itertools.groupby(keyed, key=lambda entry: entry[0])
+        for (default, signals), names in (
+            (key, [name for _, name in group])
+            for key, group in itertools.groupby(keyed, key=lambda entry: entry[0])
         )
     ]
 
@@ -2118,9 +2228,7 @@ def summary(plan, state, run_dir, code, referee=None, troubles=()):
         "attention": _lock_attention(state, plan or {})
         + _attention(plan or {}, lanes, msps)
         + list(troubles)
-        + list(oversized_lines(plan or {}))
-        + list(manifest_lines((plan or {}).get("items") or []))
-        + _coupling_attention(coupling),
+        + _coupling_attention((plan or {}).get("coupling_review") or []),
     }
 
 
@@ -2257,6 +2365,8 @@ def execute(args, plan, models, run_dir, repo, root, base=None):
             gate_classes=loaded_gate_classes(args)[0],
             gate_classes_sha256=loaded_gate_classes(args)[1],
             reask_command=args.reask_command,
+            prompt_template=args.prompt_template,
+            max_output=args.max_output_bytes,
         ), None
     except (run.ConfigError, run.ResumeError) as error:
         raise Refusal(str(error))
@@ -2271,28 +2381,21 @@ def _print(lines, stream=None):
     out.flush()
 
 
-def check_root(cwd, repo):
-    if repo is not None and os.path.realpath(repo) != os.path.realpath(cwd):
-        raise Refusal(
-            "run mitosis from the repository root %s; every Step path and the document path "
-            "are relative to it" % repo
-        )
-
-
 def run_pipeline(args):
     cwd = os.getcwd()
     repo = repository_root(cwd)
-    check_root(cwd, repo)
-    root = cwd
+    root = cwd if repo is None else repo
     models = tier_models(args.tier_model)
     check_templates(args)
     check_pull_request_flags(args)
     charter = check_charter(args.charter)
-    graph = load_graph(args.graph, root)
+    graph = load_graph(args.graph)
     run_dir = input_run_dir(args, root)
     check_worker_writes(args, run_dir, repo)
-    recorder = metrics.opened(args, repo, cwd, run_dir, models, achieved_parallelism)
-    recorded = argparse.Namespace(**{**vars(args), "recorder": recorder})
+    recorder = metrics.opened(args, repo, root, run_dir, models, achieved_parallelism)
+    recorded = argparse.Namespace(
+        **{**vars(args), "recorder": recorder, "working_directory": cwd}
+    )
     try:
         code = run_stages(recorded, repo, root, models, charter, graph, run_dir)
     except UnknownProvenHead:
@@ -2325,12 +2428,12 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     if not resolved["briefed"]:
         _print(
             report(
-                None, None, decomposed, root, run_dir, planned_code(items), from_items,
+                None, None, decomposed, root, run_dir, EXIT_SHIPPED, from_items,
                 decisions, items,
             )
         )
-        return _summarised({"items": items}, None, run_dir, planned_code(items))
-    plan = build_plan(args, items, root, charter, graph, run_dir)
+        return _summarised({"items": items}, None, run_dir, EXIT_SHIPPED)
+    plan = planned(args, items, root, charter, graph)
     recorder.planned(plan, lane_width(plan), len(empty_manifests(plan.get("items") or [])))
     proven_heads(args.proven_head, plan)
     args = argparse.Namespace(
@@ -2341,10 +2444,19 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
         run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
         _print(
-            report(plan, None, decomposed, root, run_dir, planned_code(items), from_items, decisions)
+            report(plan, None, decomposed, root, run_dir, EXIT_SHIPPED, from_items, decisions)
         )
         locked, troubles = planned_referee(args, plan, repo)
-        return _summarised(plan, None, run_dir, planned_code(items), locked, troubles)
+        return _summarised(plan, None, run_dir, EXIT_SHIPPED, locked, troubles)
+    if args.dry_run:
+        refuse_undispatchable(args)
+        refuse_unmapped(plan, args.dispatch_command, models)
+        _print(dry_run_lines(args, plan, models, run_dir))
+        _print(
+            report(plan, None, decomposed, root, run_dir, EXIT_SHIPPED, from_items, decisions)
+        )
+        locked, troubles = planned_referee(args, plan, repo)
+        return _summarised(plan, None, run_dir, EXIT_SHIPPED, locked, troubles)
     refuse_run(args, plan, models, run_dir, repo)
     base = pinned_base(args, plan, run_dir, repo)
     locked = locked_referee(args, plan, repo, base)
@@ -2354,6 +2466,8 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     else:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
         state, failure = {}, None
+    if args.run_log:
+        run.write_run_log(args.run_log, plan, state)
     code = exit_code(state, plan)
     if failure is not None and code == EXIT_SHIPPED:
         code = EXIT_INCOMPLETE
@@ -2376,8 +2490,10 @@ def main(argv=None):
         parser.error("--revise revises the structure in the run directory, which --items never writes")
     if args.resume and args.revise:
         parser.error("--revise runs the structure stage, which --resume skips; run --plan-only --revise first")
-    if args.session_tokens < 1:
-        parser.error("--session-tokens must be at least 1")
+    if args.no_briefs and not args.plan_only:
+        parser.error("--no-briefs omits the briefs a run dispatches from; use it with --plan-only")
+    if args.coalesce_max < 1:
+        parser.error("--coalesce-max must be at least 1")
     if args.structure_samples < 1:
         parser.error("--structure-samples must be at least 1")
     if args.pick is not None and not 1 <= args.pick <= args.structure_samples:

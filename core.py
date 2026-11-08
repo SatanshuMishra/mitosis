@@ -1,5 +1,5 @@
+import collections
 import fnmatch
-import functools
 import hashlib
 import itertools
 import json
@@ -9,10 +9,9 @@ import uuid
 
 import referee
 
-__version__ = "0.13.3"
+__version__ = "0.14.1"
 
 PLAN_KEYS = (
-    "version",
     "plan_id",
     "source",
     "locked",
@@ -20,20 +19,21 @@ PLAN_KEYS = (
     "msps",
     "lanes",
     "lane_after",
-    "clusters",
     "tiers",
+    "tier_notes",
     "verify_modes",
     "context_packs",
+    "shared_context",
     "lane_order",
     "coalesce",
     "coupling_review",
-    "coupling_order",
+    "verdict_groups",
     "counts",
-    "session_tokens",
-    "sizes",
     "briefs",
     "check_authors",
 )
+
+BRIEF_KEYS = ("briefs", "check_authors")
 
 ITEM_FIELDS = (
     "name",
@@ -100,15 +100,6 @@ TIERS = ("top", "cheap")
 
 VERIFY_MODES = ("serial", "offload")
 
-COUPLING_SIGNALS = (
-    "import-adjacency",
-    "shared-risk-marker",
-    "recorded-regression",
-    "same-migration-directory",
-)
-
-SERIALIZING_SIGNALS = ("shared-risk-marker", "recorded-regression", "same-migration-directory")
-
 COUNT_KEYS = ("missing_paths", "no_acceptance", "assumptions")
 
 RETURN_KEYS = ("item", "status", "files_changed", "notes")
@@ -150,9 +141,11 @@ FLAG_NAMES = (
     "--concurrency",
     "--context-hops",
     "--context-cap",
-    "--session-tokens",
+    "--coalesce-below",
+    "--coalesce-max",
     "--graph",
     "--risk-markers",
+    "--serial-verify-markers",
     "--serial-markers",
     "--trajectory",
     "--version",
@@ -232,89 +225,170 @@ def _tag(item, field):
     return ((field, str(value)),)
 
 
-def _msp_edges(items, owner, by_name):
-    return frozenset(
-        (owner[by_name[name]], owner[consumer])
-        for consumer, item in enumerate(items)
-        for name in _after(item)
-        if name in by_name and owner[by_name[name]] != owner[consumer]
-    )
-
-
-def _reaches(edges, start):
-    seen = frozenset()
-    frontier = (start,)
-    while frontier:
-        fresh = tuple(
-            dict.fromkeys(
-                consumer
-                for producer, consumer in edges
-                if producer in frontier and consumer not in seen
-            )
-        )
-        seen = seen | frozenset(fresh)
-        frontier = fresh
-    return seen
-
-
-def _cycle_pairs(items, groups, by_name):
-    edges = _msp_edges(items, _owners(groups, len(items)), by_name)
-    if not edges:
-        return ()
-    nodes = sorted({producer for producer, _ in edges} | {consumer for _, consumer in edges})
-    reached = {node: _reaches(edges, node) for node in nodes}
-    return tuple(
-        (groups[left][0], groups[right][0])
-        for position, left in enumerate(nodes)
-        for right in nodes[position + 1:]
-        if right in reached[left] and left in reached[right]
-    )
-
-
 def msp_items(items):
-    by_name = _by_name(items)
     pairs = (
         _shared(items, _files)
         + _shared(items, lambda item: _tag(item, "contract_group"))
         + _shared(items, lambda item: _tag(item, "msp"))
     )
-    groups = union_find(len(items), pairs)
-    while True:
-        fused = _cycle_pairs(items, groups, by_name)
-        if not fused:
-            return groups
-        pairs = pairs + fused
-        groups = union_find(len(items), pairs)
+    return union_find(len(items), pairs)
 
 
-def _walk_order(items, members, by_name):
-    member_set = frozenset(members)
-    indegree = {i: 0 for i in members}
-    successors = {i: [] for i in members}
-    for consumer in members:
-        for name in _after(items[consumer]):
-            producer = by_name.get(name)
-            if producer in member_set and producer != consumer:
-                indegree[consumer] += 1
-                successors[producer].append(consumer)
-    ready = sorted(i for i in members if indegree[i] == 0)
-    order = []
-    while ready:
-        current = ready.pop(0)
-        order.append(current)
-        for consumer in successors[current]:
-            indegree[consumer] -= 1
-            if indegree[consumer] == 0:
-                ready = sorted(ready + [consumer])
-    remaining = sorted(i for i in members if i not in order)
-    return tuple(order + remaining)
+def _conflict_adjacency(items):
+    names = [it["name"] for it in items]
+    files = {it["name"]: set(it["files"]) for it in items}
+    group = {it["name"]: it.get("contract_group") for it in items}
+    adj = {n: set() for n in names}
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            a, b = names[i], names[j]
+            if files[a] & files[b] or (group[a] and group[a] == group[b]):
+                adj[a].add(b)
+                adj[b].add(a)
+    return adj
+
+
+def downstream_cost(items, cost):
+    after = {it["name"]: list(it.get("after") or []) for it in items}
+    names = list(after)
+    consumers, outdeg = collections.defaultdict(list), {n: 0 for n in names}
+    for n, deps in after.items():
+        for d in deps:
+            consumers[d].append(n)
+            outdeg[d] += 1
+    dc = {n: cost.get(n, 1.0) for n in names}
+    queue = [n for n in names if outdeg[n] == 0]
+    qi = 0
+    while qi < len(queue):
+        n = queue[qi]
+        qi += 1
+        for p in after[n]:
+            dc[p] = max(dc[p], cost.get(p, 1.0) + dc[n])
+            outdeg[p] -= 1
+            if outdeg[p] == 0:
+                queue.append(p)
+    return dc
+
+
+def global_waves(items, adj, order_index, priority=None):
+    after = {it["name"]: list(it.get("after") or []) for it in items}
+    names = [it["name"] for it in items]
+    consumers = collections.defaultdict(list)
+    indeg = {n: len(after[n]) for n in names}
+    for n, deps in after.items():
+        for d in deps:
+            consumers[d].append(n)
+    floor = {n: 0 for n in names}
+    queue = [n for n in names if indeg[n] == 0]
+    qi = 0
+    while qi < len(queue):
+        n = queue[qi]
+        qi += 1
+        for c in consumers[n]:
+            floor[c] = max(floor[c], floor[n] + 1)
+            indeg[c] -= 1
+            if indeg[c] == 0:
+                queue.append(c)
+    if qi != len(names):
+        raise ValueError("`after` cycle involving: %s" % sorted(n for n in names if indeg[n] > 0))
+    members = set(names)
+    priority = priority or {}
+    verts = sorted(
+        names,
+        key=lambda n: (floor[n], -priority.get(n, 0.0), -len(adj.get(n, set()) & members), order_index[n]),
+    )
+    wave_of = {}
+    for v in verts:
+        used = {wave_of[u] for u in adj.get(v, set()) if u in wave_of}
+        w = max([floor[v]] + [wave_of[p] + 1 for p in after[v] if p in wave_of])
+        while w in used:
+            w += 1
+        wave_of[v] = w
+    waves = [[] for _ in range(max(wave_of.values()) + 1 if wave_of else 0)]
+    for v in names:
+        waves[wave_of[v]].append(v)
+    for w in waves:
+        w.sort(key=lambda n: (-priority.get(n, 0.0), -len(adj.get(n, set()) & members), order_index[n]))
+    return [w for w in waves if w]
+
+
+def ready_after(items, waves):
+    after = {it["name"]: list(it.get("after") or []) for it in items}
+    adj = _conflict_adjacency(items)
+    wave_of = {n: i for i, w in enumerate(waves) for n in w}
+    return {
+        it["name"]: sorted(
+            set(after[it["name"]])
+            | {m for m in adj.get(it["name"], ()) if wave_of.get(m, -1) < wave_of.get(it["name"], 0)}
+        )
+        for it in items
+    }
+
+
+def coalesce_groups(items, waves, tier, cost, below=2.0, max_size=4, deps=None):
+    deps = deps or {}
+    out = {}
+    for i, w in enumerate(waves):
+        small = [n for n in w if tier.get(n) != "top" and cost.get(n, 1.0) <= below]
+        by_deps = collections.defaultdict(list)
+        for n in small:
+            by_deps[tuple(deps.get(n, ()))].append(n)
+        groups = []
+        for key in sorted(by_deps):
+            bucket = by_deps[key]
+            groups += [g for g in (bucket[k:k + max_size] for k in range(0, len(bucket), max_size)) if len(g) > 1]
+        if groups:
+            out[str(i)] = groups
+    return out
+
+
+def _first_build_steps(items):
+    first = {}
+    for item in items:
+        name = item.get("name")
+        if isinstance(name, str) and name not in first and not _is_check_author(item):
+            first = {**first, name: item}
+    return first
+
+
+def build_waves(items):
+    first = _first_build_steps(items)
+    looped = frozenset(name for group in cycles(list(first.values())) for name in group)
+    names = tuple(name for name in first if name not in looped)
+    known = frozenset(names)
+    steps = [
+        {
+            "name": name,
+            "files": list(_files(first[name])),
+            "after": [producer for producer in _after(first[name]) if producer in known and producer != name],
+            "contract_group": first[name].get("contract_group"),
+        }
+        for name in names
+    ]
+    cost = {name: item_cost(first[name]) for name in names}
+    order_index = {name: index for index, name in enumerate(names)}
+    waves = global_waves(steps, _conflict_adjacency(steps), order_index, downstream_cost(steps, cost))
+    return steps, cost, waves
+
+
+def wave_sequence(items):
+    _, _, waves = build_waves(items)
+    return {n: i for i, n in enumerate(n for w in waves for n in w)}
+
+
+def _in_sequence(items, members, seq):
+    def key(index):
+        name = items[index].get("name")
+        return (seq.get(name, len(seq)) if isinstance(name, str) else len(seq), index)
+
+    return tuple(sorted(members, key=key))
 
 
 def _within_one_msp(component, lanes, owner):
     return len({owner[lanes[lane][0]] for lane in component}) == 1
 
 
-def _contract_within_msp(items, lanes, owner, by_name):
+def _contract_within_msp(items, lanes, owner, seq):
     while True:
         components = [
             component
@@ -327,7 +401,7 @@ def _contract_within_msp(items, lanes, owner, by_name):
         rebuilt = []
         for component in components:
             members = tuple(index for lane in component for index in lanes[lane])
-            rebuilt.append(_walk_order(items, members, by_name))
+            rebuilt.append(_in_sequence(items, members, seq))
             merged.update(component)
         kept = [lane for index, lane in enumerate(lanes) if index not in merged]
         lanes = tuple(kept + rebuilt)
@@ -358,24 +432,18 @@ def _waits_on(items, start, target, by_name):
     return False
 
 
-def _pins(items, members, by_name):
-    producers = tuple(index for index in members if items[index].get("type") == "contract")
-    if len(producers) != 1:
-        return False
-    return all(
-        _waits_on(items, index, producers[0], by_name)
-        for index in members
-        if index != producers[0]
+def _pins(items, members):
+    producers = frozenset(items[index].get("name") for index in members if items[index].get("type") == "contract")
+    consumers = tuple(index for index in members if items[index].get("name") not in producers)
+    return (
+        bool(producers)
+        and bool(consumers)
+        and all(producers & frozenset(_after(items[index])) for index in consumers)
     )
 
 
 def pinned_groups(items):
-    by_name = _by_name(items)
-    return frozenset(
-        group
-        for group, members in _group_members(items).items()
-        if _pins(items, members, by_name)
-    )
+    return frozenset(group for group, members in _group_members(items).items() if _pins(items, members))
 
 
 def _interface_pairs(items):
@@ -410,19 +478,21 @@ def lane_pairs(items):
     return _shared(items, _files), tuple(chain_pairs), _interface_pairs(items)
 
 
-def uncontracted_lanes(items):
-    owner = _owners(msp_items(items), len(items))
-    by_name = _by_name(items)
+def _uncontracted(items, owner, seq):
     shared, chained, interfaced = lane_pairs(items)
     groups = union_find(len(items), shared + chained + interfaced)
-    lanes = tuple(_walk_order(items, group, by_name) for group in groups)
+    lanes = tuple(_in_sequence(items, group, seq) for group in groups)
     return tuple(sorted(lanes, key=lambda lane: (owner[lane[0]], min(lane))))
+
+
+def uncontracted_lanes(items):
+    return _uncontracted(items, _owners(msp_items(items), len(items)), wave_sequence(items))
 
 
 def lane_items(items):
     owner = _owners(msp_items(items), len(items))
-    by_name = _by_name(items)
-    lanes = _contract_within_msp(items, uncontracted_lanes(items), owner, by_name)
+    seq = wave_sequence(items)
+    lanes = _contract_within_msp(items, _uncontracted(items, owner, seq), owner, seq)
     return tuple(sorted(lanes, key=lambda lane: (owner[lane[0]], min(lane))))
 
 
@@ -754,23 +824,12 @@ def validate(items, root=None, required=None):
 
 GLOB_CHARACTERS = "*?["
 
+DEFAULT_TRAJECTORY_STORE = os.environ.get(
+    "MITOSIS_TRAJECTORY_STORE",
+    os.path.expanduser("~/.claude/mcp-servers/trajectory-kb/data/trajectories.jsonl"),
+)
+
 CONTEXT_CAP = 40
-
-SESSION_TOKENS = 150000
-
-BYTES_PER_TOKEN = 4
-
-SESSION_BASE_TOKENS = 20000
-
-STEP_TOKENS = 10000
-
-EDIT_PASSES = 2
-
-NEW_FILE_TOKENS = 2000
-
-RISKY_OUTCOMES = ("reverted", "speculative", "failed", "regressed")
-
-TRAPS_FOR_RISK = 2
 
 WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
 
@@ -784,75 +843,80 @@ def path_words(path):
     }
 
 
-def marker_matches(path, marker):
+def risk_marker_matches(path, marker):
     if not isinstance(marker, str) or not marker.strip():
         return False
     normalized = _norm(path)
     candidate = marker.strip().lower()
-    if any(character in candidate for character in GLOB_CHARACTERS):
-        return fnmatch.fnmatchcase(normalized.lower(), candidate)
     if not candidate.isalnum():
         return candidate in normalized.lower()
     return candidate in path_words(normalized)
 
 
-def _marker_hits(paths, markers):
-    return tuple(
-        marker
-        for marker in (markers or ())
-        if any(marker_matches(path, marker) for path in paths)
+def marker_matches(path, marker):
+    if isinstance(marker, str) and any(character in marker for character in GLOB_CHARACTERS):
+        return fnmatch.fnmatchcase(_norm(path).lower(), marker.strip().lower())
+    return risk_marker_matches(path, marker)
+
+
+def _paths_match(a, b):
+    return a == b or a.endswith("/" + b) or b.endswith("/" + a)
+
+
+def _basename(p):
+    return p.rsplit("/", 1)[-1]
+
+
+def _ref_matches_item(ref, item):
+    if not ref:
+        return False
+    r = str(ref).lower()
+    for f in item["files"]:
+        if _paths_match(str(ref), f):
+            return True
+        bn = _basename(f).lower()
+        if bn and bn in r:
+            return True
+        stem = bn.rsplit(".", 1)[0]
+        if len(stem) >= 4 and stem in r:
+            return True
+    nm = item["name"].lower()
+    return len(nm) >= 4 and nm in r
+
+
+def _entry_matches_item(entry, item):
+    for ef in (entry.get("files") or []):
+        for itf in item["files"]:
+            if _paths_match(str(ef), itf):
+                return True
+    hay = (entry.get("surface") or "") + " " + " ".join(entry.get("tags") or [])
+    return _ref_matches_item(hay, item)
+
+
+def _entry_regresses_item(entry, target_item):
+    return any(_ref_matches_item(r, target_item) for r in (entry.get("regressed") or []))
+
+
+def history_tier_bump(item, trajectories):
+    matched = [e for e in trajectories if _entry_matches_item(e, item)]
+    if not matched:
+        return False, ""
+    reverts = sum(1 for e in matched if e.get("outcome") == "reverted")
+    spec = sum(1 for e in matched if e.get("outcome") == "speculative")
+    regressed = sum(1 for e in matched if (e.get("regressed") or []))
+    traps = sum(1 for e in matched if (e.get("what_failed") or []))
+    parts = (
+        (("%d reverted" % reverts,) if reverts else ())
+        + (("%d speculative" % spec,) if spec else ())
+        + (("%d caused-regression" % regressed,) if regressed else ())
+        + (("%d prior traps" % traps,) if traps >= 2 else ())
     )
+    return bool(parts), ", ".join(parts)
 
 
-def _touches(record_path, path):
-    a = _norm(record_path).rstrip("/")
-    b = _norm(path).rstrip("/")
-    return a == b or b.startswith(a + "/") or a.startswith(b + "/")
-
-
-def _record_files(record):
-    if not isinstance(record, dict):
-        return ()
-    files = record.get("files")
-    if not isinstance(files, list):
-        return ()
-    return tuple(f for f in files if isinstance(f, str))
-
-
-def _strings(record, key):
-    values = record.get(key) if isinstance(record, dict) else None
-    return tuple(v for v in values if isinstance(v, str)) if isinstance(values, list) else ()
-
-
-def _is_regression(record):
-    return isinstance(record, dict) and (
-        record.get("outcome") in RISKY_OUTCOMES or bool(_strings(record, "regressed"))
-    )
-
-
-def _about(record, paths):
-    return any(_touches(recorded, path) for recorded in _record_files(record) for path in paths)
-
-
-def _names(reference, path):
-    text = reference.strip()
-    base = os.path.basename(_norm(path))
-    return _touches(text, path) or bool(base) and text.lower().endswith("/" + base.lower())
-
-
-def surface_history(history, paths):
-    matched = tuple(record for record in (history or ()) if _about(record, paths))
-    risky = tuple(record for record in matched if _is_regression(record))
-    trapped = tuple(record for record in matched if _strings(record, "what_failed"))
-    return risky + (trapped if len(trapped) >= TRAPS_FOR_RISK else ())
-
-
-def _regression_links(history, left, right):
-    return any(
-        (_about(record, left) and any(_names(ref, p) for ref in _strings(record, "regressed") for p in right))
-        or (_about(record, right) and any(_names(ref, p) for ref in _strings(record, "regressed") for p in left))
-        or (_is_regression(record) and _about(record, left) and _about(record, right))
-        for record in (history or ())
+def _regression_links(left, right):
+    return any(_entry_regresses_item(e, right["item"]) for e in left["matched"]) or any(
+        _entry_regresses_item(e, left["item"]) for e in right["matched"]
     )
 
 
@@ -875,85 +939,100 @@ def trajectory_store(path):
     return tuple(record for record in records if record.get("id") not in superseded)
 
 
-def tier_for(write_set, risk_markers, complexity, assumptions, history=()):
-    paths = tuple(write_set or ())
-    mechanical = complexity == "simple" and not assumptions
-    low_blast = not _marker_hits(paths, risk_markers) and not surface_history(history, paths)
-    return "cheap" if mechanical and low_blast else "top"
+def tier_for(file_paths, risk_markers, complexity=None):
+    for f in file_paths:
+        if any(risk_marker_matches(f, m) for m in risk_markers):
+            return "top"
+    if complexity is not None and str(complexity).lower() not in ("simple", "low", "mechanical"):
+        return "top"
+    return "cheap"
 
 
-def _numbered(path):
-    return bool(re.match(r"\d+", os.path.basename(_norm(path))))
+def _tiered(item, risk_markers, history):
+    tier = tier_for(_files(item), risk_markers, item.get("complexity"))
+    if tier == "top" or not history:
+        return tier, None
+    bump, reason = history_tier_bump(item, history)
+    return ("top", "history: " + reason) if bump else (tier, None)
 
 
-def _adjacent(graph, left, right):
-    return any(n in right for a in left for n in _neighbours(graph, a)) or any(
-        n in left for b in right for n in _neighbours(graph, b)
+def _item_graph_files(file_paths, adj_keys):
+    return {k for f in file_paths for k in adj_keys if _paths_match(f, k)}
+
+
+def _migration_apps(file_paths):
+    return {
+        norm.split("migrations/")[0].rstrip("/")
+        for norm in (f.replace("\\", "/") for f in file_paths)
+        if "migrations/" in norm and norm.endswith(".py")
+    }
+
+
+def _file_coupling(graph):
+    linked = sorted(
+        {
+            pair
+            for path in (graph or {})
+            for neighbour in _neighbours(graph, path)
+            if neighbour != _norm(path)
+            for pair in ((_norm(path), neighbour), (neighbour, _norm(path)))
+        }
     )
+    return {
+        path: frozenset(neighbour for _, neighbour in group)
+        for path, group in itertools.groupby(linked, key=lambda pair: pair[0])
+    }
 
 
-def _pair_signals(left, right, graph, risk_markers, history):
-    signals = []
-    if _adjacent(graph, left, right):
-        signals.append("import-adjacency")
-    if set(_marker_hits(left, risk_markers)) & set(_marker_hits(right, risk_markers)):
-        signals.append("shared-risk-marker")
-    if _regression_links(history, left, right):
-        signals.append("recorded-regression")
-    left_dirs = {os.path.dirname(p) for p in left if _numbered(p)}
-    right_dirs = {os.path.dirname(p) for p in right if _numbered(p)}
-    if left_dirs & right_dirs:
-        signals.append("same-migration-directory")
-    return signals
+def _coupling_side(item, adj_keys, history):
+    files = frozenset(_files(item))
+    return {
+        "item": item,
+        "files": files,
+        "graph_files": _item_graph_files(files, adj_keys),
+        "matched": tuple(e for e in history if _entry_matches_item(e, item)),
+    }
 
 
-def coupling_default(signals):
-    return "serialize" if any(s in SERIALIZING_SIGNALS for s in signals) else "parallel"
+def _pair_signals(left, right, graph, risk_markers):
+    adjacent = any(
+        bf in graph.get(af, ()) for af in left["graph_files"] for bf in right["graph_files"]
+    )
+    shared = sorted(
+        {
+            m
+            for m in risk_markers
+            if any(risk_marker_matches(f, m) for f in left["files"])
+            and any(risk_marker_matches(f, m) for f in right["files"])
+        }
+    )
+    regression = _regression_links(left, right)
+    mig = sorted(_migration_apps(left["files"]) & _migration_apps(right["files"]))
+    signals = (
+        (("import-adjacent",) if adjacent else ())
+        + tuple("shared-risk-marker:" + m for m in shared)
+        + (("regression-history",) if regression else ())
+        + tuple("same-migration-app:" + (m or "<root>") for m in mig)
+    )
+    return list(signals), "serialize" if (shared or regression or mig) else "parallel"
 
 
 def _ordered(items, a, b, by_name):
     return _waits_on(items, a, b, by_name) or _waits_on(items, b, a, by_name)
 
 
-def _disjoint_signals(items, a, b, graph, risk_markers, history):
-    left = frozenset(_files(items[a]))
-    right = frozenset(_files(items[b]))
-    if left & right:
-        return []
-    return _pair_signals(left, right, graph, risk_markers, history)
-
-
-def order_coupled(items, graph=None, risk_markers=(), history=()):
-    lane_of = _owners(lane_items(items), len(items))
-    current = list(items)
-    added = ()
-    for a in range(len(items)):
-        for b in range(a + 1, len(items)):
-            if lane_of[a] == lane_of[b]:
-                continue
-            signals = _disjoint_signals(items, a, b, graph, risk_markers, history)
-            if coupling_default(signals) != "serialize":
-                continue
-            if _ordered(current, a, b, _by_name(current)):
-                continue
-            first, then = items[a]["name"], items[b]["name"]
-            current = [
-                {**item, "after": list(_after(item)) + [first]} if index == b else item
-                for index, item in enumerate(current)
-            ]
-            added = added + ({"first": first, "then": then, "signals": signals},)
-    return current, list(added)
-
-
 def coupling_review(items, lanes, graph, risk_markers=(), history=()):
     lane_of = _owners(lanes, len(items))
     by_name = _by_name(items)
+    adjacency = _file_coupling(graph)
+    adj_keys = list(adjacency)
+    sides = [_coupling_side(item, adj_keys, history or ()) for item in items]
     review = []
     for a in range(len(items)):
         for b in range(a + 1, len(items)):
-            if lane_of[a] == lane_of[b]:
+            if lane_of[a] == lane_of[b] or sides[a]["files"] & sides[b]["files"]:
                 continue
-            signals = _disjoint_signals(items, a, b, graph, risk_markers, history)
+            signals, default = _pair_signals(sides[a], sides[b], adjacency, risk_markers or ())
             if not signals or _ordered(items, a, b, by_name):
                 continue
             review.append(
@@ -961,10 +1040,21 @@ def coupling_review(items, lanes, graph, risk_markers=(), history=()):
                     "steps": [items[a]["name"], items[b]["name"]],
                     "lanes": [lane_of[a], lane_of[b]],
                     "signals": signals,
-                    "default": coupling_default(signals),
+                    "default": default,
                 }
             )
     return review
+
+
+def verdict_groups(review):
+    buckets = {}
+    for e in review:
+        buckets.setdefault((tuple(e["signals"]), e["default"]), []).append(e["steps"])
+    out = [
+        {"signals": list(sig), "default": dflt, "count": len(pairs), "pairs": pairs}
+        for (sig, dflt), pairs in buckets.items()
+    ]
+    return sorted(out, key=lambda g: (-g["count"], g["signals"]))
 
 
 def _acceptance_files(item):
@@ -979,12 +1069,10 @@ def _acceptance_files(item):
 
 
 def verify_modes(items, serial_markers):
-    modes = {}
-    for item in items:
-        surface = _files(item) + _acceptance_files(item)
-        serial = bool(_marker_hits(surface, serial_markers))
-        modes = {**modes, item["name"]: "serial" if serial else "offload"}
-    return modes
+    return {
+        it["name"]: ("serial" if any(m in f for m in serial_markers for f in it["files"]) else "offload")
+        for it in items
+    }
 
 
 def item_cost(item):
@@ -996,64 +1084,6 @@ def item_cost(item):
 
 def lane_cost(items, lane):
     return sum(item_cost(items[i]) for i in lane)
-
-
-def _measured(path, root):
-    if root is None or any(character in path for character in GLOB_CHARACTERS):
-        return None
-    full = os.path.join(root, path)
-    try:
-        return os.path.getsize(full) if os.path.isfile(full) else None
-    except (OSError, ValueError):
-        return None
-
-
-def _recorded_size(value):
-    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-        return value
-    return None
-
-
-def file_sizes(paths, root, known=None):
-    recorded = known if isinstance(known, dict) else {}
-    return {
-        path: _recorded_size(recorded[path]) if path in recorded else _measured(path, root)
-        for path in dict.fromkeys(paths)
-    }
-
-
-def _tokens(size):
-    return -(-int(size or 0) // BYTES_PER_TOKEN)
-
-
-def _write_tokens(size):
-    return NEW_FILE_TOKENS if size is None else EDIT_PASSES * _tokens(size)
-
-
-def _task_tokens(item):
-    return _tokens(len(str(item.get("task") or "").encode("utf-8")))
-
-
-def _built_tokens(size):
-    return NEW_FILE_TOKENS if size is None else _tokens(size)
-
-
-def estimate_tokens(items, steps, sizes, packs, cap=CONTEXT_CAP, shared=(), earlier=()):
-    write_set = tuple(dict.fromkeys(path for i in steps for path in _files(items[i])))
-    built = tuple(
-        path
-        for path in dict.fromkeys(path for i in earlier for path in _files(items[i]))
-        if path not in write_set
-    )
-    read_set, _ = _lane_read_set(items, steps, packs, cap, built)
-    return (
-        SESSION_BASE_TOKENS
-        + sum(_tokens(sizes.get(path)) for path in dict.fromkeys(shared))
-        + sum(STEP_TOKENS + _task_tokens(items[i]) for i in steps)
-        + sum(_write_tokens(sizes.get(path)) for path in write_set)
-        + sum(_built_tokens(sizes.get(path)) for path in built)
-        + sum(_tokens(sizes.get(path)) for path in read_set)
-    )
 
 
 def session_batches(lane):
@@ -1092,104 +1122,18 @@ def chained_after(edges, groups):
     return dict(sorted(chained.items()))
 
 
-NODE_LINK_KEYS = ("links", "edges")
-
-CODE_FILE_TYPE = "code"
-
-
-def node_link_edges(graph):
-    if not isinstance(graph, dict) or not isinstance(graph.get("nodes"), list):
-        return None
-    for key in NODE_LINK_KEYS:
-        if isinstance(graph.get(key), list):
-            return graph[key]
-    return None
-
-
-def is_adjacency(graph):
-    if not isinstance(graph, dict):
-        return False
-    lists = [neighbours for neighbours in graph.values() if isinstance(neighbours, list)]
-    nested = any(isinstance(n, (dict, list)) for neighbours in lists for n in neighbours)
-    named = any(isinstance(n, str) for neighbours in lists for n in neighbours)
-    return (not graph or bool(lists)) and (named or not nested)
-
-
-def clean_adjacency(graph):
-    return {
-        path: [n for n in neighbours if isinstance(n, str)]
-        for path, neighbours in graph.items()
-        if isinstance(neighbours, list)
-    }
-
-
-def _within(path, root):
-    if path is None:
-        return None
-    try:
-        relative = os.path.relpath(path, root)
-    except ValueError:
-        return None
-    return None if relative.split(os.sep)[0] == os.pardir else relative
-
-
-@functools.lru_cache(maxsize=4096)
-def _real_directory(directory):
-    return os.path.realpath(directory)
-
-
-def _real(path):
-    try:
-        return os.path.join(_real_directory(os.path.dirname(path)), os.path.basename(path))
-    except ValueError:
-        return None
-
-
-def _node_file(node, root):
-    if not isinstance(node, dict) or node.get("file_type", CODE_FILE_TYPE) != CODE_FILE_TYPE:
-        return None
-    path = node.get("source_file")
-    if not isinstance(path, str) or not path:
-        return None
-    if os.path.isabs(path):
-        relative = _within(path, root) or _within(_real(path), _real_directory(root))
-    else:
-        relative = _within(os.path.join(root, path), root)
-    return None if relative is None else _norm(relative)
-
-
-def _node_key(value):
-    return json.dumps(value, sort_keys=True)
-
-
-def node_files(graph, root):
-    return {
-        _node_key(node["id"]): _node_file(node, root)
-        for node in graph["nodes"]
-        if isinstance(node, dict) and "id" in node
-    }
-
-
-def _file_pairs(files, link, both):
-    if not isinstance(link, dict):
-        return ()
-    left = files.get(_node_key(link.get("source")))
-    right = files.get(_node_key(link.get("target")))
-    if not left or not right or left == right:
-        return ()
-    return ((left, right), (right, left)) if both else ((left, right),)
-
-
-def adjacency_from_node_links(graph, root):
-    files = node_files(graph, root)
-    both = not graph.get("directed", False)
-    linked = sorted(
-        {pair for link in node_link_edges(graph) for pair in _file_pairs(files, link, both)}
-    )
-    return {
-        path: [neighbour for _, neighbour in group]
-        for path, group in itertools.groupby(linked, key=lambda pair: pair[0])
-    }
+def build_file_coupling(nodes_by_id, links):
+    adj = collections.defaultdict(set)
+    for ln in links:
+        s = nodes_by_id.get(ln.get("source"))
+        t = nodes_by_id.get(ln.get("target"))
+        if not s or not t:
+            continue
+        sf, tf = s.get("source_file"), t.get("source_file")
+        if sf and tf and sf != tf:
+            adj[sf].add(tf)
+            adj[tf].add(sf)
+    return dict(adj)
 
 
 def _neighbours(adjacency, path):
@@ -1203,42 +1147,43 @@ def _neighbours(adjacency, path):
     return tuple(_norm(n) for n in raw if isinstance(n, str))
 
 
-def _expand(write_set, adjacency, hops):
-    seen = frozenset(write_set)
-    frontier = tuple(write_set)
-    gathered = ()
-    for _ in range(max(0, hops)):
-        fresh = tuple(
-            dict.fromkeys(
-                neighbour
-                for path in frontier
-                for neighbour in _neighbours(adjacency, path)
-                if neighbour not in seen
-            )
-        )
-        if not fresh:
-            break
-        seen = seen | frozenset(fresh)
-        gathered = gathered + fresh
-        frontier = fresh
-    return gathered
-
-
-def context_packs(items, adjacency, hops, cap):
+def context_packs(items, adj, hops=1, cap=CONTEXT_CAP):
     packs = {}
-    for item in items:
-        write_set = tuple(dict.fromkeys(_files(item)))
-        neighbours = _expand(write_set, adjacency, hops) if adjacency else ()
-        limit = len(neighbours) if cap is None else max(0, int(cap))
-        kept = neighbours[:limit]
-        packs = {
-            **packs,
-            item["name"]: {
-                "paths": list(write_set + kept),
-                "overflow": len(neighbours) - len(kept),
-            },
-        }
+    adj_keys = list(adj or {})
+    for it in items:
+        own = list(dict.fromkeys(it["files"]))
+        anchors = _item_graph_files(set(own), adj_keys) if adj else set()
+        seen = set(own) | anchors
+        frontier = anchors
+        for _ in range(max(0, hops)):
+            nxt = set()
+            for f in frontier:
+                nxt |= set(adj.get(f, ()))
+            frontier = nxt - seen
+            if not frontier:
+                break
+            seen |= frontier
+        pack = {"edit": own}
+        neighbours = sorted(seen - set(own) - anchors)
+        if neighbours:
+            pack["read"] = neighbours[:cap]
+            if len(neighbours) > cap:
+                pack["read_truncated"] = len(neighbours) - cap
+        packs[it["name"]] = pack
     return packs
+
+
+def shared_context(packs, waves):
+    out = {}
+    for i, w in enumerate(waves):
+        counts = collections.defaultdict(int)
+        for n in w:
+            for f in packs.get(n, {}).get("read", []):
+                counts[f] += 1
+        shared = sorted(f for f, c in counts.items() if c > 1)
+        if shared:
+            out[str(i)] = shared
+    return out
 
 
 def _dependents(lane_count, edges):
@@ -1257,40 +1202,6 @@ def lane_order(lanes, edges, items):
     )
 
 
-def coalesce(items, lanes, tier, edges=None, budget=3):
-    owners = lane_msps(items, lanes)
-    producers = frozenset(
-        int(producer) for consumers in (edges or {}).values() for producer in consumers
-    )
-    consumers = frozenset(int(consumer) for consumer in (edges or {}))
-    candidates = tuple(
-        lane_index
-        for lane_index, lane in enumerate(lanes)
-        if all(tier.get(items[i]["name"]) == "cheap" for i in lane)
-        and lane_cost(items, lane) <= budget
-        and lane_index not in producers
-        and lane_index not in consumers
-    )
-    groups = []
-    for msp_index in sorted(set(owners)):
-        current = ()
-        spent = 0
-        for lane_index in candidates:
-            if owners[lane_index] != msp_index:
-                continue
-            cost = lane_cost(items, lanes[lane_index])
-            if current and spent + cost > budget:
-                if len(current) > 1:
-                    groups.append(list(current))
-                current = ()
-                spent = 0
-            current = current + (lane_index,)
-            spent = spent + cost
-        if len(current) > 1:
-            groups.append(list(current))
-    return groups
-
-
 class ValidationError(ValueError):
     def __init__(self, errors):
         super().__init__("; ".join(errors))
@@ -1299,7 +1210,7 @@ class ValidationError(ValueError):
 
 def plan_id_for(plan):
     body = {key: value for key, value in plan.items() if key != "plan_id"}
-    encoded = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = json.dumps(body, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:12]
 
 
@@ -1308,21 +1219,35 @@ def _msp_label(items, msp):
     return tags[0] if tags else items[msp[0]]["name"]
 
 
-def _step_brief(item):
-    keys = ("name", "task", "files", "file_notes", "acceptance", "after", "assumptions", "spec_ref")
-    return {key: item[key] for key in keys if key in item}
+def _step_brief(item, pack, edit=None):
+    files = list(edit) if edit else list(pack.get("edit") or item.get("files") or [])
+    notes = {path: note for path, note in (item.get("file_notes") or {}).items() if path in files}
+    return {
+        "name": item["name"],
+        "task": item.get("task") or item.get("text") or item["name"],
+        "edit": files,
+        "read": list(pack.get("read") or []),
+        **({"acceptance": item["acceptance"]} if item.get("acceptance") else {}),
+        **({"file_notes": notes} if notes else {}),
+        **({"assumptions": item["assumptions"]} if item.get("assumptions") else {}),
+    }
 
 
-def _lane_read_set(items, lane, packs, cap=CONTEXT_CAP, owned=()):
+def brief_spec(leaves):
+    return json.dumps({"leaves": list(leaves)}, indent=2)
+
+
+def _lane_read_set(items, lane, packs, owned=()):
     write_set = frozenset(path for i in lane for path in _files(items[i])) | frozenset(owned)
-    read = ()
-    for i in lane:
-        for path in packs.get(items[i]["name"], {}).get("paths", ()):
-            if path not in write_set and path not in read:
-                read = read + (path,)
-    limit = len(read) if cap is None else max(0, int(cap))
-    dropped = sum(packs.get(items[i]["name"], {}).get("overflow", 0) for i in lane)
-    return list(read[:limit]), dropped + len(read) - len(read[:limit])
+    read = tuple(
+        dict.fromkeys(
+            path
+            for i in lane
+            for path in packs.get(items[i]["name"], {}).get("read", ())
+            if path not in write_set
+        )
+    )
+    return list(read), sum(packs.get(items[i]["name"], {}).get("read_truncated", 0) for i in lane)
 
 
 CLONE_LINE = (
@@ -1357,6 +1282,18 @@ def probe_line(paths):
     return PROBE_LINE % ", ".join(paths)
 
 
+EDIT_RULE = "Edit ONLY the files listed under `edit`."
+
+
+def _task_line(leaves):
+    if len(leaves) == 1:
+        return "Task: " + leaves[0]["task"]
+    return (
+        "You own %d related pieces of work. Do them IN THE ORDER GIVEN - a later one may build "
+        "on an earlier one." % len(leaves)
+    )
+
+
 def brief_text(brief):
     header = ["Lane %s of MSP %s" % (brief["lane"], brief["msp_label"])]
     if brief.get("charter"):
@@ -1382,44 +1319,14 @@ def brief_text(brief):
             header.append(
                 "Left for later sessions, do not start them: %s" % ", ".join(session["later"])
             )
-    body = ["Steps, in this order:"]
-    for position, item in enumerate(brief["steps"], 1):
-        body.append("")
-        body.append("%d. %s" % (position, item["name"]))
-        body.append("   Task: %s" % item["task"])
-        body.append("   Write-set: %s" % ", ".join(item.get("files", ())))
-        for path, note in (item.get("file_notes") or {}).items():
-            body.append("   Note for %s: %s" % (path, note))
-        acceptance = item.get("acceptance") or []
-        if acceptance:
-            body.append(
-                "   Acceptance: %s"
-                % ", ".join("%s::%s" % (entry["file"], entry["test"]) for entry in acceptance)
-            )
-        else:
-            body.append("   Acceptance: none declared")
-        for assumption in item.get("assumptions") or []:
-            body.append("   Assumption: %s" % assumption)
-    footer = [
-        "Write-set for this Lane, the only files you may edit: %s" % ", ".join(brief["write_set"]),
-        CLONE_LINE,
-    ] + (
+    body = [_task_line(brief["steps"]), "", brief["spec"], "", EDIT_RULE]
+    footer = [CLONE_LINE] + (
         [probe_line(brief["probe_files"])] if brief.get("probe_files") is not None else []
     ) + (
         [referee_line(brief.get("locked") or ())]
         if brief.get("role") != CHECK_AUTHOR or brief.get("locked")
         else []
-    )
-    if brief.get("read_set"):
-        footer.append(
-            "Read-set, context only, never edit: %s%s"
-            % (
-                ", ".join(brief["read_set"]),
-                " (%d more not shown)" % brief["read_overflow"] if brief.get("read_overflow") else "",
-            )
-        )
-    footer.append("When finished, return your reply as structured output:")
-    footer.append(brief["return_contract"])
+    ) + ["When finished, return your reply as structured output:", brief["return_contract"]]
     return "\n\n".join("\n".join(part) for part in (header, body, footer)) + "\n"
 
 
@@ -1432,7 +1339,6 @@ def _brief(
     packs,
     charter,
     source,
-    cap=CONTEXT_CAP,
     earlier=(),
     session=None,
     locked=(),
@@ -1440,12 +1346,15 @@ def _brief(
     write_set = tuple(
         dict.fromkeys(path for i in tuple(lane) + tuple(earlier) for path in _files(items[i]))
     )
-    read_set, read_overflow = _lane_read_set(items, lane, packs, cap, write_set)
+    read_set, read_overflow = _lane_read_set(items, lane, packs, write_set)
+    edit = write_set if tuple(earlier) else None
+    leaves = [_step_brief(items[i], packs.get(items[i]["name"], {}), edit) for i in lane]
     partial = {
         "lane": lane_index,
         "msp": msp_index,
         "msp_label": msp_label,
-        "steps": [_step_brief(items[i]) for i in lane],
+        "steps": leaves,
+        "spec": brief_spec(leaves),
         "write_set": list(write_set),
         "read_set": read_set,
         "read_overflow": read_overflow,
@@ -1458,18 +1367,20 @@ def _brief(
     return {**partial, "text": brief_text(partial)}
 
 
-def _check_author_brief(parts, msp, label, probe, packs, charter, source, cap, locked):
+def _check_author_brief(parts, msp, label, probe, packs, charter, source, locked):
     steps = [{**author, "files": list(paths)} for author, paths in parts]
     write_set = list(dict.fromkeys(path for _, paths in parts for path in paths))
     own = frozenset(referee.normalised(path) for path in write_set)
     others = [path for path in locked if referee.normalised(path) not in own]
-    read_set, read_overflow = _lane_read_set(steps, tuple(range(len(steps))), packs, cap, write_set)
+    read_set, read_overflow = _lane_read_set(steps, tuple(range(len(steps))), packs, write_set)
+    leaves = [_step_brief(step, packs.get(step["name"], {}), step["files"]) for step in steps]
     partial = {
         "lane": CHECK_AUTHOR_LANE,
         "msp": msp,
         "msp_label": label,
         "role": CHECK_AUTHOR,
-        "steps": [_step_brief(step) for step in steps],
+        "steps": leaves,
+        "spec": brief_spec(leaves),
         "write_set": write_set,
         "read_set": read_set,
         "read_overflow": read_overflow,
@@ -1670,14 +1581,6 @@ def _session_review(review, items, lanes):
     return [{**pair, "lanes": [lane_of[by_name[name]] for name in pair["steps"]]} for pair in review]
 
 
-def _sized_paths(items, packs, shared):
-    return (
-        tuple(path for item in items for path in _files(item))
-        + tuple(path for pack in packs.values() for path in pack.get("paths", ()))
-        + tuple(shared)
-    )
-
-
 def _charter_text(charter, root):
     if not isinstance(charter, str) or not charter:
         return ""
@@ -1716,6 +1619,43 @@ def referee_errors(items, locked):
     )
 
 
+LockedSteps = collections.namedtuple(
+    "LockedSteps", ("counts", "authors", "locked", "items", "msps", "placed")
+)
+
+
+def locked_steps(items, charter=None, root=None):
+    charter_locked, lock_errors = charter_locks(charter, root)
+    checked = validate(items, root=root)
+    if checked["errors"] or lock_errors:
+        raise ValidationError(tuple(checked["errors"]) + lock_errors)
+    authors = check_author_steps(items)
+    locked = _merged_locks(charter_locked, tuple(path for author in authors for path in _files(author)))
+    built = without_locked_acceptance(without_check_author(items), locked)
+    refused = referee_errors(built, locked)
+    if refused:
+        raise ValidationError(refused)
+    msps = msp_items(built)
+    slice_errors, placed = check_author_slices(authors, built, msps)
+    if slice_errors:
+        raise ValidationError(slice_errors)
+    return LockedSteps(checked["counts"], authors, locked, built, msps, placed)
+
+
+def saved_slice_errors(entries, steps):
+    owned = {
+        (steps.authors[position]["name"], referee.normalised(path))
+        for _, position, path in steps.placed
+    }
+    return tuple(
+        "%s: its slice claims %s, which no check-author Step of the loaded items writes; "
+        "a %s slice holds only its Steps' placed files" % (entry.get("name"), path, CHECK_AUTHOR)
+        for entry in entries
+        for path in entry.get("slice") or ()
+        if not any((name, referee.normalised(path)) in owned for name in entry.get("steps") or ())
+    )
+
+
 def plan(
     items,
     charter=None,
@@ -1725,47 +1665,23 @@ def plan(
     hops=1,
     cap=CONTEXT_CAP,
     history=(),
-    budget=3,
     root=None,
-    session_tokens=SESSION_TOKENS,
-    sizes=None,
+    coalesce_below=2.0,
+    coalesce_max=4,
+    briefs=True,
 ):
-    charter_locked, lock_errors = charter_locks(charter, root)
-    checked = validate(items, root=root)
-    if checked["errors"] or lock_errors:
-        raise ValidationError(tuple(checked["errors"]) + lock_errors)
-    authors = check_author_steps(items)
-    locked = _merged_locks(charter_locked, tuple(path for author in authors for path in _files(author)))
-    items = without_locked_acceptance(without_check_author(items), locked)
-    refused = referee_errors(items, locked)
-    if refused:
-        raise ValidationError(refused)
-    items, ordered = order_coupled(items, graph, risk_markers, history)
-    msps = msp_items(items)
-    slice_errors, placed = check_author_slices(authors, items, msps)
-    if slice_errors:
-        raise ValidationError(slice_errors)
+    counts, authors, locked, items, msps, placed = locked_steps(items, charter, root)
     whole = lane_items(items)
-    tiers = {
-        item["name"]: tier_for(
-            _files(item), risk_markers, item.get("complexity"), item.get("assumptions"), history
-        )
-        for item in items
-    }
+    tiered = {item["name"]: _tiered(item, risk_markers, history) for item in items}
+    tiers = {name: tier for name, (tier, _) in tiered.items()}
+    tier_notes = {name: note for name, (_, note) in tiered.items() if note}
     packs = context_packs(items, graph, hops, cap)
     labels = tuple(_msp_label(items, msp) for msp in msps)
     source = items[0].get("source") if items else None
-    shared = tuple(
-        path
-        for path in (charter, source.get("path") if isinstance(source, dict) else None)
-        if isinstance(path, str) and path
-    )
-    measured = file_sizes(_sized_paths(items, packs, shared), root, sizes)
-    estimate = functools.partial(
-        estimate_tokens, items, sizes=measured, packs=packs, cap=cap, shared=shared
-    )
+    steps, cost, waves = build_waves(items)
     groups = tuple(session_batches(lane) for lane in whole)
     lanes = tuple(batch for group in groups for batch in group)
+    review = _session_review(coupling_review(items, whole, graph, risk_markers, history), items, lanes)
     places = _session_places(groups)
     group_tiers = tuple(
         "top" if any(tiers[items[i]["name"]] == "top" for i in lane) else "cheap" for lane in whole
@@ -1787,7 +1703,6 @@ def plan(
             "steps": [items[i]["name"] for i in lane],
             "tier": lane_tiers[index],
             "cost": lane_cost(items, lane),
-            "tokens": estimate(lane, earlier=places[index]["earlier"]),
             **(
                 {"session": [places[index]["index"], places[index]["count"]]}
                 if places[index]["count"] > 1
@@ -1799,26 +1714,24 @@ def plan(
     lane_edges = {str(consumer): list(producers) for consumer, producers in edges.items()}
     related = {"msps": msp_entries, "lanes": lane_entries, "lane_after": lane_edges}
     body = {
-        "version": __version__,
         "source": source,
         "locked": list(locked),
         "items": items,
         "msps": msp_entries,
         "lanes": lane_entries,
         "lane_after": lane_edges,
-        "clusters": [list(group) for group in clusters(items, lanes)],
         "tiers": tiers,
+        "tier_notes": tier_notes,
         "verify_modes": verify_modes(items, serial_markers),
         "context_packs": packs,
+        "shared_context": shared_context(packs, waves),
         "lane_order": list(lane_order(lanes, edges, items)),
-        "coalesce": coalesce(items, lanes, tiers, edges, budget),
-        "coupling_review": _session_review(
-            coupling_review(items, whole, graph, risk_markers, history), items, lanes
+        "coalesce": coalesce_groups(
+            steps, waves, tiers, cost, coalesce_below, coalesce_max, ready_after(steps, waves)
         ),
-        "coupling_order": ordered,
-        "counts": checked["counts"],
-        "session_tokens": session_tokens,
-        "sizes": measured,
+        "coupling_review": review,
+        "verdict_groups": verdict_groups(review),
+        "counts": counts,
         "briefs": [
             _brief(
                 items,
@@ -1829,7 +1742,6 @@ def plan(
                 packs,
                 charter,
                 source,
-                cap,
                 places[index]["earlier"],
                 _session(items, places[index]),
                 locked,
@@ -1845,7 +1757,6 @@ def plan(
                 context_packs([author for author, _ in parts], graph, hops, cap),
                 charter,
                 source,
-                cap,
                 locked,
             )
             for index in range(len(msps))
@@ -1853,7 +1764,8 @@ def plan(
             if parts
         ],
     }
-    kept = {key: body[key] for key in PLAN_KEYS if key in body and _present(body[key])}
+    shaped = body if briefs else {key: value for key, value in body.items() if key not in BRIEF_KEYS}
+    kept = {key: shaped[key] for key in PLAN_KEYS if key in shaped and _present(shaped[key])}
     identified = {**kept, "plan_id": plan_id_for(kept)}
     return {key: identified[key] for key in PLAN_KEYS if key in identified}
 
