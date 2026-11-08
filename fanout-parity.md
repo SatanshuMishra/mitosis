@@ -1,6 +1,6 @@
 # fanout-parity: Mitosis plans and builds as fanout does (fanout parity)
 Status: parked
-Updated: 2026-11-08T21:09:27.529Z
+Updated: 2026-11-08T21:11:07.172Z
 Next ids: c2 D8 R1 S1
 
 ## Goal
@@ -17,7 +17,7 @@ Not started.
 
 ## Next step
 
-The drive entered ship and runs it next.
+The drive entered awaiting-merge: pull requests are ready to merge; it resumes on pipeline drive event --name merged.
 
 ## Decisions in force
 
