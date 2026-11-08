@@ -994,12 +994,8 @@
                 "type": "array",
                 "minItems": 1,
                 "items": {
-                  "enum": [
-                    "import-adjacency",
-                    "shared-risk-marker",
-                    "recorded-regression",
-                    "same-migration-directory"
-                  ]
+                  "type": "string",
+                  "pattern": "^(import-adjacency|shared-risk-marker|recorded-regression|same-migration-directory|import-adjacent|regression-history|shared-risk-marker:.+|same-migration-app:.+)$"
                 }
               }
             }
@@ -1028,12 +1024,8 @@
                 "type": "array",
                 "minItems": 1,
                 "items": {
-                  "enum": [
-                    "import-adjacency",
-                    "shared-risk-marker",
-                    "recorded-regression",
-                    "same-migration-directory"
-                  ]
+                  "type": "string",
+                  "pattern": "^(import-adjacency|shared-risk-marker|recorded-regression|same-migration-directory|import-adjacent|regression-history|shared-risk-marker:.+|same-migration-app:.+)$"
                 }
               }
             }

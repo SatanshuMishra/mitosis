@@ -434,7 +434,7 @@ class Tiering(unittest.TestCase):
         broke = ({"files": ["src/a.py"], "outcome": "fixed", "regressed": ["src/b.py"]},)
         fixed = ({"files": ["src/a.py", "src/b.py"], "outcome": "fixed"},)
         signals = {tuple(e["steps"]): e["signals"] for e in core.coupling_review(items, lanes, None, history=broke)}
-        self.assertEqual(signals[("a", "b")], ["recorded-regression"])
+        self.assertEqual(signals[("a", "b")], ["regression-history"])
         self.assertEqual(core.coupling_review(items, lanes, None, history=fixed), [])
 
     def a_marker_matches_a_mixed_case_path(self):
@@ -479,8 +479,12 @@ class Tiering(unittest.TestCase):
 
     def same_migration_directory_is_flagged_for_review(self):
         items = [
-            step("seven", ["db/migrations/0007_add_x.sql"]),
-            step("eight", ["db/migrations/0008_add_y.sql"]),
+            step("seven", ["db/migrations/0007_add_x.py"]),
+            step("eight", ["db/migrations/0008_add_y.py"]),
+            step("sql-seven", ["db/0007_a.sql"]),
+            step("sql-eight", ["db/0008_b.sql"]),
+            step("root-one", ["migrations/0001_one.py"]),
+            step("root-two", ["migrations/0002_two.py"]),
             step("plain-a", ["src/a.py"]),
             step("plain-b", ["src/b.py"]),
             step("auth-a", ["src/auth/a.py"]),
@@ -492,58 +496,80 @@ class Tiering(unittest.TestCase):
         graph = {"src/a.py": ["src/b.py"]}
         history = ({"files": ["src/a.py", "lib/auth/b.py"], "outcome": "failed"},)
         review = core.coupling_review(items, lanes, graph, risk_markers=("auth/",), history=history)
-        by_pair = {tuple(entry["steps"]): entry["signals"] for entry in review}
-        self.assertEqual(by_pair[("seven", "eight")], ["same-migration-directory"])
-        self.assertEqual(by_pair[("plain-a", "plain-b")], ["import-adjacency"])
-        self.assertEqual(by_pair[("auth-a", "auth-b")], ["shared-risk-marker"])
-        self.assertEqual(by_pair[("plain-a", "auth-b")], ["recorded-regression"])
+        by_pair = {tuple(entry["steps"]): (entry["signals"], entry["default"]) for entry in review}
+        self.assertEqual(by_pair[("seven", "eight")], (["same-migration-app:db"], "serialize"))
+        self.assertEqual(by_pair[("root-one", "root-two")], (["same-migration-app:<root>"], "serialize"))
+        self.assertEqual(by_pair[("plain-a", "plain-b")], (["import-adjacent"], "parallel"))
+        self.assertEqual(by_pair[("auth-a", "auth-b")], (["shared-risk-marker:auth/"], "serialize"))
+        self.assertNotIn(("sql-seven", "sql-eight"), by_pair)
+        self.assertNotIn(("plain-a", "auth-b"), by_pair)
         self.assertNotIn(("shared-a", "shared-b"), by_pair)
         self.assertNotIn(("seven", "plain-a"), by_pair)
+        self.assertEqual(len(review), 4)
         for entry in review:
             self.assertEqual(len(entry["lanes"]), 2)
             self.assertNotEqual(entry["lanes"][0], entry["lanes"][1])
-        self.assertEqual(core.coupling_review(items, lanes, None), [
-            entry for entry in review if entry["signals"] == ["same-migration-directory"]
-        ])
+        self.assertEqual(
+            [(tuple(entry["steps"]), entry["signals"]) for entry in core.coupling_review(items, lanes, None)],
+            [
+                (("seven", "eight"), ["same-migration-app:db"]),
+                (("root-one", "root-two"), ["same-migration-app:<root>"]),
+            ],
+        )
 
-    def a_strong_coupling_signal_orders_the_pair_and_an_import_link_leaves_it_parallel(self):
+    def a_strong_coupling_signal_flags_the_pair_serialize_and_an_import_link_leaves_it_parallel(self):
         items = [
-            step("seven", ["db/migrations/0007_add_x.sql"]),
-            step("eight", ["db/migrations/0008_add_y.sql"]),
+            step("seven", ["db/migrations/0007_add_x.py"]),
+            step("eight", ["db/migrations/0008_add_y.py"]),
             step("plain-a", ["src/a.py"]),
             step("plain-b", ["src/b.py"]),
             step("auth-a", ["src/auth/a.py"]),
             step("auth-b", ["lib/auth/b.py"]),
         ]
-        history = ({"files": ["src/a.py", "src/auth/a.py"], "outcome": "failed"},)
+        history = ({"files": ["src/a.py"], "outcome": "fixed", "regressed": ["src/auth/a.py"]},)
         plan = core.plan(items, graph={"src/a.py": ["src/b.py"]}, risk_markers=("auth/",), history=history)
-        ordered = {(entry["first"], entry["then"]): entry["signals"] for entry in plan["coupling_order"]}
-        self.assertEqual(ordered[("seven", "eight")], ["same-migration-directory"])
-        self.assertEqual(ordered[("auth-a", "auth-b")], ["shared-risk-marker"])
-        self.assertEqual(ordered[("plain-a", "auth-a")], ["recorded-regression"])
-        by_name = {item["name"]: item for item in plan["items"]}
-        self.assertEqual(by_name["eight"]["after"], ["seven"])
-        self.assertEqual(by_name["auth-b"]["after"], ["auth-a"])
-        review = {tuple(entry["steps"]): entry for entry in plan["coupling_review"]}
-        self.assertEqual(review[("plain-a", "plain-b")]["default"], "parallel")
-        self.assertEqual(review[("plain-a", "plain-b")]["signals"], ["import-adjacency"])
-        self.assertNotIn(("seven", "eight"), review)
+        self.assertNotIn("coupling_order", plan)
+        self.assertNotIn("lane_after", plan)
+        self.assertFalse(any("after" in item for item in plan["items"]))
+        review = {tuple(entry["steps"]): (entry["signals"], entry["default"]) for entry in plan["coupling_review"]}
+        self.assertEqual(
+            review,
+            {
+                ("seven", "eight"): (["same-migration-app:db"], "serialize"),
+                ("plain-a", "plain-b"): (["import-adjacent"], "parallel"),
+                ("plain-a", "auth-a"): (["regression-history"], "serialize"),
+                ("auth-a", "auth-b"): (["shared-risk-marker:auth/"], "serialize"),
+            },
+        )
         self.assertFalse(any("after" in item for item in items))
 
-    def an_added_order_never_closes_a_loop(self):
-        items = [
-            step("a", ["m/0001_a.sql"], after=["c"]),
-            step("b", ["m/0002_b.sql"]),
-            step("c", ["m/0003_c.sql"]),
-        ]
-        plan = core.plan(items)
-        self.assertEqual(core.cycles(plan["items"]), ())
+    def an_import_listed_only_under_the_later_step_is_import_adjacent(self):
+        items = [step("plain-a", ["src/app/a.py"]), step("plain-b", ["src/app/b.py"])]
+        lanes = core.lane_items(items)
         self.assertEqual(
-            [(entry["first"], entry["then"]) for entry in plan["coupling_order"]], [("a", "b")]
+            core.coupling_review(items, lanes, {"app/b.py": ["app/a.py"]}),
+            [{"steps": ["plain-a", "plain-b"], "lanes": [0, 1], "signals": ["import-adjacent"], "default": "parallel"}],
         )
-        by_name = core._by_name(plan["items"])
-        for x, y in (("a", "b"), ("a", "c"), ("b", "c")):
-            self.assertTrue(core._ordered(plan["items"], by_name[x], by_name[y], by_name), (x, y))
+
+    def verdict_groups_bucket_pairs_by_signals_and_default_biggest_first(self):
+        review = [
+            {"steps": ["a", "b"], "lanes": [0, 1], "signals": ["import-adjacent"], "default": "parallel"},
+            {"steps": ["c", "d"], "lanes": [2, 3], "signals": ["shared-risk-marker:auth"], "default": "serialize"},
+            {"steps": ["c", "e"], "lanes": [2, 4], "signals": ["shared-risk-marker:auth"], "default": "serialize"},
+        ]
+        self.assertEqual(
+            core.verdict_groups(review),
+            [
+                {
+                    "signals": ["shared-risk-marker:auth"],
+                    "default": "serialize",
+                    "count": 2,
+                    "pairs": [["c", "d"], ["c", "e"]],
+                },
+                {"signals": ["import-adjacent"], "default": "parallel", "count": 1, "pairs": [["a", "b"]]},
+            ],
+        )
+        self.assertEqual(core.verdict_groups([]), [])
 
     def a_pair_already_ordered_by_an_after_edge_gets_no_verdict(self):
         items = [step("a", ["src/a.py"]), step("b", ["src/b.py"], after=["a"])]
@@ -674,7 +700,7 @@ class Plan(unittest.TestCase):
     def the_plan_emits_exactly_the_declared_keys(self):
         result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
         self.assertEqual(
-            set(result), set(core.PLAN_KEYS) - {"coupling_order", "locked", "check_authors", "tier_notes"}
+            set(result), set(core.PLAN_KEYS) - {"locked", "check_authors", "tier_notes"}
         )
         self.assertEqual(list(result), [key for key in core.PLAN_KEYS if key in result])
         self.assertEqual(result["version"], core.__version__)
@@ -756,7 +782,7 @@ class Plan(unittest.TestCase):
         with mock.patch.object(builtins, "open", side_effect=AssertionError("plan opened a file")):
             result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
         self.assertEqual(
-            set(result), set(core.PLAN_KEYS) - {"coupling_order", "locked", "check_authors", "tier_notes"}
+            set(result), set(core.PLAN_KEYS) - {"locked", "check_authors", "tier_notes"}
         )
 
     def plan_refuses_invalid_items_with_messages(self):

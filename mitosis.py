@@ -1628,27 +1628,28 @@ def reconcile_lines(plan, state):
 def coupling_lines(plan, state):
     if plan is None:
         return (NO_PLAN,)
-    ordered = plan.get("coupling_order") or []
     pairs = plan.get("coupling_review") or []
-    if not ordered and not pairs:
+    if not pairs:
         return ("none: no write-set-disjoint pair in different Lanes shares a coupling signal",)
     verb = "ran" if state is not None else "run"
-    return tuple(
-        "%s then %s: put in order because of %s"
-        % (entry["first"], entry["then"], ", ".join(entry["signals"]))
-        for entry in ordered
-    ) + tuple(
-        "%s and %s (Lanes %s) %s in parallel with only %s between them; add an after edge if "
-        "one needs the other's output"
-        % (
-            pair["steps"][0],
-            pair["steps"][1],
-            ", ".join(str(lane) for lane in pair.get("lanes") or []),
-            verb,
-            " and ".join(pair.get("signals") or []),
-        )
-        for pair in pairs
+    return tuple(_coupling_pair_line(pair, verb) for pair in pairs)
+
+
+def _coupling_pair_line(pair, verb):
+    named = "%s and %s (Lanes %s) %s in parallel" % (
+        pair["steps"][0],
+        pair["steps"][1],
+        ", ".join(str(lane) for lane in pair.get("lanes") or []),
+        verb,
     )
+    return COUPLING_LINE[_coupling_form(pair)] % (named, " and ".join(pair.get("signals") or []))
+
+
+COUPLING_LINE = {
+    "parallel": "%s with only %s between them; add an after edge if one needs the other's output",
+    "serialize": "%s awaiting the orchestrator's verdict on %s, default serialize; add an after edge "
+    "to serialize them",
+}
 
 
 def stacking_lines(plan, state):
@@ -2093,29 +2094,43 @@ COUPLING_NAMED = 8
 
 def _coupling_summary(plan):
     return {
-        "ordered": [dict(entry) for entry in plan.get("coupling_order") or []],
+        "ordered": [],
         "parallel": [
             {"steps": list(pair["steps"]), "signals": list(pair["signals"])}
             for pair in plan.get("coupling_review") or []
-            if pair.get("default") == "parallel"
         ],
     }
 
 
-def _coupling_attention(coupling):
-    keyed = sorted((tuple(pair["signals"]), "+".join(pair["steps"])) for pair in coupling["parallel"])
+COUPLING_ATTENTION = {
+    "parallel": "%s run in parallel with only %s between them: %s%s; add an after edge where one "
+    "needs the other's output",
+    "serialize": "%s await the orchestrator's verdict on %s, default serialize: %s%s; add an after "
+    "edge to serialize them",
+}
+
+
+def _coupling_form(pair):
+    if pair.get("default") not in COUPLING_ATTENTION:
+        raise ValueError(
+            "coupling pair %s has an unknown default %r" % ("+".join(pair["steps"]), pair.get("default"))
+        )
+    return pair["default"]
+
+
+def _coupling_attention(review):
+    keyed = sorted(((_coupling_form(pair), tuple(pair["signals"])), "+".join(pair["steps"])) for pair in review)
     return [
-        "%s run in parallel with only %s between them: %s%s; add an after edge where one needs "
-        "the other's output"
+        COUPLING_ATTENTION[default]
         % (
             _n(len(names), "pair") + " of Steps",
             " and ".join(signals),
             ", ".join(names[:COUPLING_NAMED]),
             " and %d more" % (len(names) - COUPLING_NAMED) if len(names) > COUPLING_NAMED else "",
         )
-        for signals, names in (
-            (signals, [name for _, name in group])
-            for signals, group in itertools.groupby(keyed, key=lambda entry: entry[0])
+        for (default, signals), names in (
+            (key, [name for _, name in group])
+            for key, group in itertools.groupby(keyed, key=lambda entry: entry[0])
         )
     ]
 
@@ -2145,7 +2160,7 @@ def summary(plan, state, run_dir, code, referee=None, troubles=()):
         + list(troubles)
         + list(oversized_lines(plan or {}))
         + list(manifest_lines((plan or {}).get("items") or []))
-        + _coupling_attention(coupling),
+        + _coupling_attention((plan or {}).get("coupling_review") or []),
     }
 
 
