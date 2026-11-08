@@ -1,0 +1,33 @@
+# any-input-decompose: Mitosis takes any input fanout takes (asks, specs, items)
+Status: active
+Updated: 2026-11-08T01:01:07.333Z
+Next ids: c2 D1 R1 S1
+
+## Goal
+
+Mitosis plans an asks file, a spec of any kind or an items file as fanout does, writes its own lock stage and refuses a plan naming a test nothing writes, built from docs/specs/any-input-decompose.md after fanout-parity merges.
+
+## Done when
+
+- [ ] c1 The any-input-decompose MSP pull request is open with review green or its blockers listed
+
+## Where things stand
+
+Not started.
+
+## Next step
+
+After the fanout-parity pull request merges, sync main, rerun lock_feasibility on docs/specs/any-input-decompose.record.json and start its run.
+
+## Decisions in force
+
+## Open risks
+
+## Settled, do not reopen
+
+## Where the details live
+
+- Spec: docs/specs/any-input-decompose.md
+- Decisions: docs/specs/any-input-decompose.decisions.md
+- Record: docs/specs/any-input-decompose.record.json
+- Program thread: spec-only-any-input in the pipeline repository's logbook
