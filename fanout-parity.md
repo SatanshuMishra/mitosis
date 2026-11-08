@@ -1,6 +1,6 @@
 # fanout-parity: Mitosis plans and builds as fanout does (fanout parity)
-Status: active
-Updated: 2026-11-08T01:01:05.637Z
+Status: parked
+Updated: 2026-11-08T01:01:10.862Z
 Next ids: c2 D2 R1 S1
 
 ## Goal
