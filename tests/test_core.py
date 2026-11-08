@@ -90,14 +90,14 @@ class Grouping(unittest.TestCase):
         self.assertEqual(core.lane_items(items), ((0, 1, 2),))
         self.assertEqual(core.pinned_groups(items), frozenset())
 
-    def a_group_with_two_contract_steps_is_not_pinned(self):
+    def a_group_with_two_contract_steps_is_pinned(self):
         items = [
             step("shape-a", ["a.py"], type="contract", contract_group="g"),
             step("shape-b", ["b.py"], type="contract", contract_group="g"),
             step("user", ["u.py"], contract_group="g", after=["shape-a", "shape-b"]),
         ]
-        self.assertEqual(core.pinned_groups(items), frozenset())
-        self.assertEqual(len(core.lane_items(items)), 1)
+        self.assertEqual(core.pinned_groups(items), frozenset({"g"}))
+        self.assertEqual(core.lane_items(items), ((0,), (1,), (2,)))
 
     def a_member_that_never_waits_on_the_contract_unpins_the_group(self):
         items = [
@@ -108,17 +108,17 @@ class Grouping(unittest.TestCase):
         self.assertEqual(core.pinned_groups(items), frozenset())
         self.assertEqual(len(core.lane_items(items)), 1)
 
-    def a_member_waiting_on_the_contract_through_another_step_keeps_the_group_pinned(self):
+    def a_member_waiting_on_the_contract_through_another_step_unpins_the_group(self):
         items = [
             step("iface", ["iface.py"], type="contract", contract_group="g"),
             step("server", ["server.py"], contract_group="g", after=["iface"]),
             step("adapter", ["adapter.py"], contract_group="g", after=["iface"]),
             step("client", ["client.py"], contract_group="g", after=["adapter"]),
         ]
-        self.assertEqual(core.pinned_groups(items), frozenset({"g"}))
+        self.assertEqual(core.pinned_groups(items), frozenset())
         self.assertEqual(len(core.msp_items(items)), 1)
         lanes = core.lane_items(items)
-        self.assertNotEqual(lane_of(lanes, items, "server"), lane_of(lanes, items, "client"))
+        self.assertEqual(lanes, ((0, 2, 1, 3),))
         self.assertEqual(core.lane_cycles(items, lanes), ())
 
     def a_cycle_inside_one_msp_is_contracted_so_the_plan_can_still_run(self):
@@ -128,11 +128,7 @@ class Grouping(unittest.TestCase):
             step("p2", ["p2.py"], msp="m", after=["core"]),
             step("tail", ["tail.py", "shared.py"], msp="m", after=["p1", "p2"]),
         ]
-        by_name = core._by_name(items)
-        uncontracted = tuple(
-            core._walk_order(items, group, by_name)
-            for group in core.union_find(len(items), core._shared(items, core._files))
-        )
+        uncontracted = core.uncontracted_lanes(items)
         self.assertEqual(len(uncontracted), 3)
         self.assertEqual(len(core.lane_cycles(items, uncontracted)), 1)
 
@@ -140,27 +136,23 @@ class Grouping(unittest.TestCase):
         self.assertEqual(len(lanes), 1)
         self.assertEqual(core.lane_cycles(items, lanes), ())
         walked = [items[index]["name"] for index in lanes[0]]
-        self.assertLess(walked.index("core"), walked.index("p1"))
-        self.assertLess(walked.index("p1"), walked.index("tail"))
-        self.assertLess(walked.index("p2"), walked.index("tail"))
+        self.assertEqual(walked, ["core", "p1", "p2", "tail"])
 
-    def msps_that_wait_on_each_other_are_fused_into_one_msp_and_built_in_order(self):
+    def msps_that_wait_on_each_other_stay_two_msps(self):
         items = [
             step("core", ["core.py", "shared.py"]),
             step("mid", ["mid.py"], after=["core"]),
             step("tail", ["tail.py", "shared.py"], after=["mid"]),
         ]
         lanes = core.lane_items(items)
-        self.assertEqual(len(core.msp_items(items)), 1)
-        self.assertEqual(len(lanes), 1)
-        self.assertEqual(core.lane_cycles(items, lanes), ())
-        walked = [items[index]["name"] for index in lanes[0]]
-        self.assertEqual(walked, ["core", "mid", "tail"])
+        self.assertEqual(core.msp_items(items), ((0, 2), (1,)))
+        self.assertEqual(lanes, ((0, 2), (1,)))
+        self.assertEqual(core.lane_cycles(items, lanes), ((0, 1),))
 
-    def two_steps_that_wait_on_each_other_are_fused_into_one_lane(self):
+    def two_steps_that_wait_on_each_other_stay_in_two_msps_and_two_lanes(self):
         items = [step("a", ["a.py"], after=["b"]), step("b", ["b.py"], after=["a"])]
-        self.assertEqual(len(core.msp_items(items)), 1)
-        self.assertEqual(len(core.lane_items(items)), 1)
+        self.assertEqual(core.msp_items(items), ((0,), (1,)))
+        self.assertEqual(core.lane_items(items), ((0,), (1,)))
 
     def contraction_never_puts_two_msps_in_one_lane(self):
         items = [
@@ -185,10 +177,11 @@ class Grouping(unittest.TestCase):
             step("a3", ["pkg/a.py"], after=["b2"]),
         ]
         self.assertEqual(core.cycles(items), ())
+        self.assertEqual(core.msp_items(items), ((0, 1, 6), (2, 3), (4,), (5,)))
         found = core.lane_cycles(items, core.uncontracted_lanes(items))
         self.assertEqual(len(found), 1)
         self.assertEqual(len(found[0]), 2)
-        self.assertEqual(core.lane_cycles(items, core.lane_items(items)), ())
+        self.assertEqual(len(core.lane_cycles(items, core.lane_items(items))), 1)
 
     def a_plan_without_a_loop_reports_no_lane_cycle(self):
         items = [step("a", ["a.py"]), step("b", ["b.py"], after=["a"])]
@@ -593,23 +586,18 @@ class Tiering(unittest.TestCase):
 
 
 class Cost(unittest.TestCase):
-    def coalesce_never_groups_across_msps(self):
+    def coalesce_groups_cheap_steps_of_one_wave_by_name_whatever_their_msp(self):
         items = [
-            step("a1", ["a1.py"], msp="a"),
-            step("a2", ["a2.py"], msp="a"),
-            step("b1", ["b1.py"], msp="b"),
-            step("b2", ["b2.py"], msp="b"),
+            step("a1", ["a1.py"], msp="a", complexity="simple"),
+            step("a2", ["a2.py"], msp="a", complexity="simple"),
+            step("b1", ["b1.py"], msp="b", complexity="simple"),
+            step("b2", ["b2.py"], msp="b", complexity="simple"),
         ]
-        lanes = core.lane_items(items)
-        owners = core.lane_msps(items, lanes)
-        tiers = {item["name"]: "cheap" for item in items}
-        groups = core.coalesce(items, lanes, tiers, budget=4)
-        self.assertEqual(len(groups), 2)
-        for group in groups:
-            self.assertEqual(len({owners[lane] for lane in group}), 1)
-        singles = [step("x", ["x.py"]), step("y", ["y.py"])]
-        single_lanes = core.lane_items(singles)
-        self.assertEqual(core.coalesce(singles, single_lanes, {"x": "cheap", "y": "cheap"}, budget=4), [])
+        self.assertEqual(core.plan(items)["coalesce"], {"0": [["a1", "a2", "b1", "b2"]]})
+        self.assertEqual(core.plan(items, coalesce_max=3)["coalesce"], {"0": [["a1", "a2", "b1"]]})
+        self.assertNotIn("coalesce", core.plan(items, coalesce_below=0))
+        wide = [step("w%d" % i, ["w%d.py" % i, "v%d.py" % i, "u%d.py" % i], complexity="simple") for i in range(2)]
+        self.assertNotIn("coalesce", core.plan(wide))
 
     def coalesce_never_takes_a_top_tier_step(self):
         items = [
@@ -618,25 +606,17 @@ class Cost(unittest.TestCase):
             step("risky", ["risky.py"], msp="m"),
             step("c3", ["c3.py"], msp="m"),
         ]
-        lanes = core.lane_items(items)
-        tiers = {"c1": "cheap", "c2": "cheap", "risky": "top", "c3": "cheap"}
-        groups = core.coalesce(items, lanes, tiers, budget=10)
-        risky = lane_of(lanes, items, "risky")
-        self.assertEqual(groups, [[lane for lane in range(len(lanes)) if lane != risky]])
+        result = core.plan([{**item, "complexity": "simple"} for item in items], risk_markers=("risky",))
+        self.assertEqual(result["tiers"]["risky"], "top")
+        self.assertEqual(result["coalesce"], {"0": [["c1", "c2", "c3"]]})
         dependent = [
-            step("p", ["p.py"], msp="m"),
-            step("q", ["q.py"], msp="m", after=["p"]),
-            step("r", ["r.py"], msp="m", after=["p"]),
-            step("s", ["s.py"], msp="m"),
-            step("t", ["t.py"], msp="m"),
+            step("p", ["p.py"], msp="m", complexity="simple"),
+            step("q", ["q.py"], msp="m", after=["p"], complexity="simple"),
+            step("r", ["r.py"], msp="m", after=["p"], complexity="simple"),
+            step("s", ["s.py"], msp="m", complexity="simple"),
+            step("t", ["t.py"], msp="m", complexity="simple"),
         ]
-        dependent_lanes = core.lane_items(dependent)
-        edges = core.lane_after(dependent, dependent_lanes)
-        groups = core.coalesce(dependent, dependent_lanes, dict.fromkeys("pqrst", "cheap"), edges=edges, budget=10)
-        self.assertEqual(groups, [[lane_of(dependent_lanes, dependent, "s"), lane_of(dependent_lanes, dependent, "t")]])
-        budgeted = core.coalesce(items, lanes, tiers, budget=2)
-        self.assertTrue(all(len(group) == 2 for group in budgeted))
-        self.assertTrue(all(risky not in group for group in budgeted))
+        self.assertEqual(core.plan(dependent)["coalesce"], {"0": [["p", "s", "t"]], "1": [["q", "r"]]})
 
     def context_pack_reports_truncation_instead_of_hiding_it(self):
         items = [step("a", ["a.py"])]
@@ -703,17 +683,19 @@ class Plan(unittest.TestCase):
             set(result), set(core.PLAN_KEYS) - {"locked", "check_authors", "tier_notes"}
         )
         self.assertEqual(list(result), [key for key in core.PLAN_KEYS if key in result])
-        self.assertEqual(result["version"], core.__version__)
+        for gone in ("version", "clusters", "session_tokens", "sizes"):
+            self.assertNotIn(gone, core.PLAN_KEYS)
         self.assertEqual(result["source"], SOURCE)
         self.assertEqual(len(result["msps"]), 3)
         self.assertEqual(len(result["lanes"]), 5)
-        self.assertEqual(sorted(len(c) for c in result["clusters"]), [1, 2])
         self.assertEqual(result["counts"]["assumptions"], 1)
         self.assertEqual(result["tiers"]["docs-skill"], "cheap")
         self.assertEqual(result["tiers"]["docs-readme"], "cheap")
         self.assertTrue(result["coupling_review"])
         self.assertTrue(result["lane_after"])
-        self.assertEqual(len(result["coalesce"]), 1)
+        self.assertEqual(
+            result["coalesce"], {"0": [["core-vocab", "docs-readme", "docs-skill", "docs-lint"]]}
+        )
 
     def empty_sections_are_omitted_not_padded(self):
         result = core.plan([step("only", ["only.py"], complexity="simple")])
@@ -974,7 +956,7 @@ class Sessions(unittest.TestCase):
         )
 
     def a_large_session_limit_still_splits_every_step(self):
-        result = core.plan(shared_lane(6, complexity="simple"), session_tokens=10**9)
+        result = core.plan(shared_lane(6, complexity="simple"))
         self.assertEqual(lane_steps(result), [["s0"], ["s1"], ["s2"], ["s3"], ["s4"], ["s5"]])
         self.assertEqual(result["lane_order"], [0, 1, 2, 3, 4, 5])
 
@@ -984,15 +966,9 @@ class Sessions(unittest.TestCase):
         self.assertNotIn("session", result["briefs"][0])
         self.assertNotIn("Session ", result["briefs"][0]["text"])
 
-    def each_session_carries_its_own_estimate(self):
-        result = core.plan(shared_lane(3))
-        self.assertEqual([lane["tokens"] for lane in result["lanes"]], [34002, 36002, 38002])
-        self.assertEqual(result["session_tokens"], 150000)
-
     def an_oversized_lane_is_split_in_step_order_into_sessions_that_run_in_a_row(self):
         items = shared_lane(6, complexity="simple")
-        limit = core.estimate_tokens(items, (4, 5), {}, {}, earlier=(0, 1, 2, 3)) + 1
-        result = core.plan(items, session_tokens=limit)
+        result = core.plan(items)
         self.assertEqual(lane_steps(result), [["s0"], ["s1"], ["s2"], ["s3"], ["s4"], ["s5"]])
         self.assertEqual(
             [lane["session"] for lane in result["lanes"]],
@@ -1002,8 +978,7 @@ class Sessions(unittest.TestCase):
         self.assertEqual(len(result["msps"]), 1)
         self.assertEqual(result["lane_after"], {"1": [0], "2": [1], "3": [2], "4": [3], "5": [4]})
         self.assertEqual(result["lane_order"], [0, 1, 2, 3, 4, 5])
-        for lane in result["lanes"]:
-            self.assertLessEqual(lane["tokens"], limit)
+        self.assertNotIn("tokens", result["lanes"][0])
 
     def a_lane_takes_its_steps_in_dependency_order_before_it_is_split(self):
         items = [
@@ -1011,8 +986,7 @@ class Sessions(unittest.TestCase):
             step("early", ["shared.py", "early.py"]),
             step("middle", ["shared.py", "middle.py"], after=["early"]),
         ]
-        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
-        result = core.plan(items, session_tokens=limit)
+        result = core.plan(items)
         self.assertEqual(lane_steps(result), [["early"], ["late"], ["middle"]])
         self.assertEqual(result["lane_after"], {"1": [0], "2": [0, 1]})
 
@@ -1020,16 +994,14 @@ class Sessions(unittest.TestCase):
         items = shared_lane(2, complexity="simple") + [
             step("risky", ["shared.py", "auth.py"], complexity="simple")
         ]
-        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
-        result = core.plan(items, risk_markers=("auth",), session_tokens=limit)
+        result = core.plan(items, risk_markers=("auth",))
         self.assertEqual(len(result["lanes"]), 3)
         self.assertEqual([lane["tier"] for lane in result["lanes"]], ["top", "top", "top"])
         self.assertEqual(result["tiers"]["s0"], "cheap")
 
     def a_later_session_owns_what_earlier_sessions_wrote_and_is_told_what_they_built(self):
         items = shared_lane(3)
-        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
-        result = core.plan(items, session_tokens=limit)
+        result = core.plan(items)
         first, second, third = result["briefs"]
         self.assertEqual(first["write_set"], ["shared.py", "f0.py"])
         self.assertEqual(second["write_set"], ["shared.py", "f1.py", "f0.py"])
@@ -1045,80 +1017,13 @@ class Sessions(unittest.TestCase):
 
     def a_lane_waiting_on_a_split_lane_waits_for_its_last_session(self):
         items = shared_lane(3) + [step("after", ["after.py"], after=["s0"])]
-        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
-        result = core.plan(items, session_tokens=limit)
+        result = core.plan(items)
         consumer = next(i for i, lane in enumerate(result["lanes"]) if lane["steps"] == ["after"])
         self.assertEqual(result["lane_after"][str(consumer)], [2])
 
-    def file_sizes_task_length_and_the_charter_raise_the_estimate(self):
-        with tempfile.TemporaryDirectory() as root:
-            with open(os.path.join(root, "big.py"), "w") as handle:
-                handle.write("x" * 40000)
-            with open(os.path.join(root, "charter.md"), "w") as handle:
-                handle.write("y" * 8000)
-            small = core.plan([step("a", ["big.py"])], root=None)["lanes"][0]["tokens"]
-            sized = core.plan([step("a", ["big.py"])], root=root)
-            self.assertEqual(sized["sizes"], {"big.py": 40000})
-            self.assertEqual(
-                sized["lanes"][0]["tokens"] - small,
-                core.EDIT_PASSES * 10000 - core.NEW_FILE_TOKENS,
-            )
-            chartered = core.plan([step("a", ["big.py"])], root=root, charter="charter.md")
-            self.assertEqual(chartered["lanes"][0]["tokens"] - sized["lanes"][0]["tokens"], 2000)
-            wordy = core.plan([step("a", ["big.py"], task="t" * 4000)], root=root)
-            self.assertEqual(wordy["lanes"][0]["tokens"] - sized["lanes"][0]["tokens"], 1000 - 1)
-
-    def a_read_set_counts_toward_the_estimate(self):
-        with tempfile.TemporaryDirectory() as root:
-            with open(os.path.join(root, "near.py"), "w") as handle:
-                handle.write("z" * 4000)
-            alone = core.plan([step("a", ["a.py"])], root=root)
-            reading = core.plan([step("a", ["a.py"])], root=root, graph={"a.py": ["near.py"]})
-            self.assertEqual(reading["lanes"][0]["tokens"] - alone["lanes"][0]["tokens"], 1000)
-
-    def a_later_session_counts_what_earlier_sessions_wrote(self):
-        with tempfile.TemporaryDirectory() as root:
-            for index in range(3):
-                with open(os.path.join(root, "f%d.py" % index), "w") as handle:
-                    handle.write("x" * 40000)
-            items = [step("s%d" % i, ["shared.py", "f%d.py" % i]) for i in range(3)]
-            result = core.plan(items, root=root, session_tokens=1)
-        alone = core.SESSION_BASE_TOKENS + core.STEP_TOKENS + core._tokens(len("do s0"))
-        alone = alone + core.NEW_FILE_TOKENS + core.EDIT_PASSES * 10000
-        self.assertEqual(
-            [lane["tokens"] for lane in result["lanes"]], [alone, alone + 10000, alone + 20000]
-        )
-
-    def a_step_alone_above_the_limit_is_its_own_session(self):
-        items = shared_lane(3)
-        result = core.plan(items, session_tokens=1)
-        self.assertEqual(lane_steps(result), [["s0"], ["s1"], ["s2"]])
-        self.assertTrue(all(lane["tokens"] > 1 for lane in result["lanes"]))
-
-    def recorded_sizes_win_over_the_files_on_disk_so_a_resume_plans_the_same(self):
-        with tempfile.TemporaryDirectory() as root:
-            path = os.path.join(root, "a.py")
-            with open(path, "w") as handle:
-                handle.write("a" * 100)
-            first = core.plan([step("a", ["a.py"])], root=root)
-            with open(path, "a") as handle:
-                handle.write("a" * 100000)
-            grown = core.plan([step("a", ["a.py"])], root=root)
-            again = core.plan([step("a", ["a.py"])], root=root, sizes=first["sizes"])
-        self.assertNotEqual(grown["plan_id"], first["plan_id"])
-        self.assertEqual(again["plan_id"], first["plan_id"])
-        self.assertEqual(again["sizes"], {"a.py": 100})
-
-    def a_recorded_size_that_is_not_a_byte_count_reads_as_unknown(self):
-        self.assertEqual(
-            core.file_sizes(("a.py", "b.py", "c.py"), None, {"a.py": -1, "b.py": True, "c.py": 7}),
-            {"a.py": None, "b.py": None, "c.py": 7},
-        )
-
     def a_coupling_pair_names_the_sessions_its_steps_run_in(self):
         items = shared_lane(3) + [step("near", ["near.py"])]
-        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
-        result = core.plan(items, graph={"f2.py": ["near.py"]}, session_tokens=limit)
+        result = core.plan(items, graph={"f2.py": ["near.py"]})
         pairs = result["coupling_review"]
         self.assertEqual([pair["steps"] for pair in pairs], [["s2", "near"]])
         self.assertEqual(pairs[0]["lanes"], [2, 3])
@@ -1128,8 +1033,7 @@ class Sessions(unittest.TestCase):
             step("a", ["shared.py", "a.py"]),
             step("b", ["shared.py", "b.py"]),
         ]
-        limit = core.estimate_tokens(items, (0,), {}, {}) + 1
-        result = core.plan(items, graph={"a.py": ["b.py"]}, session_tokens=limit)
+        result = core.plan(items, graph={"a.py": ["b.py"]})
         self.assertEqual(len(result["lanes"]), 2)
         self.assertNotIn("coupling_review", result)
 

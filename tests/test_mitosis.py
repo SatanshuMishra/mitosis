@@ -921,10 +921,10 @@ class ItemsEntryPointRefusals(unittest.TestCase):
                 ["--items", "items.json", "--plan-only", "--run-dir", os.path.join(root, "run")],
             )
 
-    def a_plan_whose_packages_wait_on_each_other_is_planned_as_one(self):
+    def a_plan_whose_packages_wait_on_each_other_is_planned_as_two(self):
         code, out, err = self._run(self.CYCLIC)
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
-        self.assertEqual(len(core.msp_items(self.CYCLIC)), 1)
+        self.assertEqual(core.msp_items(self.CYCLIC), ((0, 2), (1,)))
 
     GROUP_CYCLE = [
         {"name": "a", "task": "t", "files": ["a.py"], "source": None, "spec_ref": [SPEC_SECTION],
@@ -938,7 +938,7 @@ class ItemsEntryPointRefusals(unittest.TestCase):
     def a_cycle_through_an_unpinned_group_is_built_by_one_worker(self):
         code, out, err = self._run(self.GROUP_CYCLE)
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
-        self.assertEqual(len(core.lane_items(self.GROUP_CYCLE)), 1)
+        self.assertEqual(core.lane_items(self.GROUP_CYCLE), ((0, 2), (1,)))
 
     def a_package_supplied_as_items_that_would_ship_empty_is_planned_and_reported(self):
         code, out, err = self._run(self.EMPTY_MANIFEST)
@@ -2190,11 +2190,11 @@ class LaneCycleFusion(unittest.TestCase):
          "after": ["a"]},
     ]
 
-    def a_cycle_spanning_msps_is_planned_as_one_msp_and_never_refused(self):
+    def a_cycle_spanning_msps_stays_two_msps_and_is_never_refused(self):
         self.assertEqual(mitosis.manifest_lines(self.CYCLIC), ())
         self.assertEqual(mitosis.planned_code(self.CYCLIC), mitosis.EXIT_SHIPPED)
-        self.assertEqual(len(core.msp_items(self.CYCLIC)), 1)
-        self.assertEqual(len(core.lane_items(self.CYCLIC)), 1)
+        self.assertEqual(core.msp_items(self.CYCLIC), ((0, 2), (1,)))
+        self.assertEqual(core.lane_items(self.CYCLIC), ((0, 2), (1,)))
 
     def a_plan_without_a_cycle_keeps_its_msps_apart(self):
         self.assertEqual(mitosis.manifest_lines(self.CLEAN), ())
@@ -2244,42 +2244,21 @@ def shared_lane_items(count):
     return [briefed("s%d" % i, files=["shared.py", "f%d.py" % i]) for i in range(count)]
 
 
-def one_step_limit(items, root=None):
-    source = items[0].get("source") if items else None
-    shared = (source["path"],) if isinstance(source, dict) else ()
-    sizes = core.file_sizes(shared, root)
-    return max(
-        core.estimate_tokens(items, (index,), sizes, {}, shared=shared, earlier=tuple(range(index)))
-        for index in range(len(items))
-    ) + 1
-
-
 class SessionReport(unittest.TestCase):
     def _plan_only(self, items, *extra):
         with tempfile.TemporaryDirectory() as root:
             write(root, "items.json", items_document(root, items))
-            return invoke(
-                root,
-                ["--items", "items.json", "--plan-only", "--run-dir", os.path.join(root, "run"), *extra],
-            )
+            write(root, "no-history.jsonl", "")
+            with unittest.mock.patch.object(
+                core, "DEFAULT_TRAJECTORY_STORE", os.path.join(root, "no-history.jsonl")
+            ):
+                return invoke(
+                    root,
+                    ["--items", "items.json", "--plan-only", "--run-dir", os.path.join(root, "run"), *extra],
+                )
 
-    def the_plan_only_report_shows_an_oversized_lane_built_as_sessions(self):
-        with tempfile.TemporaryDirectory() as root:
-            document = items_document(root, shared_lane_items(3))
-            limit = one_step_limit(json.loads(document), root)
-            write(root, "items.json", document)
-            code, out, err = invoke(
-                root,
-                [
-                    "--items",
-                    "items.json",
-                    "--plan-only",
-                    "--run-dir",
-                    os.path.join(root, "run"),
-                    "--session-tokens",
-                    str(limit),
-                ],
-            )
+    def the_plan_only_report_shows_a_shared_lane_built_as_sessions(self):
+        code, out, err = self._plan_only(shared_lane_items(3))
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
         body = section(out, "Split quality")
         self.assertIn(
@@ -2290,8 +2269,8 @@ class SessionReport(unittest.TestCase):
         lane_lines = [line for line in body if line.startswith("Lane ")]
         self.assertEqual(len(lane_lines), 3)
         for index, line in enumerate(lane_lines):
-            self.assertTrue(line.endswith(", session %d of 3: s%d" % (index + 1, index)), line)
-            self.assertIn(", about ", line)
+            self.assertTrue(line.endswith(", cost 2, session %d of 3: s%d" % (index + 1, index)), line)
+            self.assertNotIn("tokens", line)
         found = json.loads(out.splitlines()[-1])
         self.assertEqual([lane["session"] for lane in found["lanes"]], [[1, 3], [2, 3], [3, 3]])
         self.assertEqual(found["attention"], [])
@@ -2327,73 +2306,10 @@ class SessionReport(unittest.TestCase):
             ("every Lane holds one Step and runs as one Worker session",),
         )
 
-    def a_step_alone_above_the_limit_is_named_for_attention(self):
-        code, out, err = self._plan_only([briefed("big")], "--session-tokens", "1")
-        self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
-        body = section(out, "Split quality")
-        self.assertFalse(any(line.startswith("every Lane fits") for line in body))
-        found = json.loads(out.splitlines()[-1])
-        self.assertEqual(len(found["attention"]), 1)
-        self.assertTrue(found["attention"][0].startswith("Lane 0 holds Step big alone at about "))
-        self.assertIn(found["attention"][0], body)
-        code, out, err = self._plan_only(shared_lane_items(2), "--session-tokens", "1")
-        self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
-        found = json.loads(out.splitlines()[-1])
-        self.assertEqual(len(found["attention"]), 2)
-        for index, line in enumerate(found["attention"]):
-            self.assertTrue(line.startswith("Lane %d holds Step s%d alone at about " % (index, index)), line)
-            self.assertIn("above the 1 one session should hold", line)
-        self.assertIn(found["attention"][0], section(out, "Split quality"))
-
-    def a_session_limit_below_one_is_a_usage_error(self):
-        code, _, err = self._plan_only(shared_lane_items(1), "--session-tokens", "0")
+    def a_coalesce_cap_below_one_is_a_usage_error(self):
+        code, _, err = self._plan_only(shared_lane_items(1), "--coalesce-max", "0")
         self.assertEqual(code, mitosis.EXIT_USAGE)
-        self.assertIn("--session-tokens", err)
-
-    def a_resume_plans_from_the_sizes_the_run_recorded(self):
-        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as elsewhere:
-            env = {**os.environ, **ISOLATED_GIT_ENV}
-            write(root, "alpha.py", "a" * 100)
-            for args in (
-                ["git", "init", "-q", root],
-                ["git", "-C", root, "add", "-A"],
-                ["git", "-C", root, "commit", "-q", "-m", "seed"],
-                ["git", "-C", root, "branch", "feature"],
-            ):
-                subprocess.run(args, check=True, capture_output=True, env=env)
-            write(elsewhere, "items.json", items_document(elsewhere, [briefed("alpha")]))
-
-            def attempt(worker, *extra):
-                with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
-                    return invoke(
-                        root,
-                        [
-                            "--items",
-                            os.path.join(elsewhere, "items.json"),
-                            "--run-dir",
-                            os.path.join(elsewhere, "run"),
-                            "--feature-branch",
-                            "feature",
-                            "--dispatch-command",
-                            command(elsewhere, "worker.py", worker, "{task}", "{session_id}", "{schema}"),
-                            "--reask-command",
-                            REASK_COMMAND,
-                            "--acceptance-command",
-                            "probe {file} {test}",
-                            "--no-push",
-                            *extra,
-                        ],
-                    )
-
-            code, out, err = attempt("import sys\nsys.exit(4)\n")
-            self.assertEqual(code, 10, out + err)
-            failed = json.loads(out.splitlines()[-1])
-            write(root, "alpha.py", "a" * 400000)
-            code, out, err = attempt(HOLDING_WORKER, "--resume")
-            self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
-            resumed = json.loads(out.splitlines()[-1])
-            self.assertEqual(resumed["plan_id"], failed["plan_id"])
-            self.assertEqual([lane["state"] for lane in resumed["lanes"]], ["ok"])
+        self.assertIn("--coalesce-max must be at least 1", err)
 
 
 class GateClassRefusals(unittest.TestCase):

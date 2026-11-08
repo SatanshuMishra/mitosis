@@ -408,13 +408,18 @@ FLAG_SPECS = {
         "help": "most graph neighbours kept per Step and per Lane; the overflow is counted "
         "(default: %d)" % core.CONTEXT_CAP,
     },
-    "--session-tokens": {
+    "--coalesce-below": {
+        "metavar": "COST",
+        "type": float,
+        "default": 2.0,
+        "help": "cheap-tier Steps at or below this cost may be grouped into one Worker "
+        "(0 disables; default: 2)",
+    },
+    "--coalesce-max": {
         "metavar": "N",
         "type": int,
-        "default": core.SESSION_TOKENS,
-        "help": "the estimated tokens one Worker session should hold; every Step of a Lane is its "
-        "own Worker session, built in Step order in a row on its MSP's branch, and a Step "
-        "estimated above this is named for attention (default: %d)" % core.SESSION_TOKENS,
+        "default": 4,
+        "help": "most Steps in one coalesced group (default: 4)",
     },
     "--graph": {
         "metavar": "PATH",
@@ -997,15 +1002,6 @@ def resolve_input(args, root, repo, models, charter, graph, run_dir):
     return staged(items, decomposed, run_dir, decisions, True)
 
 
-def recorded_sizes(run_dir):
-    try:
-        recorded = run.read_json(os.path.join(run_dir, run.PLAN_FILE))
-    except (OSError, ValueError):
-        return None
-    sizes = recorded.get("sizes") if isinstance(recorded, dict) else None
-    return sizes if isinstance(sizes, dict) else None
-
-
 def marker_list(text):
     return tuple(part for part in text.split(",") if part)
 
@@ -1016,7 +1012,7 @@ def planning_history(args):
     return core.trajectory_store(args.trajectory or core.DEFAULT_TRAJECTORY_STORE)
 
 
-def build_plan(args, items, root, charter, graph, run_dir=None):
+def build_plan(args, items, root, charter, graph):
     try:
         return core.plan(
             items,
@@ -1028,8 +1024,8 @@ def build_plan(args, items, root, charter, graph, run_dir=None):
             cap=args.context_cap,
             history=planning_history(args),
             root=root,
-            session_tokens=args.session_tokens,
-            sizes=recorded_sizes(run_dir) if args.resume and run_dir else None,
+            coalesce_below=args.coalesce_below,
+            coalesce_max=args.coalesce_max,
         )
     except core.ValidationError as error:
         raise Refusal(
@@ -1337,24 +1333,6 @@ def drift_lines(plan, root):
     return ("none: %s still hashes to %s" % (found["path"], found["actual"]),)
 
 
-def _depths(count, producers_of):
-    depth = {}
-    for index in range(count):
-        depth = {**depth, index: _depth(index, producers_of, depth, ())}
-    return depth
-
-
-def _depth(index, producers_of, known, trail):
-    if index in known:
-        return known[index]
-    if index in trail:
-        return 0
-    producers = [p for p in producers_of.get(index, ()) if p != index]
-    if not producers:
-        return 0
-    return 1 + max(_depth(p, producers_of, known, trail + (index,)) for p in producers)
-
-
 def lane_width(plan):
     return shape.scalars(plan.get("items") or [])["parallelism"]
 
@@ -1382,14 +1360,6 @@ def manifest_lines(items):
         "modules it should export"
         % (gap["manifest"], items[gap["owner"]].get("name"), gap["siblings"])
         for gap in gaps
-    )
-
-
-def cluster_depths(plan):
-    producers = core.msp_producers(plan)
-    depths = _depths(len(plan.get("msps") or []), producers)
-    return tuple(
-        max((depths[msp] for msp in cluster), default=0) + 1 for cluster in plan.get("clusters") or []
     )
 
 
@@ -1427,41 +1397,16 @@ def session_runs(plan):
     return runs
 
 
-def oversized_sessions(plan):
-    limit = plan.get("session_tokens")
-    if limit is None:
-        return ()
-    return tuple(
-        (index, lane["steps"][0], lane["tokens"])
-        for index, lane in enumerate(plan.get("lanes") or [])
-        if len(lane.get("steps") or ()) == 1 and (lane.get("tokens") or 0) > limit
-    )
-
-
-def oversized_lines(plan):
-    return tuple(
-        "Lane %d holds Step %s alone at about %d estimated tokens, above the %d one session "
-        "should hold, and a session holds at least one Step"
-        % (index, name, tokens, plan["session_tokens"])
-        for index, name, tokens in oversized_sessions(plan)
-    )
-
-
 def session_lines(plan):
-    limit = plan.get("session_tokens")
-    if limit is None:
-        return ()
     runs = session_runs(plan)
     if not runs:
-        if oversized_sessions(plan):
-            return oversized_lines(plan)
         return ("every Lane holds one Step and runs as one Worker session",)
     return tuple(
         "Lanes %d to %d are the Steps of one Lane of MSP %s, each built in its own Worker session "
         "in a row on its branch and landing its own commit"
         % (start, start + count - 1, _label(plan, plan["lanes"][start]["msp"]))
         for start, count in runs
-    ) + oversized_lines(plan)
+    )
 
 
 def lock_stage_lines(plan):
@@ -1478,34 +1423,27 @@ def split_lines(plan, state):
         return (NO_PLAN,)
     lanes = plan.get("lanes") or []
     msps = plan.get("msps") or []
-    clusters = plan.get("clusters") or []
     counts = plan.get("counts") or {}
     total = len(plan.get("items") or [])
     lines = (
-        "%s in %s across %s in %s"
-        % (_n(total, "Step"), _n(len(lanes), "Lane"), _n(len(msps), "MSP"), _n(len(clusters), "Cluster")),
+        "%s in %s across %s"
+        % (_n(total, "Step"), _n(len(lanes), "Lane"), _n(len(msps), "MSP")),
         "%d of %s declare no acceptance property; %s do not exist yet"
         % (counts.get("no_acceptance", 0), _n(total, "Step"), _n(counts.get("missing_paths", 0), "write-set path")),
     )
     lines = lines + session_lines(plan) + lock_stage_lines(plan)
     lines = lines + tuple(
-        "Lane %d (MSP %s, %s): %s, cost %s, about %s tokens%s: %s"
+        "Lane %d (MSP %s, %s): %s, cost %s%s: %s"
         % (
             index,
             _label(plan, lane["msp"]),
             lane.get("tier"),
             _n(len(lane.get("steps") or []), "Step"),
             lane.get("cost"),
-            lane.get("tokens"),
             ", session %d of %d" % tuple(lane["session"]) if lane.get("session") else "",
             ", ".join(lane.get("steps") or []),
         )
         for index, lane in enumerate(lanes)
-    )
-    lines = lines + tuple(
-        "Cluster %d: depth %d, MSPs %s"
-        % (index, depth, ", ".join(_label(plan, m) for m in cluster))
-        for index, (cluster, depth) in enumerate(zip(clusters, cluster_depths(plan)))
     )
     lines = lines + ("parallelism available: up to %s at once" % _n(lane_width(plan), "Lane"),)
     if state is None:
@@ -2158,7 +2096,6 @@ def summary(plan, state, run_dir, code, referee=None, troubles=()):
         "attention": _lock_attention(state, plan or {})
         + _attention(plan or {}, lanes, msps)
         + list(troubles)
-        + list(oversized_lines(plan or {}))
         + list(manifest_lines((plan or {}).get("items") or []))
         + _coupling_attention((plan or {}).get("coupling_review") or []),
     }
@@ -2363,7 +2300,7 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
             )
         )
         return _summarised({"items": items}, None, run_dir, planned_code(items))
-    plan = build_plan(args, items, root, charter, graph, run_dir)
+    plan = build_plan(args, items, root, charter, graph)
     recorder.planned(plan, lane_width(plan), len(empty_manifests(plan.get("items") or [])))
     proven_heads(args.proven_head, plan)
     args = argparse.Namespace(
@@ -2409,8 +2346,8 @@ def main(argv=None):
         parser.error("--revise revises the structure in the run directory, which --items never writes")
     if args.resume and args.revise:
         parser.error("--revise runs the structure stage, which --resume skips; run --plan-only --revise first")
-    if args.session_tokens < 1:
-        parser.error("--session-tokens must be at least 1")
+    if args.coalesce_max < 1:
+        parser.error("--coalesce-max must be at least 1")
     if args.structure_samples < 1:
         parser.error("--structure-samples must be at least 1")
     if args.pick is not None and not 1 <= args.pick <= args.structure_samples:

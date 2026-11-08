@@ -215,8 +215,7 @@ own commit.
 - Every Step of a Lane is its own Worker session, run in Step order on its
   MSP's branch, and lands its own commit with the subject
   `<type>(<scope>): <step>`, or chore with no scope when the run names no
-  type, and its task's first sentence as the body. `--session-tokens` only
-  sizes the estimate.
+  type, and its task's first sentence as the body.
 
 ## 0.8.0 - 2026-10-28
 
@@ -365,12 +364,6 @@ in a row on its MSP's branch.
   its Step count, the length of each task, the sizes of its write-set and
   read-set files, the charter and document every session reads, and, for a
   later session of a split Lane, the files the earlier sessions wrote.
-- A Lane estimated above the new `--session-tokens` flag, 150000 by default,
-  is split in its Step order into consecutive Lanes. Each waits on the one
-  before it, runs once that one has landed, may edit every file the earlier
-  sessions wrote, and its brief names the Steps they built and the Steps left
-  for later sessions. A Lane waiting on a split Lane waits on its last
-  session.
 - The plan-stage report prints each Lane's estimate, names every split Lane
   and its sessions, and names a Step whose estimate alone is above the limit.
   The JSON summary gives each Lane its session position.

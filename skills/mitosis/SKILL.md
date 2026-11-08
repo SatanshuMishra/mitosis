@@ -224,8 +224,7 @@ Every Step of a Lane is its own Worker session, in Step order on its MSP's
 branch, and lands one commit: subject `<type>(<scope>): <step>` (chore, no
 scope, if absent), body its task's first sentence. Each starts once the one
 before lands, may edit what earlier ones wrote and is told which Steps they
-built; a resume starts at the first not `ok`. `--session-tokens` only sizes
-the estimate; a Step above it is named.
+built; a resume starts at the first not `ok`.
 
 Each session builds in its own clone of the MSP branch under the run
 directory's `clones` folder, never in the MSP worktree.

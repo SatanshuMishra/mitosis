@@ -31,6 +31,13 @@ SPEND_KEYS = ("usd", "tokens", "spend", "prices_date", "unpriced_models", "sessi
 RECONCILE_KEYS = ("undeclared", "unwritten", "crossing", "fatal")
 
 
+def plan_clusters(plan):
+    items = plan.get("items") or []
+    index_of = {item.get("name"): index for index, item in enumerate(items)}
+    lanes = tuple(tuple(index_of[name] for name in lane.get("steps") or ()) for lane in plan.get("lanes") or ())
+    return core.clusters(items, lanes)
+
+
 def field_name(value):
     return str(value).replace("-", "_")
 
@@ -290,7 +297,7 @@ class Run:
                 "steps": len(plan.get("items") or []),
                 "lanes": len(plan.get("lanes") or []),
                 "msps": len(plan.get("msps") or []),
-                "clusters": len(plan.get("clusters") or []),
+                "clusters": len(plan_clusters(plan)),
                 "lane_width": width,
             }
             self.remember(plan=figures)
