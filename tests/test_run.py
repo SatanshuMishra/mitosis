@@ -2127,17 +2127,10 @@ def session_items():
     ]
 
 
-def one_step_sessions(items):
-    return max(
-        core.estimate_tokens(items, (index,), {}, {}, earlier=tuple(range(index)))
-        for index in range(len(items))
-    ) + 1
-
-
 class Sessions(RepoCase):
     def _plan(self):
         items = session_items()
-        plan = core.plan(items, session_tokens=one_step_sessions(items))
+        plan = core.plan(items)
         self.assertEqual([lane["steps"] for lane in plan["lanes"]], [["s0"], ["s1"], ["s2"]])
         self.assertEqual([lane["session"] for lane in plan["lanes"]], [[1, 3], [2, 3], [3, 3]])
         self.assertEqual(plan["lane_after"], {"1": [0], "2": [1]})
@@ -2210,7 +2203,7 @@ class Sessions(RepoCase):
             step("s1", ["impl.txt", "a1.txt"], msp="m"),
             step("y", ["y.txt"], msp="m"),
         ]
-        plan = core.plan(items, session_tokens=one_step_sessions(items[:2]))
+        plan = core.plan(items)
         self.assertEqual([lane["steps"] for lane in plan["lanes"]], [["s0"], ["s1"], ["y"]])
         self.assertEqual(plan["lane_order"][:2], [0, 1])
         trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
@@ -2269,7 +2262,7 @@ class Clones(RepoCase):
 
     def a_replayed_path_is_released_when_its_owning_lane_lands(self):
         items = [step("a", ["a.txt"], msp="m"), step("i", ["iface.txt"], msp="m", after=["a"])]
-        plan = core.plan(items, session_tokens=one_step_sessions(items))
+        plan = core.plan(items)
         self.assertEqual([lane["steps"] for lane in plan["lanes"]], [["a"], ["i"]])
         first = lane_named(plan, "a")
         trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
