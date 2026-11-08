@@ -32,8 +32,6 @@ EXIT_FOREIGN = 8
 
 EXIT_REFEREE = 9
 
-EXIT_MANIFEST = 23
-
 TIMEOUT_NOTICE = "mitosis: --timeout is deprecated and ignored; mitosis has no wall-clock limit"
 
 EXIT_HANDOFF = 15
@@ -59,7 +57,7 @@ MSP_EXIT = {
 
 GATE_EXIT = {"gate-inert": 20, "gate-inconclusive": 21, "gate-weak": 24}
 
-EXIT_SEVERITY = (9, 7, 8, 24, 20, 21, 23, 22, 10, 12, 11, 13, 6, 4)
+EXIT_SEVERITY = (9, 7, 8, 24, 20, 21, 22, 10, 12, 11, 13, 6, 4)
 
 EXIT_MEANING = {
     EXIT_SHIPPED: "every MSP reached shipped, pushed, unchanged or committed, and reconcile found "
@@ -73,8 +71,6 @@ EXIT_MEANING = {
     "owns and also changes",
     EXIT_FOREIGN: "a Lane changed a file another Lane of its MSP owns and had already committed",
     EXIT_REFEREE: "a Worker wrote a referee path; mitosis restored it and held its MSP back",
-    EXIT_MANIFEST: "a branch is pushed or a pull request open with a package manifest that "
-    "exports nothing",
     EXIT_HANDOFF: "a hand-off mitosis was about to write failed its owned schema; mitosis wrote "
     "nothing for it and stopped",
     LANE_EXIT["failed"]: "a Lane failed",
@@ -1365,22 +1361,6 @@ def empty_manifests(items):
     return [gap for gap in shape.manifest_gaps(items) if gap["reached"] == 0]
 
 
-def planned_code(items):
-    return EXIT_MANIFEST if empty_manifests(items) else EXIT_SHIPPED
-
-
-def manifest_lines(items):
-    gaps = empty_manifests(items)
-    if not gaps:
-        return ()
-    return tuple(
-        "%s would ship with nothing exported: %s owns it and is built before all %d Steps whose "
-        "modules it should export"
-        % (gap["manifest"], items[gap["owner"]].get("name"), gap["siblings"])
-        for gap in gaps
-    )
-
-
 def _moment(value):
     try:
         return datetime.fromisoformat(value)
@@ -1783,12 +1763,8 @@ def _lock_findings(state, plan):
 
 
 def findings(state, plan):
-    manifests = [
-        _finding(None, None, "manifest", EXIT_MANIFEST, line)
-        for line in manifest_lines(plan.get("items") or [])
-    ]
     if state is None:
-        return manifests
+        return []
     lane_records = state.get("lanes") or {}
     msp_records = state.get("msps") or {}
     msps = [
@@ -1796,7 +1772,7 @@ def findings(state, plan):
         for index in range(len(plan.get("msps") or []))
         for entry in _msp_findings(plan, index, msp_records.get(str(index)), lane_records)
     ]
-    return _lock_findings(state, plan) + _lane_findings(plan, lane_records) + msps + manifests
+    return _lock_findings(state, plan) + _lane_findings(plan, lane_records) + msps
 
 
 def exit_code(state, plan):
@@ -2114,7 +2090,6 @@ def summary(plan, state, run_dir, code, referee=None, troubles=()):
         "attention": _lock_attention(state, plan or {})
         + _attention(plan or {}, lanes, msps)
         + list(troubles)
-        + list(manifest_lines((plan or {}).get("items") or []))
         + _coupling_attention((plan or {}).get("coupling_review") or []),
     }
 
@@ -2313,11 +2288,11 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     if not resolved["briefed"]:
         _print(
             report(
-                None, None, decomposed, root, run_dir, planned_code(items), from_items,
+                None, None, decomposed, root, run_dir, EXIT_SHIPPED, from_items,
                 decisions, items,
             )
         )
-        return _summarised({"items": items}, None, run_dir, planned_code(items))
+        return _summarised({"items": items}, None, run_dir, EXIT_SHIPPED)
     plan = build_plan(args, items, root, charter, graph)
     recorder.planned(plan, lane_width(plan), len(empty_manifests(plan.get("items") or [])))
     proven_heads(args.proven_head, plan)
@@ -2329,10 +2304,10 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
         run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
         _print(
-            report(plan, None, decomposed, root, run_dir, planned_code(items), from_items, decisions)
+            report(plan, None, decomposed, root, run_dir, EXIT_SHIPPED, from_items, decisions)
         )
         locked, troubles = planned_referee(args, plan, repo)
-        return _summarised(plan, None, run_dir, planned_code(items), locked, troubles)
+        return _summarised(plan, None, run_dir, EXIT_SHIPPED, locked, troubles)
     refuse_run(args, plan, models, run_dir, repo)
     base = pinned_base(args, plan, run_dir, repo)
     locked = locked_referee(args, plan, repo, base)
