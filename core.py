@@ -1002,8 +1002,8 @@ def _pair_signals(left, right, graph, risk_markers):
         {
             m
             for m in risk_markers
-            if any(marker_matches(f, m) for f in left["files"])
-            and any(marker_matches(f, m) for f in right["files"])
+            if any(risk_marker_matches(f, m) for f in left["files"])
+            and any(risk_marker_matches(f, m) for f in right["files"])
         }
     )
     regression = _regression_links(left, right)
