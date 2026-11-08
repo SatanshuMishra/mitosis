@@ -751,7 +751,9 @@ def check_document(args, root):
 
 def load_decisions(args, root, document):
     try:
-        return decompose.load_decisions(root, args.decisions, document)
+        return decompose.load_decisions(
+            args.working_directory, args.decisions, os.path.join(root, document)
+        )
     except ValueError as error:
         raise Refusal(str(error))
     except OSError as error:
@@ -947,7 +949,7 @@ def staged(items, decomposed, run_dir, decisions, briefed):
 
 def input_run_dir(args, root):
     if args.run_dir:
-        return os.path.abspath(args.run_dir)
+        return os.path.abspath(os.path.join(root, args.run_dir))
     kind, path = ("items", args.items) if args.items else ("spec", args.spec)
     return os.path.abspath(default_run_dir(root, kind, file_digest(os.path.abspath(path))))
 
@@ -2271,19 +2273,10 @@ def _print(lines, stream=None):
     out.flush()
 
 
-def check_root(cwd, repo):
-    if repo is not None and os.path.realpath(repo) != os.path.realpath(cwd):
-        raise Refusal(
-            "run mitosis from the repository root %s; every Step path and the document path "
-            "are relative to it" % repo
-        )
-
-
 def run_pipeline(args):
     cwd = os.getcwd()
     repo = repository_root(cwd)
-    check_root(cwd, repo)
-    root = cwd
+    root = cwd if repo is None else repo
     models = tier_models(args.tier_model)
     check_templates(args)
     check_pull_request_flags(args)
@@ -2291,8 +2284,10 @@ def run_pipeline(args):
     graph = load_graph(args.graph, root)
     run_dir = input_run_dir(args, root)
     check_worker_writes(args, run_dir, repo)
-    recorder = metrics.opened(args, repo, cwd, run_dir, models, achieved_parallelism)
-    recorded = argparse.Namespace(**{**vars(args), "recorder": recorder})
+    recorder = metrics.opened(args, repo, root, run_dir, models, achieved_parallelism)
+    recorded = argparse.Namespace(
+        **{**vars(args), "recorder": recorder, "working_directory": cwd}
+    )
     try:
         code = run_stages(recorded, repo, root, models, charter, graph, run_dir)
     except UnknownProvenHead:
