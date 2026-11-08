@@ -1,6 +1,6 @@
 # fanout-parity: Mitosis plans and builds as fanout does (fanout parity)
 Status: parked
-Updated: 2026-11-08T20:44:08.609Z
+Updated: 2026-11-08T20:44:27.096Z
 Next ids: c2 D6 R1 S1
 
 ## Goal
@@ -17,7 +17,7 @@ Not started.
 
 ## Next step
 
-The drive parked at build for the owner: build: run.zsh exited with code 3: exit 3: refused to start; repair: Build refuses (exit 3) because the run directory already holds the finished, review-green run and build never passes --resume; re-entering ship gives the same weak-gate exit 24 that correct and amend-spec already failed to clear (the amendment left the three rows unchanged), and fixing it needs --gate-classes in run.zsh, re-locked tests, or a cleared run directory, all of which only the owner can do.; it resumes on pipeline drive event --name resume.
+The drive entered review and runs it next.
 
 ## Decisions in force
 
