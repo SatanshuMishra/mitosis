@@ -76,6 +76,12 @@ running = os.path.join(marker_dir, "running-%s" % lane)
 open(running, "w").close()
 if mode == "slow-" + lane:
     time.sleep(1.5)
+if mode.startswith("held-"):
+    held_lane = mode[len("held-"):]
+    awaited = "released" if lane == held_lane else "running-" + held_lane
+    deadline = time.monotonic() + 120
+    while not os.path.exists(os.path.join(marker_dir, awaited)) and time.monotonic() < deadline:
+        time.sleep(0.01)
 lines = task.splitlines()
 opened = lines.index("{")
 spec = json.loads("\n".join(lines[opened : lines.index("}", opened) + 1]))
@@ -314,6 +320,17 @@ class RepoCase(unittest.TestCase):
     def gate_runs(self):
         path = os.path.join(self.markers, "gate")
         return read(path).splitlines() if os.path.exists(path) else []
+
+    def release_the_held_lane_when_landing(self, path, before_release=":"):
+        os.makedirs(self.markers, exist_ok=True)
+        released = shlex.quote(os.path.join(self.markers, "released"))
+        hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
+        write(
+            hook,
+            "#!/bin/sh\n%s\ngit diff --cached --name-only | grep -qx %s && touch %s\nexit 0\n"
+            % (before_release, shlex.quote(path), released),
+        )
+        os.chmod(hook, 0o755)
 
     def execute(self, plan, mode="ok", accept="real", pr=PR_STUB, **extra):
         return run.execute(
@@ -853,15 +870,11 @@ class Dispatch(RepoCase):
 
     def a_finished_lane_lands_while_a_sibling_still_runs(self):
         overlap = os.path.join(self.markers, "overlap")
-        hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
-        write(
-            hook,
-            "#!/bin/sh\nfor f in %s/running-*; do [ -e \"$f\" ] && echo \"$f\" >> %s; done\nexit 0\n"
-            % (self.markers, overlap),
+        self.release_the_held_lane_when_landing(
+            "a.txt", "for f in %s/running-*; do [ -e \"$f\" ] && echo \"$f\" >> %s; done" % (self.markers, overlap)
         )
-        os.chmod(hook, 0o755)
         plan = core.plan([step("a", ["a.txt"], msp="m"), step("b", ["b.txt"], msp="m")])
-        final = self.execute(plan, mode="slow-%d" % lane_named(plan, "b"))
+        final = self.execute(plan, mode="held-%d" % lane_named(plan, "b"))
         self.assertEqual({r["state"] for r in final["lanes"].values()}, {"ok"})
         self.assertTrue(all(r["commit"] for r in final["lanes"].values()))
         self.assertEqual(
@@ -873,13 +886,14 @@ class Dispatch(RepoCase):
         plan = core.plan(
             [step("a", ["a.txt"], msp="m"), step("c", ["c.txt"], msp="m"), step("e", ["e.txt"], msp="m")]
         )
-        final = self.execute(plan, mode="slow-%d" % lane_named(plan, "c"))
+        self.release_the_held_lane_when_landing("e.txt")
+        final = self.execute(plan, mode="held-%d" % lane_named(plan, "c"))
         self.assertEqual({r["state"] for r in final["lanes"].values()}, {"ok"})
         branch = final["worktrees"][0]["branch"]
         landed = sh(["git", "log", "--reverse", "--format=%s", "main.." + branch], self.repo).splitlines()
         self.assertEqual(landed, ["feat(ship): a", "feat(ship): e", "feat(ship): c"])
         lanes = final["lanes"]
-        self.assertLess(
+        self.assertLessEqual(
             lanes[str(lane_named(plan, "e"))]["started"], lanes[str(lane_named(plan, "c"))]["finished"]
         )
 
