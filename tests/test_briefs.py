@@ -193,7 +193,7 @@ class Tier(unittest.TestCase):
 
 class Prompt(unittest.TestCase):
     def the_prompt_carries_every_sibling_step(self):
-        pack = {"paths": ["beta.py", "core.py", "shape.py"], "overflow": 1}
+        pack = {"edit": ["beta.py"], "read": ["core.py", "shape.py"], "read_truncated": 1}
         decisions = {
             "path": "docs/spec.decisions.md",
             "text": "- the registry is owned by core\n",
@@ -258,7 +258,7 @@ class Prompt(unittest.TestCase):
             frozen(),
             STRUCTURE,
             STRUCTURE[2],
-            pack={"paths": ["gamma.py"], "overflow": 0},
+            pack={"edit": ["gamma.py"]},
             decisions={"path": "x", "text": "  \n", "count": 0},
         )
         self.assertNotIn(decompose.DECISIONS_HEADING, blank)
@@ -270,7 +270,7 @@ class Prompt(unittest.TestCase):
 
     def the_read_set_excludes_the_write_set_however_it_is_spelled(self):
         step = bare("beta", files=["./beta.py", "src/../beta_extra.py"])
-        pack = {"paths": ["beta.py", "beta_extra.py", "core.py", "core.py"], "overflow": 0}
+        pack = {"edit": ["./beta.py", "src/../beta_extra.py"], "read": ["beta.py", "beta_extra.py", "core.py", "core.py"]}
         prompt = briefs.render_brief_prompt(frozen(), [step], step, pack=pack)
         read_set = [line for line in prompt.splitlines() if "never edit" in line]
         self.assertEqual(len(read_set), 1)
@@ -456,8 +456,8 @@ class Write(unittest.TestCase):
             bare("gamma", after=["beta"], contract_group="api"),
         ]
         packs = {
-            "beta": {"paths": ["beta.py", "core.py"], "overflow": 0},
-            "gamma": {"paths": ["gamma.py", "shape.py"], "overflow": 0},
+            "beta": {"edit": ["beta.py"], "read": ["core.py"]},
+            "gamma": {"edit": ["gamma.py"], "read": ["shape.py"]},
         }
         decisions = {"path": "docs/settled.md", "text": "- settled here\n", "count": 1}
         with tempfile.TemporaryDirectory() as root:

@@ -620,26 +620,23 @@ class Cost(unittest.TestCase):
 
     def context_pack_reports_truncation_instead_of_hiding_it(self):
         items = [step("a", ["a.py"])]
-        adjacency = {"a.py": ["n1.py", "n2.py", "n3.py", "n4.py", "n5.py"], "n1.py": ["far.py"]}
+        adjacency = {"a.py": ["n5.py", "n1.py", "n4.py", "n2.py", "n3.py"], "n1.py": ["far.py"]}
         capped = core.context_packs(items, adjacency, 1, 2)["a"]
-        self.assertEqual(capped["paths"], ["a.py", "n1.py", "n2.py"])
-        self.assertEqual(capped["overflow"], 3)
-        full = core.context_packs(items, adjacency, 1, None)["a"]
-        self.assertEqual(full["paths"], ["a.py", "n1.py", "n2.py", "n3.py", "n4.py", "n5.py"])
-        self.assertEqual(full["overflow"], 0)
-        two_hops = core.context_packs(items, adjacency, 2, None)["a"]
-        self.assertIn("far.py", two_hops["paths"])
-        self.assertEqual(two_hops["paths"][-1], "far.py")
+        self.assertEqual(capped, {"edit": ["a.py"], "read": ["n1.py", "n2.py"], "read_truncated": 3})
+        full = core.context_packs(items, adjacency, 1, 40)["a"]
+        self.assertEqual(full, {"edit": ["a.py"], "read": ["n1.py", "n2.py", "n3.py", "n4.py", "n5.py"]})
+        two_hops = core.context_packs(items, adjacency, 2, 40)["a"]
+        self.assertEqual(
+            two_hops,
+            {"edit": ["a.py"], "read": ["far.py", "n1.py", "n2.py", "n3.py", "n4.py", "n5.py"]},
+        )
 
     def context_pack_works_without_a_graph(self):
         items = [step("a", ["a.py", "b.py"]), step("c", ["c.py"])]
         packs = core.context_packs(items, None, 2, 10)
-        self.assertEqual(packs, {
-            "a": {"paths": ["a.py", "b.py"], "overflow": 0},
-            "c": {"paths": ["c.py"], "overflow": 0},
-        })
+        self.assertEqual(packs, {"a": {"edit": ["a.py", "b.py"]}, "c": {"edit": ["c.py"]}})
         zero_hops = core.context_packs(items, {"a.py": ["z.py"]}, 0, 10)
-        self.assertEqual(zero_hops["a"]["paths"], ["a.py", "b.py"])
+        self.assertEqual(zero_hops["a"], {"edit": ["a.py", "b.py"]})
 
     def the_lane_unblocking_the_most_work_goes_first(self):
         items = [
@@ -680,7 +677,7 @@ class Plan(unittest.TestCase):
     def the_plan_emits_exactly_the_declared_keys(self):
         result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
         self.assertEqual(
-            set(result), set(core.PLAN_KEYS) - {"locked", "check_authors", "tier_notes"}
+            set(result), set(core.PLAN_KEYS) - {"locked", "check_authors", "tier_notes", "shared_context"}
         )
         self.assertEqual(list(result), [key for key in core.PLAN_KEYS if key in result])
         for gone in ("version", "clusters", "session_tokens", "sizes"):
@@ -764,7 +761,7 @@ class Plan(unittest.TestCase):
         with mock.patch.object(builtins, "open", side_effect=AssertionError("plan opened a file")):
             result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
         self.assertEqual(
-            set(result), set(core.PLAN_KEYS) - {"locked", "check_authors", "tier_notes"}
+            set(result), set(core.PLAN_KEYS) - {"locked", "check_authors", "tier_notes", "shared_context"}
         )
 
     def plan_refuses_invalid_items_with_messages(self):
@@ -775,7 +772,7 @@ class Plan(unittest.TestCase):
         self.assertIn("ghost", str(caught.exception))
 
 
-def node_link(links, directed=False, key="links"):
+def node_link(links):
     nodes = [
         {"id": "a1", "file_type": "code", "source_file": "pkg/a.py"},
         {"id": "a2", "file_type": "code", "source_file": "pkg/a.py"},
@@ -784,7 +781,7 @@ def node_link(links, directed=False, key="links"):
         {"id": "doc", "file_type": "document", "source_file": "README.md"},
         {"id": "ext", "file_type": "concept", "source_file": ""},
     ]
-    return {"directed": directed, "nodes": nodes, key: [
+    return {"directed": True, "nodes": nodes, "links": [
         {"source": source, "target": target, "relation": "calls"} for source, target in links
     ]}
 
@@ -816,6 +813,22 @@ class ReadSetCap(unittest.TestCase):
         brief = core.plan([step("edit-hub", ["hub.py"])], graph=graph, cap=5)["briefs"][0]
         self.assertEqual((len(brief["read_set"]), brief["read_overflow"]), (5, 7))
 
+    def a_check_author_brief_keeps_each_steps_capped_read_list_whole(self):
+        graph = {
+            "tests/test_a.py": ["n1.py", "n2.py", "n5.py"],
+            "tests/test_b.py": ["n3.py", "n4.py", "n6.py"],
+        }
+        items = [
+            step("a", ["a.py", "shared.py"], msp="x", acceptance=[{"file": "tests/test_a.py", "test": "a_works"}]),
+            step("b", ["b.py", "shared.py"], msp="y", acceptance=[{"file": "tests/test_b.py", "test": "b_works"}]),
+            step("check-author-x", ["tests/test_a.py"], msp="x", role="check-author"),
+            step("check-author-y", ["tests/test_b.py"], msp="y", role="check-author"),
+        ]
+        authors = core.plan(items, graph=graph, cap=2)["check_authors"]
+        self.assertEqual(len(authors), 1)
+        self.assertEqual(authors[0]["brief"]["read_set"], ["n1.py", "n2.py", "n3.py", "n4.py"])
+        self.assertEqual(authors[0]["brief"]["read_overflow"], 2)
+
 
 class OwnClone(unittest.TestCase):
     def every_lane_brief_says_the_worker_builds_in_its_own_clone(self):
@@ -829,107 +842,44 @@ class OwnClone(unittest.TestCase):
 class GraphInput(unittest.TestCase):
     LINKS = [("a1", "b1"), ("a2", "a1"), ("doc", "a1"), ("ext", "b1"), ("b1", "c1"), ("a1", "gone")]
 
-    def links_between_code_in_two_files_become_neighbours_both_ways(self):
-        adjacency = core.adjacency_from_node_links(node_link(self.LINKS), "/repo")
-        self.assertEqual(
-            adjacency,
-            {"pkg/a.py": ["pkg/b.py"], "pkg/b.py": ["pkg/a.py", "pkg/c.py"], "pkg/c.py": ["pkg/b.py"]},
-        )
-        self.assertTrue(core.is_adjacency(adjacency))
+    def _coupling(self):
+        graph = node_link(self.LINKS)
+        return core.build_file_coupling({node["id"]: node for node in graph["nodes"]}, graph["links"])
 
-    def a_directed_graph_keeps_its_direction(self):
-        adjacency = core.adjacency_from_node_links(node_link(self.LINKS, directed=True), "/repo")
-        self.assertEqual(adjacency, {"pkg/a.py": ["pkg/b.py"], "pkg/b.py": ["pkg/c.py"]})
-
-    def the_edges_key_is_read_like_the_links_key(self):
+    def links_between_files_become_neighbours_both_ways_whatever_the_node_type(self):
         self.assertEqual(
-            core.adjacency_from_node_links(node_link(self.LINKS, key="edges"), "/repo"),
-            core.adjacency_from_node_links(node_link(self.LINKS), "/repo"),
-        )
-
-    def an_absolute_source_file_is_made_relative_and_one_outside_the_root_is_dropped(self):
-        graph = {
-            "nodes": [
-                {"id": "in", "source_file": "/repo/src/x.py"},
-                {"id": "out", "source_file": "/elsewhere/y.py"},
-                {"id": "local", "source_file": "src/z.py"},
-            ],
-            "links": [{"source": "in", "target": "local"}, {"source": "out", "target": "local"}],
-        }
-        self.assertEqual(
-            core.adjacency_from_node_links(graph, "/repo"),
-            {"src/x.py": ["src/z.py"], "src/z.py": ["src/x.py"]},
+            self._coupling(),
+            {
+                "pkg/a.py": {"pkg/b.py", "README.md"},
+                "pkg/b.py": {"pkg/a.py", "pkg/c.py"},
+                "README.md": {"pkg/a.py"},
+                "pkg/c.py": {"pkg/b.py"},
+            },
         )
 
     def a_read_set_reaches_a_neighbour_named_only_by_a_node_link_graph(self):
-        adjacency = core.adjacency_from_node_links(node_link(self.LINKS), "/repo")
-        plan = core.plan([step("edit-a", ["pkg/a.py"])], graph=adjacency)
-        self.assertIn("pkg/b.py", plan["briefs"][0]["read_set"])
+        adjacency = {path: sorted(neighbours) for path, neighbours in self._coupling().items()}
+        plan = core.plan([step("edit-c", ["pkg/c.py"])], graph=adjacency)
+        self.assertEqual(plan["briefs"][0]["read_set"], ["pkg/b.py"])
+        self.assertEqual(plan["context_packs"]["edit-c"], {"edit": ["pkg/c.py"], "read": ["pkg/b.py"]})
 
-    def a_mapping_is_an_adjacency_when_any_path_lists_its_neighbours(self):
-        self.assertTrue(core.is_adjacency({"a.py": ["b.py"], "b.py": []}))
-        self.assertTrue(core.is_adjacency({"version": "1", "a.py": ["b.py", None], "b.py": None}))
-        self.assertTrue(core.is_adjacency({}))
-        self.assertFalse(core.is_adjacency({"a.py": "b.py", "version": 2}))
-        self.assertTrue(core.is_adjacency({"a.py": ["b.py", {"x": 1}], "nodes": [{"id": "a"}]}))
-        self.assertEqual(core.clean_adjacency({"a.py": ["b.py", {"x": 1}]}), {"a.py": ["b.py"]})
-        self.assertFalse(core.is_adjacency({"nodes": [{"id": "a"}], "meta": []}))
-        self.assertFalse(core.is_adjacency({"a.py": [["b.py"]]}))
-        self.assertTrue(core.is_adjacency({"a.py": [], "b.py": []}))
-        self.assertFalse(core.is_adjacency(["a.py"]))
-        self.assertIsNone(core.node_link_edges({"a.py": ["b.py"]}))
-        self.assertIsNone(core.node_link_edges({"nodes": [], "links": "x"}))
 
-    def a_source_file_with_a_nul_byte_is_dropped_not_raised(self):
-        graph = {
-            "nodes": [
-                {"id": "bad", "source_file": "/elsewhere/a\x00.py"},
-                {"id": "ok", "source_file": "src/b.py"},
-                {"id": "ok2", "source_file": "src/c.py"},
-            ],
-            "links": [{"source": "bad", "target": "ok"}, {"source": "ok", "target": "ok2"}],
+class SharedContext(unittest.TestCase):
+    def a_file_two_steps_of_one_wave_read_is_shared_under_that_wave(self):
+        packs = {
+            "a": {"edit": ["a.py"], "read": ["hub.py", "x.py"]},
+            "b": {"edit": ["b.py"], "read": ["hub.py"]},
+            "c": {"edit": ["c.py"], "read": ["x.py"]},
         }
-        self.assertEqual(
-            core.adjacency_from_node_links(graph, "/repo"),
-            {"src/b.py": ["src/c.py"], "src/c.py": ["src/b.py"]},
-        )
+        self.assertEqual(core.shared_context(packs, [["a", "b"], ["c"]]), {"0": ["hub.py"]})
+        self.assertEqual(core.shared_context(packs, [["a"], ["b", "c"]]), {})
 
-    def a_node_id_of_any_json_shape_is_matched_to_its_links(self):
-        graph = {
-            "nodes": [
-                {"id": ["pkg", "a"], "source_file": "pkg/a.py"},
-                {"id": {"k": 1}, "source_file": "pkg/b.py"},
-                {"id": 7, "source_file": "pkg/c.py"},
-            ],
-            "links": [
-                {"source": ["pkg", "a"], "target": {"k": 1}},
-                {"source": 7, "target": ["pkg", "a"]},
-            ],
-        }
-        self.assertEqual(
-            core.adjacency_from_node_links(graph, "/repo"),
-            {"pkg/a.py": ["pkg/b.py", "pkg/c.py"], "pkg/b.py": ["pkg/a.py"], "pkg/c.py": ["pkg/a.py"]},
-        )
-
-    def a_path_reaching_the_root_through_a_symlink_is_kept_and_one_climbing_out_is_dropped(self):
-        with tempfile.TemporaryDirectory() as scratch:
-            real = os.path.realpath(os.path.join(scratch, "real"))
-            os.makedirs(real)
-            link = os.path.join(scratch, "link")
-            os.symlink(real, link)
-            graph = {
-                "nodes": [
-                    {"id": "via-link", "source_file": os.path.join(link, "src", "a.py")},
-                    {"id": "local", "source_file": "./src/b.py"},
-                    {"id": "outside", "source_file": "../elsewhere/c.py"},
-                ],
-                "links": [
-                    {"source": "via-link", "target": "local"},
-                    {"source": "outside", "target": "local"},
-                ],
-            }
-            adjacency = core.adjacency_from_node_links(graph, real)
-        self.assertEqual(adjacency, {"src/a.py": ["src/b.py"], "src/b.py": ["src/a.py"]})
+    def a_plan_carries_shared_context_only_when_some_wave_shares_a_file(self):
+        graph = {"a.py": ["hub.py"], "c.py": ["hub.py"], "hub.py": ["a.py", "c.py"]}
+        shared = core.plan([step("a", ["a.py"]), step("c", ["c.py"])], graph=graph)
+        self.assertEqual(shared["shared_context"], {"0": ["hub.py"]})
+        alone = core.plan([step("a", ["a.py"])], graph=graph)
+        self.assertNotIn("shared_context", alone)
 
 
 def shared_lane(count, **extra):
@@ -1311,7 +1261,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, OwnClone, ReadSetCap, Sessions, Referee, CheckAuthor):
+    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, SharedContext, OwnClone, ReadSetCap, Sessions, Referee, CheckAuthor):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

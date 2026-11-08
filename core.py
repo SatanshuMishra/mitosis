@@ -1,6 +1,5 @@
 import collections
 import fnmatch
-import functools
 import hashlib
 import itertools
 import json
@@ -24,6 +23,7 @@ PLAN_KEYS = (
     "tier_notes",
     "verify_modes",
     "context_packs",
+    "shared_context",
     "lane_order",
     "coalesce",
     "coupling_review",
@@ -1120,104 +1120,18 @@ def chained_after(edges, groups):
     return dict(sorted(chained.items()))
 
 
-NODE_LINK_KEYS = ("links", "edges")
-
-CODE_FILE_TYPE = "code"
-
-
-def node_link_edges(graph):
-    if not isinstance(graph, dict) or not isinstance(graph.get("nodes"), list):
-        return None
-    for key in NODE_LINK_KEYS:
-        if isinstance(graph.get(key), list):
-            return graph[key]
-    return None
-
-
-def is_adjacency(graph):
-    if not isinstance(graph, dict):
-        return False
-    lists = [neighbours for neighbours in graph.values() if isinstance(neighbours, list)]
-    nested = any(isinstance(n, (dict, list)) for neighbours in lists for n in neighbours)
-    named = any(isinstance(n, str) for neighbours in lists for n in neighbours)
-    return (not graph or bool(lists)) and (named or not nested)
-
-
-def clean_adjacency(graph):
-    return {
-        path: [n for n in neighbours if isinstance(n, str)]
-        for path, neighbours in graph.items()
-        if isinstance(neighbours, list)
-    }
-
-
-def _within(path, root):
-    if path is None:
-        return None
-    try:
-        relative = os.path.relpath(path, root)
-    except ValueError:
-        return None
-    return None if relative.split(os.sep)[0] == os.pardir else relative
-
-
-@functools.lru_cache(maxsize=4096)
-def _real_directory(directory):
-    return os.path.realpath(directory)
-
-
-def _real(path):
-    try:
-        return os.path.join(_real_directory(os.path.dirname(path)), os.path.basename(path))
-    except ValueError:
-        return None
-
-
-def _node_file(node, root):
-    if not isinstance(node, dict) or node.get("file_type", CODE_FILE_TYPE) != CODE_FILE_TYPE:
-        return None
-    path = node.get("source_file")
-    if not isinstance(path, str) or not path:
-        return None
-    if os.path.isabs(path):
-        relative = _within(path, root) or _within(_real(path), _real_directory(root))
-    else:
-        relative = _within(os.path.join(root, path), root)
-    return None if relative is None else _norm(relative)
-
-
-def _node_key(value):
-    return json.dumps(value, sort_keys=True)
-
-
-def node_files(graph, root):
-    return {
-        _node_key(node["id"]): _node_file(node, root)
-        for node in graph["nodes"]
-        if isinstance(node, dict) and "id" in node
-    }
-
-
-def _file_pairs(files, link, both):
-    if not isinstance(link, dict):
-        return ()
-    left = files.get(_node_key(link.get("source")))
-    right = files.get(_node_key(link.get("target")))
-    if not left or not right or left == right:
-        return ()
-    return ((left, right), (right, left)) if both else ((left, right),)
-
-
-def adjacency_from_node_links(graph, root):
-    files = node_files(graph, root)
-    both = not graph.get("directed", False)
-    linked = sorted(
-        {pair for link in node_link_edges(graph) for pair in _file_pairs(files, link, both)}
-    )
-    return {
-        path: [neighbour for _, neighbour in group]
-        for path, group in itertools.groupby(linked, key=lambda pair: pair[0])
-    }
+def build_file_coupling(nodes_by_id, links):
+    adj = collections.defaultdict(set)
+    for ln in links:
+        s = nodes_by_id.get(ln.get("source"))
+        t = nodes_by_id.get(ln.get("target"))
+        if not s or not t:
+            continue
+        sf, tf = s.get("source_file"), t.get("source_file")
+        if sf and tf and sf != tf:
+            adj[sf].add(tf)
+            adj[tf].add(sf)
+    return dict(adj)
 
 
 def _neighbours(adjacency, path):
@@ -1231,42 +1145,43 @@ def _neighbours(adjacency, path):
     return tuple(_norm(n) for n in raw if isinstance(n, str))
 
 
-def _expand(write_set, adjacency, hops):
-    seen = frozenset(write_set)
-    frontier = tuple(write_set)
-    gathered = ()
-    for _ in range(max(0, hops)):
-        fresh = tuple(
-            dict.fromkeys(
-                neighbour
-                for path in frontier
-                for neighbour in _neighbours(adjacency, path)
-                if neighbour not in seen
-            )
-        )
-        if not fresh:
-            break
-        seen = seen | frozenset(fresh)
-        gathered = gathered + fresh
-        frontier = fresh
-    return gathered
-
-
-def context_packs(items, adjacency, hops, cap):
+def context_packs(items, adj, hops=1, cap=CONTEXT_CAP):
     packs = {}
-    for item in items:
-        write_set = tuple(dict.fromkeys(_files(item)))
-        neighbours = _expand(write_set, adjacency, hops) if adjacency else ()
-        limit = len(neighbours) if cap is None else max(0, int(cap))
-        kept = neighbours[:limit]
-        packs = {
-            **packs,
-            item["name"]: {
-                "paths": list(write_set + kept),
-                "overflow": len(neighbours) - len(kept),
-            },
-        }
+    adj_keys = list(adj or {})
+    for it in items:
+        own = list(dict.fromkeys(it["files"]))
+        anchors = _item_graph_files(set(own), adj_keys) if adj else set()
+        seen = set(own) | anchors
+        frontier = anchors
+        for _ in range(max(0, hops)):
+            nxt = set()
+            for f in frontier:
+                nxt |= set(adj.get(f, ()))
+            frontier = nxt - seen
+            if not frontier:
+                break
+            seen |= frontier
+        pack = {"edit": own}
+        neighbours = sorted(seen - set(own) - anchors)
+        if neighbours:
+            pack["read"] = neighbours[:cap]
+            if len(neighbours) > cap:
+                pack["read_truncated"] = len(neighbours) - cap
+        packs[it["name"]] = pack
     return packs
+
+
+def shared_context(packs, waves):
+    out = {}
+    for i, w in enumerate(waves):
+        counts = collections.defaultdict(int)
+        for n in w:
+            for f in packs.get(n, {}).get("read", []):
+                counts[f] += 1
+        shared = sorted(f for f, c in counts.items() if c > 1)
+        if shared:
+            out[str(i)] = shared
+    return out
 
 
 def _dependents(lane_count, edges):
@@ -1307,16 +1222,17 @@ def _step_brief(item):
     return {key: item[key] for key in keys if key in item}
 
 
-def _lane_read_set(items, lane, packs, cap=CONTEXT_CAP, owned=()):
+def _lane_read_set(items, lane, packs, owned=()):
     write_set = frozenset(path for i in lane for path in _files(items[i])) | frozenset(owned)
-    read = ()
-    for i in lane:
-        for path in packs.get(items[i]["name"], {}).get("paths", ()):
-            if path not in write_set and path not in read:
-                read = read + (path,)
-    limit = len(read) if cap is None else max(0, int(cap))
-    dropped = sum(packs.get(items[i]["name"], {}).get("overflow", 0) for i in lane)
-    return list(read[:limit]), dropped + len(read) - len(read[:limit])
+    read = tuple(
+        dict.fromkeys(
+            path
+            for i in lane
+            for path in packs.get(items[i]["name"], {}).get("read", ())
+            if path not in write_set
+        )
+    )
+    return list(read), sum(packs.get(items[i]["name"], {}).get("read_truncated", 0) for i in lane)
 
 
 CLONE_LINE = (
@@ -1426,7 +1342,6 @@ def _brief(
     packs,
     charter,
     source,
-    cap=CONTEXT_CAP,
     earlier=(),
     session=None,
     locked=(),
@@ -1434,7 +1349,7 @@ def _brief(
     write_set = tuple(
         dict.fromkeys(path for i in tuple(lane) + tuple(earlier) for path in _files(items[i]))
     )
-    read_set, read_overflow = _lane_read_set(items, lane, packs, cap, write_set)
+    read_set, read_overflow = _lane_read_set(items, lane, packs, write_set)
     partial = {
         "lane": lane_index,
         "msp": msp_index,
@@ -1452,12 +1367,12 @@ def _brief(
     return {**partial, "text": brief_text(partial)}
 
 
-def _check_author_brief(parts, msp, label, probe, packs, charter, source, cap, locked):
+def _check_author_brief(parts, msp, label, probe, packs, charter, source, locked):
     steps = [{**author, "files": list(paths)} for author, paths in parts]
     write_set = list(dict.fromkeys(path for _, paths in parts for path in paths))
     own = frozenset(referee.normalised(path) for path in write_set)
     others = [path for path in locked if referee.normalised(path) not in own]
-    read_set, read_overflow = _lane_read_set(steps, tuple(range(len(steps))), packs, cap, write_set)
+    read_set, read_overflow = _lane_read_set(steps, tuple(range(len(steps))), packs, write_set)
     partial = {
         "lane": CHECK_AUTHOR_LANE,
         "msp": msp,
@@ -1782,6 +1697,7 @@ def plan(
         "tier_notes": tier_notes,
         "verify_modes": verify_modes(items, serial_markers),
         "context_packs": packs,
+        "shared_context": shared_context(packs, waves),
         "lane_order": list(lane_order(lanes, edges, items)),
         "coalesce": coalesce_groups(
             steps, waves, tiers, cost, coalesce_below, coalesce_max, ready_after(steps, waves)
@@ -1799,7 +1715,6 @@ def plan(
                 packs,
                 charter,
                 source,
-                cap,
                 places[index]["earlier"],
                 _session(items, places[index]),
                 locked,
@@ -1815,7 +1730,6 @@ def plan(
                 context_packs([author for author, _ in parts], graph, hops, cap),
                 charter,
                 source,
-                cap,
                 locked,
             )
             for index in range(len(msps))

@@ -116,7 +116,7 @@ def _write_set(step):
 
 
 def _read_set(step, pack):
-    paths = pack.get("paths") if isinstance(pack, dict) else None
+    paths = pack.get("read") if isinstance(pack, dict) else None
     if not isinstance(paths, list):
         return []
     own = _write_set(step)
@@ -129,7 +129,7 @@ def _read_lines(step, pack):
     read = _read_set(step, pack)
     if not read:
         return []
-    overflow = pack.get("overflow") or 0
+    overflow = pack.get("read_truncated") or 0
     line = READ_SET_LEAD + ", ".join(read)
     if overflow > 0:
         line += " (%d more not shown)" % overflow
