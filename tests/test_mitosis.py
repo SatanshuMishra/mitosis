@@ -1024,14 +1024,10 @@ import sys
 
 SESSION = sys.argv[2] if len(sys.argv) > 2 else ""
 
-prefix = "Write-set for this Lane, the only files you may edit: "
-paths = [
-    path.strip()
-    for line in sys.argv[1].splitlines()
-    if line.startswith(prefix)
-    for path in line[len(prefix):].split(",")
-    if path.strip()
-]
+lines = sys.argv[1].splitlines()
+opened = lines.index("{")
+spec = json.loads("\n".join(lines[opened : lines.index("}", opened) + 1]))
+paths = list(dict.fromkeys(path for leaf in spec["leaves"] for path in leaf["edit"]))
 for path in paths:
     with open(path, "a") as handle:
         handle.write("work\n")
