@@ -4,6 +4,8 @@ import os
 import re
 
 CONTRACTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "contracts")
+SCHEMAS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schemas")
+SCHEMA_FOLDERS = (CONTRACTS, SCHEMAS)
 SCHEMA_SUFFIX = ".schema.json"
 SCHEMA_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}\Z")
 COMBINATORS = ("oneOf", "anyOf", "allOf")
@@ -28,24 +30,35 @@ def _vendored_validator():
 validator = _vendored_validator()
 
 
-def file_name(schema):
+def _located(schema):
     if not isinstance(schema, str):
         raise HandoffError("a schema is named by a string, not %s" % type(schema).__name__)
     stem = schema[: -len(SCHEMA_SUFFIX)] if schema.endswith(SCHEMA_SUFFIX) else schema
     if not SCHEMA_NAME.match(stem):
         raise HandoffError("%r is not the name of an owned schema" % schema)
     name = stem + SCHEMA_SUFFIX
-    if not os.path.isfile(os.path.join(CONTRACTS, name)):
-        raise HandoffError("contracts/ holds no owned schema %s" % name)
-    return name
+    folders = tuple(folder for folder in SCHEMA_FOLDERS if os.path.isfile(os.path.join(folder, name)))
+    if not folders:
+        raise HandoffError("neither contracts/ nor schemas/ holds an owned schema %s" % name)
+    return folders[0], name
+
+
+def file_name(schema):
+    return _located(schema)[1]
+
+
+def folder(schema):
+    return _located(schema)[0]
 
 
 def load(schema):
-    return validator.read_schema(os.path.join(CONTRACTS, file_name(schema)))
+    directory, name = _located(schema)
+    return validator.read_schema(os.path.join(directory, name))
 
 
 def errors(schema, value):
-    return tuple(validator.errors_against(CONTRACTS, file_name(schema), value))
+    directory, name = _located(schema)
+    return tuple(validator.errors_against(directory, name, value))
 
 
 def require(schema, value, what, producer):
@@ -126,7 +139,7 @@ def errors_at(schema, pointer, value):
     name = file_name(schema)
     if not isinstance(pointer, str) or not pointer.startswith("#"):
         raise HandoffError("%r is not a JSON pointer inside %s" % (pointer, name))
-    scope = validator.Scope(CONTRACTS, load(name))
+    scope = validator.Scope(folder(name), load(name))
     try:
         part_scope, part = validator.resolve(scope, pointer)
     except (KeyError, IndexError, ValueError, TypeError) as error:

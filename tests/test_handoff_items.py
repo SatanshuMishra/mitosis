@@ -185,6 +185,58 @@ class ItemsRead(unittest.TestCase):
             self.assertFalse(os.path.exists(plan_path), name)
 
 
+class OwnedItemsSchema(ItemsRead):
+    def mitosis_items_resolves_beside_the_contracts(self):
+        handoff = module("handoff")
+        self.assertEqual(handoff.file_name("mitosis-items"), "mitosis-items.schema.json")
+        self.assertEqual(handoff.errors("h12-interphase-items", self.items), ())
+        with self.assertRaises(handoff.HandoffError):
+            handoff.file_name("no-such-schema")
+
+    def mitosis_items_accepts_interphase_and_reference_planner_steps(self):
+        handoff = module("handoff")
+        for value in (
+            self.items,
+            [
+                {
+                    "name": "reader",
+                    "text": "t",
+                    "files": ["reader.py"],
+                    "type": "feature",
+                    "complexity": "simple",
+                    "cost": 2,
+                    "file_notes": {"reader.py": "reads"},
+                }
+            ],
+            [{"name": "reader", "text": "t", "files": ["reader.py"], "acceptance": "reader prints the count"}],
+            [{"name": "reader", "task": "t", "files": ["reader.py"], "observable": "o", "source": None, "acceptance": []}],
+        ):
+            self.assertEqual(handoff.errors("mitosis-items", value), (), json.dumps(value))
+
+    def mitosis_items_refuses_a_malformed_step(self):
+        handoff = module("handoff")
+        for value, expected in (
+            ([{"name": "reader", "text": "t", "files": []}], ("#/0/files minItems: 0 items; at least 1 needed",)),
+            ([{"name": "reader", "files": ["reader.py"]}], ('#/0 required: lacks required property "task"',)),
+            (
+                [{"name": "reader", "task": "t", "files": ["reader.py"], "colour": "red"}],
+                ('#/0/colour additionalProperties: property "colour" is not allowed',),
+            ),
+            ([{"task": "t", "files": ["a.py"]}], ('#/0 required: lacks required property "name"',)),
+        ):
+            self.assertEqual(handoff.errors("mitosis-items", value), expected, json.dumps(value))
+
+    def core_reads_text_as_task(self):
+        core = module("core")
+        steps = [{"name": "a", "text": "Build a", "files": ["a.py"], "source": None, "acceptance": []}]
+        self.assertEqual(core.validate(steps)["errors"], [])
+        self.assertEqual(core.plan(steps, history=())["items"][0]["task"], "Build a")
+        both = [{"name": "a", "task": "x", "text": "y", "files": ["a.py"], "source": None, "acceptance": []}]
+        self.assertEqual(core.plan(both, history=())["items"][0]["task"], "x")
+        bare = [{"name": "a", "files": ["a.py"], "source": None, "acceptance": []}]
+        self.assertEqual(core.validate(bare)["errors"], ["a: missing required field 'task'"])
+
+
 class Loader(unittest.TestLoader):
     def getTestCaseNames(self, case):
         return sorted(
@@ -197,6 +249,7 @@ class Loader(unittest.TestLoader):
 def load_tests(loader, standard, pattern):
     suite = unittest.TestSuite()
     suite.addTests(Loader().loadTestsFromTestCase(ItemsRead))
+    suite.addTests(Loader().loadTestsFromTestCase(OwnedItemsSchema))
     return suite
 
 
