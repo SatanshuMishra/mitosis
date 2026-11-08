@@ -1,6 +1,6 @@
 # any-input-decompose: Mitosis takes any input fanout takes (asks, specs, items)
 Status: parked
-Updated: 2026-11-08T22:52:21.132Z
+Updated: 2026-11-08T22:52:36.104Z
 Next ids: c2 D3 R1 S1
 
 ## Goal
@@ -17,7 +17,7 @@ Not started.
 
 ## Next step
 
-After the fanout-parity pull request merges, sync main, rerun lock_feasibility on docs/specs/any-input-decompose.record.json and start its run.
+The drive entered plan and runs it next.
 
 ## Decisions in force
 
