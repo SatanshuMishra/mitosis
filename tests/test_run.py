@@ -2350,6 +2350,65 @@ class Clones(RepoCase):
         self.assertIn("newline", str(refused.exception))
 
 
+GIT_TIMEOUT = 60
+
+
+def timed_git(args, cwd):
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=GIT_TIMEOUT,
+    ).stdout.strip()
+
+
+class RetryReplacedWorktree(unittest.TestCase):
+    def setUp(self):
+        self.saved_env = {key: os.environ.get(key) for key in ISOLATED_GIT_ENV}
+        os.environ.update(ISOLATED_GIT_ENV)
+        self.tmp = tempfile.mkdtemp(prefix="mitosis-retry-")
+        self.repo = os.path.join(self.tmp, "repo")
+        os.makedirs(self.repo)
+        timed_git(["init", "-q", "-b", "main"], self.repo)
+        write(os.path.join(self.repo, "README.md"), "seed\n")
+        timed_git(["add", "-A"], self.repo)
+        timed_git(["commit", "-q", "-m", "seed"], self.repo)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        for key, value in self.saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def another_runs_worktree_is_detached_and_keeps_its_files(self):
+        first = os.path.join(self.tmp, "run1", "trees", "feat")
+        second = os.path.join(self.tmp, "run2", "trees", "feat")
+        run.prepare_worktree(self.repo, "main", "mitosis/feat", first)
+        write(os.path.join(self.tmp, "run1", "state.json"), "{}")
+        write(os.path.join(first, "left.txt"), "kept\n")
+        write(os.path.join(first, "README.md"), "changed\n")
+        run.prepare_worktree(self.repo, "main", "mitosis/feat", second)
+        self.assertEqual(timed_git(["rev-parse", "--abbrev-ref", "HEAD"], second), "mitosis/feat")
+        self.assertEqual(timed_git(["rev-parse", "--abbrev-ref", "HEAD"], first), "HEAD")
+        self.assertEqual(read(os.path.join(first, "left.txt")), "kept\n")
+        self.assertEqual(read(os.path.join(first, "README.md")), "changed\n")
+
+    def a_checkout_outside_a_run_is_left_and_the_add_fails(self):
+        first = os.path.join(self.tmp, "elsewhere", "feat")
+        second = os.path.join(self.tmp, "run2", "trees", "feat")
+        run.prepare_worktree(self.repo, "main", "mitosis/feat", first)
+        write(os.path.join(first, "left.txt"), "kept\n")
+        write(os.path.join(first, "README.md"), "changed\n")
+        with self.assertRaises(run.GitError):
+            run.prepare_worktree(self.repo, "main", "mitosis/feat", second)
+        self.assertEqual(timed_git(["rev-parse", "--abbrev-ref", "HEAD"], first), "mitosis/feat")
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -2372,6 +2431,7 @@ def load_tests(loader, tests, pattern):
         Sessions,
         Clones,
         PromptTemplate,
+        RetryReplacedWorktree,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite

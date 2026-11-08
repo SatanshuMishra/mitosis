@@ -466,6 +466,14 @@ def registered_worktrees(repo):
     return trees
 
 
+def _mitosis_run_tree(tree):
+    trees_dir = os.path.dirname(tree)
+    if os.path.basename(trees_dir) != "trees":
+        return False
+    run_dir = os.path.dirname(trees_dir)
+    return any(os.path.isfile(os.path.join(run_dir, name)) for name in (STATE_FILE, PLAN_FILE))
+
+
 def prepare_worktree(repo, base, branch, path):
     git(["worktree", "prune"], repo)
     registered = registered_worktrees(repo)
@@ -480,6 +488,10 @@ def prepare_worktree(repo, base, branch, path):
         return
     os.makedirs(os.path.dirname(real), exist_ok=True)
     if branch_exists(repo, branch):
+        holders = sorted(tree for tree, held in registered.items() if held == branch and tree != real)
+        for holder in holders:
+            if _mitosis_run_tree(holder):
+                git(["switch", "--detach"], holder)
         git(["worktree", "add", path, branch], repo)
     else:
         git(["worktree", "add", "-b", branch, path, base], repo)
