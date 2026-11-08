@@ -1,6 +1,6 @@
 # fanout-parity: Mitosis plans and builds as fanout does (fanout parity)
 Status: parked
-Updated: 2026-11-08T21:04:29.220Z
+Updated: 2026-11-08T21:05:38.138Z
 Next ids: c2 D6 R1 S1
 
 ## Goal
@@ -17,7 +17,7 @@ Not started.
 
 ## Next step
 
-The drive entered repair and runs it next.
+The drive parked at ship for the owner: ship: run.zsh --resume exited with code 6, and its reconcile names more than the records pipeline commit-records committed: undeclared ".claude-plugin/plugin.json"; undeclared "tests/test_accept_planning_coupling.py"; undeclared "tests/test_accept_ports.py"; undeclared "tests/test_glob_risk_markers.py"; undeclared "tests/test_saved_plan_slices.py"; repair: The five paths are the review fix pass's own commits on the branch: round 1's 0.14.0 version bump in plugin.json, round 1's regression tests written into the locked test_accept_planning_coupling.py and test_accept_ports.py, and round 3's move of those tests into the new unlocked files test_glob_risk_markers.py and test_saved_plan_slices.py. Mitosis's reconcile reads every commit in the git log, so the locked files still show up even though round 3 put them back. The drive's unexpected_reconcile only excuses the records commit's six files, so a rerun or re-entered ship refuses the same way. An amended spec cannot declare referee-locked files, and the new plan it brings back makes build refuse with exit 3, as it did before. The worker rules, the charter and the --pr- lines do not reach reconcile. Only the owner can clear this, by squashing the locked-file edit and its revert out of the branch history, by having the drive excuse fix-pass files, or by opening the pull request by hand.; it resumes on pipeline drive event --name resume.
 
 ## Decisions in force
 
