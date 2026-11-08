@@ -1,6 +1,6 @@
 # fanout-parity: Mitosis plans and builds as fanout does (fanout parity)
 Status: parked
-Updated: 2026-11-08T06:53:23.901Z
+Updated: 2026-11-08T06:53:24.351Z
 Next ids: c2 D2 R1 S1
 
 ## Goal
@@ -17,7 +17,7 @@ Not started.
 
 ## Next step
 
-The drive entered validate and runs it next.
+The drive entered fix and runs it next.
 
 ## Decisions in force
 
