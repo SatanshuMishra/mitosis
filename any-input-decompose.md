@@ -1,7 +1,7 @@
 # any-input-decompose: Mitosis takes any input fanout takes (asks, specs, items)
 Status: active
-Updated: 2026-11-08T01:01:07.333Z
-Next ids: c2 D1 R1 S1
+Updated: 2026-11-08T01:01:10.493Z
+Next ids: c2 D2 R1 S1
 
 ## Goal
 
@@ -20,6 +20,8 @@ Not started.
 After the fanout-parity pull request merges, sync main, rerun lock_feasibility on docs/specs/any-input-decompose.record.json and start its run.
 
 ## Decisions in force
+
+- D1 hand-off: build any-input-decompose unattended after fanout-parity merges: Hand off any-input-decompose once fanout-parity merges, from the merged main.
 
 ## Open risks
 
