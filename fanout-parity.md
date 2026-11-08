@@ -1,7 +1,7 @@
 # fanout-parity: Mitosis plans and builds as fanout does (fanout parity)
 Status: parked
-Updated: 2026-11-08T21:05:38.138Z
-Next ids: c2 D6 R1 S1
+Updated: 2026-11-08T21:05:38.468Z
+Next ids: c2 D7 R1 S1
 
 ## Goal
 
@@ -26,6 +26,7 @@ The drive parked at ship for the owner: ship: run.zsh --resume exited with code 
 - D3 repair: ship fail: amend-spec: The build is done: all 10 Lanes finished and 57 locked tests pass. The gate failed because three locked tests are weak, and two of them (C19.2 the_session_limit_flag_is_gone, C27.2 an_early_manifest_is_not_a_finding) only check that code was removed, so no mutation of the work can ever make them fail. The third (C30.2 a_run_with_no_briefs_is_refused) is real: the refusal at mitosis.py:2493 is there, but the gate's fixed choice of mutants never touched that line. Rerunning ship or correcting the worker rules or charter cannot change the result, and run.zsh may only change its --pr- lines, so it cannot pass --gate-classes removed. The spec's amendment step should restate these three rows so a mutant can make them fail, or class them as removed. If the amendment step cannot do that, park the run for the owner.
 - D4 repair: build fail: park: build: run.zsh exited with code 3: exit 3: refused to start; repair: Build refuses (exit 3) because the run directory already holds the finished, review-green run and build never passes --resume; re-entering ship gives the same weak-gate exit 24 that correct and amend-spec already failed to clear (the amendment left the three rows unchanged), and fixing it needs --gate-classes in run.zsh, re-locked tests, or a cleared run directory, all of which only the owner can do.
 - D5 repair: clear the weak-gate park by classing three rows and resuming at review round 3: class the three rows with --gate-classes, restore plan ad0951f2d793, move the dropped tests to unlocked files and resume at review round 3
+- D6 repair: ship fail: park: ship: run.zsh --resume exited with code 6, and its reconcile names more than the records pipeline commit-records committed: undeclared ".claude-plugin/plugin.json"; undeclared "tests/test_accept_planning_coupling.py"; undeclared "tests/test_accept_ports.py"; undeclared "tests/test_glob_risk_markers.py"; undeclared "tests/test_saved_plan_slices.py"; repair: The five paths are the review fix pass's own commits on the branch: round 1's 0.14.0 version bump in plugin.json, round 1's regression tests written into the locked test_accept_planning_coupling.py and test_accept_ports.py, and round 3's move of those tests into the new unlocked files test_glob_risk_markers.py and test_saved_plan_slices.py. Mitosis's reconcile reads every commit in the git log, so the locked files still show up even though round 3 put them back. The drive's unexpected_reconcile only excuses the records commit's six files, so a rerun or re-entered ship refuses the same way. An amended spec cannot declare referee-locked files, and the new plan it brings back makes build refuse with exit 3, as it did before. The worker rules, the charter and the --pr- lines do not reach reconcile. Only the owner can clear this, by squashing the locked-file edit and its revert out of the branch history, by having the drive excuse fix-pass files, or by opening the pull request by hand.
 
 ## Open risks
 
