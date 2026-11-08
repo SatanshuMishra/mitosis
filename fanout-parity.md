@@ -1,7 +1,7 @@
 # fanout-parity: Mitosis plans and builds as fanout does (fanout parity)
 Status: active
-Updated: 2026-11-08T01:00:59.556Z
-Next ids: c2 D1 R1 S1
+Updated: 2026-11-08T01:01:05.637Z
+Next ids: c2 D2 R1 S1
 
 ## Goal
 
@@ -20,6 +20,8 @@ Not started.
 Run pipeline feature-branch for fanout-parity and write its run home at ~/.mitosis/mitosis/fanout-parity/.
 
 ## Decisions in force
+
+- D1 hand-off: build fanout-parity unattended from the approved read-back: Hand off fanout-parity to mitosis now; any-input-decompose is cut after the fanout-parity pull request merges.
 
 ## Open risks
 
