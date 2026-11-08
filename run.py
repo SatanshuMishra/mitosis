@@ -795,22 +795,39 @@ def lane_record(lane, msp, state, **fields):
     }
 
 
-def _cross_producers(plan, lane, producers, trees, records):
+def _producer_msps(plan, lane, producers):
     lanes = plan["lanes"]
     own = lanes[lane]["msp"]
-    seen = ()
-    for producer in producers:
-        msp = lanes[producer]["msp"]
-        if msp == own or any(entry["msp"] == msp for entry in seen):
-            continue
-        seen = seen + (
-            {
-                "msp": msp,
-                "branch": trees[msp]["branch"],
-                "commit": records.get(producer, {}).get("commit"),
-            },
-        )
-    return seen
+    return tuple(sorted({lanes[producer]["msp"] for producer in producers} - {own}))
+
+
+def _msp_lanes(plan, msp):
+    return tuple(index for index, entry in enumerate(plan["lanes"]) if entry["msp"] == msp)
+
+
+def _msp_head(tree, plan, msp, records):
+    commits = [
+        records[index]["commit"]
+        for index in _msp_lanes(plan, msp)
+        if records.get(index, {}).get("commit")
+    ]
+    head = None
+    for commit in commits:
+        if head is None or git_ok(["merge-base", "--is-ancestor", head, commit], tree):
+            head = commit
+    return head
+
+
+def _cross_producers(plan, lane, producers, trees, records):
+    tree = trees[plan["lanes"][lane]["msp"]]["path"]
+    return tuple(
+        {
+            "msp": msp,
+            "branch": trees[msp]["branch"],
+            "commit": _msp_head(tree, plan, msp, records),
+        }
+        for msp in _producer_msps(plan, lane, producers)
+    )
 
 
 def templated_task(plan, lane, label, template):
@@ -1096,8 +1113,7 @@ def dispatch(
     with ThreadPoolExecutor(max_workers=cap) as pool:
         while pending or running or held:
             progressed = False
-            busy = {lanes[entry[0]]["msp"] for entry in running.values()}
-            for msp in sorted({lanes[lane]["msp"] for lane in held} - busy):
+            for msp in sorted({lanes[lane]["msp"] for lane in held}):
                 batch = [lane for lane in held if lanes[lane]["msp"] == msp]
                 landed, records = _land_batch(
                     plan, msp, tree_of[msp], batch, held, records, run_dir, settle, header
@@ -1135,7 +1151,6 @@ def dispatch(
                     )
                 pending = []
             waiting = ()
-            holding = {lanes[lane]["msp"] for lane in held}
             for lane in pending:
                 msp = lanes[lane]["msp"]
                 producers = edges.get(lane, ())
@@ -1158,7 +1173,7 @@ def dispatch(
                     )
                     progressed = True
                     continue
-                if len(running) >= cap or msp in holding:
+                if len(running) >= cap:
                     waiting = waiting + (lane,)
                     continue
                 bad = [p for p in producers if records[p].get("state") != "ok"]
@@ -1172,6 +1187,27 @@ def dispatch(
                             "blocked",
                             reason="producer Lane %d is %s"
                             % (bad[0], records[bad[0]].get("state")),
+                        ),
+                    )
+                    progressed = True
+                    continue
+                awaited = [
+                    member
+                    for producer_msp in _producer_msps(plan, lane, producers)
+                    for member in _msp_lanes(plan, producer_msp)
+                ]
+                if any(member not in records for member in awaited):
+                    waiting = waiting + (lane,)
+                    continue
+                if any(records[member].get("state") != "ok" for member in awaited):
+                    records = settle(
+                        records,
+                        lane,
+                        lane_record(
+                            lane,
+                            msp,
+                            "blocked",
+                            reason="dependencies can no longer be satisfied",
                         ),
                     )
                     progressed = True
@@ -1438,17 +1474,14 @@ UNCHANGED_REASON = (
 )
 
 
-def _property_verdict(name, modes, unchanged):
+def _property_verdict(name, unchanged):
     if name in unchanged:
         return "not-applicable", UNCHANGED_REASON
-    if modes.get(name) == "serial":
-        return "not-applicable", "serial surface; the probe cannot run it headlessly"
     return None, None
 
 
 def msp_properties(plan, msp, unchanged=frozenset()):
     steps = _steps_by_name(plan)
-    modes = plan.get("verify_modes") or {}
     found = ()
     for name in plan["msps"][msp]["steps"]:
         acceptance = steps[name].get("acceptance") or []
@@ -1463,7 +1496,7 @@ def msp_properties(plan, msp, unchanged=frozenset()):
                 },
             )
             continue
-        outcome, reason = _property_verdict(name, modes, unchanged)
+        outcome, reason = _property_verdict(name, unchanged)
         for entry in acceptance:
             check = {"check": entry["check"]} if "check" in entry else {}
             found = found + (
