@@ -891,6 +891,12 @@
             "null"
           ]
         },
+        "output_tail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "merged": {
           "type": "array",
           "items": {
