@@ -8,7 +8,6 @@
   "required": [
     "version",
     "plan_id",
-    "run_dir",
     "exit",
     "meaning",
     "lanes",
@@ -405,6 +404,38 @@
             "boolean",
             "null"
           ]
+        },
+        "shared_overlaps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "also_in",
+              "integration_order"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "also_in": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "integration_order": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
         }
       },
       "if": {
@@ -995,7 +1026,7 @@
                 "minItems": 1,
                 "items": {
                   "type": "string",
-                  "pattern": "^(import-adjacency|shared-risk-marker|recorded-regression|same-migration-directory|import-adjacent|regression-history|shared-risk-marker:.+|same-migration-app:.+)$"
+                  "pattern": "^(import-adjacency|shared-risk-marker|recorded-regression|same-migration-directory|import-adjacent|regression-history|shared-risk-marker:.+|same-migration-app:.+|shared-file:.+)$"
                 }
               }
             }
@@ -1025,7 +1056,7 @@
                 "minItems": 1,
                 "items": {
                   "type": "string",
-                  "pattern": "^(import-adjacency|shared-risk-marker|recorded-regression|same-migration-directory|import-adjacent|regression-history|shared-risk-marker:.+|same-migration-app:.+)$"
+                  "pattern": "^(import-adjacency|shared-risk-marker|recorded-regression|same-migration-directory|import-adjacent|regression-history|shared-risk-marker:.+|same-migration-app:.+|shared-file:.+)$"
                 }
               }
             }

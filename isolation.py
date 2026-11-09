@@ -118,6 +118,10 @@ def _remove_left(path):
         os.remove(path)
 
 
+def remove_tree(path):
+    _remove_left(path)
+
+
 def remove_lane_folders(folders):
     for key in ("clone", "tmp", "profile", "mark"):
         _remove_left(folders[key])

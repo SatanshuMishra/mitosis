@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import sys
+import tempfile
 from datetime import datetime
 
 import asks
@@ -162,6 +163,8 @@ STAGE_FLAG_NAMES = (
     "--proven-head",
     "--worker-sandbox",
     "--worker-write",
+    "--worktree-root",
+    "--no-run-dir",
     "--suite-command",
     "--gate-classes",
     "--pr-impact",
@@ -448,6 +451,15 @@ FLAG_SPECS = {
         "graph such as graphify's graph.json, read as that mapping from its links between "
         "code in different files",
     },
+    "--shared-files": {
+        "metavar": "LIST",
+        "default": "",
+        "help": "comma-separated files that MSPs may each edit without being fused: an entry "
+        "matches a path equal to it, a path ending in a slash and the entry, or a path the "
+        "entry matches as a case-sensitive glob; an overlap only on such a file makes no MSP, "
+        "Lane edge or scheduling conflict, is listed in the coupling review, and the plan "
+        "records the order to integrate each file two MSPs edit (default: none)",
+    },
     "--risk-markers": {
         "metavar": "MARKERS",
         "default": "",
@@ -534,6 +546,22 @@ FLAG_SPECS = {
         "under, such as one a --gate-setup needs; repeatable; a path that is, holds or lies "
         "inside the run directory, the repository or its git directory refuses the run with "
         "exit 3",
+    },
+    "--worktree-root": {
+        "metavar": "PATH",
+        "default": "",
+        "help": "the folder each MSP's worktree is placed in, as PATH/<slug>, read against the "
+        "repository root; it is created before any Worker starts and a PATH that cannot be "
+        "created refuses the run with exit 3; a --worker-write path that is, holds or lies "
+        "inside it refuses the run with exit 3 (default: the run directory's trees folder)",
+    },
+    "--no-run-dir": {
+        "action": "store_true",
+        "help": "keep the run's plan, state, logs and clones in a private temp folder removed "
+        "before mitosis exits, whether the run shipped, failed or was refused; --run-dir is "
+        "ignored and --resume starts from nothing; the MSP branches and worktrees stay, at "
+        "--worktree-root or where a run of the same input keeps them; each Worker's standard "
+        "output is printed before the report, and the result line carries no run_dir",
     },
     "--version": {"action": "version", "version": core.__version__},
     "--help": {"action": "help", "help": "show this message and exit"},
@@ -860,11 +888,29 @@ def check_reask_template(reask, flags):
         )
 
 
-def check_worker_writes(args, run_dir, repo):
+def check_worker_writes(args, run_dir, repo, trees_root=None):
     try:
-        isolation.refuse_overlapping_writes(run_dir, args.worker_write, repo)
+        isolation.refuse_overlapping_writes(run_dir, args.worker_write, repo, trees_root)
     except run.ConfigError as error:
         raise Refusal(str(error))
+
+
+def trees_root_of(args, root):
+    if args.worktree_root:
+        return os.path.abspath(os.path.join(root, args.worktree_root))
+    if args.no_run_dir:
+        return os.path.join(default_input_run_dir(args, root), "trees")
+    return None
+
+
+def made_trees_root(path):
+    if path is None:
+        return None
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as error:
+        raise Refusal("the worktree folder %s cannot be created: %s" % (path, error))
+    return path
 
 
 def check_document(args, root):
@@ -1096,7 +1142,9 @@ def base_holds(args, repo):
 
 
 def with_lock_stage(args, items, repo, root, charter):
-    return lock_stage.check_authors(items, base_holds(args, repo), core.charter_locks(charter, root)[0])
+    return lock_stage.check_authors(
+        items, base_holds(args, repo), core.charter_locks(charter, root)[0], shared_list(args.shared_files)
+    )
 
 
 def locked_items(args, items, repo, root, charter, run_dir):
@@ -1178,6 +1226,21 @@ def asks_input(args, root, repo, models, charter, run_dir):
 def input_run_dir(args, root):
     if args.run_dir:
         return os.path.abspath(os.path.join(root, args.run_dir))
+    return default_input_run_dir(args, root)
+
+
+def private_run_dir():
+    return os.path.realpath(tempfile.mkdtemp(prefix="mitosis-run-"))
+
+
+def removed_private_run_dir(path):
+    try:
+        isolation.remove_tree(path)
+    except OSError as error:
+        _print(("mitosis: the private run folder %s stays: %s" % (path, error),), sys.stderr)
+
+
+def default_input_run_dir(args, root):
     kind, path = next(
         (kind, path)
         for kind, path in (("items", args.items), ("asks", args.asks), ("spec", args.spec))
@@ -1221,6 +1284,10 @@ def marker_list(text):
     return tuple(part for part in text.split(",") if part)
 
 
+def shared_list(text):
+    return tuple(entry for entry in (part.strip() for part in (text or "").split(",")) if entry)
+
+
 def planning_history(args):
     if args.no_trajectories:
         return ()
@@ -1248,6 +1315,7 @@ def build_plan(args, items, root, charter, graph):
             coalesce_below=args.coalesce_below,
             coalesce_max=args.coalesce_max,
             briefs=not args.no_briefs,
+            shared_files=shared_list(args.shared_files),
         )
     except core.ValidationError as error:
         raise refused_steps(error)
@@ -1261,7 +1329,7 @@ def saved_plan(path, items, charter, root):
     if missing:
         raise Refusal("--plan-file %s lacks %s" % (path, ", ".join(missing)))
     try:
-        steps = core.locked_steps(items, charter, root)
+        steps = core.locked_steps(items, charter, root, loaded.get("shared_files") or ())
     except core.ValidationError as error:
         raise refused_steps(error)
     if steps.authors and not loaded.get("check_authors"):
@@ -1640,13 +1708,14 @@ def drift_lines(plan, root):
 
 
 def lane_width(plan):
-    return shape.scalars(plan.get("items") or [])["parallelism"]
+    return shape.scalars(plan.get("items") or [], plan.get("shared_files"))["parallelism"]
 
 
-def shape_lines(items):
+def shape_lines(items, shared_files=()):
     return tuple(
-        "%s: %s" % (finding["kind"], finding["detail"]) for finding in shape.findings(items)
-    ) + (scalar_text(shape.scalars(items)),)
+        "%s: %s" % (finding["kind"], finding["detail"])
+        for finding in shape.findings(items, shared_files)
+    ) + (scalar_text(shape.scalars(items, shared_files)),)
 
 
 def empty_manifests(items):
@@ -1846,6 +1915,15 @@ def reconcile_lines(plan, state):
             for entry in crossing
         )
         lines = lines + tuple("  referee: " + path for path in written)
+        lines = lines + tuple(
+            "  shared: %s is also changed by MSP %s; integrate in the order %s"
+            % (
+                entry.get("path"),
+                ", ".join(entry.get("also_in") or ()),
+                ", ".join(entry.get("integration_order") or ()),
+            )
+            for entry in found.get("shared_overlaps") or ()
+        )
     return ("%s from the git log" % _n(findings, "finding"),) + lines
 
 
@@ -2054,7 +2132,7 @@ def exit_code(state, plan):
 def outcome_lines(plan, state, run_dir, code):
     if plan is None:
         return (
-            "run directory: %s" % run_dir,
+            "run directory: %s" % (run_dir or "none"),
             "exit %d: %s"
             % (
                 code,
@@ -2063,7 +2141,7 @@ def outcome_lines(plan, state, run_dir, code):
                 else "the structure was written and no brief was bought",
             ),
         )
-    lines = ("run directory: %s" % run_dir, "plan id: %s" % plan.get("plan_id"))
+    lines = ("run directory: %s" % (run_dir or "none"), "plan id: %s" % plan.get("plan_id"))
     if state is None:
         return lines + (
             "exit %d: %s"
@@ -2183,6 +2261,11 @@ def _msp_summary(plan, state):
                         for key in ("undeclared", "unwritten", "untouched")
                     },
                     **_referee_verdict(record.get("reconcile")),
+                    **(
+                        {"shared_overlaps": list(findings["shared_overlaps"])}
+                        if findings.get("shared_overlaps")
+                        else {}
+                    ),
                 },
                 "crossing": [entry.get("path") for entry in findings.get("crossing") or ()],
                 "ignored": list(record.get("ignored") or ()),
@@ -2344,7 +2427,7 @@ def summary(plan, state, run_dir, code, referee=None, troubles=()):
     return {
         "version": core.__version__,
         "plan_id": (plan or {}).get("plan_id"),
-        "run_dir": run_dir,
+        **({} if run_dir is None else {"run_dir": run_dir}),
         "exit": code,
         "meaning": EXIT_MEANING.get(code, "not shipped"),
         "lanes": lanes,
@@ -2444,7 +2527,7 @@ def report(plan, state, decomposed, root, run_dir, code, from_items, decisions=N
         decision_lines(decisions, from_items, root),
         constraint_lines(decomposed, from_items),
         drift_lines(steps, root),
-        shape_lines(steps.get("items") or []),
+        shape_lines(steps.get("items") or [], steps.get("shared_files")),
         split_lines(plan, state),
         gate_lines(plan, state),
         reconcile_lines(plan, state),
@@ -2476,6 +2559,7 @@ def execute(args, plan, models, run_dir, repo, root, base=None):
             models=models,
             resume=args.resume,
             root=root,
+            trees_root=trees_root_of(args, root),
             remote=REMOTE,
             no_push=args.no_push,
             header=pull_request_header(args),
@@ -2501,6 +2585,22 @@ def execute(args, plan, models, run_dir, repo, root, base=None):
         return run.load_state(run_dir) or {}, str(error)
 
 
+def lane_output_paths(run_dir):
+    folder = os.path.join(run_dir, "lanes")
+    if not os.path.isdir(folder):
+        return ()
+    return tuple(os.path.join(folder, name) for name in sorted(os.listdir(folder)) if name.endswith(".out"))
+
+
+def _write_lane_outputs(run_dir):
+    for path in lane_output_paths(run_dir):
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+        if text:
+            sys.stdout.write(text if text.endswith("\n") else text + "\n")
+    sys.stdout.flush()
+
+
 def _print(lines, stream=None):
     out = stream or sys.stdout
     for line in lines:
@@ -2517,8 +2617,17 @@ def run_pipeline(args):
     check_pull_request_flags(args)
     charter = check_charter(args.charter)
     graph = load_graph(args.graph)
-    run_dir = input_run_dir(args, root)
-    check_worker_writes(args, run_dir, repo)
+    if not args.no_run_dir:
+        return recorded_pipeline(args, cwd, repo, root, models, charter, graph, input_run_dir(args, root))
+    private = private_run_dir()
+    try:
+        return recorded_pipeline(args, cwd, repo, root, models, charter, graph, private)
+    finally:
+        removed_private_run_dir(private)
+
+
+def recorded_pipeline(args, cwd, repo, root, models, charter, graph, run_dir):
+    check_worker_writes(args, run_dir, repo, trees_root_of(args, root))
     recorder = metrics.opened(args, repo, root, run_dir, models, achieved_parallelism)
     recorded = argparse.Namespace(
         **{**vars(args), "recorder": recorder, "working_directory": cwd}
@@ -2553,14 +2662,15 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     )
     from_items = bool(args.items)
     notices = resolved["troubles"]
+    shown = None if args.no_run_dir else run_dir
     if not resolved["briefed"]:
         _print(
             report(
-                None, None, decomposed, root, run_dir, EXIT_SHIPPED, from_items,
+                None, None, decomposed, root, shown, EXIT_SHIPPED, from_items,
                 decisions, items,
             )
         )
-        return _summarised({"items": items}, None, run_dir, EXIT_SHIPPED, troubles=notices)
+        return _summarised({"items": items}, None, shown, EXIT_SHIPPED, troubles=notices)
     plan = planned(args, items, root, charter, graph)
     if args.plan_file is None:
         refuse_unwritten(plan, base_holds(args, repo))
@@ -2574,24 +2684,25 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
         run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
         _print(
-            report(plan, None, decomposed, root, run_dir, EXIT_SHIPPED, from_items, decisions)
+            report(plan, None, decomposed, root, shown, EXIT_SHIPPED, from_items, decisions)
         )
         locked, troubles = planned_referee(args, plan, repo)
-        return _summarised(plan, None, run_dir, EXIT_SHIPPED, locked, tuple(troubles) + notices)
+        return _summarised(plan, None, shown, EXIT_SHIPPED, locked, tuple(troubles) + notices)
     if args.dry_run:
         refuse_undispatchable(args)
         refuse_unmapped(plan, args.dispatch_command, models)
         _print(dry_run_lines(args, plan, models, run_dir))
         _print(
-            report(plan, None, decomposed, root, run_dir, EXIT_SHIPPED, from_items, decisions)
+            report(plan, None, decomposed, root, shown, EXIT_SHIPPED, from_items, decisions)
         )
         locked, troubles = planned_referee(args, plan, repo)
-        return _summarised(plan, None, run_dir, EXIT_SHIPPED, locked, tuple(troubles) + notices)
+        return _summarised(plan, None, shown, EXIT_SHIPPED, locked, tuple(troubles) + notices)
     refuse_run(args, plan, models, run_dir, repo)
     base = pinned_base(args, plan, run_dir, repo)
     locked = locked_referee(args, plan, repo, base)
     run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
     if plan.get("msps"):
+        made_trees_root(trees_root_of(args, root))
         state, failure = execute(args, plan, models, run_dir, repo, root, base)
     else:
         run.write_json(os.path.join(run_dir, run.PLAN_FILE), plan)
@@ -2601,10 +2712,12 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     code = exit_code(state, plan)
     if failure is not None and code == EXIT_SHIPPED:
         code = EXIT_INCOMPLETE
-    _print(report(plan, state, decomposed, root, run_dir, code, from_items, decisions))
+    if args.no_run_dir:
+        _write_lane_outputs(run_dir)
+    _print(report(plan, state, decomposed, root, shown, code, from_items, decisions))
     if failure is not None:
         _print(("the run stopped: %s" % failure,), sys.stderr)
-    return _summarised(plan, state, run_dir, code, locked, notices)
+    return _summarised(plan, state, shown, code, locked, notices)
 
 
 def refuse_unwritten(plan, held):
@@ -2615,7 +2728,8 @@ def refuse_unwritten(plan, held):
 
 def main(argv=None):
     parser = build_parser()
-    args = parser.parse_args(argv)
+    parsed = parser.parse_args(argv)
+    args = argparse.Namespace(**{**vars(parsed), "resume": False}) if parsed.no_run_dir else parsed
     if not args.items and not args.spec and not args.asks:
         parser.error("one of --items, --spec or --asks is required; mitosis has no input without them")
     paired = next((flag for flag, given in (("--items", args.items), ("--spec", args.spec)) if given), None)

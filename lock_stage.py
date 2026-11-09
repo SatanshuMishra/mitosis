@@ -70,14 +70,14 @@ def _ordered_step(item, label, author):
     }
 
 
-def check_authors(items, held=lambda path: False, locked=()):
+def check_authors(items, held=lambda path: False, locked=(), shared_files=()):
     if any(item.get("role") == core.CHECK_AUTHOR for item in items):
         return [dict(item) for item in items]
     base = _written(items) | _normalised(locked)
     claimed = frozenset()
     authors = ()
     changed = {}
-    for msp in core.msp_items(items):
+    for msp in core.msp_items(items, shared_files):
         tests = _msp_tests(items, msp, base | claimed, held)
         claimed = claimed | _normalised(path for path, _, _, _ in tests)
         if not tests:

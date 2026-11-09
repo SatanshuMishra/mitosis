@@ -3281,10 +3281,56 @@ def referee_writes(plan, tree, head, base, held=None):
     return sorted(judged | moved)
 
 
+def _declaring_msps(plan, path, msp):
+    normalized = _norm(path)
+    return tuple(
+        index
+        for index, entry in enumerate(plan.get("msps") or [])
+        if index != msp and normalized in {_norm(f) for f in entry.get("files") or ()}
+    )
+
+
+def _plan_msp_rank(plan):
+    items = plan.get("items") or []
+    index_of = {item.get("name"): index for index, item in enumerate(items)}
+    msps = tuple(
+        tuple(index_of[name] for name in entry.get("steps") or () if name in index_of)
+        for entry in plan.get("msps") or []
+    )
+    return core.msp_rank(items, msps)
+
+
+def shared_overlaps(plan, msp, undeclared):
+    shared = core.shared_matcher(plan.get("shared_files") or ())
+    found = tuple(
+        (path, others)
+        for path in undeclared
+        if shared(_norm(path))
+        for others in (_declaring_msps(plan, path, msp),)
+        if others
+    )
+    if not found:
+        return ()
+    rank = _plan_msp_rank(plan)
+    return tuple(
+        {
+            "path": path,
+            "also_in": [_label(plan, index) for index in others],
+            "integration_order": [
+                _label(plan, index) for index in rank if index in others or index == msp
+            ],
+        }
+        for path, others in found
+    )
+
+
 def reconcile(plan, msp, tree, head, base, producer_heads=(), held=None):
     changed = changed_files(tree, head, base, producer_heads)
     declared = sorted({_norm(f) for f in plan["msps"][msp].get("files") or ()})
-    undeclared = [path for path in changed if _norm(path) not in declared]
+    outside = [path for path in changed if _norm(path) not in declared]
+    overlaps = shared_overlaps(plan, msp, outside)
+    overlapping = frozenset(entry["path"] for entry in overlaps)
+    undeclared = [path for path in outside if path not in overlapping]
     missing = [path for path in declared if path not in {_norm(c) for c in changed}]
     unproven = _unproven_paths(plan, msp)
     untouched = [
@@ -3309,6 +3355,7 @@ def reconcile(plan, msp, tree, head, base, producer_heads=(), held=None):
         "crossing": list(crossing),
         "referee": written,
         "fatal": bool(crossing or written),
+        **({"shared_overlaps": list(overlaps)} if overlaps else {}),
     }
 
 
