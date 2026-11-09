@@ -3,6 +3,20 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.15.3 - 2026-11-08
+
+- Every Worker and check-author is told to run only the tests its brief names
+  and the test files it edits, never the project's full suite, which took 59
+  to 73 percent of a measured build's elapsed time.
+- A one-part brief states its task once instead of twice, which halves the
+  largest prompts.
+- Before judging a Python test weak, the gate tries negating each branch that
+  decides whether added code runs and emptying each function the Step added,
+  so a correct build whose tests run in a subprocess or check that nothing
+  happens is no longer held back.
+- Workers are asked for at most 150 characters of notes, leaving room under
+  the 200 the return schema allows, so a near miss no longer costs a re-ask.
+
 ## 0.15.2 - 2026-11-08
 
 - The skill file is back within its size cap, and the any-input release test

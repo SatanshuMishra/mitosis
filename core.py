@@ -9,7 +9,7 @@ import uuid
 
 import referee
 
-__version__ = "0.15.2"
+__version__ = "0.15.3"
 
 PLAN_KEYS = (
     "plan_id",
