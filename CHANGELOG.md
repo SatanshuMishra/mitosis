@@ -17,6 +17,8 @@ only when the version changes, so every release changes it.
 - `--no-run-dir` keeps the run's state in a private temp folder removed before
   mitosis exits, prints each Worker's output before the report, and leaves the
   result line without a run directory.
+- A second live run on a branch a running mitosis holds is refused with exit 5,
+  and a later run takes the branch back from a stopped tree wherever it was.
 
 ## 0.16.0 - 2026-11-09
 

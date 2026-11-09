@@ -1,4 +1,5 @@
 import ast
+import fcntl
 import hashlib
 import json
 import os
@@ -501,12 +502,49 @@ def _files_built_in(tree):
     )
 
 
-def _retried_by(holder, files):
+BRANCH_HOLDS = "mitosis-branch-holds"
+BRANCH_IN_USE = "branch %s is in use by another running mitosis"
+
+_held_branches = {}
+
+
+def _branch_hold_path(repo, branch, suffix):
+    common = os.path.realpath(os.path.join(repo, git(["rev-parse", "--git-common-dir"], repo)))
+    return os.path.join(common, BRANCH_HOLDS, hashlib.sha256(branch.encode("utf-8")).hexdigest() + suffix)
+
+
+def _hold_branch(repo, branch):
+    lock = _branch_hold_path(repo, branch, ".lock")
+    if lock in _held_branches:
+        return
+    os.makedirs(os.path.dirname(lock), exist_ok=True)
+    handle = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as error:
+        os.close(handle)
+        raise GitError(["worktree", "add", branch], 1, BRANCH_IN_USE % branch) from error
+    _held_branches[lock] = handle
+
+
+def _branch_builder(repo, branch):
+    try:
+        return read_json(_branch_hold_path(repo, branch, ".json"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _retried_by(repo, branch, holder, files):
+    wanted = frozenset(_norm(path) for path in files)
     run_dir = os.path.dirname(os.path.dirname(holder))
-    return not _run_is_live(run_dir) and bool(_files_built_in(holder) & frozenset(_norm(path) for path in files))
+    if os.path.isfile(os.path.join(run_dir, STATE_FILE)):
+        return not _run_is_live(run_dir) and bool(_files_built_in(holder) & wanted)
+    builder = _branch_builder(repo, branch)
+    return builder.get("tree") == holder and bool(frozenset(builder.get("files") or ()) & wanted)
 
 
 def prepare_worktree(repo, base, branch, path, files=()):
+    _hold_branch(repo, branch)
     git(["worktree", "prune"], repo)
     registered = registered_worktrees(repo)
     real = os.path.realpath(path)
@@ -522,11 +560,15 @@ def prepare_worktree(repo, base, branch, path, files=()):
     if branch_exists(repo, branch):
         holders = sorted(tree for tree, held in registered.items() if held == branch and tree != real)
         for holder in holders:
-            if _retried_by(holder, files):
+            if _retried_by(repo, branch, holder, files):
                 git(["switch", "--detach"], holder)
         git(["worktree", "add", path, branch], repo)
     else:
         git(["worktree", "add", "-b", branch, path, base], repo)
+    write_json(
+        _branch_hold_path(repo, branch, ".json"),
+        {"tree": real, "files": sorted(_norm(built) for built in files)},
+    )
 
 
 def prepare_worktrees(msps, base, root, repo, prefix=BRANCH_PREFIX, bases=None, skipped=()):

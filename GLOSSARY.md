@@ -165,6 +165,14 @@ _Avoid_: common files
 A plan file mitosis builds as written, with the charter's locks and its check authors' files merged back into its locked list.
 _Avoid_: plan replay
 
+**Shared file**:
+A file a caller declares as edited by many MSPs in separate regions; an overlap on it alone fuses no MSP and orders none.
+_Avoid_: hub file, common file
+
+**Integration order**:
+The order to merge the MSPs that edit one shared file: producers first, then the longest remaining chain, then input order.
+_Avoid_: merge queue, shared order
+
 **Output tail**:
 The end of a Worker's last reply, kept in its Lane record when no valid reply came back.
 _Avoid_: raw output, log tail

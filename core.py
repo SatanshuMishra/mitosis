@@ -602,17 +602,24 @@ def _msp_chains(items, msps):
     return tuple(max((reach[items[member]["name"]] for member in msp), default=0.0) for msp in msps)
 
 
+def _msp_levels(producers):
+    levels = [0] * len(producers)
+    waiting = [len(needed) for needed in producers]
+    finished = [index for index, count in enumerate(waiting) if not count]
+    for producer in finished:
+        for consumer, needed in enumerate(producers):
+            if producer in needed:
+                levels[consumer] = max(levels[consumer], levels[producer] + 1)
+                waiting[consumer] -= 1
+                if not waiting[consumer]:
+                    finished.append(consumer)
+    return tuple(levels)
+
+
 def msp_rank(items, msps):
-    producers = _msp_producers(items, msps)
+    levels = _msp_levels(_msp_producers(items, msps))
     chains = _msp_chains(items, msps)
-    placed = ()
-    remaining = tuple(range(len(msps)))
-    while remaining:
-        ready = tuple(index for index in remaining if producers[index] <= frozenset(placed))
-        chosen = min(ready or remaining, key=lambda index: (-chains[index], index))
-        placed = placed + (chosen,)
-        remaining = tuple(index for index in remaining if index != chosen)
-    return placed
+    return tuple(sorted(range(len(msps)), key=lambda index: (levels[index], -chains[index], index)))
 
 
 def integration_order(items, msps, shared_files=()):

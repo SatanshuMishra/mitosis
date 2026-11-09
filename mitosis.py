@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import sys
 import tempfile
 from datetime import datetime
@@ -1141,9 +1142,16 @@ def base_holds(args, repo):
     return lambda path: repo is not None and run.git_ok(["cat-file", "-e", "%s:%s" % (ref, path)], repo)
 
 
+def planning_shared_files(args):
+    if args.plan_file is None:
+        return shared_list(args.shared_files)
+    loaded = read_json(args.plan_file, "--plan-file")
+    return tuple(loaded.get("shared_files") or ()) if isinstance(loaded, dict) else ()
+
+
 def with_lock_stage(args, items, repo, root, charter):
     return lock_stage.check_authors(
-        items, base_holds(args, repo), core.charter_locks(charter, root)[0], shared_list(args.shared_files)
+        items, base_holds(args, repo), core.charter_locks(charter, root)[0], planning_shared_files(args)
     )
 
 
@@ -2187,7 +2195,7 @@ def outline(items):
     return {"items": items, "source": first.get("source")}
 
 
-def _lane_summary(plan, state):
+def _lane_summary(plan, state, outputs_kept=True):
     records = (state or {}).get("lanes") or {}
     return [
         {
@@ -2199,8 +2207,8 @@ def _lane_summary(plan, state):
             "reason": _whole((records.get(str(index)) or {}).get("reason")),
             "notes": ((records.get(str(index)) or {}).get("returned") or {}).get("notes"),
             "foreign_writes": list((records.get(str(index)) or {}).get("foreign_writes") or ()),
-            "stdout": (records.get(str(index)) or {}).get("stdout"),
-            "stderr": (records.get(str(index)) or {}).get("stderr"),
+            "stdout": (records.get(str(index)) or {}).get("stdout") if outputs_kept else None,
+            "stderr": (records.get(str(index)) or {}).get("stderr") if outputs_kept else None,
         }
         for index, lane in enumerate(plan.get("lanes") or [])
     ]
@@ -2421,7 +2429,7 @@ def sandbox_of(state):
 
 
 def summary(plan, state, run_dir, code, referee=None, troubles=()):
-    lanes = _lane_summary(plan or {}, state)
+    lanes = _lane_summary(plan or {}, state, run_dir is not None)
     msps = _msp_summary(plan or {}, state)
     coupling = _coupling_summary(plan or {})
     return {
@@ -2620,10 +2628,20 @@ def run_pipeline(args):
     if not args.no_run_dir:
         return recorded_pipeline(args, cwd, repo, root, models, charter, graph, input_run_dir(args, root))
     private = private_run_dir()
+    _removed_when_terminated(private)
     try:
         return recorded_pipeline(args, cwd, repo, root, models, charter, graph, private)
     finally:
         removed_private_run_dir(private)
+
+
+def _removed_when_terminated(private):
+    def terminated(number, frame):
+        removed_private_run_dir(private)
+        signal.signal(number, signal.SIG_DFL)
+        os.kill(os.getpid(), number)
+
+    signal.signal(signal.SIGTERM, terminated)
 
 
 def recorded_pipeline(args, cwd, repo, root, models, charter, graph, run_dir):
