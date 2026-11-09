@@ -3,6 +3,11 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.15.2 - 2026-11-08
+
+- The skill file is back within its size cap, and the any-input release test
+  accepts any later version, so the suite passes on main again.
+
 ## 0.15.1 - 2026-11-08
 
 - A test that passes without the work counts as a guard of unchanged

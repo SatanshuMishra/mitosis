@@ -1,6 +1,6 @@
 ---
 name: mitosis
-description: Use when one repository holds two or more changes that touch different files, or a document whose sections each become code, and the work should ship as separately reviewable pull requests built in parallel. Splits the work, builds each part on its own branch, checks that every part's named acceptance tests actually fail without the work or guard what must stay the same, opens one pull request per part, and never merges.
+description: Use when one repository holds two or more changes that touch different files, or a document whose sections each become code, and the work should ship as separately reviewable pull requests built in parallel. Splits the work, builds each part on its own branch, checks that each Step has a named acceptance test that fails without the work, opens one pull request per part, and never merges.
 ---
 
 # mitosis
@@ -250,10 +250,8 @@ Lane after its Worker has run.
 The gate runs each acceptance property twice, with the work present and with
 the implementation reverted. `pass`: it failed without the work.
 `inert`: it passed without it, proving nothing. `inconclusive`: reverting
-broke the build. `not-applicable`: the Step declared none, or the property is a
-guard. A property that passes both ways is a guard of behaviour that must stay
-the same when another property of its Step is `pass`; it gets no mutants, and
-without that other property it stays `inert`. Implementation is derived: the MSP's
+broke the build. `not-applicable`: the Step declared none, or it passed both
+ways beside a `pass` of its Step, a guard with no mutants. Implementation is derived: the MSP's
 write-set minus the files its acceptance properties name.
 
 Each passing property then runs against up to 12 mutants of its Step's added
@@ -276,7 +274,8 @@ or pull request. Each MSP's check-author locks its tests on that MSP's branch,
 from its own clone at the feature base: one per `msp` label, or the unlabelled
 one split by acceptance owner. Each test must exit 0 with its uncommitted
 probe, and each Step must hold one that exits 1 there; only the locked files
-are committed, as the MSP's first commit. Its record is the MSP's `lock` in JSON `msps`; a failed one blocks
+are committed, as the MSP's first commit. Its record is the MSP's `lock` in
+JSON `msps`; a failed one blocks
 only it and the MSPs merging it.
 
 The referee is what judges the work, and no Worker writes it: the charter's
