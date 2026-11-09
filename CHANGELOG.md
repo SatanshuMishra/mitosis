@@ -3,6 +3,14 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.15.1 - 2026-11-08
+
+- A test that passes without the work counts as a guard of unchanged
+  behaviour when another test of its Step fails without the work, at the
+  lock and at the gate, so a spec's rows for what must stay the same no
+  longer block every Lane.
+- A Step whose tests all pass without the work is still refused.
+
 ## 0.15.0 - 2026-11-08
 
 - mitosis takes a file of plain-text asks, with one planning call per ask.

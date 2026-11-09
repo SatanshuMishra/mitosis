@@ -65,6 +65,10 @@ _Avoid_: judge, oracle
 An acceptance test a check author writes before the build, locked only when it fails on the feature base and passes against the check author's probe, and committed as the first commit of the branch of the one MSP whose Steps name it; a path a `- Locked:` line of the charter names is a locked check every MSP holds.
 _Avoid_: frozen test, pinned test
 
+**Guard**:
+An acceptance test that passes with and without the work while another test of its Step fails without it, so it proves the work left that behaviour alone and not that the work exists. The lock accepts it, the gate records it as not-applicable and gives it no mutants, and it still must pass with the work.
+_Avoid_: regression test, no-op test
+
 **Probe files**:
 The files a check author's probe may write for an MSP: the files of that MSP's Steps and of every MSP it merges. Only probe writes there are overlaid when mitosis judges a locked check, and no probe write is committed.
 _Avoid_: scratch implementation, stub files

@@ -1895,6 +1895,16 @@ def probe_outcome(with_work, reverted):
     )
 
 
+def with_guards(judged):
+    proven = frozenset(entry["step"] for entry in judged if entry["outcome"] == "pass")
+    return tuple(
+        {**entry, "outcome": "not-applicable", "reason": core.GUARD_REASON}
+        if entry["outcome"] == "inert" and entry["step"] in proven
+        else entry
+        for entry in judged
+    )
+
+
 def gate_outcome(properties):
     outcomes = [entry["outcome"] for entry in properties]
     for candidate in ("weak", "inert", "inconclusive", "pass"):
@@ -2764,7 +2774,7 @@ def _gate_runs(
         )
     verdicts = ()
     seen = {}
-    for index, entry in enumerate(judged):
+    for index, entry in enumerate(with_guards(judged)):
         if index not in with_work or entry["outcome"] != "pass":
             verdicts = verdicts + ((entry, ()),)
             continue
@@ -3749,7 +3759,7 @@ def _gate_outcomes(plan, msp, result, settings):
             (prop.get("seconds") or 0) / 60,
         )
         for prop in result.get("properties") or ()
-        if prop.get("file") and prop.get("test")
+        if prop.get("file") and prop.get("test") and not core.is_guard(prop)
     ]
 
 
@@ -3970,8 +3980,13 @@ ALREADY_LOCKED = (
 )
 
 LOCKED_BY_AUTHOR = (
-    "the %s Step %s wrote %s, each locked test fails on the feature base without the build "
-    "and passes with its probe, and %s locks them as the first commit of MSP %s's branch"
+    "the %s Step %s wrote %s, each locked test passes with its probe, each Step holds one that "
+    "fails on the feature base without the build, and %s locks them as the first commit of "
+    "MSP %s's branch"
+)
+
+GUARDS_AT_THE_LOCK = (
+    "; %s pass on the feature base without the build and guard behaviour that must stay the same"
 )
 
 PASSES_WITHOUT_BUILD = (
@@ -4139,15 +4154,35 @@ def _stored_entries(repo, entries):
     return {_norm(path): (mode, oid) for (path, (mode, _)), oid in zip(ordered, oids)}
 
 
-def _locked_checks(plan, paths):
+def _step_checks(plan, paths):
     locked = frozenset(referee.normalised(path) for path in paths)
-    found = ()
-    for item in plan.get("items") or ():
-        for entry in item.get("acceptance") or ():
-            check = {"file": entry["file"], "test": entry["test"]}
-            if referee.normalised(check["file"]) in locked and check not in found:
-                found = found + (check,)
-    return found
+    return tuple(
+        tuple(
+            {"file": entry["file"], "test": entry["test"]}
+            for entry in item.get("acceptance") or ()
+            if referee.normalised(entry["file"]) in locked
+        )
+        for item in plan.get("items") or ()
+    )
+
+
+def _distinct(checks):
+    return tuple(check for position, check in enumerate(checks) if check not in checks[:position])
+
+
+def _locked_checks(plan, paths):
+    return _distinct(tuple(check for checks in _step_checks(plan, paths) for check in checks))
+
+
+def _passing_alone(steps, passing):
+    return _distinct(
+        tuple(
+            check
+            for checks in steps
+            if all(check in passing for check in checks)
+            for check in checks
+        )
+    )
 
 
 def _named_check(check):
@@ -4155,12 +4190,9 @@ def _named_check(check):
 
 
 def _without_probe_fault(check, code):
-    named = _named_check(check)
-    if code == ACCEPTANCE_FAILURE_EXIT:
+    if code in (0, ACCEPTANCE_FAILURE_EXIT):
         return None
-    if code == 0:
-        return PASSES_WITHOUT_BUILD % named
-    return CANNOT_RUN % (named, code)
+    return CANNOT_RUN % (_named_check(check), code)
 
 
 def _with_probe_fault(check, code):
@@ -4217,12 +4249,19 @@ def _lock_judgement(plan, entry, settings, base, stored, probes):
             )
 
         faults = ()
+        passing = ()
         for position, check in enumerate(_locked_checks(plan, entry["slice"])):
-            fault = _without_probe_fault(check, accepted(position, check, without, "without-probe"))
+            without_build = accepted(position, check, without, "without-probe")
+            fault = _without_probe_fault(check, without_build)
             if fault is None:
                 fault = _with_probe_fault(check, accepted(position, check, with_probe, "with-probe"))
             faults = faults if fault is None else faults + (fault,)
-        return faults
+            passing = passing + (check,) if without_build == 0 else passing
+        unproven = _passing_alone(_step_checks(plan, entry["slice"]), passing)
+        return (
+            faults + tuple(PASSES_WITHOUT_BUILD % _named_check(check) for check in unproven),
+            tuple(check for check in passing if check not in unproven),
+        )
     finally:
         shutil.rmtree(folder, ignore_errors=True)
         isolation.release_gate(isolation.gate_folders(log_dir))
@@ -4250,6 +4289,10 @@ def _lock_commit(settings, entry, base, stored):
     finally:
         _removed(index)
     return git(["commit-tree", tree, "-p", base, "-m", LOCK_MESSAGE], repo)
+
+
+def _guards_note(guards):
+    return GUARDS_AT_THE_LOCK % ", ".join(_named_check(check) for check in guards) if guards else ""
 
 
 def _failed_lock(record, reason):
@@ -4318,7 +4361,7 @@ def _landed_lock(plan, entry, settings, record, base):
     try:
         stored = _stored_entries(repo, entries)
         probes = _stored_probes(repo, writes)
-        faults = _lock_judgement(plan, entry, settings, base, stored, probes)
+        faults, guards = _lock_judgement(plan, entry, settings, base, stored, probes)
     except GateSetupError as error:
         return _failed_lock(noted, str(error))
     except (GitError, OSError) as error:
@@ -4335,7 +4378,8 @@ def _landed_lock(plan, entry, settings, record, base):
         **noted,
         "state": "ok",
         "reason": LOCKED_BY_AUTHOR
-        % (core.CHECK_AUTHOR, entry["name"], ", ".join(slice_paths), commit[:12], entry["label"]),
+        % (core.CHECK_AUTHOR, entry["name"], ", ".join(slice_paths), commit[:12], entry["label"])
+        + _guards_note(guards),
         "commit": commit,
     }
 

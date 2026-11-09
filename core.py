@@ -9,7 +9,7 @@ import uuid
 
 import referee
 
-__version__ = "0.15.0"
+__version__ = "0.15.1"
 
 PLAN_KEYS = (
     "plan_id",
@@ -91,6 +91,12 @@ MSP_STATES = (
 DELIVERED_STATES = ("shipped", "pushed", "unchanged", "committed")
 
 GATE_OUTCOMES = ("pass", "weak", "inert", "inconclusive", "not-applicable")
+
+GUARD_REASON = "passes with and without the work, so it guards behaviour that must stay the same"
+
+
+def is_guard(judged):
+    return judged.get("outcome") == "not-applicable" and judged.get("reverted") == 0
 
 STEP_TYPES = ("fix", "feature", "port", "design", "sweep", "contract")
 

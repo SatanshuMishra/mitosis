@@ -330,8 +330,10 @@ base, up to `--concurrency` at once. mitosis judges each locked test against
 the check-author's probe: it must exit 1 at the feature base plus the locked
 files, and exit 0 once the check-author's probe writes are added, the clone's
 writes inside the files of that MSP's Steps and of every MSP it merges. A test
-that passes without the probe, fails with it, or cannot run refuses the lock,
-naming it. The probe is never committed; mitosis commits the locked files
+that exits 0 at the feature base counts as a guard of behaviour that must stay
+the same when another locked test of its Step exits 1 there. A test that fails
+with the probe or cannot run refuses the lock, naming it, and so does every
+test of a Step with no test that exits 1. The probe is never committed; mitosis commits the locked files
 alone onto the feature base as `test: lock the acceptance checks`, cuts that
 MSP's branch and worktree from that commit, and never moves the feature
 branch or pushes at lock time, so the lock commit reaches the remote with the
