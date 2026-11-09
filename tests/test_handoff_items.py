@@ -71,6 +71,8 @@ class ItemsRead(unittest.TestCase):
         os.makedirs(self.env["HOME"])
         os.makedirs(self.repo)
         put(os.path.join(self.repo, "README.md"), "seed\n")
+        put(os.path.join(self.repo, "tests", "test_api.py"), "import unittest\n")
+        put(os.path.join(self.repo, "tests", "test_use.py"), "import unittest\n")
         for args in (
             ("init", "-q", "-b", "main", self.repo),
             ("-C", self.repo, "add", "-A"),
@@ -151,38 +153,88 @@ class ItemsRead(unittest.TestCase):
         ):
             completed, path, plan_path = self._planned(name, json.dumps(self._changed(change)))
             self.assertEqual(completed.returncode, 3, name + tail(completed))
-            for part in (path, "interphase", "h12-interphase-items", "additionalProperties"):
+            for part in (path, "mitosis-items", "additionalProperties"):
                 self.assertIn(part, completed.stderr, name)
             self.assertFalse(os.path.exists(plan_path), name)
 
-    def an_unknown_complexity_or_type_is_refused_not_tiered(self):
-        handoff = module("handoff")
-        self.assertEqual(handoff.errors("h12-interphase-items", self.items), ())
-        for name, change, pointer in (
-            ("medium", lambda items: items[0].update(complexity="medium"), "#/0/complexity"),
-            ("fix", lambda items: items[1].update(type="fix"), "#/1/type"),
-        ):
-            completed, _, plan_path = self._planned(name, json.dumps(self._changed(change)))
-            self.assertEqual(completed.returncode, 3, name + tail(completed))
-            self.assertIn("h12-interphase-items", completed.stderr, name)
-            self.assertIn(pointer, completed.stderr, name)
-            self.assertFalse(os.path.exists(plan_path), name)
+    def _plan_of(self, name, change):
+        completed, _, plan_path = self._planned(name, json.dumps(self._changed(change)))
+        self.assertEqual(completed.returncode, 0, name + tail(completed))
+        with open(plan_path, encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def a_complexity_outside_the_simple_words_plans_at_the_top_tier(self):
+        plan = self._plan_of("medium", lambda items: items[0].update(complexity="medium"))
+        self.assertEqual(plan["tiers"][self.items[0]["name"]], "top")
+
+    def a_type_the_interphase_schema_refuses_is_carried_into_the_plan(self):
+        plan = self._plan_of("fix", lambda items: items[1].update(type="fix"))
+        self.assertEqual(plan["items"][1]["type"], "fix")
 
     def a_document_that_is_not_a_non_empty_array_of_items_is_refused(self):
         handoff = module("handoff")
         self.assertEqual(handoff.errors("h12-interphase-items", self.items), ())
         unreferenced = self._changed(lambda items: items[1].pop("spec_ref"))
-        for name, document, named in (
-            ("object", "{}", None),
-            ("empty", "[]", None),
-            ("unreferenced", json.dumps(unreferenced), "spec_ref"),
-        ):
+        for name, document in (("object", "{}"), ("empty", "[]")):
             completed, _, plan_path = self._planned(name, document)
             self.assertEqual(completed.returncode, 3, name + tail(completed))
-            self.assertIn("h12-interphase-items", completed.stderr, name)
-            if named is not None:
-                self.assertIn(named, completed.stderr, name)
+            self.assertIn("mitosis-items", completed.stderr, name)
             self.assertFalse(os.path.exists(plan_path), name)
+        completed, _, plan_path = self._planned("unreferenced", json.dumps(unreferenced))
+        self.assertEqual(completed.returncode, 0, tail(completed))
+        self.assertTrue(os.path.exists(plan_path))
+
+
+class OwnedItemsSchema(ItemsRead):
+    def mitosis_items_resolves_beside_the_contracts(self):
+        handoff = module("handoff")
+        self.assertEqual(handoff.file_name("mitosis-items"), "mitosis-items.schema.json")
+        self.assertEqual(handoff.errors("h12-interphase-items", self.items), ())
+        with self.assertRaises(handoff.HandoffError):
+            handoff.file_name("no-such-schema")
+
+    def mitosis_items_accepts_interphase_and_reference_planner_steps(self):
+        handoff = module("handoff")
+        for value in (
+            self.items,
+            [
+                {
+                    "name": "reader",
+                    "text": "t",
+                    "files": ["reader.py"],
+                    "type": "feature",
+                    "complexity": "simple",
+                    "cost": 2,
+                    "file_notes": {"reader.py": "reads"},
+                }
+            ],
+            [{"name": "reader", "text": "t", "files": ["reader.py"], "acceptance": "reader prints the count"}],
+            [{"name": "reader", "task": "t", "files": ["reader.py"], "observable": "o", "source": None, "acceptance": []}],
+        ):
+            self.assertEqual(handoff.errors("mitosis-items", value), (), json.dumps(value))
+
+    def mitosis_items_refuses_a_malformed_step(self):
+        handoff = module("handoff")
+        for value, expected in (
+            ([{"name": "reader", "text": "t", "files": []}], ("#/0/files minItems: 0 items; at least 1 needed",)),
+            ([{"name": "reader", "files": ["reader.py"]}], ('#/0 required: lacks required property "task"',)),
+            (
+                [{"name": "reader", "task": "t", "files": ["reader.py"], "colour": "red"}],
+                ('#/0/colour additionalProperties: property "colour" is not allowed',),
+            ),
+            ([{"task": "t", "files": ["a.py"]}], ('#/0 required: lacks required property "name"',)),
+        ):
+            self.assertEqual(handoff.errors("mitosis-items", value), expected, json.dumps(value))
+
+    def core_reads_text_as_task(self):
+        core = module("core")
+        steps = [{"name": "a", "text": "Build a", "files": ["a.py"], "source": None, "acceptance": []}]
+        self.assertEqual(core.validate(steps)["errors"], [])
+        self.assertEqual(core.plan(steps, history=())["items"][0]["task"], "Build a")
+        both = [{"name": "a", "task": "x", "text": "y", "files": ["a.py"], "source": None, "acceptance": []}]
+        self.assertEqual(core.plan(both, history=())["items"][0]["task"], "x")
+        bare = [{"name": "a", "files": ["a.py"], "source": None, "acceptance": []}]
+        self.assertEqual(core.validate(bare)["errors"], ["a: missing required field 'task'"])
 
 
 class Loader(unittest.TestLoader):
@@ -197,6 +249,7 @@ class Loader(unittest.TestLoader):
 def load_tests(loader, standard, pattern):
     suite = unittest.TestSuite()
     suite.addTests(Loader().loadTestsFromTestCase(ItemsRead))
+    suite.addTests(Loader().loadTestsFromTestCase(OwnedItemsSchema))
     return suite
 
 

@@ -13,21 +13,23 @@ open.
 
 ## Inputs
 
-mitosis takes exactly one of two inputs, and needs nothing else to run:
+mitosis takes exactly one of three inputs, and needs nothing else to run:
 
 - `--items`, a JSON array of Steps, handed to it directly.
 - `--spec`, a document in any format, which mitosis decomposes into that same
   Steps array before scheduling.
+- `--asks`, an asks file, one ask per line, each planned by its own call
+  through `--decompose-command`.
 
-Both converge on the same items format before anything downstream runs.
+All three converge on the same items format before anything downstream runs.
 
-The file `--items` names must meet h12, the owned schema
-`contracts/h12-interphase-items.schema.json`: every Step carries `name`,
-`task`, `files`, `source`, `acceptance` and `spec_ref`, the document's
-section numbers it builds, and nothing else beyond the optional fields h12
-lists. `source` names the document by absolute path and SHA-256. A file that
-fails h12 is refused with exit 3, its schema errors named, before anything is
-planned. Two Steps that build a validator and then its command-line flag:
+The file `--items` names is read through mitosis's own items schema,
+`schemas/mitosis-items.schema.json`, which accepts every file h12 accepts and
+the reference planner's Steps: a Step carries `name`, `files`, and `task` or
+`text`; `source`, `acceptance` and `spec_ref` are optional. `source` names the
+document by absolute path and SHA-256. A file that fails it is refused with
+exit 3, each error named with its Step, before anything is planned. Two Steps
+that build a validator and then its command-line flag:
 
 ```json
 [
@@ -85,13 +87,16 @@ claude plugin marketplace add SatanshuMishra/mitosis
 claude plugin install mitosis@mitosis
 ```
 
-The plugin carries the skill and the fifteen modules it runs — `core.py`,
+The plugin carries the skill and the nineteen modules it runs — `core.py`,
 `shape.py`, `decompose.py`, `briefs.py`, `run.py`, `isolation.py`, `pr_facts.py`,
 `mitosis.py`, `metrics.py`, `spend.py`, `metrics_writer.py`, `referee.py`,
-`mutants.py`, `outcomes.py`, `handoff.py` — the two data files they read,
-`prices.json` and `catalogue.json`, and the `contracts/` folder beside the
+`mutants.py`, `outcomes.py`, `handoff.py`, `recon_text.py`, `step_names.py`,
+`asks.py`, `lock_stage.py` — the two data files they read,
+`prices.json` and `catalogue.json`, the `contracts/` folder beside the
 modules, which holds byte-identical copies of the program's
-`contracts/validator.py` and of every owned schema mitosis writes or reads.
+`contracts/validator.py` and of every owned schema mitosis writes or reads,
+and the `schemas/` folder beside `contracts/`, which holds mitosis's own items
+and recon schemas.
 They need Python 3.9 or later. A run that names `--pr-type` and
 `--pr-subject` also needs the pull-request command, 0.3.0 or later, on PATH
 or named with `--render-command`, because mitosis writes no pull-request text
@@ -109,10 +114,10 @@ release changes it; `CHANGELOG.md` lists them. The version is part of each
 plan's id, so finish a run before updating: it cannot be resumed on another
 release.
 
-Without Claude Code, copy the fifteen modules and the `contracts/` folder
-into one directory and invoke `mitosis.py` by path. The modules import one
-another and `handoff.py` loads `contracts/validator.py` and the schemas beside
-it, so they must stay side by side.
+Without Claude Code, copy the nineteen modules, the `contracts/` folder and
+the `schemas/` folder into one directory and invoke `mitosis.py` by path. The
+modules import one another and `handoff.py` loads `contracts/validator.py` and
+the schemas in both folders beside it, so they must stay side by side.
 
 ## A worked invocation
 

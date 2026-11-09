@@ -9,7 +9,7 @@ import uuid
 
 import referee
 
-__version__ = "0.14.1"
+__version__ = "0.15.0"
 
 PLAN_KEYS = (
     "plan_id",
@@ -802,12 +802,19 @@ def _without_after(item, names):
     return {key: value for key, value in item.items() if key != "after"}
 
 
+def with_task(item):
+    if isinstance(item, dict) and "text" in item:
+        return {**item, "task": item.get("task") or item["text"]}
+    return item
+
+
 def validate(items, root=None, required=None):
     if not isinstance(items, list):
         return {
             "errors": ["the items file must be a JSON array at the top level"],
             "counts": dict.fromkeys(COUNT_KEYS, 0),
         }
+    items = [with_task(item) for item in items]
     errors = _shape_errors(items, REQUIRED_ITEM_FIELDS if required is None else required)
     if errors:
         return {"errors": errors, "counts": dict.fromkeys(COUNT_KEYS, 0)}
@@ -1219,6 +1226,11 @@ def _msp_label(items, msp):
     return tags[0] if tags else items[msp[0]]["name"]
 
 
+def _observable(item):
+    observable = item.get("observable")
+    return isinstance(observable, str) and observable != ""
+
+
 def _step_brief(item, pack, edit=None):
     files = list(edit) if edit else list(pack.get("edit") or item.get("files") or [])
     notes = {path: note for path, note in (item.get("file_notes") or {}).items() if path in files}
@@ -1228,6 +1240,7 @@ def _step_brief(item, pack, edit=None):
         "edit": files,
         "read": list(pack.get("read") or []),
         **({"acceptance": item["acceptance"]} if item.get("acceptance") else {}),
+        **({"observable": item["observable"]} if _observable(item) else {}),
         **({"file_notes": notes} if notes else {}),
         **({"assumptions": item["assumptions"]} if item.get("assumptions") else {}),
     }
@@ -1670,6 +1683,7 @@ def plan(
     coalesce_max=4,
     briefs=True,
 ):
+    items = [with_task(item) for item in items] if isinstance(items, list) else items
     counts, authors, locked, items, msps, placed = locked_steps(items, charter, root)
     whole = lane_items(items)
     tiered = {item["name"]: _tiered(item, risk_markers, history) for item in items}

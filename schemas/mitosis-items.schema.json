@@ -1,0 +1,264 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mitosis/mitosis-items.schema.json",
+  "title": "mitosis items",
+  "description": "The Steps mitosis reads from --items: every items file interphase's h12 schema accepts, and every Step the reference planner takes.",
+  "type": "array",
+  "minItems": 1,
+  "items": {
+    "$ref": "#/$defs/item"
+  },
+  "$defs": {
+    "text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![/\\\\])(?!(.*[/\\\\])?\\.\\.([/\\\\]|$)).+$"
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "files"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/text"
+        },
+        "task": {
+          "$ref": "#/$defs/text"
+        },
+        "text": {
+          "$ref": "#/$defs/text"
+        },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/relative_path"
+          }
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "sha256"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "pattern": "^/"
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              }
+            }
+          ]
+        },
+        "acceptance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/text"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "file",
+                  "test"
+                ],
+                "properties": {
+                  "file": {
+                    "$ref": "#/$defs/relative_path"
+                  },
+                  "test": {
+                    "$ref": "#/$defs/text"
+                  },
+                  "check": {
+                    "type": "string",
+                    "pattern": "^C[0-9]+\\.[0-9]+$"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "observable": {
+          "$ref": "#/$defs/text"
+        },
+        "after": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text"
+          }
+        },
+        "contract_group": {
+          "$ref": "#/$defs/text"
+        },
+        "type": {
+          "enum": [
+            "fix",
+            "feature",
+            "port",
+            "design",
+            "sweep",
+            "contract"
+          ]
+        },
+        "complexity": {
+          "$ref": "#/$defs/text"
+        },
+        "cost": {
+          "type": "number"
+        },
+        "file_notes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "msp": {
+          "$ref": "#/$defs/text"
+        },
+        "spec_ref": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+$"
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "role": {
+          "const": "check-author"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "not": {
+              "required": [
+                "text"
+              ]
+            }
+          },
+          "then": {
+            "required": [
+              "task"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "pattern": "^check-author(-[a-z0-9]+)*$"
+              },
+              "acceptance": {
+                "maxItems": 0
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "after"
+                  ]
+                },
+                {
+                  "required": [
+                    "type"
+                  ]
+                },
+                {
+                  "required": [
+                    "contract_group"
+                  ]
+                },
+                {
+                  "required": [
+                    "complexity"
+                  ]
+                },
+                {
+                  "required": [
+                    "file_notes"
+                  ]
+                }
+              ]
+            }
+          },
+          "else": {
+            "properties": {
+              "name": {
+                "not": {
+                  "pattern": "^check-author(-|$)"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "role"
+            ],
+            "properties": {
+              "name": {
+                "const": "check-author"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "msp": {
+                "const": "check-author"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "role",
+              "msp"
+            ]
+          },
+          "then": {
+            "properties": {
+              "msp": {
+                "type": "string",
+                "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -165,6 +165,7 @@ class Scratch:
         self.checked("init", "-q", "--bare", self.remote)
         put(os.path.join(self.repo, "src", "calc.py"), ORIGINAL_CALC)
         put(os.path.join(self.repo, ".gitignore"), "__pycache__/\n")
+        put(os.path.join(self.repo, "tests", "test_calc.py"), "import unittest\n")
         self.checked("-C", self.repo, "add", "-A")
         self.checked("-C", self.repo, "commit", "-q", "-m", "seed")
         self.checked("-C", self.repo, "remote", "add", "origin", self.remote)

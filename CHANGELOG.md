@@ -3,6 +3,16 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.15.0 - 2026-11-08
+
+- mitosis takes a file of plain-text asks, with one planning call per ask.
+- A spec is planned with the reference planner's recon text in its structure
+  prompt, and each structure call sees the recon environment variables.
+- mitosis writes the lock stage for every plan it makes and refuses a plan
+  that names a test nothing writes.
+- mitosis owns its items schema and accepts text as an alias for task.
+- A retry with one Step replaced no longer stops on its earlier worktree.
+
 ## 0.14.1 - 2026-11-08
 
 Names only; plans and builds are unchanged.

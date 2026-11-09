@@ -8,11 +8,13 @@ import shlex
 import sys
 from datetime import datetime
 
+import asks
 import briefs
 import core
 import decompose
 import handoff
 import isolation
+import lock_stage
 import metrics
 import referee
 import pr_facts
@@ -93,6 +95,7 @@ DECOMPOSE_TIER = "top"
 RUNS_DIR = ("~", ".mitosis", "runs")
 
 ITEMS_FILE = "items.json"
+NOTICES_FILE = "notices.json"
 
 STRUCTURE_FILE = "structure.json"
 
@@ -101,6 +104,8 @@ BRIEFS_DIR = "briefs"
 DECOMPOSE_FILE = "decompose.json"
 
 DECOMPOSE_LOG = "decompose.log"
+
+RECON_DIR = "recon"
 
 REMOTE = "origin"
 
@@ -147,6 +152,9 @@ PLACEHOLDER_HELP = {
 }
 
 STAGE_FLAG_NAMES = (
+    "--asks",
+    "--recon-prompt-template",
+    "--emit-items",
     "--brief-command",
     "--decisions",
     "--structure-samples",
@@ -198,6 +206,20 @@ FLAG_SPECS = {
         "help": "a document in any format; the structure stage turns it into unbriefed Steps, "
         "which needs --decompose-command, and the brief stage writes each Step's task, "
         "which needs --brief-command",
+    },
+    "--asks": {
+        "metavar": "PATH",
+        "help": "an asks file, one ask per line; each ask is planned by its own call through "
+        "--decompose-command, at most --concurrency at once",
+    },
+    "--recon-prompt-template": {
+        "metavar": "TEMPLATE",
+        "help": "the planning prompt for each ask and a spec's structure call, with {ask}, "
+        "{graph}, {source} and {contract} replaced",
+    },
+    "--emit-items": {
+        "metavar": "PATH",
+        "help": "write the Steps the asks or structure stage derived to PATH as JSON indented by 2",
     },
     "--charter": {
         "metavar": "PATH",
@@ -396,7 +418,7 @@ FLAG_SPECS = {
         "metavar": "N",
         "type": int,
         "default": DEFAULT_CONCURRENCY,
-        "help": "Workers running at once, for the brief stage and the build "
+        "help": "Workers running at once, for the asks stage, the brief stage and the build "
         "(default: %d)" % DEFAULT_CONCURRENCY,
     },
     "--context-hops": {
@@ -603,12 +625,45 @@ def read_json(path, what):
         raise Refusal("%s %s is not valid JSON: %s" % (what, path, error))
 
 
+ITEM_POINTER = re.compile(r"^#/(\d+)(?![0-9])")
+
+
+def item_label(items, error):
+    found = ITEM_POINTER.match(error)
+    if found is None:
+        return None
+    index = int(found.group(1))
+    name = items[index].get("name") if index < len(items) and isinstance(items[index], dict) else None
+    return name if isinstance(name, str) and name else "item #%d" % index
+
+
+def schema_error_line(items, error):
+    label = item_label(items, error)
+    return error if label is None else "Step %s: %s" % (label, error)
+
+
+def with_item_defaults(item):
+    acceptance = item.get("acceptance", [])
+    observable = {"observable": acceptance} if isinstance(acceptance, str) else {}
+    return {
+        **item,
+        "source": item.get("source"),
+        **observable,
+        "acceptance": [] if isinstance(acceptance, str) else acceptance,
+    }
+
+
 def read_items(path):
     items = read_json(path, "--items")
-    try:
-        return handoff.require(ITEMS_SCHEMA, items, "the --items file %s" % path, "interphase")
-    except handoff.HandoffError as error:
-        raise Refusal(str(error))
+    found = handoff.errors(ITEMS_SCHEMA, items)
+    if found:
+        raise Refusal(
+            "\n".join(
+                ("the --items file %s fails the owned schema %s:" % (path, handoff.file_name(ITEMS_SCHEMA)),)
+                + tuple(schema_error_line(items, error) for error in found)
+            )
+        )
+    return [with_item_defaults(item) for item in items]
 
 
 def file_digest(path):
@@ -895,13 +950,27 @@ def recorder_of(args):
     return getattr(args, "recorder", metrics.UNRECORDED)
 
 
-def structure_document(args, root, run_dir, models, charter, graph, decisions, prior):
-    model = models.get(DECOMPOSE_TIER)
-    if "{model}" in args.decompose_command and model is None:
+def refuse_unmapped_decompose(template, models):
+    if "{model}" in template and models.get(DECOMPOSE_TIER) is None:
         raise Refusal(
             "the decompose command uses {model} but no model is mapped for tier %s; "
             "map it with --tier-model %s=<model>" % (DECOMPOSE_TIER, DECOMPOSE_TIER)
         )
+
+
+def emit_items(path, steps):
+    if path is None:
+        return
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(steps, handle, indent=2)
+    except OSError as error:
+        raise Refusal("--emit-items %s is not writable: %s" % (path, error))
+
+
+def structure_document(args, root, run_dir, models, charter, graph, decisions, prior):
+    refuse_unmapped_decompose(args.decompose_command, models)
+    model = models.get(DECOMPOSE_TIER)
     path = check_document(args, root)
     recorder = recorder_of(args)
     began = run.now()
@@ -919,12 +988,15 @@ def structure_document(args, root, run_dir, models, charter, graph, decisions, p
         env=run.process_environ(recorder.env, root),
         on_sessions=lambda sessions: recorder.stage_ended("structure", began, sessions),
         reask=args.reask_command,
+        graph_path=args.graph,
+        prompt_template=args.recon_prompt_template,
     )
     order = decompose.rank(results)
     chosen = chosen_sample(order, args.pick)
     if len(results) > 1:
         _print(sample_lines(results, order, chosen))
     result = results[chosen]
+    emit_items(args.emit_items, result.get("items") or [])
     _print(decompose.report(result))
     if result["errors"]:
         _print(("Coverage map:",) + tuple("  " + line for line in coverage_lines({}, result, root)))
@@ -1014,20 +1086,110 @@ def brief_structure(args, items, root, run_dir, models, charter, graph, decision
     return written["items"]
 
 
-def staged(items, decomposed, run_dir, decisions, briefed):
+def staged(items, decomposed, run_dir, decisions, briefed, troubles=()):
     return {
         "items": items,
         "decomposed": decomposed,
         "run_dir": run_dir,
         "decisions": decisions,
         "briefed": briefed,
+        "troubles": tuple(troubles),
     }
+
+
+def base_holds(args, repo):
+    ref = args.feature_branch or "HEAD"
+    return lambda path: repo is not None and run.git_ok(["cat-file", "-e", "%s:%s" % (ref, path)], repo)
+
+
+def with_lock_stage(args, items, repo, root, charter):
+    return lock_stage.check_authors(items, base_holds(args, repo), core.charter_locks(charter, root)[0])
+
+
+def locked_items(args, items, repo, root, charter, run_dir):
+    path = os.path.join(run_dir, ITEMS_FILE)
+    if args.resume and os.path.isfile(path):
+        return run.read_json(path)
+    locked = with_lock_stage(args, items, repo, root, charter)
+    run.write_json(path, locked)
+    return locked
+
+
+def load_notices(run_dir):
+    path = os.path.join(run_dir, NOTICES_FILE)
+    return tuple(run.read_json(path)) if os.path.isfile(path) else ()
+
+
+def refuse_held_run(run_dir):
+    if os.path.isfile(os.path.join(run_dir, run.STATE_FILE)):
+        raise Refusal(
+            "%s already holds a run; pass --resume to continue it or --run-dir to start elsewhere"
+            % run_dir
+        )
+
+
+def read_ask_lines(path):
+    try:
+        return asks.read_asks(path)
+    except (OSError, ValueError) as error:
+        raise Refusal("--asks %s is not readable: %s" % (path, error))
+
+
+def planned_asks(args, root, models, run_dir):
+    refuse_unmapped_decompose(args.decompose_command, models)
+    path = os.path.abspath(args.asks)
+    lines = read_ask_lines(path)
+    recorder = recorder_of(args)
+    began = run.now()
+    result = asks.plan_asks(
+        lines,
+        args.decompose_command,
+        root,
+        model=models.get(DECOMPOSE_TIER),
+        graph_path=args.graph,
+        concurrency=args.concurrency,
+        reask=args.reask_command,
+        env=run.process_environ(recorder.env, root),
+        log_dir=os.path.join(run_dir, RECON_DIR),
+        prompt_template=args.recon_prompt_template,
+        document=path,
+    )
+    recorder.stage_ended("structure", began, result["sessions"])
+    if result["errors"]:
+        raise Refusal(
+            "the asks stage returned %s:\n" % _n(len(result["errors"]), "error")
+            + "\n".join("  " + line for line in result["errors"])
+        )
+    run.write_json(os.path.join(run_dir, STRUCTURE_FILE), result["items"])
+    notices = tuple(asks.notices(result))
+    run.write_json(os.path.join(run_dir, NOTICES_FILE), list(notices))
+    _print(notices, sys.stderr)
+    return result["items"], notices
+
+
+def asks_input(args, root, repo, models, charter, run_dir):
+    if args.dry_run and not args.plan_only:
+        refuse_undispatchable(args)
+    elif not args.plan_only:
+        refuse_unbuildable(args, repo)
+    if args.resume:
+        items, notices = load_structure(run_dir, root, "nothing to resume"), load_notices(run_dir)
+    else:
+        refuse_held_run(run_dir)
+        items, notices = planned_asks(args, root, models, run_dir)
+        emit_items(args.emit_items, items)
+    locked = locked_items(args, items, repo, root, charter, run_dir)
+    return staged(locked, load_decomposed(run_dir), run_dir, None, True, notices)
 
 
 def input_run_dir(args, root):
     if args.run_dir:
         return os.path.abspath(os.path.join(root, args.run_dir))
-    kind, path = ("items", args.items) if args.items else ("spec", args.spec)
+    kind, path = next(
+        (kind, path)
+        for kind, path in (("items", args.items), ("asks", args.asks), ("spec", args.spec))
+        if path
+    )
     return os.path.abspath(default_run_dir(root, kind, file_digest(os.path.abspath(path))))
 
 
@@ -1035,6 +1197,8 @@ def resolve_input(args, root, repo, models, charter, graph, run_dir):
     if args.items:
         items = read_items(os.path.abspath(args.items))
         return staged(items, load_decomposed(run_dir), run_dir, None, True)
+    if args.asks:
+        return asks_input(args, root, repo, models, charter, run_dir)
     document = check_document(args, root)
     decisions = load_decisions(args, root, document)
     if args.dry_run and not args.plan_only:
@@ -1045,11 +1209,7 @@ def resolve_input(args, root, repo, models, charter, graph, run_dir):
         items = load_structure(run_dir, root, "nothing to resume")
         decomposed = load_decomposed(run_dir)
     else:
-        if os.path.isfile(os.path.join(run_dir, run.STATE_FILE)):
-            raise Refusal(
-                "%s already holds a run; pass --resume to continue it or --run-dir to start elsewhere"
-                % run_dir
-            )
+        refuse_held_run(run_dir)
         prior = load_structure(run_dir, root, "nothing to revise") if args.revise else None
         if not args.plan_only:
             refuse_unbriefable(args, briefs.pending(prior or [{}]))
@@ -1058,9 +1218,10 @@ def resolve_input(args, root, repo, models, charter, graph, run_dir):
         )
         if args.plan_only:
             return staged(items, decomposed, run_dir, decisions, False)
-    items = brief_structure(args, items, root, run_dir, models, charter, graph, decisions, document)
-    run.write_json(os.path.join(run_dir, ITEMS_FILE), items)
-    return staged(items, decomposed, run_dir, decisions, True)
+    briefed = brief_structure(args, items, root, run_dir, models, charter, graph, decisions, document)
+    emit_items(args.emit_items, briefed)
+    locked = locked_items(args, briefed, repo, root, charter, run_dir)
+    return staged(locked, decomposed, run_dir, decisions, True)
 
 
 def marker_list(text):
@@ -2233,7 +2394,7 @@ def summary(plan, state, run_dir, code, referee=None, troubles=()):
 
 
 RESULT_SCHEMA = "h8-mitosis-result"
-ITEMS_SCHEMA = "h12-interphase-items"
+ITEMS_SCHEMA = "mitosis-items"
 
 
 def _summarised(plan, state, run_dir, code, referee=None, troubles=()):
@@ -2425,6 +2586,7 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
         resolved["decisions"],
     )
     from_items = bool(args.items)
+    notices = resolved["troubles"]
     if not resolved["briefed"]:
         _print(
             report(
@@ -2432,8 +2594,10 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
                 decisions, items,
             )
         )
-        return _summarised({"items": items}, None, run_dir, EXIT_SHIPPED)
+        return _summarised({"items": items}, None, run_dir, EXIT_SHIPPED, troubles=notices)
     plan = planned(args, items, root, charter, graph)
+    if args.plan_file is None:
+        refuse_unwritten(plan, base_holds(args, repo))
     recorder.planned(plan, lane_width(plan), len(empty_manifests(plan.get("items") or [])))
     proven_heads(args.proven_head, plan)
     args = argparse.Namespace(
@@ -2447,7 +2611,7 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
             report(plan, None, decomposed, root, run_dir, EXIT_SHIPPED, from_items, decisions)
         )
         locked, troubles = planned_referee(args, plan, repo)
-        return _summarised(plan, None, run_dir, EXIT_SHIPPED, locked, troubles)
+        return _summarised(plan, None, run_dir, EXIT_SHIPPED, locked, tuple(troubles) + notices)
     if args.dry_run:
         refuse_undispatchable(args)
         refuse_unmapped(plan, args.dispatch_command, models)
@@ -2456,7 +2620,7 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
             report(plan, None, decomposed, root, run_dir, EXIT_SHIPPED, from_items, decisions)
         )
         locked, troubles = planned_referee(args, plan, repo)
-        return _summarised(plan, None, run_dir, EXIT_SHIPPED, locked, troubles)
+        return _summarised(plan, None, run_dir, EXIT_SHIPPED, locked, tuple(troubles) + notices)
     refuse_run(args, plan, models, run_dir, repo)
     base = pinned_base(args, plan, run_dir, repo)
     locked = locked_referee(args, plan, repo, base)
@@ -2474,20 +2638,33 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     _print(report(plan, state, decomposed, root, run_dir, code, from_items, decisions))
     if failure is not None:
         _print(("the run stopped: %s" % failure,), sys.stderr)
-    return _summarised(plan, state, run_dir, code, locked)
+    return _summarised(plan, state, run_dir, code, locked, notices)
+
+
+def refuse_unwritten(plan, held):
+    lines = lock_stage.unwritten(plan, held)
+    if lines:
+        raise Refusal("the plan names tests nothing writes:\n" + "\n".join("  " + line for line in lines))
 
 
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not args.items and not args.spec:
-        parser.error("one of --items or --spec is required; mitosis has no input without them")
+    if not args.items and not args.spec and not args.asks:
+        parser.error("one of --items, --spec or --asks is required; mitosis has no input without them")
+    paired = next((flag for flag, given in (("--items", args.items), ("--spec", args.spec)) if given), None)
+    if args.asks and paired:
+        parser.error("--asks and %s are two front ends to one pipeline; pass one, not both" % paired)
     if args.items and args.spec:
         parser.error("--items and --spec are two front ends to one pipeline; pass one, not both")
     if args.spec and not args.decompose_command and not args.resume:
         parser.error("--spec needs --decompose-command; a document becomes Steps only through decompose")
+    if args.asks and not args.decompose_command and not args.resume:
+        parser.error("--asks needs --decompose-command; an ask becomes Steps only through a planning call")
     if args.items and args.revise:
         parser.error("--revise revises the structure in the run directory, which --items never writes")
+    if args.asks and args.revise:
+        parser.error("--revise revises a spec's structure in the run directory, which --asks never revises")
     if args.resume and args.revise:
         parser.error("--revise runs the structure stage, which --resume skips; run --plan-only --revise first")
     if args.no_briefs and not args.plan_only:

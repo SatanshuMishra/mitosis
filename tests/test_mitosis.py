@@ -2410,6 +2410,101 @@ class GateClassRefusals(unittest.TestCase):
         self.assertIn("is not UTF-8 JSON", self._refusal("[{"))
 
 
+MITOSIS_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mitosis.py")
+
+SCRATCH_CALL_LIMIT = 60
+
+SCRATCH_RUN_LIMIT = 300
+
+SCRATCH_STRIPPED = ("CLAUDE_CODE_SESSION_ID", "PLUGIN_METRICS_PARENT", "SHIP")
+
+
+class FrontEnds(unittest.TestCase):
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="mitosis-front-ends-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.repo = os.path.join(self.tmp, "repo")
+        self.env = {
+            **{key: value for key, value in os.environ.items() if key not in SCRATCH_STRIPPED},
+            **ISOLATED_GIT_ENV,
+            "HOME": os.path.join(self.tmp, "home"),
+            "PLUGIN_METRICS_DIR": os.path.join(self.tmp, "metrics"),
+            "MITOSIS_TRAJECTORY_STORE": write(self.tmp, "no-history.jsonl", ""),
+        }
+        os.makedirs(self.env["HOME"])
+        os.makedirs(self.repo)
+        write(self.repo, "README.md", "seed\n")
+        self._git("init", "-q", "-b", "main")
+        self._git("add", "-A")
+        self._git("commit", "-q", "-m", "seed")
+        self._git("branch", "feature")
+
+    def _git(self, *args):
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=self.repo,
+            env=self.env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=SCRATCH_CALL_LIMIT,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError("scaffold git %s failed: %s" % (" ".join(args), completed.stderr))
+
+    def _mitosis(self, *flags):
+        return subprocess.run(
+            [sys.executable, MITOSIS_SCRIPT, *flags],
+            cwd=self.repo,
+            env=self.env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=SCRATCH_RUN_LIMIT,
+        )
+
+    def asks_with_spec_is_a_usage_error_naming_both(self):
+        completed = self._mitosis("--asks", "a.txt", "--spec", "docs/spec.md", "--decompose-command", "c")
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("--asks", completed.stderr)
+        self.assertIn("--spec", completed.stderr)
+
+    def asks_with_revise_is_a_usage_error_naming_revise(self):
+        completed = self._mitosis("--asks", "a.txt", "--decompose-command", "c", "--revise", "--plan-only")
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("--revise", completed.stderr)
+
+    def a_named_test_only_the_feature_branch_holds_plans_only_from_that_branch(self):
+        self._git("checkout", "-q", "feature")
+        write(self.repo, os.path.join("tests", "test_reader.py"), "import unittest\n")
+        self._git("add", "tests/test_reader.py")
+        self._git("commit", "-q", "-m", "reader test")
+        self._git("checkout", "-q", "main")
+        items = write(
+            self.tmp,
+            "items.json",
+            items_document(
+                self.tmp,
+                [
+                    {
+                        "name": "reader",
+                        "task": "Read it.",
+                        "files": ["reader.py"],
+                        "acceptance": [{"file": "tests/test_reader.py", "test": "R.reads"}],
+                        "spec_ref": [SPEC_SECTION],
+                    }
+                ],
+            ),
+        )
+        held = self._mitosis(
+            "--items", items, "--plan-only", "--feature-branch", "feature", "--run-dir", os.path.join(self.tmp, "run-1")
+        )
+        self.assertEqual(held.returncode, 0, held.stdout[-2000:] + held.stderr[-2000:])
+        unheld = self._mitosis("--items", items, "--plan-only", "--run-dir", os.path.join(self.tmp, "run-2"))
+        self.assertEqual(unheld.returncode, 3, unheld.stdout[-2000:] + unheld.stderr[-2000:])
+        self.assertIn("tests/test_reader.py", unheld.stderr)
+
+
 def load_tests(loader, tests, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -2445,6 +2540,7 @@ def load_tests(loader, tests, pattern):
         RenderPreflight,
         SessionReport,
         GateClassRefusals,
+        FrontEnds,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite

@@ -89,6 +89,9 @@ class MarkerList(accept.Case):
 
 
 class VerifyMarkers(accept.Case):
+    def make_scratch(self):
+        return accept.Scratch(seeded={"auth/test_a.py": "import unittest\n"})
+
     def a_serial_marker_is_a_raw_substring_of_a_file(self):
         completed, plan = self.planned(
             [S("x", ["app/unauthenticated/x.ts"])], "--serial-markers", "auth"
