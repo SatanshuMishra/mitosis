@@ -912,7 +912,7 @@ def templated_task(plan, lane, label, template):
     brief = plan["briefs"][lane]
     rendered = (
         template.replace("{cluster}", ", ".join(plan["lanes"][lane]["steps"]))
-        .replace("{spec}", brief["spec"])
+        .replace("{spec}", core.whole_spec(brief["steps"]))
         .replace("{tier}", str(plan["lanes"][lane].get("tier") or ""))
         .replace("{contract}", core.RETURN_CONTRACT)
     )

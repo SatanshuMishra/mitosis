@@ -982,14 +982,14 @@ class Sessions(unittest.TestCase):
         self.assertIn("Task: do s1", second["text"].splitlines())
         self.assertIn(
             json.dumps(
-                {"leaves": [{"name": "s1", "task": "do s1", "edit": ["shared.py", "f1.py", "f0.py"], "read": []}]},
+                {"leaves": [{"name": "s1", "edit": ["shared.py", "f1.py", "f0.py"], "read": []}]},
                 indent=2,
             ),
             second["text"],
         )
         self.assertIn(
             json.dumps(
-                {"leaves": [{"name": "s0", "task": "do s0", "edit": ["shared.py", "f0.py"], "read": []}]},
+                {"leaves": [{"name": "s0", "edit": ["shared.py", "f0.py"], "read": []}]},
                 indent=2,
             ),
             first["text"],
@@ -1165,7 +1165,6 @@ class CheckAuthor(unittest.TestCase):
                     "leaves": [
                         {
                             "name": "write-checks",
-                            "task": "do write-checks",
                             "edit": ["tests/test_calc.py"],
                             "read": [],
                         }

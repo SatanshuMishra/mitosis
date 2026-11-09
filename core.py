@@ -110,15 +110,15 @@ COUNT_KEYS = ("missing_paths", "no_acceptance", "assumptions")
 
 RETURN_KEYS = ("item", "status", "files_changed", "notes")
 
-NOTES_CAP = 200
+NOTES_CAP = 150
 
 RETURN_SCHEMA = "h10-worker-return"
 
 RETURN_CONTRACT = (
     "Return your reply as structured output meeting the Worker return schema %s, "
     'shaped {"item":"<name>","status":"ok"|"failed","files_changed":["path",...],'
-    '"notes":"<=200 chars"}, with notes at most %d characters; it is read from '
-    "structured_output, never from a last JSON line." % (RETURN_SCHEMA, NOTES_CAP)
+    '"notes":"<=%d chars"}, with notes at most %d characters; it is read from '
+    "structured_output, never from a last JSON line." % (RETURN_SCHEMA, NOTES_CAP, NOTES_CAP)
 )
 
 FLAG_NAMES = (
@@ -1252,8 +1252,16 @@ def _step_brief(item, pack, edit=None):
     }
 
 
-def brief_spec(leaves):
+def whole_spec(leaves):
     return json.dumps({"leaves": list(leaves)}, indent=2)
+
+
+def brief_spec(leaves):
+    return whole_spec(
+        [{key: value for key, value in leaves[0].items() if key != "task"}]
+        if len(leaves) == 1
+        else leaves
+    )
 
 
 def _lane_read_set(items, lane, packs, owned=()):
@@ -1275,6 +1283,14 @@ CLONE_LINE = (
     "them, and it never reads the clone's commits, branches or other refs, so do not rely on "
     "them. Run no command that changes the repository's index or history: no add, commit, "
     "stash, reset, checkout, restore, clean, merge or rebase."
+)
+
+
+TEST_SCOPE_LINE = (
+    "Run only the tests your brief names and the test files you edit, each by name and in the "
+    "foreground. Never run the project's full test suite, a discovery command over its test "
+    "folder or a selection of affected tests, and never repeat a run on a second interpreter: "
+    "mitosis judges the finished build itself once every Lane is done."
 )
 
 
@@ -1339,7 +1355,7 @@ def brief_text(brief):
                 "Left for later sessions, do not start them: %s" % ", ".join(session["later"])
             )
     body = [_task_line(brief["steps"]), "", brief["spec"], "", EDIT_RULE]
-    footer = [CLONE_LINE] + (
+    footer = [CLONE_LINE, TEST_SCOPE_LINE] + (
         [probe_line(brief["probe_files"])] if brief.get("probe_files") is not None else []
     ) + (
         [referee_line(brief.get("locked") or ())]
