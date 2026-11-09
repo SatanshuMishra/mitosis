@@ -4370,6 +4370,10 @@ def _dispatch_check_author(entry, settings, command, models, sandbox, base, note
         ),
         confinement,
     )
+    return _check_author_outcome(entry, called, carried, folders, seeded)
+
+
+def _check_author_outcome(entry, called, carried, folders, seeded):
     judged, why = called_verdict(called)
     ran = {
         "stdout": called["stdout"],
@@ -4652,14 +4656,52 @@ def _landed_lock(plan, entry, settings, record, base):
     }
 
 
-def _lock_attempt(plan, entry, settings, command, models, sandbox, base, note=None):
-    record = _dispatch_check_author(entry, settings, command, models, sandbox, base, note)
-    if record["state"] != "ok":
-        return record
+def _judged_lock(plan, entry, settings, record, base):
     landed = _landed_lock(plan, entry, settings, record, base)
     if landed["state"] == "ok":
         isolation.discard_landed_folders(isolation.lock_folders(settings["run_dir"], entry["msp"]))
     return landed
+
+
+def _lock_attempt(plan, entry, settings, command, models, sandbox, base, note=None):
+    record = _dispatch_check_author(entry, settings, command, models, sandbox, base, note)
+    return record if record["state"] != "ok" else _judged_lock(plan, entry, settings, record, base)
+
+
+LOCK_REFUSED_NOTE = (
+    "mitosis refused the checks you wrote: %s. Correct them in this clone, keeping the rest of "
+    "your work, and reply again."
+)
+
+SEED_FIELDS = ("seeded", "seed_skipped", "seed_seconds")
+
+
+def _refused_after_reply(record):
+    return bool(record.get("session_id")) and (record.get("returned") or {}).get("status") == "ok"
+
+
+def _continued_lock(plan, entry, settings, models, sandbox, base, first):
+    run_dir = settings["run_dir"]
+    folders = isolation.lock_folders(run_dir, entry["msp"])
+    session = first["session_id"]
+    values = _lock_values(entry, folders, settings["feature_branch"], models, run_dir, session)
+    asked = {"template": settings["reask_command"], "values": reask_values(values)}
+    argv = build_argv(asked["template"], {**asked["values"], "prompt": LOCK_REFUSED_NOTE % first["reason"]})
+    try:
+        confinement = isolation.worker_confinement(folders, sandbox, settings["env"])
+    except (GitError, OSError) as error:
+        return lock_record("failed", "mitosis could not confine the continued lock: %s" % error)
+    called = worker_call(
+        argv,
+        asked,
+        folders["clone"],
+        call_files(os.path.join(run_dir, "lanes"), _attempt_stem(_lock_name(entry), True)),
+        _check_author_environ(entry, settings["plan_id"], settings["feature_branch"], settings["env"]),
+        confinement,
+    )
+    seeded = {key: first[key] for key in SEED_FIELDS if key in first}
+    record = _check_author_outcome(entry, called, session, folders, seeded)
+    return record if record["state"] != "ok" else _judged_lock(plan, entry, settings, record, base)
 
 
 def _msp_lock(plan, entry, settings, command, models, sandbox, base):
@@ -4669,6 +4711,10 @@ def _msp_lock(plan, entry, settings, command, models, sandbox, base):
     first = _lock_attempt(plan, entry, settings, command, models, sandbox, base)
     if first["state"] != "failed":
         return first
+    if settings.get("reask_command") and _refused_after_reply(first):
+        continued = _continued_lock(plan, entry, settings, models, sandbox, base, first)
+        if continued["state"] != "failed" or _refused_after_reply(continued):
+            return continued
     return _lock_attempt(
         plan, entry, settings, command, models, sandbox, base, RETRY_NOTE % first["reason"]
     )

@@ -25,14 +25,18 @@ task = sys.argv[-3]
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "worker.json"), encoding="utf-8") as handle:
     jobs = json.load(handle)
-name = next(step for step in sorted(jobs, key=len, reverse=True) if "build " + step in task)
 log = os.path.join(here, "attempts.jsonl")
-earlier = 0
+found = []
 if os.path.exists(log):
     with open(log, encoding="utf-8") as handle:
-        earlier = sum(1 for line in handle if json.loads(line)["step"] == name)
+        found = [json.loads(line) for line in handle]
+name = next(
+    (step for step in sorted(jobs, key=len, reverse=True) if "build " + step in task),
+    next((entry["step"] for entry in found if entry["session"] == SESSION), None),
+)
+earlier = sum(1 for entry in found if entry["step"] == name)
 with open(log, "a", encoding="utf-8") as handle:
-    handle.write(json.dumps({"step": name, "task": task}) + "\n")
+    handle.write(json.dumps({"step": name, "task": task, "session": SESSION}) + "\n")
 attempts = jobs[name]
 attempt = attempts[min(earlier, len(attempts) - 1)]
 if attempt.get("limit"):
@@ -91,10 +95,19 @@ class Scratch(fixtures.Scratch):
             found = [json.loads(line) for line in handle]
         return [entry["task"] for entry in found if entry["step"] == step]
 
+    def sessions(self, step):
+        path = os.path.join(self.stubs, "attempts.jsonl")
+        with open(path, encoding="utf-8") as handle:
+            found = [json.loads(line) for line in handle]
+        return [entry["session"] for entry in found if entry["step"] == step]
+
+    def continuing_worker(self):
+        return self.stub("worker.py", "{prompt}", "{session_id}", "{schema}")
+
     def hook(self, body, name="pre-commit"):
         executable(os.path.join(self.repo, ".git", "hooks", name), "#!/bin/sh\n" + body)
 
-    def built(self, steps, jobs, push=False, acceptance="unittest", flags=()):
+    def built(self, steps, jobs, push=False, acceptance="unittest", flags=(), reask=None):
         self.jobs(jobs)
         shipping = (
             (*fixtures.PR_FLAGS, "--pr-command", self.stub("pr.py", "{branch}"), "--render-command", self.render)
@@ -111,7 +124,7 @@ class Scratch(fixtures.Scratch):
             "--dispatch-command",
             self.stub("worker.py", "{task}", "{session_id}", "{schema}"),
             "--reask-command",
-            fixtures.REASK_COMMAND,
+            reask or fixtures.REASK_COMMAND,
             "--acceptance-command",
             self.stub("accept.py", acceptance, "{file}", "{test}"),
             *shipping,
@@ -375,6 +388,7 @@ class FinishesTheWork(unittest.TestCase):
                 "first": [{"writes": {"a.py": RIGHT}}],
             },
             push=True,
+            reask=scratch.continuing_worker(),
         )
         self._exit(completed, 0)
         tasks = scratch.attempts("check-author")
@@ -400,6 +414,7 @@ class FinishesTheWork(unittest.TestCase):
                 "first": [{"writes": {"a.py": RIGHT}}],
             },
             push=True,
+            reask=scratch.continuing_worker(),
         )
         self._exit(completed, 0)
         record = msp_of(summary, "first")
@@ -407,8 +422,52 @@ class FinishesTheWork(unittest.TestCase):
         self.assertEqual(record["gate"]["outcome"], "pass")
         self.assertTrue(scratch.on_branch("mitosis/first", TEST_FILE))
         retry = scratch.attempts("check-author")[1]
-        self.assertIn("An earlier attempt at this work failed", retry)
-        self.assertNotIn("mitosis keeps the write", retry)
+        self.assertIn("mitosis refused the checks you wrote", retry)
+        self.assertNotIn("build check-author", retry)
+        sessions = scratch.sessions("check-author")
+        self.assertEqual(sessions[0], sessions[1])
+
+    def a_lock_worker_reporting_failure_starts_again_told_why(self):
+        scratch = self._scratch()
+        completed, summary = scratch.built(
+            [lock_author(), builder()],
+            {
+                "check-author": [
+                    {"status": "failed", "notes": "the fixture was missing"},
+                    {"writes": {TEST_FILE: PROPERTY_TEXT, "a.py": RIGHT}},
+                ],
+                "first": [{"writes": {"a.py": RIGHT}}],
+            },
+            reask=scratch.continuing_worker(),
+        )
+        self._exit(completed, 0)
+        self.assertEqual(msp_of(summary, "first")["lock"]["state"], "ok")
+        tasks = scratch.attempts("check-author")
+        self.assertIn("An earlier attempt at this work failed", tasks[1])
+        sessions = scratch.sessions("check-author")
+        self.assertNotEqual(sessions[0], sessions[1])
+
+    def a_lock_whose_session_cannot_continue_starts_again_told_why(self):
+        scratch = self._scratch()
+        completed, summary = scratch.built(
+            [lock_author(), builder()],
+            {
+                "check-author": [
+                    {"writes": {TEST_FILE: REFUSED_LOCK}},
+                    {"writes": {TEST_FILE: PROPERTY_TEXT, "a.py": RIGHT}},
+                ],
+                "first": [{"writes": {"a.py": RIGHT}}],
+            },
+            reask="%s -c 'raise SystemExit(1)' {prompt} {session_id} {schema}" % sys.executable,
+        )
+        self._exit(completed, 0)
+        self.assertEqual(msp_of(summary, "first")["lock"]["state"], "ok")
+        tasks = scratch.attempts("check-author")
+        self.assertEqual(len(tasks), 2)
+        self.assertIn("An earlier attempt at this work failed", tasks[1])
+        self.assertNotIn("mitosis keeps the write", tasks[1])
+        sessions = scratch.sessions("check-author")
+        self.assertNotEqual(sessions[0], sessions[1])
 
     def a_repair_writing_a_sibling_lanes_file_is_reported(self):
         scratch = self._scratch()
@@ -683,6 +742,8 @@ def load_tests(loader, standard, pattern):
         FinishesTheWork(name)
         for name in (
             "a_lane_reporting_failure_is_retried_with_its_reason_and_ships",
+            "a_lock_whose_session_cannot_continue_starts_again_told_why",
+            "a_lock_worker_reporting_failure_starts_again_told_why",
             "a_repair_writing_a_sibling_lanes_file_is_reported",
             "a_repair_keeps_the_foreign_writes_of_the_lanes_first_attempt",
             "a_repair_reaches_the_gate_when_a_sibling_wrote_that_file_earlier",

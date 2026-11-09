@@ -13,7 +13,8 @@ only when the version changes, so every release changes it.
   location. `--suite-command` is accepted and ignored.
 - A gate that could not run is named in the pull request and holds nothing.
 - A Lane that fails is dispatched once more, told why. A check-author whose
-  lock is refused gets one retry, and a lock refused twice no longer stops the
+  lock is refused continues its session once, told what was refused, rather
+  than writing its tests again, and a lock refused twice no longer stops the
   build.
 - A Lane commits without the repository's hooks, and the pre-commit hook runs
   once per MSP over its whole change, in a throwaway checkout that never moves

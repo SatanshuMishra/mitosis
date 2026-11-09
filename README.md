@@ -502,7 +502,9 @@ A Lane whose Worker fails is dispatched once more, told why, and told it may
 change a file outside its write-set when that was the obstacle; mitosis keeps
 that write, shows it to the gate and reports it. A Worker that reports failure twice leaves its Lane
 `failed` and its MSP unshipped, while every other MSP carries on. A check-author
-whose lock is refused gets the same one retry. A lock refused twice no longer
+whose lock is refused gets one retry too: the same session continues in its
+clone, told what was refused, and it starts again only when that session
+cannot continue. A lock refused twice no longer
 stops the build: the MSP builds from its base, its Steps' locked tests are judged
 `not-applicable` with the refusal as the reason, and the pull request says so.
 
