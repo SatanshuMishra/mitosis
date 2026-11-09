@@ -2277,6 +2277,19 @@ def property_mutants(plan, msp, tree, base, commit, entry, trace=None):
     return property_sample(plan, msp, tree, base, commit, entry, trace)[0]
 
 
+def structural_mutants(plan, msp, tree, base, commit, entry):
+    paths = tuple(step_implementation_paths(plan, msp, entry["step"]))
+    if not paths:
+        return []
+    pairs, texts = _step_added(tree, base, commit, paths)
+    held = dict(texts)
+
+    def read(path):
+        return _decoded(held[path])
+
+    return mutants.structural(dict(pairs), read)
+
+
 def _run_mutant(command, folder, entry, mutant, log_path, env, reset, sandbox=None):
     written = reset()
     path = mutant["file"]
@@ -2408,6 +2421,24 @@ def _suite_verdicts(
     return verdicts, written, seconds, seen
 
 
+def _first_kill(candidates, attempt, log_name):
+    tried = ()
+    written = ()
+    seconds = 0
+    for mutant in candidates:
+        (ran, left), spent = _timed(
+            lambda mutant=mutant: attempt(mutant, log_name(len(tried)))
+        )
+        seconds = seconds + spent
+        written = written + left
+        if ran is None:
+            continue
+        tried = tried + (mutant,)
+        if ran != 0:
+            return mutant, tried, written, seconds
+    return None, tried, written, seconds
+
+
 def _weak(entry, mutant, record, coverage, seconds, fault=None):
     return {
         **entry,
@@ -2439,7 +2470,6 @@ def mutant_verdict(
     seen=None,
     sandbox=None,
 ):
-    tried = ()
     written = ()
     seen = dict(seen or {})
     seconds = entry.get("seconds", 0)
@@ -2470,37 +2500,39 @@ def mutant_verdict(
             written,
             seen,
         )
-    for mutant in sampled:
-        (ran, left), spent = _timed(
-            lambda mutant=mutant: _run_mutant(
-                command,
-                folder,
-                entry,
-                mutant,
-                os.path.join(log_dir, "%d-mutant-%d.log" % (index, len(tried))),
-                env,
-                reset,
-                sandbox,
-            )
+    def attempt(mutant, name):
+        return _run_mutant(
+            command, folder, entry, mutant, os.path.join(log_dir, name), env, reset, sandbox
+        )
+
+    killer, tried, left, spent = _first_kill(
+        sampled, attempt, lambda count: "%d-mutant-%d.log" % (index, count)
+    )
+    seconds = seconds + spent
+    written = written + left
+    attempts = tried
+    if killer is None and tried:
+        killer, extra, left, spent = _first_kill(
+            structural_mutants(plan, msp, tree, base, commit, entry),
+            attempt,
+            lambda count: "%d-structural-%d.log" % (index, count),
         )
         seconds = seconds + spent
         written = written + left
-        if ran is None:
-            continue
-        tried = tried + (mutant,)
-        if ran != 0:
-            return (
-                {
-                    **entry,
-                    "mutants": {"tried": len(tried), "killed": _mutant_place(mutant)},
-                    "mutation": "killed",
-                    "coverage": coverage,
-                    "seconds": seconds,
-                },
-                written,
-                seen,
-            )
-    record = {"tried": len(tried), "killed": None}
+        attempts = tried + extra
+    if killer is not None:
+        return (
+            {
+                **entry,
+                "mutants": {"tried": len(attempts), "killed": _mutant_place(killer)},
+                "mutation": "killed",
+                "coverage": coverage,
+                "seconds": seconds,
+            },
+            written,
+            seen,
+        )
+    record = {"tried": len(attempts), "killed": None}
     if not tried:
         return {**entry, "mutants": record, "coverage": coverage, "seconds": seconds}, written, seen
     if kind == SAMPLED_DATA:

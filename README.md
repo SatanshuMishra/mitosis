@@ -410,7 +410,10 @@ left alone, and when no operator applies to any added line the gate drops the
 added lines of each file instead. A Step that changed a symbolic link is
 judged `inconclusive`, because the gate never writes through a link. A
 property no mutant fails is judged `weak`, with exit 24: it passes whether or
-not the work is right. An MSP
+not the work is right. Before that verdict the gate also tries, for a Python
+Step, negating each `if` that holds added code inside a function and emptying
+each function the Step added, and stops at the first that fails the property.
+An MSP
 whose gate is `weak`, `inert` or `inconclusive` ends `gate-failed`: its work
 is committed on its branch and never pushed, so no pull request opens on an
 unproven property.
