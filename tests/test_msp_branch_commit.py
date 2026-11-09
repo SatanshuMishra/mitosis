@@ -50,7 +50,7 @@ class MspBranchCommit(pinned.PinnedRefereeRun):
         self.assertEqual(completed.returncode, 21, "mitosis exit code" + lock_fixtures.tail(completed))
         msp = self._summary(completed)["msps"][0]
         self.assertEqual(msp["reconcile"]["referee"], [])
-        self.assertEqual(msp["gate"]["properties"][0]["reason"], "exit 1 with the work present")
+        self.assertEqual(msp["gate"]["properties"][0]["reason"], "fails against the finished work")
         self.assertEqual(
             self.scratch.checked("show", "refs/heads/%s:tests/test_calc.py" % pinned.BRANCH),
             pinned.LOCKED_CALC_TEST,

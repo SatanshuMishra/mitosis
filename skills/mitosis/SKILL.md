@@ -54,7 +54,6 @@ quotes or newlines lands as one argument and is never reinterpreted by a shell.
 | `--reask-command` | the same session once more, for a reply failing its owned schema; required to call a model | prompt, session_id, schema, model |
 | `--worker-sandbox` | each Worker, gate and lock-stage run under sandbox-exec, writing only its clone or checkout, temp, transcript and `--worker-write` paths; exit 3 without it | none |
 | `--worker-write` | nothing; one more sandbox-writable path; repeatable; exit 3 if it overlaps the run directory, repository or its git directory | none |
-| `--suite-command` | the full suite unmutated, then per surviving mutant; exit 1 kills only after an unmutated pass, else `weak` | worktree, report |
 | `--gate-classes` | nothing; a JSON `{test, class, reason}` list classing properties | none |
 
 A Worker's prompt is its whole brief. Dispatch, decompose and brief templates
@@ -234,7 +233,7 @@ Worker runs in its MSP, and a resume lands it without paying again. A write
 outside the write-set is judged by reconcile only, exit 6, or reverted as a
 referee write, exit 9; the gate never sees it. JSON `sandbox` is
 sandbox-exec or `off`. Each git call
-drops the diff, pathspec, repository and object variables. Producer merges run no hooks; a git command meeting
+drops the diff, pathspec, repository and object variables. Producer merges and Lane commits run no hooks; a git command meeting
 another process's lock is retried. A later change to a file whose Lane already
 committed is kept in its own commit and named in the pull request, `attention`
 and the exit code.
@@ -243,27 +242,30 @@ Steps with no file in common are ordered when they share a risk marker, a
 recorded regression or a migration folder. A pair joined only by an import
 runs in parallel and is named in `attention`; add an `after` edge if needed.
 
-mitosis refuses with exit 3 when git has no commit identity. A refused commit
-fails that Lane alone, so a hook refusing the Step commit's form fails every
-Lane after its Worker has run.
+mitosis refuses with exit 3 when git has no commit identity. A failed Lane is
+retried once with the reason; a refused commit fails that Lane alone.
 
 The gate runs each acceptance property twice, with the work present and with
 the implementation reverted. `pass`: it failed without the work.
-`inert`: it passed without it, proving nothing. `inconclusive`: reverting
-broke the build. `not-applicable`: the Step declared none, or it passed both
+`inert`: it passed without it, proving nothing. `inconclusive`: the
+acceptance command could not judge it. `not-applicable`: the Step declared none, or it passed both
 ways beside a `pass` of its Step, a guard with no mutants. Implementation is derived: the MSP's
 write-set minus the files its acceptance properties name.
 
+A property exiting 1 with the work present gets its Lane one repair; still
+failing, it holds its MSP `gate-failed`, exit 21: committed, never pushed. Every
+other verdict, and a gate that could not run, ships and is named in the pull
+request's Testing table.
+
 Each passing property then runs against up to 12 mutants of its Step's added
-lines, such as a flipped comparison, or dropped added lines when no operator
-fits. `weak` means no mutant failed it, exit 24. An MSP whose gate is `weak`, `inert` or `inconclusive`
-ends `gate-failed`: committed, never pushed, no pull request. `--trajectory`
-also gets one outcome entry per acceptance test after every gate.
+lines outside test locations, such as a flipped comparison, or dropped added
+lines when no operator fits. `weak` means no mutant failed it, and holds
+nothing. `--trajectory` also gets one outcome entry per acceptance test after
+every gate.
 
 Mutants come only from added lines the with-work run executed. Each
 property's mutation is killed, `weak`, `not-applicable` (the test loads none
-of the Step's files) or covered-elsewhere (`--suite-command` passed unmutated,
-then failed on each survivor; `killers` names the tests); `coverage` is
+of the Step's files) or covered-elsewhere (classed so); `coverage` is
 `untraced` unless its mutants came from the trace. `--gate-classes` classes a property `<file>::<name>`
 `not-applicable`, covered-elsewhere or `removed` with a reason, judged
 without a run and kept out of the plan id, so `--resume` rebuilds nothing; an
@@ -275,8 +277,8 @@ from its own clone at the feature base: one per `msp` label, or the unlabelled
 one split by acceptance owner. Each test must exit 0 with its uncommitted
 probe, and each Step must hold one that exits 1 there; only the locked files
 are committed, as the MSP's first commit. Its record is the MSP's `lock` in
-JSON `msps`; a failed one blocks
-only it and the MSPs merging it.
+JSON `msps`; refused twice, the MSP builds from its base with those tests
+`not-applicable`, and a resume never reruns it.
 
 The referee is what judges the work, and no Worker writes it: the charter's
 `- Locked:` lines, plus built-in markers for test configuration, snapshots,
@@ -295,9 +297,9 @@ Dependencies are the root's node_modules and venvs, or `--gate-setup`, run
 once per gate with `{worktree}`; its output survives only at top-level names
 the commit lacks, such as the `.git` a git-running test needs. A top-level referee
 file or folder it makes, such as `conftest.py`, is fatal, exit 9. A Git LFS file stays
-pointer text and eol attributes may not apply, whatever `--gate-setup` does;
-a test reading real content ends `inconclusive`. That, a failed gate setup or
-a refused pre-gate commit holds the MSP back `gate-failed`, exit 21. Ship
+pointer text and eol attributes may not apply; a test reading real content
+fails. A refused pre-gate commit or a pre-commit hook refusing the whole MSP
+holds it back `gate-failed`, exit 21; a failed gate setup holds nothing. Ship
 refuses any head but the gated one, `ship-failed`, exit 22.
 
 An unreadable base submodule whose gitlink the branch changed cannot be
@@ -305,8 +307,8 @@ judged, exit 21; a committed referee write inside one is reverted by
 resetting its gitlink to the base's, exit 9.
 
 Reconcile compares what the git log says changed against what the Steps
-declared. A write outside the declaration, or a declared path never written,
-is a finding. A write into a file another MSP owns is the serious one: merging
+declared. A write outside the declaration is a finding; a declared path never
+written is one only when the MSP changed nothing. A write into a file another MSP owns is the serious one: merging
 both pull requests as they stand overwrites one with the other. The pull
 request that made the write names it under Trade-offs and open problems, and
 it sets the exit code.
@@ -314,9 +316,9 @@ it sets the exit code.
 ## Reading the result
 
 The exit code is zero only when every MSP reached `shipped`, `pushed`,
-`unchanged` or `committed`, every gate verdict was `pass` or `not-applicable`,
-and reconcile found nothing. Otherwise it is the most severe entry of the JSON
-result's `findings` list, printed with its meaning on the report's last line.
+`unchanged` or `committed` and nothing in the JSON result's `findings` list set
+one. Otherwise it is the most severe entry, printed with its meaning on the
+report's last line.
 Each Lane ends `ok`, `failed`, `blocked`, `merge-blocked` or `parked-limit`;
 each MSP ends `shipped`, `pushed`, `unchanged`, `committed`, `ship-failed`,
 `blocked`, `referee-reverted`, `gate-failed` or `parked`. An MSP is

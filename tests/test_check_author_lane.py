@@ -560,7 +560,7 @@ class CheckAuthorLane(unittest.TestCase):
         self.assertEqual(scratch.dispatched(), ["check-author", "add"])
         self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
 
-    def a_locked_test_that_passes_before_the_build_stops_it(self):
+    def a_locked_test_that_passes_before_the_build_is_refused_and_the_build_still_runs(self):
         scratch = self._scratch()
         before = self._feature()
         items = scratch.items([check_author(), builder()])
@@ -577,14 +577,11 @@ class CheckAuthorLane(unittest.TestCase):
         self.assertIn(TEST_FILE, lock.get("reason") or "")
         self.assertIn("Calc.adds", lock.get("reason") or "")
         self.assertIn("passes on the feature base without the build", lock.get("reason") or "")
-        self.assertEqual(self._lane(summary, "add")["state"], "blocked")
-        self.assertEqual(self._msp(summary, "calc").get("state"), "blocked")
+        self.assertEqual(self._lane(summary, "add")["state"], "ok")
+        self.assertEqual(self._msp(summary, "calc").get("state"), "committed")
         self.assertEqual(self._feature(), before)
-        self.assertEqual(
-            scratch.git("rev-parse", "--verify", "--quiet", "refs/heads/mitosis/calc").returncode, 1
-        )
-        self.assertEqual(scratch.dispatched(), ["check-author"])
-        self.assertNotEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
+        self.assertEqual(scratch.dispatched(), ["check-author", "check-author", "add"])
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
 
     def a_locked_test_passing_before_the_build_beside_a_failing_one_is_a_guard(self):
         scratch = self._scratch({"calc.py": CORRECT_ADD})
@@ -636,7 +633,7 @@ class CheckAuthorLane(unittest.TestCase):
             "tests/test_calc.py::Calc.adds passes on the feature base without the build", lock["reason"]
         )
         self.assertNotIn("Calc.stays", lock["reason"])
-        self.assertEqual(scratch.dispatched(), ["check-author"])
+        self.assertEqual(scratch.dispatched(), ["check-author", "check-author", "keep", "add"])
 
     def a_check_two_steps_share_is_named_once_when_refused(self):
         scratch = self._scratch({"calc.py": CORRECT_ADD})
@@ -680,9 +677,9 @@ class CheckAuthorLane(unittest.TestCase):
         lock = self._lock(summary_of(completed), completed)
         self.assertEqual(lock.get("state"), "failed", lock.get("reason"))
         self.assertIn("tests/test_calc.py::Calc.adds fails with the check-author's probe", lock["reason"])
-        self.assertEqual(scratch.dispatched(), ["check-author"])
+        self.assertEqual(scratch.dispatched(), ["check-author", "check-author", "add"])
 
-    def a_step_proving_nothing_beside_a_proven_step_is_held_at_the_gate(self):
+    def a_step_proving_nothing_beside_a_proven_step_is_reported_at_the_gate(self):
         scratch = self._scratch({"calc.py": CORRECT_ADD})
         doubles = {"file": "tests/test_maths.py", "test": "Maths.doubles"}
         items = scratch.items(
@@ -712,7 +709,7 @@ class CheckAuthorLane(unittest.TestCase):
             }
         )
         completed = scratch.build(items)
-        self.assertEqual(completed.returncode, 20, "mitosis exit code" + tail(completed))
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
         gate = self._msp(summary_of(completed), "calc")["gate"]
         self.assertEqual(
             {entry["step"]: entry["outcome"] for entry in gate["properties"]},
@@ -788,12 +785,12 @@ def load_tests(loader, standard, pattern):
                 "a_malformed_check_author_is_refused",
                 "a_check_author_lane_locks_then_the_build_runs",
                 "a_check_author_reply_that_fails_h10_is_reasked_in_its_own_session",
-                "a_locked_test_that_passes_before_the_build_stops_it",
+                "a_locked_test_that_passes_before_the_build_is_refused_and_the_build_still_runs",
                 "a_locked_test_passing_before_the_build_beside_a_failing_one_is_a_guard",
                 "a_step_whose_locked_tests_all_pass_before_the_build_is_refused",
                 "a_check_two_steps_share_is_named_once_when_refused",
                 "a_guard_that_fails_with_its_probe_is_refused",
-                "a_step_proving_nothing_beside_a_proven_step_is_held_at_the_gate",
+                "a_step_proving_nothing_beside_a_proven_step_is_reported_at_the_gate",
                 "a_check_author_write_outside_the_locked_paths_is_not_landed",
                 "locked_files_already_on_the_feature_branch_skip_the_lane",
             ),

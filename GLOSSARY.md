@@ -92,11 +92,11 @@ _Avoid_: stray, uncommitted write
 A copy of the work with one added line changed on purpose by one operator of receipts' G14 table, which a passing property must fail against.
 
 **Weak property**:
-An acceptance property that fails without the work and passes with it, yet passes against every mutant tried, so it cannot tell working code from broken code.
+An acceptance property that fails without the work and passes with it, yet passes against every mutant tried, so it may not tell working code from broken code; reported to reviewers and holding nothing.
 _Avoid_: shallow test
 
 **Held-back MSP**:
-An MSP whose gate is weak, inert or inconclusive, committed on its branch in the state gate-failed and never pushed.
+An MSP with an acceptance test still failing against the finished work after one repair, or whose whole change a repository hook refused, committed on its branch in the state gate-failed and never pushed.
 
 **Parked Lane**:
 A Lane whose Worker stopped at a usage limit, or that was not dispatched after one, recorded parked-limit so a resume runs it.

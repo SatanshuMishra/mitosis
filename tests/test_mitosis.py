@@ -877,12 +877,12 @@ class ReconcileReporting(unittest.TestCase):
         self.assertTrue(any("untouched: a.py" in line for line in lines))
         self.assertFalse(mitosis.reconcile_dirty(found))
 
-    def a_path_that_should_have_been_written_is_still_a_finding(self):
+    def a_path_left_unwritten_is_reported_and_never_dirty(self):
         found = {"undeclared": [], "unwritten": ["a.py"], "untouched": [],
                  "crossing": [], "fatal": False}
         lines = mitosis.reconcile_lines(self.PLAN, self._state(found))
         self.assertIn("1 finding from the git log", lines[0])
-        self.assertTrue(mitosis.reconcile_dirty(found))
+        self.assertFalse(mitosis.reconcile_dirty(found))
 
     def a_referee_write_is_listed_and_carried_in_the_summary(self):
         found = {"undeclared": ["tests/conftest.py"], "unwritten": [], "untouched": [],
@@ -1081,7 +1081,7 @@ class HeldRun(unittest.TestCase):
         found = json.loads(out.splitlines()[-1])
         self.assertEqual(found["lanes"][0]["state"], "failed")
         self.assertIn("exit 4 with no valid reply; re-asked once: exit 1", found["lanes"][0]["reason"])
-        self.assertTrue(found["lanes"][0]["stderr"].endswith("0.reask.err"))
+        self.assertTrue(found["lanes"][0]["stderr"].endswith("0.retry.reask.err"))
         self.assertEqual(len(found["attention"]), 2)
         self.assertIn("Lane 0 (alpha) is failed", found["attention"][0])
         self.assertIn("MSP alpha is blocked", found["attention"][1])
@@ -1820,17 +1820,18 @@ class GateExit(unittest.TestCase):
                                                              "crossing": [], "fatal": False}, **msp}},
         }
 
-    def a_shipped_msp_with_an_inert_property_exits_twenty(self):
-        state = self._state(gate={"outcome": "inert", "counts": {}, "blocks": True})
-        self.assertEqual(mitosis.exit_code(state, self.PLAN), 20)
-        self.assertIn("proves nothing", mitosis.EXIT_MEANING[20])
+    def a_shipped_msp_with_an_inert_property_exits_zero(self):
+        state = self._state(gate={"outcome": "inert", "counts": {}, "blocks": False})
+        self.assertEqual(mitosis.exit_code(state, self.PLAN), 0)
+        self.assertNotIn(20, mitosis.EXIT_MEANING)
+        self.assertNotIn(24, mitosis.EXIT_MEANING)
 
-    def a_shipped_msp_the_gate_could_not_judge_exits_twenty_one(self):
+    def a_shipped_msp_the_gate_could_not_judge_exits_zero(self):
         self.assertEqual(
-            mitosis.exit_code(self._state(gate={"outcome": "inconclusive", "blocks": True}), self.PLAN), 21
+            mitosis.exit_code(self._state(gate={"outcome": "inconclusive", "blocks": False}), self.PLAN), 0
         )
         self.assertEqual(
-            mitosis.exit_code(self._state(gate=None, gate_error="no runner"), self.PLAN), 21
+            mitosis.exit_code(self._state(gate=None, gate_error="no runner"), self.PLAN), 0
         )
 
     def a_shipped_msp_that_wrote_another_msps_file_exits_seven(self):
@@ -1864,17 +1865,14 @@ class GateExit(unittest.TestCase):
         )
 
     def a_held_back_msp_exits_with_its_gates_flag(self):
-        for outcome, code in (("weak", 24), ("inert", 20), ("inconclusive", 21)):
-            with self.subTest(outcome=outcome):
-                state = self._state(state="gate-failed", gate={"outcome": outcome, "blocks": True})
-                self.assertEqual(mitosis.exit_code(state, self.PLAN), code)
+        failing = {"file": "tests/test_a.py", "test": "A.works", "outcome": "inconclusive", "with_work": 1}
+        state = self._state(
+            state="gate-failed", gate={"outcome": "inconclusive", "blocks": True, "properties": [failing]}
+        )
+        self.assertEqual(mitosis.exit_code(state, self.PLAN), 21)
         errored = self._state(state="gate-failed", gate=None, gate_error="no runner")
         self.assertEqual(mitosis.exit_code(errored, self.PLAN), 21)
-        self.assertEqual(
-            mitosis.EXIT_MEANING[24],
-            "an acceptance property passes against a mutant of the work, so it cannot tell "
-            "working code from broken code",
-        )
+        self.assertIn("fails against the finished work", mitosis.EXIT_MEANING[21])
 
     def a_proven_head_over_a_weak_gate_exits_zero(self):
         state = self._state(gate={"outcome": "weak", "blocks": True}, proven_head="a" * 40)
@@ -1951,7 +1949,7 @@ class GateExit(unittest.TestCase):
                 "outcome": "inconclusive",
                 "blocks": True,
                 "properties": [
-                    {"file": "tests/test_a.py", "test": "A.works", "outcome": "inconclusive", "reason": "exit 2"},
+                    {"file": "tests/test_a.py", "test": "A.works", "outcome": "inconclusive", "reason": "exit 2", "with_work": 1},
                     {"file": "tests/test_a.py", "test": "A.other", "outcome": "pass", "reason": None},
                 ],
             },
@@ -1965,9 +1963,8 @@ class GateExit(unittest.TestCase):
             "detail": "tests/test_a.py::A.works: exit 2",
         }
         undeclared = {"msp": "beta", "lane": None, "kind": "undeclared", "exit": 6, "detail": "stray.txt"}
-        unwritten = {"msp": "beta", "lane": None, "kind": "unwritten", "exit": 6, "detail": "b.py"}
         forward = self._pair(held, stray)
-        self.assertEqual(mitosis.findings(forward, self.PAIR), [gate, undeclared, unwritten])
+        self.assertEqual(mitosis.findings(forward, self.PAIR), [gate, undeclared])
         self.assertEqual(mitosis.exit_code(forward, self.PAIR), 21)
         backward = self._pair(stray, held)
         self.assertEqual(mitosis.exit_code(backward, self.PAIR), 21)

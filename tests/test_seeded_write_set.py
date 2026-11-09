@@ -74,11 +74,7 @@ class SeededWriteSet(unittest.TestCase):
             lock.get("reason"),
             "the check-author Step check-author left %s unwritten" % SEEDED_FILE,
         )
-        self.assertEqual(
-            scratch.git("rev-parse", "--verify", "--quiet", "refs/heads/mitosis/calc").returncode,
-            1,
-            "an MSP whose lock failed got a branch" + tail(completed),
-        )
+        self.assertEqual(self._cache_paths("mitosis/calc"), [], tail(completed))
 
 
 def load_tests(loader, standard, pattern):

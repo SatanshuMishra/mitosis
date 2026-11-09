@@ -3,6 +3,23 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.16.0 - 2026-11-09
+
+- The gate holds an MSP only when a named test fails against the finished
+  work, and gives the owning Lane one repair first. A test that proves little,
+  passes without the work or could not be judged is named in the pull request
+  and no longer stops it. Exits 20 and 24 are gone.
+- Mutation stays as a finding for reviewers and never touches a file in a test
+  location. `--suite-command` is accepted and ignored.
+- A gate that could not run is named in the pull request and holds nothing.
+- A Lane that fails is dispatched once more, told why. A check-author whose
+  lock is refused gets one retry, and a lock refused twice no longer stops the
+  build.
+- A Lane commits without the repository's hooks, and the pre-commit hook runs
+  once per MSP over its whole change.
+- A declared path never written is reported and exits 0, unless the whole MSP
+  changed nothing. A gitignored path in a write-set no longer fails its Lane.
+
 ## 0.15.3 - 2026-11-08
 
 - Every Worker and check-author is told to run only the tests its brief names

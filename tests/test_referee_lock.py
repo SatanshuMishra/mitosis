@@ -126,6 +126,13 @@ PR_FLAGS = (
 )
 
 
+def refuse_landing(repo, pattern, message):
+    for key, value in (("clean", "echo %s >&2; false" % shlex.quote(message)), ("required", "true")):
+        subprocess.run(["git", "config", "filter.refuse.%s" % key, value], cwd=repo, check=True)
+    with open(os.path.join(repo, ".git", "info", "attributes"), "a", encoding="utf-8") as handle:
+        handle.write("%s filter=refuse\n" % pattern)
+
+
 def put(path, content):
     if os.path.dirname(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)

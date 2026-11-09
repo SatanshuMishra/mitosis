@@ -194,7 +194,7 @@ gate judges a property:
 |---|---|
 | `--worker-sandbox` | runs every Worker under sandbox-exec, refusing file writes outside its clone, a private temp folder, its session transcript folder, /dev/null, /dev/tty, /dev/fd and each `--worker-write` path; it also runs the gate's setup, acceptance, mutant and suite runs and the lock stage's checks under sandbox-exec, refusing writes outside their clean checkout, a private temp folder and each `--worker-write` path, so a `--gate-setup` that needs another writable path names it with `--worker-write`; a host without sandbox-exec refuses the run with exit 3 before any Worker starts |
 | `--worker-write PATH` | one more path a sandboxed Worker, gate run or lock-stage check may write under; repeatable; a path that is, holds or lies inside the run directory, the repository or its git directory refuses the run with exit 3 |
-| `--suite-command TEMPLATE` | the project's full suite, run once with no mutant and then on each mutant every acceptance test of a property survives; exit 1 kills that mutant only when the run with no mutant passed, else the property stays `weak` with that reason, and a property whose every survivor is killed is covered-elsewhere instead of `weak` |
+| `--suite-command TEMPLATE` | deprecated and ignored; a surviving mutant is reported and holds nothing |
 | `--gate-classes PATH` | a JSON list of `{test, class, reason}` objects classing a property `not-applicable`, covered-elsewhere or `removed`, judged without a run and kept out of the plan id |
 
 ## Model replies and owned hand-offs
@@ -257,7 +257,7 @@ Without `--worker-sandbox` the clone keeps git state apart, but a Worker can
 still write any path the caller's account can; with it, the JSON result's
 `sandbox` reads sandbox-exec instead of `off`. The sandbox also wraps every
 later command that runs Worker-written code: the gate's `--gate-setup`,
-acceptance, mutant and `--suite-command` runs, and the lock stage's checks.
+acceptance and mutant runs, and the lock stage's checks.
 Each may write only the clean checkout it runs in, `gate/msp-<n>/checkout-*`
 or `lock/msp-<n>/checkout-*` under the run directory, a private temp folder beside
 its log folder, `gate/msp-<n>.tmp` or `lock/msp-<n>.tmp`, passed as TMPDIR and
@@ -402,21 +402,26 @@ commit they were read at. A real run refuses, with exit 3, a charter whose
 is empty, absolute or contains `..`.
 
 The gate runs each acceptance property with the work present and with the
-implementation reverted, then runs each passing property against up to 12
-mutants of its Step's added lines, each one a small change to an added line,
-such as a flipped comparison, a swapped operator, a flipped true or false, a
-number shifted by one or a replaced return value. Strings and comments are
-left alone, and when no operator applies to any added line the gate drops the
-added lines of each file instead. A Step that changed a symbolic link is
-judged `inconclusive`, because the gate never writes through a link. A
-property no mutant fails is judged `weak`, with exit 24: it passes whether or
-not the work is right. Before that verdict the gate also tries, for a Python
-Step, negating each `if` that holds added code inside a function and emptying
-each function the Step added, and stops at the first that fails the property.
-An MSP
-whose gate is `weak`, `inert` or `inconclusive` ends `gate-failed`: its work
-is committed on its branch and never pushed, so no pull request opens on an
-unproven property.
+implementation reverted, and a property that exits 1 with the work present is
+the one verdict that holds its MSP. mitosis first gives the Lane that owns the
+failing Step one repair, with the test's name and output, and judges again. A
+test still failing after that ends the MSP `gate-failed`, with exit 21: its work
+is committed on its branch and never pushed.
+
+Every other verdict ships and is named in the pull request's Testing table.
+`pass` is a property that failed without the work, `inert` one that passed
+without it, and `inconclusive` one the acceptance command could not judge. A
+gate that could not run ships the same way, with a `Not run` row.
+
+A passing property then runs against up to 12 mutants of its Step's added
+lines, each one a small change to an added line, such as a flipped comparison,
+a swapped operator, a flipped true or false, a number shifted by one or a
+replaced return value. Files in a test location are never mutated. Strings and
+comments are left alone, and when no operator applies to any added line the
+gate drops the added lines of each file instead. For a Python Step the gate
+also tries negating each `if` that holds added code inside a function and
+emptying each function the Step added. A property no mutant fails is judged
+`weak`: reviewers see it in the Testing table and it holds nothing.
 
 The with-work run of each property records, through a standard-library
 tracer first on `PYTHONPATH`, the lines it executed, and the gate samples its
@@ -425,9 +430,8 @@ assignments an executed function reads. Each property in the JSON result
 carries two fields. mutation is killed when a mutant failed it, `weak`
 when none did, `not-applicable` when the test loads none of the Step's
 Python files or the Step added no code file for a mutant to change, and
-covered-elsewhere when `--suite-command` passed with no mutant and then
-failed on every mutant the property survived, its `killers` naming the
-failing tests. `coverage` is `traced` only when the sampled lines came from
+covered-elsewhere when a `--gate-classes` entry classed it so.
+`coverage` is `traced` only when the sampled lines came from
 the trace, and `untraced` whenever they did not: when the run wrote no trace,
 when only JavaScript, TypeScript or shell lines were sampled, or when the gate
 fell back to every added line. A test that
@@ -463,8 +467,8 @@ write, fatal with exit 9; mitosis judges that top-level name and never walks
 into a kept folder such as node_modules. A Git LFS file
 arrives as its pointer text, and a committed eol attribute is not applied in
 every run, whatever `--gate-setup` does. An acceptance test that reads the
-real content ends `inconclusive` and holds the MSP back as `gate-failed`, with
-exit 21. The gate cannot tell pointer text from real content, so a property
+real content fails, and holds the MSP back as `gate-failed`, with exit 21, when
+the acceptance command exits 1. The gate cannot tell pointer text from real content, so a property
 that holds on pointer text is judged on pointer text.
 
 Dependency folders come from outside the Worker's control. Without
@@ -474,15 +478,27 @@ root holds and the commit lacks. With `--gate-setup`, the gate links nothing
 and runs that command once per gate in the clean checkout, with `{worktree}`
 naming it; a project whose root folders point back
 into the root checkout, such as an editable install, uses it. A gate setup
-that exits non-zero runs no acceptance test and holds the MSP
-back as `gate-failed`, with exit 21, and a gate error naming the gate setup.
-A pre-gate commit that git refuses holds the MSP back the same way, with
+that exits non-zero runs no acceptance test, records a gate error naming the
+gate setup, and holds nothing.
+A pre-gate commit that git refuses holds the MSP back as `gate-failed`, with
 exit 21, its work left uncommitted in the worktree and no gate run.
+
+A Lane commits without the repository's hooks, because a Lane is a partial tree.
+The pre-commit hook runs once per MSP, over the whole change as staged on its
+base. A hook that refuses it holds the MSP back as `gate-failed`, with exit 21.
 
 An acceptance run that leaves a referee path in the clean checkout differing
 from the commit is caught the same way as a committed write: the gate lists
 it under its `referee` list, and the MSP is held back as `referee-reverted`
 and never pushed, with exit 9.
+
+A Lane whose Worker fails is dispatched once more, told why, and told it may
+change a file outside its write-set when that was the obstacle; mitosis keeps
+that write and reports it. A Worker that reports failure twice leaves its Lane
+`failed` and its MSP unshipped, while every other MSP carries on. A check-author
+whose lock is refused gets the same one retry. A lock refused twice no longer
+stops the build: the MSP builds from its base, its Steps' locked tests are judged
+`not-applicable` with the refusal as the reason, and the pull request says so.
 
 A base submodule whose gitlink the branch changed and whose commits cannot be
 read holds the MSP back as `gate-failed`, with exit 21, and a gate error

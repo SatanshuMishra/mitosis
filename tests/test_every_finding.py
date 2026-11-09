@@ -71,6 +71,8 @@ import subprocess
 import sys
 
 mode, file, test = sys.argv[1], sys.argv[2], sys.argv[3]
+if mode == "exit-1":
+    sys.exit(1)
 if mode != "unittest":
     sys.exit(2)
 folder, name = os.path.split(file)
@@ -296,7 +298,7 @@ class EveryFinding(unittest.TestCase):
         self.scratch = Scratch()
         items = self.scratch.items(steps)
         self.scratch.jobs(JOBS)
-        completed = self.scratch.build(items, acceptance="exit-2")
+        completed = self.scratch.build(items, acceptance="exit-1")
         self.assertEqual(completed.returncode, 21, "mitosis exit code" + tail(completed))
         summary = summary_of(completed)
         self.assertIn("findings", summary, "the JSON summary carries no findings list")

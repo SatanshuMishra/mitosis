@@ -140,21 +140,6 @@ except subprocess.TimeoutExpired:
 sys.exit(code if code in (0, 1) else 2)
 '''
 
-SUITE = r'''
-import os
-import subprocess
-import sys
-
-os.chdir(sys.argv[1])
-try:
-    code = subprocess.run(
-        [sys.executable, "-m", "unittest", "discover", "tests"], timeout=120
-    ).returncode
-except subprocess.TimeoutExpired:
-    sys.exit(2)
-sys.exit(code if code in (0, 1) else 2)
-'''
-
 TEST_FILE = "tests/test_calc.py"
 ADDS = {"file": TEST_FILE, "test": "Calc.adds"}
 DECLARES = {"file": "tests/test_hooks.py", "test": "Hooks.declares"}
@@ -421,7 +406,6 @@ class MutantCoverage(unittest.TestCase):
 
     def _scratch(self, seeded=None):
         self.scratch = Scratch(seeded)
-        put(os.path.join(self.scratch.stubs, "suite.py"), SUITE)
         return self.scratch
 
     def _first_property(self, completed, label="demo"):
@@ -437,17 +421,6 @@ class MutantCoverage(unittest.TestCase):
         items = scratch.items([step("add", ["calc.py"], "demo", acceptance=[ADDS])])
         scratch.jobs({"add": {"writes": {"calc.py": CONSTANTS_CALC}}})
         return scratch.build(items, acceptance=acceptance)
-
-    def _suite_run(self, seeded):
-        scratch = self._scratch(seeded)
-        items = scratch.items([step("add", ["calc.py"], "demo", acceptance=[ADDS])])
-        scratch.jobs({"add": {"writes": {"calc.py": CORRECT_ADD}}})
-        return scratch.build(
-            items,
-            "--suite-command",
-            scratch.stub("suite.py", "{worktree}"),
-            acceptance="keep",
-        )
 
     def module_constants_no_test_reads_leave_the_strong_mutant_in_reach(self):
         completed = self._constants_run("keep")
@@ -485,7 +458,7 @@ class MutantCoverage(unittest.TestCase):
         items = scratch.items([step("add", ["calc.py"], "demo", acceptance=[ADDS])])
         scratch.jobs({"add": {"writes": {"calc.py": IMPORT_GUARD_CALC}}})
         completed = scratch.build(items, acceptance="keep")
-        self.assertEqual(completed.returncode, 24, "mitosis exit code" + tail(completed))
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
         self.assertEqual(self._first_property(completed)["outcome"], "weak")
 
     def a_negative_path_test_is_killed_by_negating_its_branch(self):
@@ -499,26 +472,6 @@ class MutantCoverage(unittest.TestCase):
         self.assertEqual(first.get("mutation"), "killed")
         self.assertEqual((first["mutants"]["killed"])["op"], "negate branch")
 
-    def a_survivor_the_full_suite_kills_is_covered_elsewhere(self):
-        completed = self._suite_run({TEST_FILE: CALL_ONLY_TEST, "tests/test_other.py": OTHER_TEST})
-        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
-        first = self._first_property(completed)
-        self.assertEqual(first["outcome"], "pass")
-        self.assertEqual(first.get("mutation"), "covered-elsewhere")
-        killers = first.get("killers") or []
-        self.assertTrue(
-            any("test_other" in killer for killer in killers),
-            "the killers %r name no test_other" % (killers,),
-        )
-
-    def a_survivor_the_suite_misses_stays_weak(self):
-        completed = self._suite_run({TEST_FILE: CALL_ONLY_TEST})
-        self.assertEqual(completed.returncode, 24, "mitosis exit code" + tail(completed))
-        first = self._first_property(completed)
-        self.assertEqual(first["outcome"], "weak")
-        self.assertRegex(first["reason"] or "", r"calc\.py:2\b")
-
-
 def load_tests(loader, standard, pattern):
     suite = unittest.TestSuite()
     for case, names_ in (
@@ -530,8 +483,6 @@ def load_tests(loader, standard, pattern):
                 "an_untraced_test_that_needs_an_added_function_is_not_weak",
                 "an_import_guard_never_passes_a_test_with_no_teeth",
                 "a_negative_path_test_is_killed_by_negating_its_branch",
-                "a_survivor_the_full_suite_kills_is_covered_elsewhere",
-                "a_survivor_the_suite_misses_stays_weak",
             ),
         ),
     ):

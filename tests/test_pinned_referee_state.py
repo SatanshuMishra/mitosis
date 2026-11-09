@@ -261,12 +261,10 @@ class PinnedRefereeRun(unittest.TestCase):
             scratch.git("cat-file", "-e", "refs/heads/%s:dep/conftest.py" % BRANCH).returncode, 0
         )
 
-    def _conftest_run(self, actions, reason, hook=None):
+    def _conftest_run(self, actions, reason, refused=None):
         scratch = self._scratch({"tests/test_calc.py": clean_fixtures.CALC_TEST})
-        if hook is not None:
-            path = os.path.join(scratch.repo, ".git", "hooks", hook[0])
-            lock_fixtures.put(path, hook[1])
-            os.chmod(path, 0o755)
+        if refused is not None:
+            lock_fixtures.refuse_landing(scratch.repo, refused, "refused: chore commits")
         self._worker(actions)
         completed = self._run()
         self.assertEqual(completed.returncode, 10, "mitosis exit code" + lock_fixtures.tail(completed))
@@ -289,7 +287,7 @@ class PinnedRefereeRun(unittest.TestCase):
                 ["write", "calc.py", clean_fixtures.CALC],
             ],
             run.LANE_COMMIT_FAILED,
-            hook=("commit-msg", clean_fixtures.REFUSING_COMMIT_MSG_HOOK),
+            refused="calc.py",
         )
 
     def a_worker_failing_after_committing_lands_no_committed_conftest(self):

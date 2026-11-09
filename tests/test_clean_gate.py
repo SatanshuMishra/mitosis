@@ -55,13 +55,6 @@ def load_tests(loader, standard, pattern):
     return suite
 """
 
-REFUSING_COMMIT_MSG_HOOK = """#!/bin/sh
-case "$(head -n 1 "$1")" in
-  "chore"*) echo "refused: chore commits" >&2; exit 1 ;;
-esac
-exit 0
-"""
-
 WORKER = r'''
 import json
 import os
@@ -456,15 +449,14 @@ class CleanGate(unittest.TestCase):
                 [path for path in entry["listing"] if path.split("/")[0] == "node_modules"], []
             )
 
-    def a_failing_gate_setup_holds_the_msp_back(self):
+    def a_failing_gate_setup_is_recorded_and_never_holds_the_msp(self):
         self._scratch()
         self._worker([["write", "calc.py", CALC]])
         completed = self._build(flags=self._setup("setup_fails.py"))
-        self.assertEqual(completed.returncode, 21, "mitosis exit code" + lock_fixtures.tail(completed))
-        self.assertEqual(self._msp(completed)["state"], "gate-failed")
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
+        self.assertEqual(self._msp(completed)["state"], "committed")
         self.assertIn("gate-setup", self._recorded().get("gate_error") or "")
         self.assertFalse(os.path.exists(os.path.join(self.scratch.tmp, "accept.log")))
-        self._no_remote_branch()
 
     def a_no_diff_attribute_never_hides_the_added_lines_from_the_mutants(self):
         self._scratch(seeded={"tests/test_calc.py": CALLABLE_TEST})
@@ -477,10 +469,10 @@ class CleanGate(unittest.TestCase):
         completed = self._build(
             accept=self.scratch.stub("accept_unittest.py", "{worktree}", "{file}", "{test}")
         )
-        self.assertEqual(completed.returncode, 24, "mitosis exit code" + lock_fixtures.tail(completed))
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
         msp = self._msp(completed)
         self.assertEqual(msp["gate"]["properties"][0]["outcome"], "weak")
-        self.assertEqual(msp["state"], "gate-failed")
+        self.assertEqual(msp["state"], "committed")
 
     def a_locked_path_a_gate_run_writes_is_fatal(self):
         self._scratch(seeded={lock_fixtures.LOCKED: lock_fixtures.LOCKED_TEXT})
@@ -551,9 +543,7 @@ class CleanGate(unittest.TestCase):
 
     def a_committed_referee_write_never_lands_when_the_landing_commit_fails(self):
         self._scratch()
-        hook = os.path.join(self.scratch.repo, ".git", "hooks", "commit-msg")
-        lock_fixtures.put(hook, REFUSING_COMMIT_MSG_HOOK)
-        os.chmod(hook, 0o755)
+        lock_fixtures.refuse_landing(self.scratch.repo, "calc.py", "refused: chore commits")
         self._worker(
             [
                 ["write", "calc.py", CALC],
@@ -611,7 +601,7 @@ def load_tests(loader, standard, pattern):
                 "a_locked_edit_hidden_by_a_replace_ref_is_reverted_and_fatal",
                 "dependency_folders_come_from_the_repository_root",
                 "gate_setup_runs_in_the_clean_checkout_first",
-                "a_failing_gate_setup_holds_the_msp_back",
+                "a_failing_gate_setup_is_recorded_and_never_holds_the_msp",
                 "a_no_diff_attribute_never_hides_the_added_lines_from_the_mutants",
                 "a_locked_path_a_gate_run_writes_is_fatal",
                 "a_file_one_gate_run_leaves_never_reaches_the_next_run",
