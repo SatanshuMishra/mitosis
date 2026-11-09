@@ -93,9 +93,18 @@ def prompt(ask, graph_path=None, template=None, contract=RECON_CONTRACT):
     return "%s\n\n%s\n\nRequest:\n%s" % (contract, source, ask)
 
 
+LONGEST_PASSABLE_TEXT = 100000
+
+
+def passable_text(text):
+    if text is None or "\0" in text or len(text.encode("utf-8")) > LONGEST_PASSABLE_TEXT:
+        return ""
+    return text
+
+
 def environment(ask, graph_path=None):
     return {
         "MITOSIS_RECON": "1",
-        "MITOSIS_RECON_ASK": ask,
+        "MITOSIS_RECON_ASK": passable_text(ask),
         "MITOSIS_RECON_GRAPH": graph_path or "",
     }

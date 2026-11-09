@@ -2385,14 +2385,51 @@ class RetryReplacedWorktree(unittest.TestCase):
             else:
                 os.environ[key] = value
 
-    def another_runs_worktree_is_detached_and_keeps_its_files(self):
+    def _earlier_run(self, files):
         first = os.path.join(self.tmp, "run1", "trees", "feat")
-        second = os.path.join(self.tmp, "run2", "trees", "feat")
         run.prepare_worktree(self.repo, "main", "mitosis/feat", first)
-        write(os.path.join(self.tmp, "run1", "state.json"), "{}")
+        write(
+            os.path.join(self.tmp, "run1", "state.json"),
+            json.dumps({"worktrees": [{"msp": 0, "path": first, "branch": "mitosis/feat"}]}),
+        )
+        write(
+            os.path.join(self.tmp, "run1", "plan.json"),
+            json.dumps({"msps": [{"steps": ["feat"], "files": list(files)}]}),
+        )
+        return first, os.path.join(self.tmp, "run2", "trees", "feat")
+
+    def _refused_and_left_on_its_branch(self, first, second, files):
+        with self.assertRaises(run.GitError):
+            run.prepare_worktree(self.repo, "main", "mitosis/feat", second, files)
+        self.assertEqual(timed_git(["rev-parse", "--abbrev-ref", "HEAD"], first), "mitosis/feat")
+
+    def an_unrelated_runs_worktree_is_left_and_the_add_fails(self):
+        first, second = self._earlier_run(["old.py"])
+        self._refused_and_left_on_its_branch(first, second, ("new.py",))
+
+    def a_run_still_going_keeps_its_worktree_and_the_add_fails(self):
+        first, second = self._earlier_run(["README.md"])
+        write(os.path.join(self.tmp, "run1", "runner.pid"), str(os.getpid()))
+        self._refused_and_left_on_its_branch(first, second, ("README.md",))
+
+    def a_run_owned_by_another_user_counts_as_still_going(self):
+        first, second = self._earlier_run(["README.md"])
+        write(os.path.join(self.tmp, "run1", "runner.pid"), "1")
+        self._refused_and_left_on_its_branch(first, second, ("README.md",))
+
+    def a_run_whose_process_has_ended_gives_up_its_worktree(self):
+        first, second = self._earlier_run(["README.md"])
+        ended = subprocess.Popen([sys.executable, "-c", ""])
+        ended.wait()
+        write(os.path.join(self.tmp, "run1", "runner.pid"), str(ended.pid))
+        run.prepare_worktree(self.repo, "main", "mitosis/feat", second, ("README.md",))
+        self.assertEqual(timed_git(["rev-parse", "--abbrev-ref", "HEAD"], first), "HEAD")
+
+    def another_runs_worktree_is_detached_and_keeps_its_files(self):
+        first, second = self._earlier_run(["README.md"])
         write(os.path.join(first, "left.txt"), "kept\n")
         write(os.path.join(first, "README.md"), "changed\n")
-        run.prepare_worktree(self.repo, "main", "mitosis/feat", second)
+        run.prepare_worktree(self.repo, "main", "mitosis/feat", second, ("README.md",))
         self.assertEqual(timed_git(["rev-parse", "--abbrev-ref", "HEAD"], second), "mitosis/feat")
         self.assertEqual(timed_git(["rev-parse", "--abbrev-ref", "HEAD"], first), "HEAD")
         self.assertEqual(read(os.path.join(first, "left.txt")), "kept\n")

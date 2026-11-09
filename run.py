@@ -28,6 +28,7 @@ BRANCH_PREFIX = "mitosis"
 PLAN_FILE = "plan.json"
 
 STATE_FILE = "state.json"
+RUNNER_FILE = "runner.pid"
 
 MSP_BLOCKED = "blocked"
 
@@ -466,15 +467,37 @@ def registered_worktrees(repo):
     return trees
 
 
-def _mitosis_run_tree(tree):
-    trees_dir = os.path.dirname(tree)
-    if os.path.basename(trees_dir) != "trees":
+def _run_is_live(run_dir):
+    try:
+        os.kill(read_json(os.path.join(run_dir, RUNNER_FILE)), 0)
+    except PermissionError:
+        return True
+    except (OSError, ValueError, TypeError, OverflowError):
         return False
-    run_dir = os.path.dirname(trees_dir)
-    return any(os.path.isfile(os.path.join(run_dir, name)) for name in (STATE_FILE, PLAN_FILE))
+    return True
 
 
-def prepare_worktree(repo, base, branch, path):
+def _files_built_in(tree):
+    run_dir = os.path.dirname(os.path.dirname(tree))
+    try:
+        worktrees = read_json(os.path.join(run_dir, STATE_FILE)).get("worktrees") or ()
+        msps = read_json(os.path.join(run_dir, PLAN_FILE)).get("msps") or ()
+    except (OSError, ValueError):
+        return frozenset()
+    return frozenset(
+        _norm(built)
+        for entry in worktrees
+        if os.path.realpath(entry["path"]) == tree
+        for built in msps[entry["msp"]].get("files") or ()
+    )
+
+
+def _retried_by(holder, files):
+    run_dir = os.path.dirname(os.path.dirname(holder))
+    return not _run_is_live(run_dir) and bool(_files_built_in(holder) & frozenset(_norm(path) for path in files))
+
+
+def prepare_worktree(repo, base, branch, path, files=()):
     git(["worktree", "prune"], repo)
     registered = registered_worktrees(repo)
     real = os.path.realpath(path)
@@ -490,7 +513,7 @@ def prepare_worktree(repo, base, branch, path):
     if branch_exists(repo, branch):
         holders = sorted(tree for tree, held in registered.items() if held == branch and tree != real)
         for holder in holders:
-            if _mitosis_run_tree(holder):
+            if _retried_by(holder, files):
                 git(["switch", "--detach"], holder)
         git(["worktree", "add", path, branch], repo)
     else:
@@ -504,7 +527,8 @@ def prepare_worktrees(msps, base, root, repo, prefix=BRANCH_PREFIX, bases=None, 
         branch = "%s/%s" % (prefix, slugs[index])
         path = os.path.join(os.path.abspath(root), slugs[index])
         if index not in skipped:
-            prepare_worktree(repo, (bases or {}).get(index, base), branch, path)
+            files = msp.get("files") or () if isinstance(msp, dict) else ()
+            prepare_worktree(repo, (bases or {}).get(index, base), branch, path, files)
         trees = trees + (
             {
                 "msp": index,
@@ -4609,6 +4633,7 @@ def execute(
     }
     os.makedirs(run_dir, exist_ok=True)
     write_json(os.path.join(run_dir, PLAN_FILE), plan)
+    write_json(os.path.join(run_dir, RUNNER_FILE), os.getpid())
     state = write_state(
         run_dir,
         {

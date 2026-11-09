@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mitosis/recon-return.schema.json",
+  "title": "mitosis recon return",
+  "description": "One planning reply for one ask: the reference planner's recon items, each with its observable and the tests that check it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "items"
+  ],
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/item"
+      }
+    }
+  },
+  "$defs": {
+    "text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![/\\\\])(?!(.*[/\\\\])?\\.\\.([/\\\\]|$)).+$"
+    },
+    "item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "task",
+        "files",
+        "acceptance",
+        "tests"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "task": {
+          "$ref": "#/$defs/text"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/relative_path"
+          }
+        },
+        "file_notes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "type": {
+          "enum": [
+            "fix",
+            "feature",
+            "port",
+            "design",
+            "sweep",
+            "contract"
+          ]
+        },
+        "complexity": {
+          "enum": [
+            "simple",
+            "complex"
+          ]
+        },
+        "acceptance": {
+          "$ref": "#/$defs/text",
+          "description": "one observable that proves it works"
+        },
+        "tests": {
+          "description": "the named tests that check the acceptance observable, each a test file path relative to the repository root and the test's name in it. Name a new test file for each new test, or a test file one of your items lists in its files: the lock stage writes a test in a new file no item lists, and never one in a file the repository already holds",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "file",
+              "test"
+            ],
+            "properties": {
+              "file": {
+                "$ref": "#/$defs/relative_path"
+              },
+              "test": {
+                "$ref": "#/$defs/text"
+              }
+            }
+          }
+        },
+        "after": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "contract_group": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    }
+  }
+}

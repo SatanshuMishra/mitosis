@@ -1116,7 +1116,7 @@ def sample_structures(
     frozen = freeze(document)
     prompt = (
         recon_text.prompt(frozen["text"], graph_path, prompt_template, STRUCTURE_CONTRACT)
-        if prompt_template and not prior
+        if prompt_template and not prior and recon_text.passable_text(frozen["text"])
         else render_structure_prompt(
             frozen, inventory(root, cap), graph, charter, decisions, prior, graph_path
         )
