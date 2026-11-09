@@ -375,6 +375,32 @@ class GateOutcomes(unittest.TestCase):
         self.assertTrue(gate.get("properties"), "the MSP's gate object carries no properties")
         self.assertEqual(entry.get("symptom"), gate["properties"][0]["reason"])
 
+    def a_guard_appends_no_entry(self):
+        doubles = {"file": "tests/test_calc.py", "test": "Calc.doubles"}
+        self.scratch = Scratch({"calc.py": CORRECT_ADD})
+        items = self.scratch.items(
+            [step("add", ["calc.py", "tests/test_calc.py"], "demo", [ADDS, doubles])]
+        )
+        self.scratch.jobs(
+            {
+                "demo": {
+                    "step": "add",
+                    "writes": {
+                        "calc.py": CORRECT_ADD + "\n\ndef double(a):\n    return a * 2\n",
+                        "tests/test_calc.py": (
+                            EXACT_TEST + "\n    def doubles(self):\n        self.assertTrue(calc.double(3) == 6)\n"
+                        ),
+                    },
+                }
+            }
+        )
+        completed = self.scratch.build(items, "--trajectory", self._store(), push=True)
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
+        self.assertEqual(
+            [entry["surface"] for entry in self._entries(self._store())],
+            ["tests/test_calc.py::Calc.doubles"],
+        )
+
     def an_acceptance_entry_with_a_check_id_carries_its_check_tag(self):
         completed = self._passing_run([{**ADDS, "check": "C1.1"}])
         entries = self._entries(self._store())
@@ -390,6 +416,7 @@ def load_tests(loader, standard, pattern):
             GateOutcomes,
             (
                 "each_gated_acceptance_test_appends_one_k6_entry",
+                "a_guard_appends_no_entry",
                 "a_property_that_does_not_pass_appends_unverified_reasoned",
                 "an_acceptance_entry_with_a_check_id_carries_its_check_tag",
             ),

@@ -257,6 +257,62 @@ class Facts(unittest.TestCase):
             {"check": "tests/t.py::one", "result": "Not run: the gate does not apply to it"},
         )
 
+    def a_guard_is_reported_as_passing_both_ways(self):
+        import pr_facts
+
+        gate = {
+            "commit": GATED,
+            "properties": [
+                {
+                    "step": "a",
+                    "file": "tests/t.py",
+                    "test": "one",
+                    "outcome": "not-applicable",
+                    "with_work": 0,
+                    "reverted": 0,
+                }
+            ],
+        }
+        self.assertEqual(
+            pr_facts.facts(HEADER, first_plan(), 0, gate)["testing"][0],
+            {
+                "check": "tests/t.py::one",
+                "result": "passes with and without the work, so it guards behaviour that must stay the same",
+            },
+        )
+        inert = {**gate, "properties": [{**gate["properties"][0], "outcome": "inert"}]}
+        self.assertEqual(
+            pr_facts.facts(HEADER, first_plan(), 0, inert)["testing"][0]["result"],
+            "passes with and without the work",
+        )
+
+    def folded_guards_are_counted_apart_from_unproven_tests(self):
+        import pr_facts
+
+        tests = [{"file": "tests/t.py", "test": "t%d" % number} for number in range(12)]
+        plan = plan_of(
+            [{"label": "m", "steps": ["a"]}],
+            [{"name": "a", "task": "Build it.", "files": ["a.py"], "acceptance": tests}],
+        )
+        guard = {"outcome": "not-applicable", "with_work": 0, "reverted": 0}
+        gate = {
+            "commit": GATED,
+            "properties": [
+                {"step": "a", "file": "tests/t.py", "test": entry["test"], **(guard if number > 8 else {"outcome": "pass"})}
+                for number, entry in enumerate(tests)
+            ],
+        }
+        self.assertEqual(
+            pr_facts.facts(HEADER, plan, 0, gate)["testing"][0],
+            {
+                "check": "a",
+                "result": (
+                    "9 of 12 acceptance tests pass with the work and fail without it; "
+                    "the other 3 pass either way and guard behaviour that must stay the same"
+                ),
+            },
+        )
+
     def a_caller_classed_property_is_never_reported_proven(self):
         import pr_facts
 

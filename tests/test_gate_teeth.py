@@ -327,10 +327,13 @@ LIMITS_TEST = (
 )
 
 ADDS = {"file": "tests/test_calc.py", "test": "Calc.adds"}
+DOUBLES = {"file": "tests/test_calc.py", "test": "Calc.doubles"}
+DOUBLES_LINES = "\n\ndef double(a):\n    return a * 2\n"
+GUARD_AND_PROOF_TEST = EXACT_TEST + "\n    def doubles(self):\n        self.assertTrue(calc.double(3) == 6)\n"
 
 
-def add_step(files=("calc.py", "tests/test_calc.py")):
-    return step("add", files, "demo", acceptance=[ADDS])
+def add_step(files=("calc.py", "tests/test_calc.py"), checks=(ADDS,)):
+    return step("add", files, "demo", acceptance=list(checks))
 
 
 class GateTeeth(unittest.TestCase):
@@ -349,9 +352,11 @@ class GateTeeth(unittest.TestCase):
                 raise
             self.fail("mitosis has no %s module: %s" % (name, missing))
 
-    def _gated(self, writes, seeded=None, acceptance="unittest", files=("calc.py", "tests/test_calc.py")):
+    def _gated(
+        self, writes, seeded=None, acceptance="unittest", files=("calc.py", "tests/test_calc.py"), checks=(ADDS,)
+    ):
         self.scratch = Scratch(seeded)
-        items = self.scratch.items([add_step(files)])
+        items = self.scratch.items([add_step(files, checks)])
         self.scratch.jobs({"demo": {"step": "add", "writes": writes}})
         return self.scratch.build(items, acceptance=acceptance, push=True)
 
@@ -392,6 +397,31 @@ class GateTeeth(unittest.TestCase):
     def a_skipped_test_fails_the_gate(self):
         completed = self._gated({"calc.py": CORRECT_ADD, "tests/test_calc.py": SKIPPED_TEST})
         self._held_back(completed, 24, "weak")
+
+    def a_guard_beside_a_proven_test_ships(self):
+        completed = self._gated(
+            {"calc.py": CORRECT_ADD + DOUBLES_LINES, "tests/test_calc.py": GUARD_AND_PROOF_TEST},
+            seeded={"calc.py": CORRECT_ADD},
+            checks=(ADDS, DOUBLES),
+        )
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
+        msp = self._msp(completed)
+        self.assertEqual(msp["state"], "shipped")
+        guard, proven = msp["gate"]["properties"]
+        self.assertEqual(guard["test"], "Calc.adds")
+        self.assertEqual(guard["outcome"], "not-applicable")
+        self.assertIn("guards behaviour that must stay the same", guard["reason"])
+        self.assertIsNone(guard["mutants"])
+        self.assertEqual(proven["outcome"], "pass")
+        self.assertEqual(msp["gate"]["outcome"], "pass")
+
+    def a_guard_the_work_breaks_holds_the_msp_back(self):
+        completed = self._gated(
+            {"calc.py": BROKEN_ADD + DOUBLES_LINES, "tests/test_calc.py": GUARD_AND_PROOF_TEST},
+            seeded={"calc.py": CORRECT_ADD},
+            checks=(ADDS, DOUBLES),
+        )
+        self._held_back(completed, 21, "inconclusive")
 
     def an_inert_test_holds_the_msp_back(self):
         completed = self._gated(
@@ -448,6 +478,8 @@ def load_tests(loader, standard, pattern):
                 "mutants_match_receipts_g14",
                 "an_existence_only_test_of_a_broken_add_is_weak",
                 "a_skipped_test_fails_the_gate",
+                "a_guard_beside_a_proven_test_ships",
+                "a_guard_the_work_breaks_holds_the_msp_back",
                 "an_inert_test_holds_the_msp_back",
                 "an_inconclusive_property_holds_the_msp_back",
                 "a_test_that_kills_a_mutant_passes_and_ships",

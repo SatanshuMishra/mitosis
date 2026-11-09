@@ -4,6 +4,7 @@ import re
 import subprocess
 from collections import Counter
 
+import core
 import handoff
 import shape
 
@@ -43,6 +44,11 @@ RESULTS = {
 UNJUDGED = "Not run: the gate did not judge it"
 
 CLASSED = "Not run: the caller classed it %s, so no run judged it"
+
+GUARDED_FOLD = (
+    "%d of %d acceptance tests pass with the work and fail without it; "
+    "the other %d pass either way and guard behaviour that must stay the same"
+)
 
 NO_ACCEPTANCE = "Not run: the Step names no acceptance test"
 
@@ -103,7 +109,9 @@ def _impact(header):
     return impact if impact else [header.get("blast_radius")]
 
 
-def _folded(passed, total):
+def _folded(passed, guards, total):
+    if guards and passed + guards == total:
+        return GUARDED_FOLD % (passed, total, guards)
     if passed == total:
         return (
             "1 acceptance test passes with the work and fails without it"
@@ -120,18 +128,28 @@ def _partly_folded(passed, total):
     )
 
 
-def _probe_folded(_, total):
+def _probe_folded(_, __, total):
     return _partly_folded(total, total)
 
 
 def _result(judged):
     if judged.get("class"):
         return CLASSED % judged["class"]
+    if core.is_guard(judged):
+        return core.GUARD_REASON
     return RESULTS.get(judged.get("outcome"), UNJUDGED)
 
 
 def _passed(judged):
     return judged.get("outcome") == "pass" and not judged.get("class")
+
+
+def _tally(fold, judged):
+    return fold(
+        sum(1 for entry in judged if _passed(entry)),
+        sum(1 for entry in judged if core.is_guard(entry)),
+        len(judged),
+    )
 
 
 def _check_label(label, stand_in):
@@ -158,10 +176,7 @@ def _testing(plan, msp, outcome_of, fold, closing):
         proven = [
             {
                 "check": _check_label(name, "Step %d" % number),
-                "result": fold(
-                    sum(1 for entry in item["acceptance"] if _passed(outcome_of(name, entry))),
-                    len(item["acceptance"]),
-                ),
+                "result": _tally(fold, [outcome_of(name, entry) for entry in item["acceptance"]]),
             }
             for number, (name, item) in numbered
             if item.get("acceptance")
@@ -181,9 +196,7 @@ def _folded_rows(tests, untested, outcome_of, fold):
         [
             {
                 "check": "Acceptance tests",
-                "result": fold(
-                    sum(1 for name, entry in tests if _passed(outcome_of(name, entry))), len(tests)
-                ),
+                "result": _tally(fold, [outcome_of(name, entry) for name, entry in tests]),
             }
         ]
         if tests
