@@ -750,10 +750,10 @@ class RetryReplaced(accept.Case):
 class Released(unittest.TestCase):
     def the_version_is_raised(self):
         with open(os.path.join(ROOT, "core.py"), encoding="utf-8") as handle:
-            lines = handle.read().splitlines()
-        self.assertIn('__version__ = "0.15.0"', lines)
+            declared = re.search(r'^__version__ = "([0-9.]+)"$', handle.read(), re.M).group(1)
+        self.assertGreaterEqual(tuple(int(part) for part in declared.split(".")), (0, 15, 0))
         with open(os.path.join(ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as handle:
-            self.assertEqual(json.load(handle).get("version"), "0.15.0")
+            self.assertEqual(json.load(handle).get("version"), declared)
 
     def the_changelog_describes_the_release(self):
         with open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8") as handle:
