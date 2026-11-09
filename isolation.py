@@ -326,13 +326,13 @@ def gate_folders(log_dir):
     return {"log": root, "tmp": root + ".tmp", "profile": root + ".sb", "mark": root + ".mark"}
 
 
-def gate_confinement(sandbox, log_dir, checkout):
+def gate_confinement(sandbox, log_dir, checkout, *writable):
     if sandbox is None:
         return None
     folders = gate_folders(log_dir)
     release_gate(folders)
     os.makedirs(folders["tmp"])
-    return _confinement(sandbox, folders, folders["tmp"], (checkout,))
+    return _confinement(sandbox, folders, folders["tmp"], (checkout, *writable))
 
 
 def gate_outputs(log_dir, confinement):

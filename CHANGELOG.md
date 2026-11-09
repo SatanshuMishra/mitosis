@@ -16,7 +16,14 @@ only when the version changes, so every release changes it.
   lock is refused gets one retry, and a lock refused twice no longer stops the
   build.
 - A Lane commits without the repository's hooks, and the pre-commit hook runs
-  once per MSP over its whole change.
+  once per MSP over its whole change, in a throwaway checkout that never moves
+  the branch. Under the Worker sandbox it runs confined, and no other repository
+  hook or fsmonitor runs outside the sandbox.
+- A repair reports writes to other Lanes' files, reaches the gate even where a
+  sibling overwrote the file, and reaches any MSP built on the repaired one. A
+  usage limit during a repair parks the MSP and a resume finishes the repair.
+- A retried Lane's write outside its write-set reaches the gate and is reported.
+  A check-author's discarded write no longer sets an exit code.
 - A declared path never written is reported and exits 0, unless the whole MSP
   changed nothing. A gitignored path in a write-set no longer fails its Lane.
 

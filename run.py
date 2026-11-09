@@ -83,7 +83,6 @@ NO_REFEREE_WRITE = {"referee": [], "fatal": False}
 PUBLISHED_STATES = ("shipped", MSP_PUSHED, MSP_UNCHANGED)
 
 ACCEPTANCE_FAILURE_EXIT = 1
-GIT_USAGE_EXIT = 129
 
 MUTANT_CAP = 12
 
@@ -255,9 +254,11 @@ def _decoded(data):
     return data.decode("utf-8", "surrogateescape")
 
 
-def _git_kept_environ():
+def _git_kept_environ(source=None):
     return {
-        name: value for name, value in os.environ.items() if name not in UNPINNED_GIT_VARIABLES
+        name: value
+        for name, value in (os.environ if source is None else source).items()
+        if name not in UNPINNED_GIT_VARIABLES
     }
 
 
@@ -299,6 +300,19 @@ def _config_count(base):
     return int(raw)
 
 
+def _config_added(base, settings):
+    count = _config_count(base)
+    added = {
+        name: value
+        for offset, (key, setting) in enumerate(settings)
+        for name, value in (
+            ("GIT_CONFIG_KEY_%d" % (count + offset), key),
+            ("GIT_CONFIG_VALUE_%d" % (count + offset), setting),
+        )
+    }
+    return {**added, "GIT_CONFIG_COUNT": str(count + len(settings))}
+
+
 def _config_entries(base):
     count = _config_count(base)
     held = tuple(
@@ -307,15 +321,7 @@ def _config_entries(base):
     )
     if count >= len(HTTP_SETTINGS) and held[count - len(HTTP_SETTINGS):] == HTTP_SETTINGS:
         return {}
-    added = {
-        name: value
-        for offset, (key, setting) in enumerate(HTTP_SETTINGS)
-        for name, value in (
-            ("GIT_CONFIG_KEY_%d" % (count + offset), key),
-            ("GIT_CONFIG_VALUE_%d" % (count + offset), setting),
-        )
-    }
-    return {**added, "GIT_CONFIG_COUNT": str(count + len(HTTP_SETTINGS))}
+    return _config_added(base, HTTP_SETTINGS)
 
 
 def process_environ(env=None, repo=None):
@@ -328,8 +334,21 @@ def process_environ(env=None, repo=None):
     }
 
 
+REPOSITORY_PROGRAMS_OFF = (("core.hooksPath", os.devnull), ("core.fsmonitor", "false"))
+
+_programs_off_for_unconfined_git = ()
+
+
+def _keep_repository_programs_confined(sandbox):
+    global _programs_off_for_unconfined_git
+    _programs_off_for_unconfined_git = () if sandbox is None else REPOSITORY_PROGRAMS_OFF
+
+
 def git_environ(env=None, cwd=None):
-    return {**process_environ(_git_kept_environ(), cwd), **(env or {})}
+    merged = {**process_environ(_git_kept_environ(), cwd), **(env or {})}
+    if not _programs_off_for_unconfined_git:
+        return merged
+    return {**merged, **_config_added(merged, _programs_off_for_unconfined_git)}
 
 
 def _git_once(args, cwd, raw=False, data=None, env=None):
@@ -809,6 +828,11 @@ def _ignored_of(tree, paths):
     return frozenset(os.fsdecode(name) for name in listed.stdout.split(b"\0") if name)
 
 
+def _stage(tree, paths, force):
+    if paths:
+        git(["add", "-A", *force, "--", *paths], tree)
+
+
 def commit_paths(tree, paths, message, branch=None):
     msp_branch = branch or _attached_branch(tree)
     present = [p for p in paths if os.path.lexists(os.path.join(tree, p))]
@@ -817,23 +841,85 @@ def commit_paths(tree, paths, message, branch=None):
     ignored = _ignored_of(tree, wanted) if wanted else frozenset()
     targets = [path for path in wanted if path not in ignored]
     if targets:
-        git(["add", "-A", "--", *targets], tree)
+        known = frozenset(tracked)
+        _stage(tree, [path for path in targets if path not in known], ())
+        _stage(tree, [path for path in targets if path in known], ("-f",))
         if git(["status", "--porcelain", "--", *targets], tree):
             git([*HOOKS_OFF, "commit", "-q", "--no-verify", "-m", message, "--", *targets], tree)
     return branch_commit(tree, msp_branch, required=True)
 
 
-def msp_hook_refusal(tree, base, head):
-    if head == base:
+GIT_HELP_EXITS = (0, 129)
+
+PRE_COMMIT = ("git", "hook", "run", "--ignore-missing", "pre-commit")
+
+HOOK_COULD_NOT_RUN = "mitosis could not run the pre-commit hook over the whole change: %s"
+
+
+def _hook_quarantine(log_dir):
+    return os.path.join(log_dir, "quarantine")
+
+
+def _hook_path(tree):
+    named = subprocess.run(
+        ["git", "rev-parse", "--git-path", "hooks/pre-commit"],
+        cwd=tree,
+        env=_git_kept_environ(),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+    return os.path.join(tree, named.stdout.strip()) if named.returncode == 0 else None
+
+
+def _pre_commit_installed(tree):
+    hook = _hook_path(tree)
+    return (
+        hook is not None
+        and os.access(hook, os.X_OK)
+        and git_run(["hook", "run", "-h"], tree).returncode in GIT_HELP_EXITS
+    )
+
+
+def _pre_commit_exit(folder, base, head, tree, log_dir, env, sandbox, out, err):
+    git([*HOOKS_OFF, "worktree", "add", "-q", "--detach", folder, head], tree)
+    git([*HOOKS_OFF, "reset", "-q", "--soft", base], folder)
+    admin = git(["rev-parse", "--absolute-git-dir"], folder)
+    stored = os.path.join(folder, git(["rev-parse", "--git-path", "objects"], folder))
+    quarantine = _hook_quarantine(log_dir)
+    objects = os.path.join(quarantine, "objects")
+    os.makedirs(objects)
+    index = shutil.copyfile(os.path.join(admin, "index"), os.path.join(quarantine, "index"))
+    confinement = isolation.gate_confinement(sandbox, log_dir, folder, quarantine)
+    quarantined = {
+        **_git_kept_environ(env),
+        "GIT_INDEX_FILE": index,
+        "GIT_OBJECT_DIRECTORY": objects,
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": stored,
+    }
+    return run_command(list(PRE_COMMIT), folder, out, err, quarantined, confinement)
+
+
+def msp_hook_refusal(tree, base, head, log_dir, env=None, sandbox=None):
+    if head == base or not _pre_commit_installed(tree):
         return None
-    git(["reset", "-q", "--soft", base], tree)
+    os.makedirs(log_dir, exist_ok=True)
+    _remove_gate_folders(log_dir)
+    shutil.rmtree(_hook_quarantine(log_dir), ignore_errors=True)
+    folder = tempfile.mkdtemp(prefix=GATE_FOLDER_PREFIX, dir=log_dir)
+    out, err = os.path.join(log_dir, "pre-commit.out"), os.path.join(log_dir, "pre-commit.err")
     try:
-        ran = git_run(["hook", "run", "--ignore-missing", "pre-commit"], tree)
+        code = _pre_commit_exit(folder, base, head, tree, log_dir, env, sandbox, out, err)
+    except (GitError, OSError) as error:
+        return HOOK_COULD_NOT_RUN % error
     finally:
-        git(["reset", "-q", "--soft", head], tree)
-    if ran.returncode in (0, GIT_USAGE_EXIT):
+        git_run(["worktree", "remove", "--force", folder], tree)
+        shutil.rmtree(folder, ignore_errors=True)
+        shutil.rmtree(_hook_quarantine(log_dir), ignore_errors=True)
+        isolation.release_gate(isolation.gate_folders(log_dir))
+    if code == 0:
         return None
-    return (ran.stderr or ran.stdout or "").strip() or "exit %d" % ran.returncode
+    return (_read_tail(err) or _read_tail(out)).strip() or "exit %d" % code
 
 
 def cluster_label(steps, index):
@@ -953,10 +1039,11 @@ def _worker_values(plan, lane, tree, models, run_dir, session_id, template=None)
     }
 
 
-RETRY_NOTE = (
-    "\n\nAn earlier attempt at this work failed: %s. Start again from this clone. If the obstacle "
-    "was a file outside your write-set, change that file as well and name it in your notes: "
-    "mitosis keeps the write and reports it."
+RETRY_NOTE = "\n\nAn earlier attempt at this work failed: %s. Start again from this clone."
+
+OUTSIDE_WRITE_NOTE = (
+    " If the obstacle was a file outside your write-set, change that file as well and name it in "
+    "your notes: mitosis keeps the write, shows it to the gate and reports it."
 )
 
 RETRY_STEM = "retry"
@@ -970,7 +1057,10 @@ def _attempt_stem(lane, retrying):
 
 def _retry_note(judged):
     told = (judged.get("returned") or {}).get("notes")
-    return RETRY_NOTE % ("%s (%s)" % (judged["reason"], told) if told else judged["reason"])
+    return (
+        RETRY_NOTE % ("%s (%s)" % (judged["reason"], told) if told else judged["reason"])
+        + OUTSIDE_WRITE_NOTE
+    )
 
 
 def _with_note(values, note):
@@ -1164,6 +1254,10 @@ def _landed(plan, lane, tree, record, run_dir, header):
     return {**record, **outside, "commit": commit}
 
 
+def _open_to_the_gate(record):
+    return {**record, "replayed": {}}
+
+
 def _land_batch(plan, msp, tree, batch, held, records, run_dir, settle, header):
     lanes = plan["lanes"]
     landed = {}
@@ -1250,7 +1344,7 @@ def dispatch(
                         records,
                         lane,
                         {
-                            **landed[lane],
+                            **(_open_to_the_gate(landed[lane]) if lane in retried else landed[lane]),
                             "foreign_writes": [
                                 {**entry, "suspects": suspects}
                                 for entry in foreign
@@ -3530,7 +3624,8 @@ def _failing_by_lane(plan, gate_result):
 
 def _repair_note(settings, msp, failing):
     names = ", ".join(property_key(entry["file"], entry["test"]) for _, entry in failing)
-    return REPAIR_NOTE % (names, "\n".join(_gate_log_tail(settings, msp, position) for position, _ in failing))
+    logs = "\n".join(_gate_log_tail(settings, msp, position) for position, _ in failing)
+    return REPAIR_NOTE % (names, logs[-MAX_OUTPUT:])
 
 
 def _repaired_lane(plan, lane, tree, settings, note):
@@ -3572,6 +3667,8 @@ def _repaired_lane(plan, lane, tree, settings, note):
 
 OUTSIDE_PATH_KEYS = ("unreplayed", "ignored")
 
+NO_REPAIR = {"state": None, "landed": False, "parked": None, "failed": ()}
+
 
 def _keeping_outside_writes(earlier, repaired):
     return {
@@ -3584,24 +3681,77 @@ def _keeping_outside_writes(earlier, repaired):
     }
 
 
-def _repair_lanes(plan, msp, tree, state, settings, gated):
-    landed = {
-        lane: _repaired_lane(plan, lane, tree, settings, _repair_note(settings, msp, failing))
-        for lane, failing in sorted(_failing_by_lane(plan, gated["gate"]).items())
+def _carried_foreign(earlier, found):
+    new = frozenset(entry["path"] for entry in found)
+    return [entry for entry in earlier if entry["path"] not in new] + list(found)
+
+
+def _with_repair(plan, msp, tree, lanes, lane, repaired):
+    claimed = plan["briefs"][lane]["write_set"]
+    freed = {
+        key: record
+        if int(key) == lane or plan["lanes"][int(key)]["msp"] != msp
+        else isolation.released(record, claimed)
+        for key, record in lanes.items()
     }
-    if not any(record["state"] == "ok" for record in landed.values()):
-        return None
+    foreign = _foreign_writes(plan, msp, tree, [lane], {int(key): record for key, record in freed.items()})
+    earlier = freed[str(lane)]
     return {
-        **state,
-        "lanes": {
-            **state["lanes"],
-            **{
-                str(lane): _keeping_outside_writes(state["lanes"][str(lane)], record)
-                for lane, record in landed.items()
-                if record["state"] == "ok"
-            },
+        **freed,
+        str(lane): {
+            **_keeping_outside_writes(earlier, repaired),
+            "foreign_writes": _carried_foreign(
+                earlier.get("foreign_writes") or (),
+                [{**entry, "suspects": [lane]} for entry in foreign],
+            ),
         },
     }
+
+
+def _repair_lanes(plan, msp, tree, state, settings, gated):
+    lanes = state["lanes"]
+    outcomes = ()
+    for lane, failing in sorted(_failing_by_lane(plan, gated["gate"]).items()):
+        record = _repaired_lane(plan, lane, tree, settings, _repair_note(settings, msp, failing))
+        outcomes = outcomes + ((lane, record),)
+        if record["state"] == "ok":
+            lanes = _with_repair(plan, msp, tree, lanes, lane, record)
+    return {
+        "state": {**state, "lanes": lanes},
+        "landed": any(record["state"] == "ok" for _, record in outcomes),
+        "parked": next(
+            (record["reason"] for _, record in outcomes if record["state"] == LANE_PARKED), None
+        ),
+        "failed": tuple(
+            "the repair of Lane %d failed: %s" % (lane, record["reason"])
+            for lane, record in outcomes
+            if record["state"] == "failed"
+        ),
+    }
+
+
+REPAIR_PARKED = "the repair of a failing test stopped (%s); pass --resume to finish it"
+
+PRODUCER_REPAIR_CONFLICT = "a producer's repair would not merge into this MSP: %s"
+
+
+def _merged_producer_repairs(tree, producers, trees, base):
+    tips = tuple(
+        {"branch": trees[producer]["branch"]}
+        for producer in producers
+        if branch_exists(tree["path"], trees[producer]["branch"])
+    )
+    return merge_producers(tree["path"], tree["branch"], tips, base)[1]
+
+
+def _head_with_producers(plan, msp, tree, producers, trees, base):
+    head, commit_error = _committed_head(plan, msp, tree)
+    if commit_error is not None:
+        return None, commit_error, None
+    conflict = _merged_producer_repairs(tree, producers, trees, base)
+    if conflict is not None:
+        return None, None, {"state": MSP_BLOCKED, "reason": PRODUCER_REPAIR_CONFLICT % conflict}
+    return branch_commit(tree["path"], tree["branch"], required=True), None, None
 
 
 def _committed_head(plan, msp, tree):
@@ -3930,7 +4080,12 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
     replayed = isolation.msp_replayed(plan, msp, state["lanes"])
     unreplayed = isolation.msp_unreplayed(plan, msp, state["lanes"])
     state = write_state(run_dir, _msp_record(state, msp, replayed=replayed))
-    head, commit_error = (None, None) if block is not None else _committed_head(plan, msp, tree)
+    head, commit_error, conflict = (
+        (None, None, None)
+        if block is not None
+        else _head_with_producers(plan, msp, tree, producers, trees, settings["base_commit"])
+    )
+    block = block or conflict
     if block is None:
         ignored = set(ignored_paths(tree["path"])) | set(
             isolation.msp_ignored(plan, msp, state["lanes"])
@@ -4016,17 +4171,49 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
                 "owns, so mitosis held %s back" % (", ".join(tampered), tree["branch"]),
             ),
         )
-    refused = msp_hook_refusal(tree["path"], settings["base_commit"], head) if judged_now else None
+    refused = (
+        msp_hook_refusal(
+            tree["path"],
+            settings["base_commit"],
+            head,
+            os.path.join(run_dir, "gate", "hook-msp-%d" % msp),
+            settings.get("env"),
+            settings.get("sandbox"),
+        )
+        if judged_now
+        else None
+    )
     held_back = _held_back(gated, tree["branch"], refused) if judged_now else None
     if held_back is not None:
-        repaired = (
+        owed = recorded_gate is None or prior.get("state") != MSP_GATE_FAILED
+        repair = (
             _repair_lanes(plan, msp, tree, state, settings, gated)
-            if repairable and refused is None and recorded_gate is None
-            else None
+            if repairable and refused is None and owed
+            else NO_REPAIR
         )
-        if repaired is not None:
-            return _finish_msp(plan, msp, trees, producers, repaired, settings, repairable=False)
-        return write_state(run_dir, _msp_record(state, msp, **held_back))
+        if repair["parked"] is not None:
+            return write_state(
+                run_dir,
+                _msp_record(
+                    repair["state"],
+                    msp,
+                    state=MSP_PARKED,
+                    reason=REPAIR_PARKED % repair["parked"],
+                ),
+            )
+        if repair["landed"]:
+            return _finish_msp(plan, msp, trees, producers, repair["state"], settings, repairable=False)
+        return write_state(
+            run_dir,
+            _msp_record(
+                state,
+                msp,
+                **{
+                    **held_back,
+                    "reason": "; ".join((held_back["reason"], *repair["failed"])),
+                },
+            ),
+        )
     base, exception = pr_base(
         plan, msp, settings["feature_branch"], trees, settings["repo"], state["msps"]
     )
@@ -4738,6 +4925,7 @@ def execute(
             (os.path.abspath(run_dir), isolation.worker_home(env)) + checked_writes
         )
     sandbox = None if program is None else {"program": program, "writes": checked_writes}
+    _keep_repository_programs_confined(sandbox)
     recorded = (prior or {}).get("lanes") or {}
     if any(
         (recorded.get(str(index)) or {}).get("state") != "ok"

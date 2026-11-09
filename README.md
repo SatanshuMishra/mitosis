@@ -485,7 +485,13 @@ exit 21, its work left uncommitted in the worktree and no gate run.
 
 A Lane commits without the repository's hooks, because a Lane is a partial tree.
 The pre-commit hook runs once per MSP, over the whole change as staged on its
-base. A hook that refuses it holds the MSP back as `gate-failed`, with exit 21.
+base, in a throwaway checkout, so it never moves the branch and whatever it
+edits or stages is discarded. Under `--worker-sandbox` it runs confined like the
+gate and can write nothing under the repository's `.git`, and every other
+repository hook and fsmonitor are off, because Worker-written code could sit
+behind any of them. A clean or smudge filter the repository configures to a
+tracked program still runs outside the sandbox. A hook that refuses the change
+holds the MSP back as `gate-failed`, with exit 21.
 
 An acceptance run that leaves a referee path in the clean checkout differing
 from the commit is caught the same way as a committed write: the gate lists
@@ -494,11 +500,16 @@ and never pushed, with exit 9.
 
 A Lane whose Worker fails is dispatched once more, told why, and told it may
 change a file outside its write-set when that was the obstacle; mitosis keeps
-that write and reports it. A Worker that reports failure twice leaves its Lane
+that write, shows it to the gate and reports it. A Worker that reports failure twice leaves its Lane
 `failed` and its MSP unshipped, while every other MSP carries on. A check-author
 whose lock is refused gets the same one retry. A lock refused twice no longer
 stops the build: the MSP builds from its base, its Steps' locked tests are judged
 `not-applicable` with the refusal as the reason, and the pull request says so.
+
+A repair lands the way a first attempt does: a write to another Lane's file is
+reported, a file a sibling had overwritten reaches the gate again, and an MSP
+built on the repaired one merges the repair before its own gate. A repair that
+stops at a usage limit parks the MSP with exit 13, and `--resume` finishes it.
 
 A base submodule whose gitlink the branch changed and whose commits cannot be
 read holds the MSP back as `gate-failed`, with exit 21, and a gate error

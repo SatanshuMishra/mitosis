@@ -1,3 +1,4 @@
+import glob
 import os
 import re
 import shlex
@@ -133,8 +134,15 @@ class Receipts(unittest.TestCase):
                 )
         self.assertEqual(self.scratch.git("rev-parse", "--verify", "-q", "refs/heads/escaped").returncode, 1)
 
-    def _sandboxed(self, seeded, jobs, flags=lambda scratch: (), acceptance="unittest", steps=None):
+    def _sandboxed(
+        self, seeded, jobs, flags=lambda scratch: (), acceptance="unittest", steps=None, hooks=None
+    ):
         scratch = self._scratch(seeded)
+        for name, body in (hooks(self._escape_targets()) if hooks else {}).items():
+            path = os.path.join(scratch.repo, ".git", "hooks", name)
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("#!/bin/sh\n" + body)
+            os.chmod(path, 0o755)
         items = scratch.items(steps or [step("add", ["calc.py"], "demo", acceptance=[ADDS])])
         scratch.jobs(jobs(self._escape_targets()))
         return scratch.build(
@@ -159,6 +167,47 @@ class Receipts(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
         self.assertEqual(self._first_property(completed)["outcome"], "pass")
         self._assert_confined(completed)
+
+    def sandboxed_repository_hook_cannot_write_outside(self):
+        self._skip_without_sandbox()
+        completed = self._sandboxed(
+            {TEST_FILE: EXACT_TEST},
+            lambda targets: {"add": {"writes": {"calc.py": CORRECT_ADD}}},
+            hooks=lambda targets: {
+                "pre-commit": "".join('touch "%s" 2>/dev/null\n' % target for target in targets)
+                + "echo the hook ran >&2\nexit 1\n"
+            },
+        )
+        self.assertEqual(completed.returncode, 21, "mitosis exit code" + tail(completed))
+        self.assertIn("the hook ran", completed.stdout)
+        self._assert_confined(completed)
+
+    def sandboxed_repository_hook_cannot_write_the_repositorys_git_folder(self):
+        self._skip_without_sandbox()
+        completed = self._sandboxed(
+            {TEST_FILE: EXACT_TEST},
+            lambda targets: {"add": {"writes": {"calc.py": CORRECT_ADD}}},
+            hooks=lambda targets: {
+                "pre-commit": 'touch "$(git rev-parse --absolute-git-dir)/locked" 2>/dev/null\n'
+                "echo the hook ran >&2\nexit 1\n"
+            },
+        )
+        self.assertEqual(completed.returncode, 21, "mitosis exit code" + tail(completed))
+        self.assertIn("the hook ran", completed.stdout)
+        left = glob.glob(os.path.join(self.scratch.repo, ".git", "worktrees", "*", "locked"))
+        self.assertEqual(left, [], "the hook locked its worktree in the real repository" + tail(completed))
+
+    def sandboxed_repository_hook_can_still_stage_in_its_checkout(self):
+        self._skip_without_sandbox()
+        completed = self._sandboxed(
+            {TEST_FILE: EXACT_TEST},
+            lambda targets: {"add": {"writes": {"calc.py": CORRECT_ADD}}},
+            hooks=lambda targets: {
+                "pre-commit": "git add -A || exit 0\necho the hook staged its checkout >&2\nexit 1\n"
+            },
+        )
+        self.assertEqual(completed.returncode, 21, "mitosis exit code" + tail(completed))
+        self.assertIn("the hook staged its checkout", completed.stdout)
 
     def sandboxed_worker_code_cannot_write_outside_at_the_gate_setup(self):
         self._skip_without_sandbox()
@@ -309,6 +358,9 @@ def load_tests(loader, standard, pattern):
             (
                 "sandboxed_worker_code_cannot_write_outside_at_the_acceptance_runs",
                 "sandboxed_worker_code_cannot_write_outside_at_the_gate_setup",
+                "sandboxed_repository_hook_cannot_write_outside",
+                "sandboxed_repository_hook_cannot_write_the_repositorys_git_folder",
+                "sandboxed_repository_hook_can_still_stage_in_its_checkout",
                 "sandboxed_check_author_code_cannot_write_outside_at_the_lock_stage",
                 "a_hook_beside_an_unloaded_python_file_is_still_sampled",
                 "a_case_folded_nested_git_folder_is_never_replayed",

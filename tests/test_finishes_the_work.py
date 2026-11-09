@@ -9,6 +9,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
+import run
 import test_every_finding as fixtures
 import test_gate_teeth as teeth
 
@@ -34,6 +35,9 @@ with open(log, "a", encoding="utf-8") as handle:
     handle.write(json.dumps({"step": name, "task": task}) + "\n")
 attempts = jobs[name]
 attempt = attempts[min(earlier, len(attempts) - 1)]
+if attempt.get("limit"):
+    print("You've hit your usage limit")
+    sys.exit(1)
 for path, content in sorted(attempt.get("writes", {}).items()):
     if os.path.dirname(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -87,10 +91,10 @@ class Scratch(fixtures.Scratch):
             found = [json.loads(line) for line in handle]
         return [entry["task"] for entry in found if entry["step"] == step]
 
-    def hook(self, body):
-        executable(os.path.join(self.repo, ".git", "hooks", "pre-commit"), "#!/bin/sh\n" + body)
+    def hook(self, body, name="pre-commit"):
+        executable(os.path.join(self.repo, ".git", "hooks", name), "#!/bin/sh\n" + body)
 
-    def built(self, steps, jobs, push=False, acceptance="unittest"):
+    def built(self, steps, jobs, push=False, acceptance="unittest", flags=()):
         self.jobs(jobs)
         shipping = (
             (*fixtures.PR_FLAGS, "--pr-command", self.stub("pr.py", "{branch}"), "--render-command", self.render)
@@ -111,11 +115,17 @@ class Scratch(fixtures.Scratch):
             "--acceptance-command",
             self.stub("accept.py", acceptance, "{file}", "{test}"),
             *shipping,
+            *flags,
         )
         return completed, fixtures.summary_of(completed)
 
     def on_branch(self, branch, path):
         return self.git("cat-file", "-e", "refs/heads/%s:%s" % (branch, path)).returncode == 0
+
+    def worktree_of(self, branch):
+        blocks = self.checked("worktree", "list", "--porcelain").split("\n\n")
+        found = [block for block in blocks if "branch refs/heads/%s" % branch in block]
+        return found[0].splitlines()[0].split(" ", 1)[1]
 
     def pushed(self, branch):
         return bool(self.checked("ls-remote", "origin", branch).strip())
@@ -136,6 +146,10 @@ def builder():
 
 def msp_of(summary, label):
     return next(entry for entry in summary["msps"] if entry["msp"] == label)
+
+
+def foreign_paths(summary):
+    return sorted(entry["detail"] for entry in summary["findings"] if entry["kind"] == "foreign")
 
 
 class FinishesTheWork(unittest.TestCase):
@@ -392,6 +406,275 @@ class FinishesTheWork(unittest.TestCase):
         self.assertEqual(record["lock"]["state"], "ok")
         self.assertEqual(record["gate"]["outcome"], "pass")
         self.assertTrue(scratch.on_branch("mitosis/first", TEST_FILE))
+        retry = scratch.attempts("check-author")[1]
+        self.assertIn("An earlier attempt at this work failed", retry)
+        self.assertNotIn("mitosis keeps the write", retry)
+
+    def a_repair_writing_a_sibling_lanes_file_is_reported(self):
+        scratch = self._scratch()
+        completed, summary = scratch.built(
+            [built_step(), fixtures.step("second", ["b.py"], "first")],
+            {
+                "first": [
+                    {"writes": {"a.py": WRONG, TEST_FILE: PROPERTY_TEXT}},
+                    {"writes": {"a.py": RIGHT, TEST_FILE: PROPERTY_TEXT, "b.py": "taken over\n"}},
+                ],
+                "second": [{"writes": {"b.py": "b = 1\n"}}],
+            },
+        )
+        self._exit(completed, 8)
+        self.assertEqual(msp_of(summary, "first")["gate"]["outcome"], "pass")
+        self.assertEqual(foreign_paths(summary), ["b.py"])
+        self.assertEqual(scratch.checked("show", "refs/heads/mitosis/first:b.py"), "taken over\n")
+
+    def a_repair_keeps_the_foreign_writes_of_the_lanes_first_attempt(self):
+        scratch = self._scratch()
+        completed, summary = scratch.built(
+            [
+                {**built_step(), "after": ["second"]},
+                fixtures.step("second", ["b.py"], "first"),
+                fixtures.step("third", ["c.py"], "first", [], ["second"]),
+            ],
+            {
+                "first": [
+                    {"writes": {"a.py": WRONG, TEST_FILE: PROPERTY_TEXT, "b.py": "taken over\n"}},
+                    {"writes": {"a.py": RIGHT, TEST_FILE: PROPERTY_TEXT}},
+                ],
+                "second": [{"writes": {"b.py": "b = 1\n"}}],
+                "third": [{"writes": {"c.py": "c = 1\n"}}],
+            },
+        )
+        self._exit(completed, 8)
+        self.assertEqual(len(scratch.attempts("first")), 2)
+        self.assertEqual(foreign_paths(summary), ["b.py"])
+
+    def a_repair_reaches_the_gate_when_a_sibling_wrote_that_file_earlier(self):
+        scratch = self._scratch()
+        second_test = "tests/test_b.py"
+        checks = (
+            "import unittest\n\nimport b\n\n\nclass B(unittest.TestCase):\n"
+            "    def works(self):\n        self.assertEqual(b.value(), 2)\n"
+        )
+        completed, summary = scratch.built(
+            [
+                fixtures.step("first", ["a.py"], "first", [], ["second"]),
+                fixtures.step(
+                    "second",
+                    ["b.py", second_test],
+                    "first",
+                    [{"file": second_test, "test": "B.works"}],
+                ),
+                fixtures.step("third", ["c.py"], "first", [], ["second"]),
+            ],
+            {
+                "first": [{"writes": {"a.py": "a = 1\n", "b.py": WRONG + "# first\n"}}],
+                "third": [{"writes": {"c.py": "c = 1\n"}}],
+                "second": [
+                    {"writes": {"b.py": WRONG, second_test: checks}},
+                    {"writes": {"b.py": RIGHT, second_test: checks}},
+                ],
+            },
+        )
+        self._exit(completed, 8)
+        record = msp_of(summary, "first")
+        self.assertEqual(record["state"], "committed")
+        self.assertEqual(record["gate"]["outcome"], "pass")
+        self.assertEqual(scratch.checked("show", "refs/heads/mitosis/first:b.py"), RIGHT)
+
+    def a_producers_repair_reaches_the_consumer_built_on_it(self):
+        scratch = self._scratch()
+        completed, summary = scratch.built(
+            [built_step(), fixtures.step("second", ["b.py"], "second", [], ["first"])],
+            {
+                "first": [
+                    {"writes": {"a.py": WRONG, TEST_FILE: PROPERTY_TEXT}},
+                    {"writes": {"a.py": RIGHT, TEST_FILE: PROPERTY_TEXT}},
+                ],
+                "second": [{"writes": {"b.py": "b = 1\n"}}],
+            },
+        )
+        self._exit(completed, 0)
+        self.assertEqual(msp_of(summary, "second")["state"], "committed")
+        self.assertEqual(scratch.checked("show", "refs/heads/mitosis/second:a.py"), RIGHT)
+
+    def a_usage_limit_during_a_repair_parks_and_the_resume_finishes_the_repair(self):
+        scratch = self._scratch()
+        jobs = {
+            "first": [
+                {"writes": {"a.py": WRONG, TEST_FILE: PROPERTY_TEXT}},
+                {"limit": True},
+                {"writes": {"a.py": RIGHT, TEST_FILE: PROPERTY_TEXT}},
+            ]
+        }
+        completed, summary = scratch.built([built_step()], jobs)
+        self._exit(completed, 13)
+        self.assertEqual(msp_of(summary, "first")["state"], "parked")
+        resumed, summary = scratch.built([built_step()], jobs, flags=("--resume",))
+        self._exit(resumed, 0)
+        tasks = scratch.attempts("first")
+        self.assertEqual(len(tasks), 3)
+        self.assertIn("The finished build fails tests/test_a.py::A.works", tasks[2])
+        self.assertEqual(msp_of(summary, "first")["state"], "committed")
+
+    def a_retried_lanes_outside_write_reaches_the_gate_and_is_reported(self):
+        scratch = self._scratch()
+        helped = "import helper\n\n\ndef value():\n    return helper.TWO\n"
+        completed, summary = scratch.built(
+            [built_step()],
+            {
+                "first": [
+                    {"status": "failed", "notes": "helper.py is outside my write-set"},
+                    {"writes": {"a.py": helped, "helper.py": "TWO = 2\n", TEST_FILE: PROPERTY_TEXT}},
+                ]
+            },
+        )
+        self._exit(completed, 6)
+        self.assertIn("mitosis keeps the write", scratch.attempts("first")[1])
+        record = msp_of(summary, "first")
+        self.assertEqual(record["gate"]["outcome"], "pass")
+        self.assertEqual(
+            [entry["detail"] for entry in summary["findings"] if entry["kind"] == "undeclared"],
+            ["helper.py"],
+        )
+        self.assertTrue(scratch.on_branch("mitosis/first", "helper.py"))
+
+    def a_tracked_file_under_an_ignored_folder_lands(self):
+        scratch = self._scratch({"gen/x.py": "x = 1\n"})
+        scratch.checked("checkout", "-q", "feature")
+        fixtures.put(os.path.join(scratch.repo, ".gitignore"), "__pycache__/\ngen/\n")
+        scratch.checked("add", ".gitignore")
+        scratch.checked("commit", "-q", "-m", "ignore the generated folder")
+        scratch.checked("checkout", "-q", "main")
+        completed, summary = scratch.built(
+            [fixtures.step("first", ["gen/x.py"], "first")],
+            {"first": [{"writes": {"gen/x.py": "x = 2\n"}}]},
+        )
+        self._exit(completed, 0)
+        self.assertEqual(scratch.checked("show", "refs/heads/mitosis/first:gen/x.py"), "x = 2\n")
+
+    def a_hook_never_moves_the_branch_and_its_edits_never_touch_the_work(self):
+        scratch = self._scratch()
+        seen = os.path.join(scratch.tmp, "branch-during-hook")
+        scratch.hook('git rev-parse refs/heads/mitosis/first > "%s"\necho tampered >> a.py\n' % seen)
+        completed, summary = scratch.built(
+            [built_step()],
+            {"first": [{"writes": {"a.py": RIGHT, TEST_FILE: PROPERTY_TEXT}}]},
+        )
+        self._exit(completed, 0)
+        tip = scratch.checked("rev-parse", "refs/heads/mitosis/first").strip()
+        with open(seen, encoding="utf-8") as handle:
+            self.assertEqual(handle.read().strip(), tip)
+        self.assertEqual(scratch.checked("show", "refs/heads/mitosis/first:a.py"), RIGHT)
+        self.assertEqual(scratch.checked("-C", scratch.worktree_of("mitosis/first"), "status", "--porcelain"), "")
+
+    def a_hook_exiting_129_holds_the_msp(self):
+        scratch = self._scratch()
+        scratch.hook("echo refused with a usage code >&2\nexit 129\n")
+        completed, summary = scratch.built(
+            [built_step()],
+            {"first": [{"writes": {"a.py": RIGHT, TEST_FILE: PROPERTY_TEXT}}]},
+        )
+        self._exit(completed, 21)
+        self.assertIn("refused with a usage code", msp_of(summary, "first")["reason"])
+
+    def a_repair_the_worker_reports_failed_is_named_in_the_held_reason(self):
+        scratch = self._scratch()
+        completed, summary = scratch.built(
+            [built_step()],
+            {
+                "first": [
+                    {"writes": {"a.py": WRONG, TEST_FILE: PROPERTY_TEXT}},
+                    {"status": "failed", "notes": "the service is not reachable here"},
+                ]
+            },
+        )
+        self._exit(completed, 21)
+        reason = msp_of(summary, "first")["reason"]
+        self.assertIn("failed against the finished work", reason)
+        self.assertIn("the repair of Lane 0 failed", reason)
+
+    def a_producers_repair_that_conflicts_blocks_the_consumer_and_says_why(self):
+        scratch = self._scratch()
+        completed, summary = scratch.built(
+            [built_step(), fixtures.step("second", ["b.py"], "second", [], ["first"])],
+            {
+                "first": [
+                    {"writes": {"a.py": WRONG, TEST_FILE: PROPERTY_TEXT}},
+                    {"writes": {"a.py": RIGHT, TEST_FILE: PROPERTY_TEXT, "b.py": "from the repair\n"}},
+                ],
+                "second": [{"writes": {"b.py": "b = 1\n"}}],
+            },
+        )
+        self._exit(completed, 7)
+        record = msp_of(summary, "second")
+        self.assertEqual(record["state"], "blocked")
+        self.assertIn("would not merge", record["reason"])
+
+    def _pre_push_marked(self, flags):
+        scratch = self._scratch()
+        marker = os.path.join(scratch.tmp, "pre-push-ran")
+        scratch.hook('touch "%s"\n' % marker, "pre-push")
+        completed, summary = scratch.built(
+            [built_step()],
+            {"first": [{"writes": {"a.py": RIGHT, TEST_FILE: PROPERTY_TEXT}}]},
+            push=True,
+            flags=flags(scratch),
+        )
+        self._exit(completed, 0)
+        self.assertTrue(scratch.pushed("mitosis/first"))
+        return os.path.lexists(marker)
+
+    def a_pre_push_hook_runs_when_workers_are_not_sandboxed(self):
+        self.assertTrue(self._pre_push_marked(lambda scratch: ()))
+
+    def a_sandboxed_run_never_runs_a_pre_push_hook(self):
+        if sys.platform != "darwin":
+            self.skipTest("sandbox-exec exists only on macOS")
+        self.assertFalse(
+            self._pre_push_marked(lambda scratch: ("--worker-sandbox", "--worker-write", scratch.stubs))
+        )
+
+    def a_sandboxed_run_fires_no_repository_hook_outside_the_sandbox(self):
+        if sys.platform != "darwin":
+            self.skipTest("sandbox-exec exists only on macOS")
+        scratch = self._scratch()
+        marker = os.path.join(scratch.tmp, "hook-fired")
+        for name in ("reference-transaction", "post-index-change", "post-checkout"):
+            scratch.hook('echo %s >> "%s"\n' % (name, marker), name)
+        completed, summary = scratch.built(
+            [built_step()],
+            {"first": [{"writes": {"a.py": RIGHT, TEST_FILE: PROPERTY_TEXT}}]},
+            push=True,
+            flags=("--worker-sandbox", "--worker-write", scratch.stubs),
+        )
+        self._exit(completed, 0)
+        self.assertTrue(scratch.pushed("mitosis/first"))
+        self.assertFalse(os.path.lexists(marker), "a repository hook ran outside the sandbox")
+
+    def a_repair_note_stays_bounded_however_many_tests_fail(self):
+        scratch = self._scratch()
+        noisy = (
+            "import unittest\n\n\nclass A(unittest.TestCase):\n"
+            "    def one(self):\n        self.fail('x' * 6000)\n\n"
+            "    def two(self):\n        self.fail('y' * 6000)\n"
+        )
+        failing = [{"file": TEST_FILE, "test": "A.one"}, {"file": TEST_FILE, "test": "A.two"}]
+        calm = (
+            "import unittest\n\n\nclass A(unittest.TestCase):\n"
+            "    def one(self):\n        pass\n\n    def two(self):\n        pass\n"
+        )
+        completed, summary = scratch.built(
+            [built_step(acceptance=failing)],
+            {
+                "first": [
+                    {"writes": {"a.py": RIGHT, TEST_FILE: noisy}},
+                    {"writes": {"a.py": RIGHT, TEST_FILE: calm}},
+                ]
+            },
+        )
+        tasks = scratch.attempts("first")
+        self.assertEqual(len(tasks), 2, fixtures.tail(completed))
+        self.assertLess(len(tasks[1]) - len(tasks[0]), run.MAX_OUTPUT + len(run.REPAIR_NOTE) + 200)
 
 
 def load_tests(loader, standard, pattern):
@@ -400,6 +683,21 @@ def load_tests(loader, standard, pattern):
         FinishesTheWork(name)
         for name in (
             "a_lane_reporting_failure_is_retried_with_its_reason_and_ships",
+            "a_repair_writing_a_sibling_lanes_file_is_reported",
+            "a_repair_keeps_the_foreign_writes_of_the_lanes_first_attempt",
+            "a_repair_reaches_the_gate_when_a_sibling_wrote_that_file_earlier",
+            "a_producers_repair_reaches_the_consumer_built_on_it",
+            "a_usage_limit_during_a_repair_parks_and_the_resume_finishes_the_repair",
+            "a_retried_lanes_outside_write_reaches_the_gate_and_is_reported",
+            "a_tracked_file_under_an_ignored_folder_lands",
+            "a_hook_never_moves_the_branch_and_its_edits_never_touch_the_work",
+            "a_hook_exiting_129_holds_the_msp",
+            "a_pre_push_hook_runs_when_workers_are_not_sandboxed",
+            "a_sandboxed_run_never_runs_a_pre_push_hook",
+            "a_repair_note_stays_bounded_however_many_tests_fail",
+            "a_sandboxed_run_fires_no_repository_hook_outside_the_sandbox",
+            "a_repair_the_worker_reports_failed_is_named_in_the_held_reason",
+            "a_producers_repair_that_conflicts_blocks_the_consumer_and_says_why",
             "a_lane_failing_twice_ships_nothing_for_its_msp_and_its_sibling_still_ships",
             "a_test_failing_against_the_work_is_repaired_once_and_ships",
             "a_test_still_failing_after_the_repair_holds_its_msp_and_names_the_test",

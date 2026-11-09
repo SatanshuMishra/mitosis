@@ -2025,10 +2025,6 @@ def _lock_findings(state, plan):
                     lock.get("reason") or "",
                 )
             ]
-        found = found + [
-            _finding(label, None, "undeclared", EXIT_RECONCILE, path)
-            for path in lock.get("undeclared") or []
-        ]
     return found
 
 

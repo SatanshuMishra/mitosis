@@ -742,14 +742,11 @@ class CheckAuthorLane(unittest.TestCase):
         lock = self._lock(summary, completed)
         self.assertEqual(lock.get("undeclared"), ["stray.py"])
         self.assertEqual(lock.get("probes"), ["calc.py"])
-        found = [
-            finding
-            for finding in summary.get("findings") or []
-            if finding.get("msp") == "calc"
-            and finding.get("kind") == "undeclared"
-            and names(finding.get("detail"), "stray.py")
-        ]
-        self.assertTrue(found, "no undeclared finding under calc names stray.py" + tail(completed))
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
+        self.assertEqual(
+            [finding for finding in summary.get("findings") or [] if finding.get("kind") == "undeclared"],
+            [],
+        )
         self.assertNotIn("stray.py", scratch.checked("ls-tree", "-r", "--name-only", "mitosis/calc").split())
 
     def locked_files_already_on_the_feature_branch_skip_the_lane(self):
