@@ -12,7 +12,9 @@ rather than about the code, now finish, as `docs/adr/0027` settles.
   names their files, so an items build runs no lock stage. The lock had
   refused 83 Lanes whose tests passed at the base and blocked 67 more behind
   them. A saved plan given by `--plan-file` keeps its lock when its
-  `check_authors` show it was planned with one.
+  `check_authors` show it was planned with one; one without them folds only
+  when its Steps already write, or the charter locks, the folded files, and is
+  refused otherwise.
 - An `inert` test runs against the work's mutants, and one a mutant fails
   passes as a guard of behaviour the work must keep, so a Step that only
   guards behaviour no longer ends a run with exit 20. The Testing table

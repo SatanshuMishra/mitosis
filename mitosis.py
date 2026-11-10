@@ -1126,15 +1126,28 @@ def asks_input(args, root, repo, models, charter, run_dir):
     return staged(owned, load_decomposed(run_dir), run_dir, None, notices)
 
 
-def planned_with_lock(path):
+def normalised_files(paths):
+    return frozenset(referee.normalised(path) for path in paths or ())
+
+
+def saved_plan_folds(path, folded, charter):
     loaded = read_json(path, "--plan-file")
-    return not isinstance(loaded, dict) or bool(loaded.get("check_authors"))
+    if not isinstance(loaded, dict) or loaded.get("check_authors"):
+        return False
+    charter_locked, _ = core.charter_locks(charter)
+    held = {
+        item.get("name"): normalised_files(item.get("files")) | normalised_files(charter_locked)
+        for item in loaded.get("items") or ()
+        if isinstance(item, dict)
+    }
+    return all(normalised_files(item.get("files")) <= held.get(item.get("name"), frozenset()) for item in folded)
 
 
 def folded_items(args, items):
-    if args.plan_file is not None and planned_with_lock(args.plan_file):
-        return items, ()
-    return own_tests.folded(items)
+    folded = own_tests.folded(items)
+    if args.plan_file is None or saved_plan_folds(args.plan_file, folded[0], args.charter):
+        return folded
+    return items, ()
 
 
 def items_input(args, run_dir):

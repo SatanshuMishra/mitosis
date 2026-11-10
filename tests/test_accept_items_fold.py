@@ -131,6 +131,24 @@ class ItemsFold(unittest.TestCase):
         again = scratch.mitosis(*common, "--plan-file", saved, "--run-dir", scratch.run_dir + "-again")
         self._exit(again, 0)
 
+    def a_lock_plan_saved_with_a_charter_lock_keeps_its_check_authors(self):
+        scratch = finishes.Scratch({finishes.TEST_FILE: finishes.PROPERTY_TEXT})
+        self.addCleanup(scratch.close)
+        charter = scratch.file("charter.md", "# Charter\n\n- Locked: %s\n" % finishes.TEST_FILE)
+        items = scratch.items([finishes.lock_author(), finishes.builder()])
+        args = mitosis.build_parser().parse_args(["--items", items, "--no-trajectories", "--charter", charter])
+        lock = mitosis.build_plan(args, mitosis.read_items(items), scratch.repo, mitosis.check_charter(charter), None)
+        authors = [entry["name"] for entry in lock["check_authors"]]
+        self.assertEqual(authors, [AUTHOR])
+        saved = scratch.file("saved.json", json.dumps(lock))
+        again = scratch.mitosis(
+            "--items", items, "--plan-only", "--no-trajectories", "--feature-branch", "feature",
+            "--charter", charter, "--plan-file", saved, "--run-dir", scratch.run_dir,
+        )
+        self._exit(again, 0)
+        self.assertEqual([entry["name"] for entry in plan_of(scratch)["check_authors"]], authors)
+        self.assertNotIn(FOLDED, again.stderr.splitlines())
+
     def a_check_author_file_no_step_names_is_reported_dropped(self):
         steps = [author((finishes.TEST_FILE, OTHER_TEST)), finishes.builder()]
         completed = self._plan_only(self.scratch.items(steps))
@@ -151,5 +169,6 @@ def load_tests(loader, tests, pattern):
             "items_with_no_check_author_keep_their_plan_id",
             "a_check_author_file_no_step_names_is_reported_dropped",
             "a_folded_plan_saved_with_a_charter_lock_plans_again_from_its_file",
+            "a_lock_plan_saved_with_a_charter_lock_keeps_its_check_authors",
         )
     )
