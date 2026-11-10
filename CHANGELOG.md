@@ -3,6 +3,28 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.18.0 - 2026-11-09
+
+- Every Lane is one Worker session that builds its Steps in order and lands
+  one commit, as the reference planner runs one Worker per cluster; a Step no
+  longer gets a session and a commit of its own.
+- The split writes each Step's task in the call that names its files and
+  tests, so a spec build makes no brief call: the brief stage and its h10c
+  reply schema are gone, and `--brief-command` is accepted and ignored with a
+  notice. A split Step that carries a role is asked again in the same session.
+- A plan mitosis makes from a spec or asks writes no check-author Step: each
+  Step's acceptance test files join that Step's files unless the charter locks
+  them, and its Worker writes those tests. A check-author Step an items file
+  declares still runs as the lock stage.
+- The split and asks contracts say a test's name is its name inside its file,
+  never repeating the file's path or module, and a property the acceptance
+  command cannot run with the work present gets the gate's one repair, as a
+  failing one does.
+- A Lane brief with nothing locked tells its Worker never to write any test
+  configuration, snapshot, baseline, allowlist or skip list, instead of "never
+  write them", which named nothing and could be read as a ban on the tests the
+  Worker now writes.
+
 ## 0.17.1 - 2026-11-09
 
 - The split rates each Step simple or complex with the reference planner's

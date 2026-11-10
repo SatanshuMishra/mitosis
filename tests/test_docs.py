@@ -10,10 +10,10 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import briefs
 import core
 import decompose
 import mitosis
+import own_tests
 import shape
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -92,7 +92,7 @@ def vocabulary_words():
         + core.GATE_OUTCOMES
         + shape.SCALAR_KEYS
         + shape.FINDING_KINDS
-        + _public_callables(core, shape, briefs, decompose, mitosis)
+        + _public_callables(core, shape, own_tests, decompose, mitosis)
         + metrics_writer.ENVELOPE
         + metrics_writer.TOKEN_KINDS
         + _catalogue_names(os.path.join(ROOT, "catalogue.json"))
@@ -444,7 +444,7 @@ class Docs(unittest.TestCase):
                 "0.3.0",
                 "--pr-impact",
                 "--render-command",
-                "<type>(<scope>): <step>",
+                "<type>(<scope>): <steps>",
             ):
                 self.assertIn(phrase, text, os.path.relpath(path, ROOT))
             for phrase in ("house format", "What changed", "Verified:", "Not verified:", "land Lane"):

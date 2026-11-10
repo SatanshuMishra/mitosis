@@ -76,7 +76,7 @@
           "description": "one observable that proves it works"
         },
         "tests": {
-          "description": "the named tests that check the acceptance observable, each a test file path relative to the repository root and the test's name in it. Name a new test file for each new test, or a test file one of your items lists in its files: the lock stage writes a test in a new file no item lists, and never one in a file the repository already holds",
+          "description": "the named tests that check the acceptance observable, each a test file path relative to the repository root and the test's name inside that file, such as Class.method. The acceptance command is given the file and the name separately, so the name never repeats the file's path or module. The item writes each of its tests itself, so each test file joins its files",
           "type": "array",
           "items": {
             "type": "object",

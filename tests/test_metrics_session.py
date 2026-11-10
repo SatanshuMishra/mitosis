@@ -35,40 +35,24 @@ import tempfile
 
 here = os.path.dirname(os.path.abspath(__file__))
 sys.stdin.read()
-handle, _ = tempfile.mkstemp(dir=os.path.join(here, "sessions"), prefix="structure-")
+try:
+    os.remove(os.path.join(here, "fail-once-structure"))
+    failed = True
+except FileNotFoundError:
+    failed = False
+prefix = "structure-failed-" if failed else "structure-"
+handle, _ = tempfile.mkstemp(dir=os.path.join(here, "sessions"), prefix=prefix)
 os.write(handle, sys.argv[-1].encode("utf-8"))
 os.close(handle)
 with open(os.path.join(here, "structure-reply.txt"), encoding="utf-8") as reply:
     value = json.load(reply)
+if failed:
+    value = {**value, "items": [{key: field for key, field in step.items() if key != "task"} for step in value["items"]]}
 print(json.dumps({
     "type": "result",
     "session_id": sys.argv[-1],
     "result": "done",
     "structured_output": {"reply": value},
-}))
-"""
-
-BRIEFER = """
-import json
-import os
-import sys
-import tempfile
-
-here = os.path.dirname(os.path.abspath(__file__))
-step = sys.argv[1]
-sys.stdin.read()
-handle, _ = tempfile.mkstemp(dir=os.path.join(here, "sessions"), prefix="brief-%s-" % step)
-os.write(handle, sys.argv[-1].encode("utf-8"))
-os.close(handle)
-marker = os.path.join(here, "fail-once-%s" % step)
-if os.path.isfile(marker):
-    os.remove(marker)
-    sys.exit(2)
-print(json.dumps({
-    "type": "result",
-    "session_id": sys.argv[-1],
-    "result": "done",
-    "structured_output": {"name": step, "task": "build " + step},
 }))
 """
 
@@ -83,12 +67,13 @@ sys.stdin.read()
 handle, _ = tempfile.mkstemp(dir=os.path.join(here, "sessions"), prefix="reask-")
 os.write(handle, sys.argv[-1].encode("utf-8"))
 os.close(handle)
-step = json.loads(sys.argv[-2])["properties"]["name"]["const"]
+with open(os.path.join(here, "structure-reply.txt"), encoding="utf-8") as reply:
+    value = json.load(reply)
 print(json.dumps({
     "type": "result",
     "session_id": sys.argv[-1],
     "result": "done",
-    "structured_output": {"name": step, "task": "build " + step},
+    "structured_output": {"reply": value},
 }))
 """
 
@@ -154,7 +139,7 @@ def command(root, script_name, script, *placeholders):
 
 
 def bare(name, **extra):
-    return {"name": name, "files": [name + ".py"], "source": None, "acceptance": [], "spec_ref": [SPEC_SECTION], **extra}
+    return {"name": name, "task": "Build %s." % name, "files": [name + ".py"], "source": None, "acceptance": [], "spec_ref": [SPEC_SECTION], **extra}
 
 
 def briefed(name, **extra):
@@ -289,12 +274,11 @@ class SpawnAttemptSessionId(unittest.TestCase):
             write(root, "worker/structure-reply.txt", json.dumps(
                 structure_reply(bare("alpha"), bare("beta"))
             ))
-            write(root, "worker/fail-once-alpha", "")
+            write(root, "worker/fail-once-structure", "")
             os.makedirs(os.path.join(root, "worker", "sessions"))
             structurer = command(
                 root, "structurer.py", STRUCTURER, "{document}", "{schema}", "{session_id}"
             )
-            briefer = command(root, "briefer.py", BRIEFER, "{step}", "{schema}", "{session_id}")
             reasker = command(root, "reasker.py", REASKER, "{prompt}", "{schema}", "{session_id}")
             run_dir = os.path.join(root, "run")
             with isolated_run():
@@ -305,8 +289,6 @@ class SpawnAttemptSessionId(unittest.TestCase):
                         "docs/spec.md",
                         "--decompose-command",
                         structurer,
-                        "--brief-command",
-                        briefer,
                         "--reask-command",
                         reasker,
                         "--structure-samples",
@@ -318,33 +300,15 @@ class SpawnAttemptSessionId(unittest.TestCase):
                         run_dir,
                     ],
                 )
-                self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
-                code, out, err = invoke(
-                    root,
-                    [
-                        "--spec",
-                        "docs/spec.md",
-                        "--resume",
-                        "--brief-command",
-                        briefer,
-                        "--reask-command",
-                        reasker,
-                        "--timeout",
-                        "20",
-                        "--plan-only",
-                        "--run-dir",
-                        run_dir,
-                    ],
-                )
             self.assertEqual(code, mitosis.EXIT_SHIPPED, out + err)
             sessions = recorded_sessions(root)
             kinds = sorted(kind for kind, _ in sessions)
-            self.assertEqual(kinds, ["brief-alpha", "brief-beta", "reask", "structure", "structure"])
+            self.assertEqual(kinds, ["reask", "structure", "structure-failed"], out + err)
             values = [value for _, value in sessions]
             for value in values:
                 self.assertRegex(value, UUID4)
             by_kind = dict(sessions)
-            self.assertEqual(by_kind["reask"], by_kind["brief-alpha"])
+            self.assertEqual(by_kind["reask"], by_kind["structure-failed"])
             firsts = [value for kind, value in sessions if kind != "reask"]
             self.assertEqual(len(set(firsts)), len(firsts))
 

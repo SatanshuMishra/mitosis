@@ -92,6 +92,7 @@ def run(root, document_text, reply, **extra):
 def bare(name, **extra):
     return {
         "name": name,
+        "task": "Build %s." % name,
         "files": [name + ".py"],
         "source": None,
         "acceptance": [],
@@ -122,8 +123,11 @@ class Contract(unittest.TestCase):
     def the_contract_names_every_required_item_field(self):
         for field in core.REQUIRED_ITEM_FIELDS:
             self.assertIn(field, decompose.CONTRACT)
-        for field in core.ITEM_FIELDS:
+        for field in core.REQUIRED_ITEM_FIELDS + decompose.OPTIONAL_ITEM_FIELDS:
             self.assertIn(field, decompose.CONTRACT)
+        self.assertEqual(
+            set(core.ITEM_FIELDS) - set(core.REQUIRED_ITEM_FIELDS) - set(decompose.OPTIONAL_ITEM_FIELDS), {"role"}
+        )
         for key in decompose.RETURN_KEYS:
             self.assertIn('"%s"' % key, decompose.CONTRACT)
         self.assertEqual(decompose.RETURN_KEYS, ("items", "assumptions", "constraints"))
@@ -132,6 +136,7 @@ class Contract(unittest.TestCase):
         for key in core.ACCEPTANCE_KEYS:
             self.assertIn('"%s"' % key, decompose.CONTRACT)
         self.assertIn("never prose", decompose.CONTRACT)
+        self.assertIn("the name is the test's name inside that file", decompose.CONTRACT)
         source = {"path": "docs/spec.md", "sha256": "0" * 64}
         checked = decompose.check_items(
             [
@@ -615,44 +620,12 @@ class EmptyReturn(unittest.TestCase):
 
 
 class Structure(unittest.TestCase):
-    def the_structure_contract_forbids_a_task(self):
-        contract = decompose.STRUCTURE_CONTRACT
-        sentence = "A Step must not carry a task"
-        self.assertIn(sentence, contract)
-        forbidding = [line for line in contract.splitlines() if sentence in line]
-        self.assertEqual(len(forbidding), 1)
-        self.assertIn("rejected", forbidding[0])
-        self.assertNotIn("task", contract.replace(forbidding[0], ""))
-        for field in core.STRUCTURE_ITEM_FIELDS:
-            self.assertIn(field, contract)
-        for field in decompose.OPTIONAL_ITEM_FIELDS:
-            self.assertIn(field, contract)
-        self.assertIn(", ".join(core.STRUCTURE_ITEM_FIELDS) + ".", contract)
-        self.assertNotIn(", ".join(core.REQUIRED_ITEM_FIELDS) + ".", contract)
-        self.assertEqual(contract.count(sentence), 1)
-
-    def a_structure_return_carrying_a_task_is_an_error(self):
-        reply = {
-            "items": [bare("clean"), bare("prosy", task="a whole brief"), bare("also", task="x")],
-            "assumptions": [],
-            "constraints": [],
-        }
-        with tempfile.TemporaryDirectory() as root:
-            result = run_structure(root, "# One\n\nbody\n", reply)
-        self.assertEqual([step["name"] for step in result["items"]], ["clean", "prosy", "also"])
-        self.assertEqual(len(result["errors"]), 1)
-        self.assertIn("prosy", result["errors"][0])
-        self.assertIn("also", result["errors"][0])
-        self.assertNotIn("clean", result["errors"][0])
-        self.assertIn("task", result["errors"][0])
-        self.assertIn(result["errors"][0], decompose.report(result))
-
-    def a_structure_return_without_a_task_validates(self):
+    def a_structure_return_validates_and_carries_its_source(self):
         text = "# 1. One\n\nbody\n\n# 2. Two\n\nmore\n"
         reply = {
             "items": [
-                bare("first", spec_ref=["1"], task=""),
-                bare("second", after=["first"], spec_ref=["2"]),
+                bare("first", spec_ref=["1"], task="Build one."),
+                bare("second", after=["first"], spec_ref=["2"], task="Build two."),
             ],
             "assumptions": [{"step": "second", "text": "a reading"}],
             "constraints": ["one global"],
@@ -673,10 +646,7 @@ class Structure(unittest.TestCase):
         self.assertEqual(result["coverage"]["uncovered"], [])
         self.assertEqual(result["exit"], 0)
         self.assertIn(decompose.STRUCTURE_CONTRACT, prompt)
-        self.assertNotIn(decompose.CONTRACT, prompt)
-        self.assertEqual(
-            core.validate(result["items"], required=core.STRUCTURE_ITEM_FIELDS)["errors"], []
-        )
+        self.assertEqual(core.validate(result["items"])["errors"], [])
 
     def a_structure_result_has_the_shape_a_decompose_result_has(self):
         reply = {"items": [bare("a")], "assumptions": [], "constraints": []}
@@ -859,9 +829,8 @@ class Delta(unittest.TestCase):
             decompose.DELTA_KEYS,
             ("keep", "change", "add", "remove", "assumptions", "constraints"),
         )
-        for field in core.STRUCTURE_ITEM_FIELDS:
+        for field in core.REQUIRED_ITEM_FIELDS:
             self.assertIn(field, decompose.DELTA_CONTRACT)
-        self.assertNotIn("  task:", decompose.DELTA_CONTRACT)
 
     def parse_delta_reports_a_missing_or_mistyped_key_instead_of_raising(self):
         parsed = decompose.parse_delta({"keep": "a", "add": []})
@@ -893,7 +862,6 @@ class Delta(unittest.TestCase):
         self.assertIsNot(items[1], kept)
         self.assertEqual(items[1]["task"], "the whole brief")
         self.assertEqual(items[0], changed)
-        self.assertNotIn("task", items[0])
         self.assertEqual(items[2], added)
 
     def a_delta_that_does_not_partition_the_prior_is_rejected_whole(self):
@@ -1019,7 +987,7 @@ with open(os.path.join(here, "prompt-%d.txt" % os.getpid()), "w", encoding="utf-
 print(json.dumps({"type": "result", "session_id": "", "result": "done", "structured_output": {
     "reply": {
         "items": [
-            {"name": "step-%d" % os.getpid(), "files": ["a.py"], "source": None, "acceptance": []}
+            {"name": "step-%d" % os.getpid(), "task": "Build a.", "files": ["a.py"], "source": None, "acceptance": []}
         ],
         "assumptions": [],
         "constraints": [],
@@ -1294,6 +1262,7 @@ GOOD_STRUCTURE = {
     "items": [
         {
             "name": "only",
+            "task": "Build only.",
             "type": "feature",
             "files": ["pkg/only.py"],
             "acceptance": [{"file": "tests/test_only.py", "test": "a_thing_holds"}],

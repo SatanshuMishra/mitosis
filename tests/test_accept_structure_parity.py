@@ -13,7 +13,7 @@ from test_accept_execution import tail
 
 
 def spec_steps(*steps):
-    return [{**step, "spec_ref": ["1.1"], "acceptance": []} for step in steps]
+    return [{"task": "Build %s." % step["name"], **step, "spec_ref": ["1.1"], "acceptance": []} for step in steps]
 
 
 class ParityCase(any_input.AsksCase):
@@ -52,7 +52,7 @@ class ParityCase(any_input.AsksCase):
 class ReconPromptTemplate(ParityCase):
     def the_structure_prompt_is_the_callers_template(self):
         completed = self._spec_plan_only(
-            [{"name": "a", "files": ["a.py"], "spec_ref": ["1.1"], "acceptance": []}],
+            [{"name": "a", "task": "Build a.", "files": ["a.py"], "spec_ref": ["1.1"], "acceptance": []}],
             "--recon-prompt-template",
             "ASK<{ask}>GRAPH<{graph}>",
         )
@@ -99,7 +99,7 @@ class PlanningModel(ParityCase):
 
 class StructureEnvironment(ParityCase):
     def the_structure_call_carries_the_planners_recon_environment(self):
-        completed = self._spec_plan_only([{"name": "a", "files": ["a.py"], "spec_ref": ["1.1"], "acceptance": []}])
+        completed = self._spec_plan_only([{"name": "a", "task": "Build a.", "files": ["a.py"], "spec_ref": ["1.1"], "acceptance": []}])
         self.exits(completed, 0)
         recorded = json.loads(self._recorded("structure-env.json", completed))
         self.assertEqual(

@@ -314,39 +314,12 @@ class Validation(unittest.TestCase):
         self.assertEqual(result["errors"], [])
         self.assertEqual(result["counts"], {"missing_paths": 2, "no_acceptance": 2, "assumptions": 1})
 
-    def a_structure_item_validates_without_a_task(self):
-        self.assertEqual(
-            core.STRUCTURE_ITEM_FIELDS,
-            tuple(field for field in core.REQUIRED_ITEM_FIELDS if field != "task"),
-        )
-        without_task = {"name": "a", "files": ["a.py"], "source": None, "acceptance": []}
-        result = core.validate([without_task], required=core.STRUCTURE_ITEM_FIELDS)
-        self.assertEqual(result["errors"], [])
-        with_task = {**without_task, "task": "do a"}
-        result = core.validate([with_task], required=core.STRUCTURE_ITEM_FIELDS)
-        self.assertEqual(result["errors"], [])
-
     def a_full_item_still_requires_a_task(self):
         without_task = {"name": "a", "files": ["a.py"], "source": None, "acceptance": []}
         errors = core.validate([without_task])["errors"]
         self.assertTrue(any("task" in e for e in errors))
         errors = core.validate([without_task], required=core.REQUIRED_ITEM_FIELDS)["errors"]
         self.assertTrue(any("task" in e for e in errors))
-
-    def an_after_edge_to_a_missing_step_is_reported_in_structure_mode(self):
-        broken = [
-            {
-                "name": "a",
-                "files": ["a.py"],
-                "source": None,
-                "acceptance": [],
-                "after": ["zz"],
-            }
-        ]
-        errors = core.validate(broken, required=core.STRUCTURE_ITEM_FIELDS)["errors"]
-        self.assertEqual(len(errors), 1)
-        self.assertIn("zz", errors[0])
-        self.assertIn("a", errors[0])
 
     def a_missing_required_field_is_a_message_not_a_traceback(self):
         missing = [{"name": "a", "task": "t", "source": None, "acceptance": []}]
@@ -756,10 +729,7 @@ class Plan(unittest.TestCase):
         self.assertIn("run.py", by_step["core-vocab"]["text"])
         chain = [step("first", ["x.py"], msp="m"), step("second", ["y.py"], msp="m", after=["first"])]
         chained = core.plan(chain)
-        self.assertEqual(len(chained["briefs"]), 2)
-        self.assertEqual([[s["name"] for s in b["steps"]] for b in chained["briefs"]], [["first"], ["second"]])
-        self.assertEqual(chained["lane_after"], {"1": [0]})
-        self.assertEqual([lane["session"] for lane in chained["lanes"]], [[1, 2], [2, 2]])
+        self.assertEqual([[s["name"] for s in b["steps"]] for b in chained["briefs"]], [["first", "second"]])
 
     def plan_touches_no_git_and_no_subprocess(self):
         import builtins
@@ -829,17 +799,18 @@ class ReadSetCap(unittest.TestCase):
         self.assertNotIn('"n%03d.py"' % core.CONTEXT_CAP, brief["text"])
         self.assertEqual(core.CONTEXT_CAP, 40)
 
-    def every_session_of_a_lane_is_capped_on_its_own(self):
+    def every_step_of_a_lane_is_capped_on_its_own(self):
         graph = {
-            "a.py": ["a%02d.py" % n for n in range(30)],
+            "a.py": ["a%02d.py" % n for n in range(50)],
             "b.py": ["b%02d.py" % n for n in range(30)],
         }
         items = [step("a", ["a.py"], msp="m"), step("b", ["b.py"], msp="m", after=["a"])]
         plan = core.plan(items, graph=graph)
-        self.assertEqual(lane_steps(plan), [["a"], ["b"]])
-        self.assertEqual([len(brief["read_set"]) for brief in plan["briefs"]], [30, 30])
-        self.assertEqual([brief["read_overflow"] for brief in plan["briefs"]], [0, 0])
-        self.assertEqual(plan["briefs"][1]["read_set"][0], "b00.py")
+        self.assertEqual(lane_steps(plan), [["a", "b"]])
+        brief = plan["briefs"][0]
+        self.assertEqual([len(leaf["read"]) for leaf in brief["steps"]], [core.CONTEXT_CAP, 30])
+        self.assertEqual(brief["steps"][1]["read"][0], "b00.py")
+        self.assertEqual(brief["read_overflow"], 50 - core.CONTEXT_CAP)
 
     def an_explicit_cap_is_still_honoured(self):
         graph = {"hub.py": ["n%03d.py" % n for n in range(12)]}
@@ -925,108 +896,52 @@ def lane_steps(result):
     return [lane["steps"] for lane in result["lanes"]]
 
 
-class Sessions(unittest.TestCase):
-    def every_step_of_a_shared_lane_is_its_own_session(self):
+class OneSessionPerLane(unittest.TestCase):
+    def steps_sharing_a_file_are_one_lane_with_one_brief_that_walks_them_in_order(self):
         result = core.plan(shared_lane(3))
-        self.assertEqual(lane_steps(result), [["s0"], ["s1"], ["s2"]])
-        self.assertEqual([lane["session"] for lane in result["lanes"]], [[1, 3], [2, 3], [3, 3]])
-        self.assertEqual(result["lane_after"], {"1": [0], "2": [1]})
-        self.assertEqual(
-            result["briefs"][1]["session"], {"index": 2, "count": 3, "built": ["s0"], "later": ["s2"]}
-        )
-        self.assertIn(
-            "Session 2 of 3: each Step of this Lane is built in its own Worker session, "
-            "in a row on one branch, and lands as its own commit",
-            result["briefs"][1]["text"].splitlines(),
-        )
-
-    def a_large_session_limit_still_splits_every_step(self):
-        result = core.plan(shared_lane(6, complexity="simple"))
-        self.assertEqual(lane_steps(result), [["s0"], ["s1"], ["s2"], ["s3"], ["s4"], ["s5"]])
-        self.assertEqual(result["lane_order"], [0, 1, 2, 3, 4, 5])
-
-    def a_lone_step_has_no_session(self):
-        result = core.plan([step("s0", ["a.py"])])
+        self.assertEqual(lane_steps(result), [["s0", "s1", "s2"]])
         self.assertNotIn("session", result["lanes"][0])
-        self.assertNotIn("session", result["briefs"][0])
-        self.assertNotIn("Session ", result["briefs"][0]["text"])
+        self.assertNotIn("lane_after", result)
+        brief = result["briefs"][0]
+        self.assertEqual(brief["write_set"], ["shared.py", "f0.py", "f1.py", "f2.py"])
+        self.assertEqual([s["name"] for s in brief["steps"]], ["s0", "s1", "s2"])
+        self.assertNotIn("session", brief)
+        self.assertNotIn("Session ", brief["text"])
+        text = brief["text"]
+        self.assertLess(text.index('"task": "do s0"'), text.index('"task": "do s1"'))
+        self.assertLess(text.index('"task": "do s1"'), text.index('"task": "do s2"'))
 
-    def an_oversized_lane_is_split_in_step_order_into_sessions_that_run_in_a_row(self):
-        items = shared_lane(6, complexity="simple")
-        result = core.plan(items)
-        self.assertEqual(lane_steps(result), [["s0"], ["s1"], ["s2"], ["s3"], ["s4"], ["s5"]])
-        self.assertEqual(
-            [lane["session"] for lane in result["lanes"]],
-            [[1, 6], [2, 6], [3, 6], [4, 6], [5, 6], [6, 6]],
-        )
-        self.assertEqual({lane["msp"] for lane in result["lanes"]}, {0})
-        self.assertEqual(len(result["msps"]), 1)
-        self.assertEqual(result["lane_after"], {"1": [0], "2": [1], "3": [2], "4": [3], "5": [4]})
-        self.assertEqual(result["lane_order"], [0, 1, 2, 3, 4, 5])
-        self.assertNotIn("tokens", result["lanes"][0])
-
-    def a_lane_takes_its_steps_in_dependency_order_before_it_is_split(self):
+    def a_lane_takes_its_steps_in_dependency_order(self):
         items = [
             step("late", ["shared.py", "late.py"], after=["early"]),
             step("early", ["shared.py", "early.py"]),
             step("middle", ["shared.py", "middle.py"], after=["early"]),
         ]
         result = core.plan(items)
-        self.assertEqual(lane_steps(result), [["early"], ["late"], ["middle"]])
-        self.assertEqual(result["lane_after"], {"1": [0], "2": [0, 1]})
+        self.assertEqual(lane_steps(result), [["early", "late", "middle"]])
+        self.assertNotIn("lane_after", result)
 
-    def every_session_keeps_the_lanes_tier(self):
+    def a_lane_takes_the_top_tier_any_of_its_steps_needs(self):
         items = shared_lane(2, complexity="simple") + [
             step("risky", ["shared.py", "auth.py"], complexity="simple")
         ]
         result = core.plan(items, risk_markers=("auth",))
-        self.assertEqual(len(result["lanes"]), 3)
-        self.assertEqual([lane["tier"] for lane in result["lanes"]], ["top", "top", "top"])
+        self.assertEqual([lane["tier"] for lane in result["lanes"]], ["top"])
         self.assertEqual(result["tiers"]["s0"], "cheap")
 
-    def a_later_session_owns_what_earlier_sessions_wrote_and_is_told_what_they_built(self):
-        items = shared_lane(3)
-        result = core.plan(items)
-        first, second, third = result["briefs"]
-        self.assertEqual(first["write_set"], ["shared.py", "f0.py"])
-        self.assertEqual(second["write_set"], ["shared.py", "f1.py", "f0.py"])
-        self.assertEqual(third["write_set"], ["shared.py", "f2.py", "f0.py", "f1.py"])
-        self.assertEqual(second["session"], {"index": 2, "count": 3, "built": ["s0"], "later": ["s2"]})
-        self.assertEqual([s["name"] for s in second["steps"]], ["s1"])
-        self.assertTrue(second["text"].startswith("Lane 1 of MSP s0\nSession 2 of 3: "))
-        self.assertIn("by earlier sessions, read what you build on: s0\n", second["text"])
-        self.assertIn("Left for later sessions, do not start them: s2\n", second["text"])
-        self.assertNotIn("Left for later sessions", third["text"])
-        self.assertNotIn("earlier sessions", first["text"])
-        self.assertEqual(second["text"], core.brief_text(second))
-        self.assertIn("Task: do s1", second["text"].splitlines())
-        self.assertIn(
-            json.dumps(
-                {"leaves": [{"name": "s1", "edit": ["shared.py", "f1.py", "f0.py"], "read": []}]},
-                indent=2,
-            ),
-            second["text"],
-        )
-        self.assertIn(
-            json.dumps(
-                {"leaves": [{"name": "s0", "edit": ["shared.py", "f0.py"], "read": []}]},
-                indent=2,
-            ),
-            first["text"],
-        )
-
-    def a_lane_waiting_on_a_split_lane_waits_for_its_last_session(self):
+    def a_lane_waiting_on_a_step_of_a_shared_lane_waits_for_that_lane(self):
         items = shared_lane(3) + [step("after", ["after.py"], after=["s0"])]
         result = core.plan(items)
         consumer = next(i for i, lane in enumerate(result["lanes"]) if lane["steps"] == ["after"])
-        self.assertEqual(result["lane_after"][str(consumer)], [2])
+        producer = next(i for i, lane in enumerate(result["lanes"]) if "s0" in lane["steps"])
+        self.assertEqual(result["lane_after"][str(consumer)], [producer])
 
-    def a_coupling_pair_names_the_sessions_its_steps_run_in(self):
+    def a_coupling_pair_names_the_lanes_its_steps_run_in(self):
         items = shared_lane(3) + [step("near", ["near.py"])]
         result = core.plan(items, graph={"f2.py": ["near.py"]})
         pairs = result["coupling_review"]
         self.assertEqual([pair["steps"] for pair in pairs], [["s2", "near"]])
-        self.assertEqual(pairs[0]["lanes"], [2, 3])
+        self.assertEqual(pairs[0]["lanes"], [0, 1])
 
     def steps_of_one_lane_are_never_reviewed_as_a_coupled_pair(self):
         items = [
@@ -1034,7 +949,7 @@ class Sessions(unittest.TestCase):
             step("b", ["shared.py", "b.py"]),
         ]
         result = core.plan(items, graph={"a.py": ["b.py"]})
-        self.assertEqual(len(result["lanes"]), 2)
+        self.assertEqual(len(result["lanes"]), 1)
         self.assertNotIn("coupling_review", result)
 
 
@@ -1113,6 +1028,15 @@ class Referee(unittest.TestCase):
         self.assertIn('"edit": [\n        "calc.py"\n      ],', brief["text"])
         self.assertIn("Edit ONLY the files listed under `edit`.", brief["text"])
         self.assertNotIn("Write-set for this Lane", brief["text"])
+
+    def a_brief_with_nothing_locked_forbids_only_the_referee_files(self):
+        text = core.plan([step("build", ["calc.py", "tests/test_calc.py"])])["briefs"][0]["text"]
+        self.assertIn(
+            "Never write any test configuration, snapshot, baseline, allowlist or skip list: mitosis "
+            "reverts such a write and holds the MSP back.",
+            text,
+        )
+        self.assertNotIn("Never write them", text)
 
     def the_plan_refuses_a_step_writing_a_referee_path(self):
         with self.assertRaises(core.ValidationError) as caught:
@@ -1331,7 +1255,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, SharedContext, OwnClone, ReadSetCap, Sessions, Referee, CheckAuthor):
+    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, SharedContext, OwnClone, ReadSetCap, OneSessionPerLane, Referee, CheckAuthor):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

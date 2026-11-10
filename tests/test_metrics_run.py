@@ -253,7 +253,7 @@ def acceptance(elsewhere, config=None):
 
 
 def bare(name, **extra):
-    return {"name": name, "files": [name + ".py"], "source": None, "acceptance": [], "spec_ref": [SPEC_SECTION], **extra}
+    return {"name": name, "task": "Build %s." % name, "files": [name + ".py"], "source": None, "acceptance": [], "spec_ref": [SPEC_SECTION], **extra}
 
 
 def briefed(name, **extra):
@@ -546,7 +546,7 @@ class PlanOnly(unittest.TestCase):
         self.assertEqual([line["event"] for line in lines], ["run.start", "plan", "run.end"])
         self.assertEqual(summary["mode"], "plan-only")
         self.assertEqual(summary["steps"], 3)
-        self.assertEqual(summary["lanes"], 3)
+        self.assertEqual(summary["lanes"], 2)
         self.assertEqual(summary["msps"], 2)
         self.assertEqual(summary["lane_width"], 2)
 
@@ -576,12 +576,12 @@ class PlanOnly(unittest.TestCase):
             self.assertEqual(code, 0, out + err)
             lines = events_of(store)
             summary = summary_of(store)
-        self.assertEqual([line["event"] for line in lines], ["run.start", "stage.end", "run.end"])
+        self.assertEqual([line["event"] for line in lines], ["run.start", "stage.end", "plan", "run.end"])
         self.assertEqual(named(lines, "stage.end")[0]["stage"], "structure")
         self.assertEqual(summary["mode"], "plan-only")
         self.assertEqual(summary["steps"], 2)
         for key in ("lanes", "msps", "clusters", "lane_width"):
-            self.assertIsNone(summary[key], key)
+            self.assertEqual(summary[key], 2, key)
 
 
 class Summary(unittest.TestCase):

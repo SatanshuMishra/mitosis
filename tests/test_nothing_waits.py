@@ -39,15 +39,6 @@ with open(os.path.join(here, "structure-reply.txt"), encoding="utf-8") as handle
 print(json.dumps({"type": "result", "session_id": sys.argv[-2], "result": "done", "structured_output": {"reply": reply}}))
 '''
 
-BRIEFER = r'''
-import json
-import sys
-
-sys.stdin.read()
-reply = {"name": sys.argv[1], "task": "build " + sys.argv[1]}
-print(json.dumps({"type": "result", "session_id": sys.argv[-2], "result": "done", "structured_output": reply}))
-'''
-
 RENDER = r'''
 import json
 import os
@@ -308,7 +299,7 @@ class NothingWaits(unittest.TestCase):
             root = self._folder()
             put(os.path.join(root, "docs", "spec.md"), "# One\n\nbody\n")
             reply = {
-                "items": [{"name": "alpha", "files": ["alpha.py"], "source": None, "acceptance": []}],
+                "items": [{"name": "alpha", "task": "Build alpha.", "files": ["alpha.py"], "source": None, "acceptance": []}],
                 "assumptions": [],
                 "constraints": [],
             }
@@ -321,10 +312,6 @@ class NothingWaits(unittest.TestCase):
                 self._command(root, "structurer.py", STRUCTURER, "{document}", "{session_id}", "{schema}"),
                 "--reask-command",
                 scaffold.REASK_COMMAND,
-                "--brief-command",
-                self._command(root, "briefer.py", BRIEFER, "{step}", "{document}", "{session_id}", "{schema}"),
-                "--reask-command",
-                scaffold.REASK_COMMAND,
                 "--plan-only",
                 "--run-dir",
                 os.path.join(root, "run"),
@@ -332,35 +319,6 @@ class NothingWaits(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, scaffold.tail(completed))
             self.assertNotIn("--timeout", completed.stderr)
             self.assertTrue(os.path.isfile(os.path.join(root, "run", "structure.json")))
-        with self.subTest(stage="brief"):
-            root = self._folder()
-            put(os.path.join(root, "docs", "spec.md"), "# One\n\nbody\n")
-            put(
-                os.path.join(root, "run", "structure.json"),
-                json.dumps(
-                    [
-                        {"name": "alpha", "files": ["alpha.py"], "source": None, "acceptance": [], "task": "do alpha"},
-                        {"name": "beta", "files": ["beta.py"], "source": None, "acceptance": []},
-                    ]
-                ),
-            )
-            completed = self._stage(
-                root,
-                "--spec",
-                "docs/spec.md",
-                "--resume",
-                "--brief-command",
-                self._command(root, "briefer.py", BRIEFER, "{step}", "{document}", "{session_id}", "{schema}"),
-                "--reask-command",
-                scaffold.REASK_COMMAND,
-                "--plan-only",
-                "--run-dir",
-                os.path.join(root, "run"),
-            )
-            self.assertEqual(completed.returncode, 0, scaffold.tail(completed))
-            self.assertNotIn("--timeout", completed.stderr)
-            with open(os.path.join(root, "run", "structure.json"), encoding="utf-8") as handle:
-                self.assertEqual([step.get("task") for step in json.load(handle)], ["do alpha", "build beta"])
         with self.subTest(stage="render-probe"):
             root = self._folder()
             env = stage_env(os.path.join(root, "home"))

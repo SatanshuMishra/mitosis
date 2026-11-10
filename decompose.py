@@ -38,7 +38,9 @@ SKIPPED_DIRS = (".git", "node_modules", "__pycache__")
 DOCUMENT_OPEN = "<<<DOCUMENT"
 DOCUMENT_CLOSE = "DOCUMENT>>>"
 
-OPTIONAL_ITEM_FIELDS = tuple(f for f in core.ITEM_FIELDS if f not in core.REQUIRED_ITEM_FIELDS)
+OPTIONAL_ITEM_FIELDS = tuple(
+    f for f in core.ITEM_FIELDS if f not in core.REQUIRED_ITEM_FIELDS and f != "role"
+)
 
 RETURN_SHAPE = (
     '{"items":[{...},...],'
@@ -51,9 +53,12 @@ REQUIRED_FIELD_LINES = {
     "task": "  task: the Step's entire brief; the Worker that builds it receives nothing else",
     "files": "  files: the write-set, a non-empty list of paths relative to the codebase root",
     "source": "  source: null; the document path and hash are stamped in for you",
-    "acceptance": '  acceptance: a list of {"%s": "<test file>", "%s": "<test identifier>"} objects,'
+    "acceptance": '  acceptance: a list of {"%s": "<test file>", "%s": "<test name>"} objects,'
     % core.ACCEPTANCE_KEYS
-    + " never prose; an empty list declares that the Step proves nothing mechanically",
+    + " never prose; an empty list declares that the Step proves nothing mechanically. The Step"
+    " writes each test itself, so each test file joins its write-set. The acceptance command"
+    " is given the file and the name separately, so the name is the test's name inside that"
+    " file, such as Class.method, and never repeats the file's path or module",
 }
 
 OPTIONAL_FIELD_LINES = (
@@ -106,11 +111,6 @@ TOP_LEVEL_LINES = (
     " one string each; return an empty list when there are none",
 )
 
-TASK_FORBIDDEN = (
-    "A Step must not carry a task; a return in which any Step carries one will be rejected."
-)
-
-
 DELTA_KEYS = ("keep", "change", "add", "remove", "assumptions", "constraints")
 
 DELTA_SHAPE = (
@@ -156,12 +156,10 @@ def _contract(shape, lead, required, tail=()):
 
 CONTRACT = _contract(RETURN_SHAPE, ITEMS_LEAD, core.REQUIRED_ITEM_FIELDS)
 
-STRUCTURE_CONTRACT = _contract(
-    RETURN_SHAPE, ITEMS_LEAD, core.STRUCTURE_ITEM_FIELDS, (TASK_FORBIDDEN,)
-)
+STRUCTURE_CONTRACT = CONTRACT
 
 DELTA_CONTRACT = _contract(
-    DELTA_SHAPE, DELTA_LEAD, core.STRUCTURE_ITEM_FIELDS, (TASK_FORBIDDEN,) + DELTA_RULES
+    DELTA_SHAPE, DELTA_LEAD, core.REQUIRED_ITEM_FIELDS, DELTA_RULES
 )
 
 DECISIONS_HEADING = (
@@ -774,7 +772,7 @@ def parse_delta(value):
     return _parse_lists(value, DELTA_KEYS)
 
 
-REPLY_STEP_FIELDS = tuple(field for field in core.STRUCTURE_ITEM_FIELDS if field != "source")
+REPLY_STEP_FIELDS = tuple(field for field in core.REQUIRED_ITEM_FIELDS if field != "source")
 
 
 def call_schema():
@@ -1043,18 +1041,15 @@ def decompose(
     return _assemble(frozen, spawned, log, root)
 
 
-def _task_errors(items):
+def _role_errors(items):
     named = [
         _step_label(item, index)
         for index, item in enumerate(items)
-        if isinstance(item, dict) and item.get("task") not in (None, "")
+        if isinstance(item, dict) and "role" in item
     ]
     if not named:
         return []
-    return [
-        "%d Steps carry a task, which a structure return must not: %s"
-        % (len(named), ", ".join(named))
-    ]
+    return ["%s: no Step of a plan mitosis makes carries a role" % label for label in named]
 
 
 def _delta_return(prior, value):
@@ -1062,17 +1057,17 @@ def _delta_return(prior, value):
     carried = {key: parsed[key] for key in ("assumptions", "constraints")}
     if parsed["errors"]:
         return {"items": [], **carried, "errors": parsed["errors"]}
-    task_errors = _task_errors(list(parsed["change"]) + list(parsed["add"]))
+    role_errors = _role_errors(list(parsed["change"]) + list(parsed["add"]))
     items, errors = apply_delta(prior, parsed)
-    if task_errors:
-        return {"items": [], **carried, "errors": task_errors + errors}
+    if role_errors:
+        return {"items": [], **carried, "errors": role_errors + errors}
     return {"items": items, **carried, "errors": errors}
 
 
 def _structure_return(value):
     parsed = parse_return(value)
     items = step_names.renamed(list(parsed["items"]))
-    return {**parsed, "items": items, "errors": parsed["errors"] + _task_errors(items)}
+    return {**parsed, "items": items, "errors": parsed["errors"] + _role_errors(items)}
 
 
 def _structure_parse(prior):
@@ -1083,7 +1078,7 @@ def _structure_parse(prior):
 
 def _assemble_structure(frozen, spawned, log, root, prior=None):
     return _assemble(
-        frozen, spawned, log, root, core.STRUCTURE_ITEM_FIELDS, parse=_structure_parse(prior)
+        frozen, spawned, log, root, core.REQUIRED_ITEM_FIELDS, parse=_structure_parse(prior)
     )
 
 
@@ -1141,7 +1136,7 @@ def sample_structures(
     ]
     read = _reader(
         parse_delta if prior else parse_return,
-        _step_check(frozen, root, core.STRUCTURE_ITEM_FIELDS, _structure_parse(prior)),
+        _step_check(frozen, root, core.REQUIRED_ITEM_FIELDS, _structure_parse(prior)),
     )
     spawned = spawn_replies(jobs, count, root, read, REPLY_SCHEMA, reask=reask, env=recon_env)
     if on_sessions is not None:

@@ -173,25 +173,6 @@ print(json.dumps({
 }))
 """
 
-BRIEFER = """
-import json
-import os
-import sys
-
-here = os.path.dirname(os.path.abspath(__file__))
-step = sys.argv[1]
-with open(os.path.join(here, "brief-prompt-%s.txt" % step), "w", encoding="utf-8") as handle:
-    handle.write(sys.stdin.read())
-if os.path.isfile(os.path.join(here, "fail-%s" % step)):
-    sys.exit(2)
-print(json.dumps({
-    "type": "result",
-    "session_id": sys.argv[3],
-    "result": "done",
-    "structured_output": {"name": step, "task": "Build %s." % step},
-}))
-"""
-
 REASKER = """
 import json
 import os
@@ -250,14 +231,6 @@ def structurer(root, reply, second=None):
     return command(root, "structurer.py", STRUCTURER, "{document}", "{session_id}", "{schema}")
 
 
-def briefer(root, failing=()):
-    for name in failing:
-        write(root, "worker/fail-%s" % name, "")
-    return command(
-        root, "briefer.py", BRIEFER, "{step}", "{document}", "{session_id}", "{schema}"
-    )
-
-
 def reasker(root):
     return command(root, "reasker.py", REASKER, "{prompt}", "{session_id}", "{schema}")
 
@@ -277,20 +250,8 @@ def structure_prompts(root):
     return sum(1 for name in os.listdir(worker) if name.startswith("structure-prompt-"))
 
 
-def briefed_steps(root):
-    worker = os.path.join(root, "worker")
-    if not os.path.isdir(worker):
-        return []
-    prefix, suffix = "brief-prompt-", ".txt"
-    return sorted(
-        name[len(prefix) : -len(suffix)]
-        for name in os.listdir(worker)
-        if name.startswith(prefix) and name.endswith(suffix)
-    )
-
-
 def bare(name, **extra):
-    return {"name": name, "files": [name + ".py"], "source": None, "acceptance": [], "spec_ref": [SPEC_SECTION], **extra}
+    return {"name": name, "task": "Build %s." % name, "files": [name + ".py"], "source": None, "acceptance": [], "spec_ref": [SPEC_SECTION], **extra}
 
 
 def briefed(name, **extra):
@@ -414,10 +375,10 @@ class Flags(unittest.TestCase):
         parser = mitosis.build_parser()
         declared = mitosis.declared_flags(parser)
         text = parser.format_help()
-        for flag in ("--decisions", "--structure-samples", "--pick", "--revise", "--brief-command"):
+        for flag in ("--decisions", "--structure-samples", "--pick", "--revise"):
             self.assertIn(flag, declared)
             self.assertIn(flag, text)
-        for placeholder in ("{prompt}", "{model}", "{step}", "{document}"):
+        for placeholder in ("{prompt}", "{model}", "{document}"):
             self.assertIn(placeholder, text)
 
     def a_run_builds_several_lanes_at_once_by_default(self):
@@ -435,41 +396,15 @@ class Flags(unittest.TestCase):
         self.assertEqual(args.structure_samples, 1)
         self.assertIsNone(args.pick)
         self.assertFalse(args.revise)
-        self.assertIsNone(args.brief_command)
         self.assertIsNone(args.decisions)
 
-    def a_brief_template_with_an_unoffered_placeholder_is_refused(self):
-        with tempfile.TemporaryDirectory() as root:
-            write(root, "docs/spec.md", "# One\n\nbody\n")
-            code, _, err = invoke(
-                root,
-                [
-                    "--spec",
-                    "docs/spec.md",
-                    "--decompose-command",
-                    structurer(root, structure_reply(bare("alpha"))),
-                    "--brief-command",
-                    briefer(root) + " {worktree}",
-                    "--plan-only",
-                    "--run-dir",
-                    os.path.join(root, "run"),
-                ],
-            )
-            self.assertEqual(code, mitosis.EXIT_REFUSED)
-            self.assertIn("{worktree}", err)
-            self.assertIn("brief", err)
-            self.assertEqual(structure_prompts(root), 0)
-            self.assertEqual(briefed_steps(root), [])
-
-    def every_offered_brief_placeholder_is_accepted(self):
+    def every_offered_model_placeholder_is_accepted(self):
         args = mitosis.build_parser().parse_args(
             [
                 "--spec",
                 "x",
                 "--decompose-command",
                 "c {prompt} {model} {document} {session_id} {schema}",
-                "--brief-command",
-                "b {prompt} {model} {step} {document} {session_id} {schema}",
                 "--reask-command",
                 "r {prompt} {session_id} {schema} {model}",
             ]
@@ -480,8 +415,6 @@ class Flags(unittest.TestCase):
         cases = (
             ("--decompose-command", "{session_id}", "{schema}", ()),
             ("--decompose-command", "{schema}", "{session_id}", ()),
-            ("--brief-command", "{session_id}", "{schema}", ("--resume",)),
-            ("--brief-command", "{schema}", "{session_id}", ("--resume",)),
         )
         for flag, kept, missing, extra in cases:
             with self.subTest(flag=flag, missing=missing), tempfile.TemporaryDirectory() as root:
@@ -509,7 +442,6 @@ class Flags(unittest.TestCase):
                 self.assertIn(flag, err)
                 self.assertIn(missing, err)
                 self.assertEqual(structure_prompts(root), 0)
-                self.assertEqual(briefed_steps(root), [])
 
     def a_model_run_without_a_complete_reask_command_is_refused_before_any_call(self):
         for reask, named in ((None, "--reask-command is required"), ("r {prompt} {schema}", "{session_id}")):
@@ -599,8 +531,6 @@ class Staging(unittest.TestCase):
                 "docs/spec.md",
                 "--decompose-command",
                 structurer(root, reply, second),
-                "--brief-command",
-                briefer(root),
                 "--reask-command",
                 reasker(root),
                 "--plan-only",
@@ -610,15 +540,13 @@ class Staging(unittest.TestCase):
             ],
         )
 
-    def _resume(self, root, *extra, failing=()):
+    def _resume(self, root, *extra):
         return invoke(
             root,
             [
                 "--spec",
                 "docs/spec.md",
                 "--resume",
-                "--brief-command",
-                briefer(root, failing),
                 "--reask-command",
                 reasker(root),
                 "--run-dir",
@@ -627,7 +555,7 @@ class Staging(unittest.TestCase):
             ],
         )
 
-    def plan_only_writes_a_structure_and_spawns_no_brief(self):
+    def plan_only_writes_the_structure_items_and_plan(self):
         with tempfile.TemporaryDirectory() as root:
             write(root, "docs/spec.md", "# One\n\nbody\n")
             code, out, err = self._plan_only(
@@ -637,19 +565,18 @@ class Staging(unittest.TestCase):
             run_dir = os.path.join(root, "run")
             structure = read_json(os.path.join(run_dir, mitosis.STRUCTURE_FILE))
             self.assertEqual([step["name"] for step in structure], ["alpha", "beta"])
-            self.assertTrue(all("task" not in step for step in structure))
+            self.assertEqual([step["task"] for step in structure], ["Build alpha.", "Build beta."])
             self.assertEqual(structure[0]["source"]["path"], "docs/spec.md")
             self.assertTrue(os.path.isfile(os.path.join(run_dir, mitosis.DECOMPOSE_FILE)))
-            self.assertFalse(os.path.isfile(os.path.join(run_dir, mitosis.ITEMS_FILE)))
-            self.assertFalse(os.path.isfile(os.path.join(run_dir, run.PLAN_FILE)))
+            self.assertTrue(os.path.isfile(os.path.join(run_dir, mitosis.ITEMS_FILE)))
+            self.assertTrue(os.path.isfile(os.path.join(run_dir, run.PLAN_FILE)))
             self.assertEqual(structure_prompts(root), 1)
-            self.assertEqual(briefed_steps(root), [])
             self.assertEqual(section(out, "Split shape")[0].split(", ")[0], "steps 2")
             self.assertEqual(section(out, "Decisions"), ["none: no decisions file was supplied"])
             self.assertIn("by headings", section(out, "Coverage map")[0])
             self.assertTrue(section(out, "Outcome")[-1].startswith("exit 0"))
 
-    def resume_briefs_only_the_unbriefed_steps(self):
+    def resume_plans_from_the_saved_structure_without_a_model_call(self):
         with tempfile.TemporaryDirectory() as root:
             write(root, "docs/spec.md", "# One\n\nbody\n")
             run_dir = os.path.join(root, "run")
@@ -660,23 +587,18 @@ class Staging(unittest.TestCase):
             )
             code, out, err = self._resume(root, "--plan-only")
             self.assertEqual(code, mitosis.EXIT_SHIPPED, err)
-            self.assertEqual(briefed_steps(root), ["beta", "gamma"])
             self.assertEqual(structure_prompts(root), 0)
             items = read_json(os.path.join(run_dir, mitosis.ITEMS_FILE))
             self.assertEqual(
                 [item["task"] for item in items], ["Do alpha.", "Build beta.", "Build gamma."]
             )
-            structure = read_json(os.path.join(run_dir, mitosis.STRUCTURE_FILE))
-            self.assertEqual([step["task"] for step in structure], [item["task"] for item in items])
             plan = read_json(os.path.join(run_dir, run.PLAN_FILE))
             self.assertEqual(len(plan["lanes"]), 3)
             self.assertEqual(plan["lane_after"], {"1": [0]})
-            self.assertTrue(os.path.isfile(os.path.join(run_dir, "briefs", "beta.log")))
-            self.assertTrue(os.path.isfile(os.path.join(run_dir, "briefs", "gamma.log")))
             self.assertEqual(section(out, "Split shape")[0].split(", ")[0], "steps 3")
             self.assertIn("plan id: " + plan["plan_id"], section(out, "Outcome"))
 
-    def resume_continues_into_the_build_once_every_step_is_briefed(self):
+    def resume_continues_into_the_build(self):
         with tempfile.TemporaryDirectory() as root:
             git_repo(root)
             write(root, "docs/spec.md", "# One\n\nbody\n")
@@ -711,57 +633,19 @@ class Staging(unittest.TestCase):
                 mitosis.execute = kept
             self.assertEqual(code, mitosis.EXIT_NO_BRANCHES, err)
             self.assertEqual([item["task"] for item in seen["items"]], ["Do alpha.", "Build beta."])
-            self.assertEqual(briefed_steps(root), ["beta"])
             items = read_json(os.path.join(root, "run", mitosis.ITEMS_FILE))
             self.assertEqual([item["name"] for item in items], ["alpha", "beta"])
 
-    def a_one_shot_run_without_a_brief_command_refuses_before_any_dispatch(self):
-        with tempfile.TemporaryDirectory() as root:
-            git_repo(root)
-            write(root, "docs/spec.md", "# One\n\nbody\n")
-            code, _, err = invoke(
-                root,
-                [
-                    "--spec",
-                    "docs/spec.md",
-                    "--decompose-command",
-                    structurer(root, structure_reply(bare("alpha"))),
-                    "--run-dir",
-                    os.path.join(root, "run"),
-                    "--feature-branch",
-                    "feature",
-                    "--dispatch-command",
-                    "worker {task} {session_id} {schema}",
-                    "--reask-command",
-                    "reask {prompt} {session_id} {schema}",
-                    "--acceptance-command",
-                    "probe {file} {test}",
-                    "--pr-command",
-                    "opener {branch}",
-                    *PR_FLAGS,
-                ],
-            )
-            self.assertEqual(code, mitosis.EXIT_REFUSED)
-            self.assertIn("--brief-command", err)
-            self.assertEqual(structure_prompts(root), 0)
-            self.assertFalse(os.path.isfile(os.path.join(root, "run", mitosis.STRUCTURE_FILE)))
-
-    def a_step_left_unbriefed_refuses_with_exit_three(self):
+    def a_saved_structure_step_without_a_task_is_refused(self):
         with tempfile.TemporaryDirectory() as root:
             write(root, "docs/spec.md", "# One\n\nbody\n")
-            run_dir = os.path.join(root, "run")
-            write(root, "run/structure.json", json.dumps([bare("alpha"), bare("beta"), bare("gamma")]))
-            code, _, err = self._resume(root, "--plan-only", failing=("beta",))
+            untasked = {key: value for key, value in bare("beta").items() if key != "task"}
+            write(root, "run/structure.json", json.dumps([bare("alpha"), untasked]))
+            code, _, err = self._resume(root, "--plan-only")
             self.assertEqual(code, mitosis.EXIT_REFUSED)
             self.assertIn("beta", err)
-            self.assertEqual(len(reasks(root)), 1)
-            self.assertNotIn("alpha", err.split("mitosis:")[-1].split("\n")[0])
-            self.assertEqual(briefed_steps(root), ["alpha", "beta", "gamma"])
-            self.assertFalse(os.path.isfile(os.path.join(run_dir, mitosis.ITEMS_FILE)))
-            structure = read_json(os.path.join(run_dir, mitosis.STRUCTURE_FILE))
-            self.assertEqual(
-                [step.get("task") for step in structure], ["Build alpha.", None, "Build gamma."]
-            )
+            self.assertIn("task", err)
+            self.assertFalse(os.path.isfile(os.path.join(root, "run", mitosis.ITEMS_FILE)))
 
     def resume_without_a_structure_is_refused(self):
         with tempfile.TemporaryDirectory() as root:
@@ -770,7 +654,6 @@ class Staging(unittest.TestCase):
             code, _, err = self._resume(root, "--plan-only")
             self.assertEqual(code, mitosis.EXIT_REFUSED)
             self.assertIn(mitosis.STRUCTURE_FILE, err)
-            self.assertEqual(briefed_steps(root), [])
 
     def a_structure_with_no_steps_for_a_document_with_content_is_refused(self):
         with tempfile.TemporaryDirectory() as root:
@@ -779,12 +662,12 @@ class Staging(unittest.TestCase):
             self.assertEqual(code, mitosis.EXIT_REFUSED)
             self.assertIn("contract error", err)
             self.assertFalse(os.path.isfile(os.path.join(root, "run", mitosis.STRUCTURE_FILE)))
-            self.assertEqual(briefed_steps(root), [])
 
-    def a_structure_carrying_a_task_is_refused(self):
+    def a_structure_step_without_a_task_is_refused(self):
         with tempfile.TemporaryDirectory() as root:
             write(root, "docs/spec.md", "# One\n\nbody\n")
-            code, _, err = self._plan_only(root, structure_reply(briefed("alpha")))
+            untasked = {key: value for key, value in bare("alpha").items() if key != "task"}
+            code, _, err = self._plan_only(root, structure_reply(untasked))
             self.assertEqual(code, mitosis.EXIT_REFUSED)
             self.assertIn("contract error", err)
             self.assertFalse(os.path.isfile(os.path.join(root, "run", mitosis.STRUCTURE_FILE)))
@@ -802,8 +685,7 @@ class Staging(unittest.TestCase):
             structure = read_json(os.path.join(root, "run", mitosis.STRUCTURE_FILE))
             self.assertEqual([step["name"] for step in structure], ["alpha", "gamma"])
             self.assertEqual(structure[0]["task"], "Do alpha.")
-            self.assertNotIn("task", structure[1])
-            self.assertEqual(briefed_steps(root), [])
+            self.assertEqual(structure[1]["task"], "Build gamma.")
             self.assertEqual(section(out, "Split shape")[0].split(", ")[0], "steps 2")
 
     def a_delta_that_does_not_partition_is_refused_and_the_structure_survives(self):
@@ -2141,28 +2023,6 @@ class ReportSections(unittest.TestCase):
         self.assertEqual(mitosis.lane_width({}), 0)
 
 
-class BriefStageReport(unittest.TestCase):
-    def a_run_with_nothing_to_brief_still_reports_what_it_reused(self):
-        lines = mitosis.brief_lines({"written": [], "reused": ["a", "b"], "errors": []})
-        self.assertIn("2 briefs reused", lines[0])
-        self.assertIn("0 briefs written", lines[0])
-
-    def a_brief_that_had_to_be_asked_again_is_named_in_the_report(self):
-        lines = mitosis.brief_lines(
-            {"written": ["a", "b"], "reused": [], "reasked": ["b"], "errors": []}
-        )
-        self.assertIn(
-            "1 brief re-asked in the same session after a reply that failed h10c-brief-return: b",
-            lines,
-        )
-
-    def a_run_where_every_brief_returned_cleanly_says_nothing_about_retries(self):
-        lines = mitosis.brief_lines(
-            {"written": ["a"], "reused": [], "reasked": [], "errors": []}
-        )
-        self.assertTrue(all("re-asked" not in line for line in lines))
-
-
 class CoverageRendering(unittest.TestCase):
     def the_coverage_map_is_rendered_exactly_once_in_a_report(self):
         record = {
@@ -2251,9 +2111,9 @@ class LaneCycleFusion(unittest.TestCase):
         self.assertNotIn(23, mitosis.EXIT_MEANING)
         for code, meaning in mitosis.EXIT_MEANING.items():
             with self.subTest(code=code):
-                lines = mitosis.outcome_lines(None, None, "/run", code)
+                lines = mitosis.outcome_lines({"plan_id": "p"}, None, "/run", code)
                 if code == mitosis.EXIT_SHIPPED:
-                    self.assertIn("no brief was bought", lines[-1])
+                    self.assertIn("the plan was written and nothing was spawned", lines[-1])
                 else:
                     self.assertIn(meaning, lines[-1])
                 self.assertTrue(lines[-1].startswith("exit %d:" % code))
@@ -2263,7 +2123,7 @@ def shared_lane_items(count):
     return [briefed("s%d" % i, files=["shared.py", "f%d.py" % i]) for i in range(count)]
 
 
-class SessionReport(unittest.TestCase):
+class LaneReport(unittest.TestCase):
     def _plan_only(self, items, *extra):
         with tempfile.TemporaryDirectory() as root:
             write(root, "items.json", items_document(root, items))
@@ -2276,54 +2136,13 @@ class SessionReport(unittest.TestCase):
                     ["--items", "items.json", "--plan-only", "--run-dir", os.path.join(root, "run"), *extra],
                 )
 
-    def the_plan_only_report_shows_a_shared_lane_built_as_sessions(self):
+    def steps_sharing_a_file_are_one_lane_in_the_result(self):
         code, out, err = self._plan_only(shared_lane_items(3))
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
-        body = section(out, "Split quality")
-        self.assertIn(
-            "Lanes 0 to 2 are the Steps of one Lane of MSP s0, each built in its own Worker "
-            "session in a row on its branch and landing its own commit",
-            body,
-        )
-        lane_lines = [line for line in body if line.startswith("Lane ")]
-        self.assertEqual(len(lane_lines), 3)
-        for index, line in enumerate(lane_lines):
-            self.assertTrue(line.endswith(", cost 2, session %d of 3: s%d" % (index + 1, index)), line)
-            self.assertNotIn("tokens", line)
         found = json.loads(out.splitlines()[-1])
-        self.assertEqual([lane["session"] for lane in found["lanes"]], [[1, 3], [2, 3], [3, 3]])
+        self.assertEqual([lane["steps"] for lane in found["lanes"]], [["s0", "s1", "s2"]])
+        self.assertEqual([lane["session"] for lane in found["lanes"]], [None])
         self.assertEqual(found["attention"], [])
-
-    def a_lane_that_fits_reports_one_session_and_no_split(self):
-        code, out, err = self._plan_only([briefed("s0"), briefed("s1")])
-        self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
-        body = section(out, "Split quality")
-        self.assertIn("every Lane holds one Step and runs as one Worker session", body)
-        found = json.loads(out.splitlines()[-1])
-        self.assertEqual([lane["session"] for lane in found["lanes"]], [None, None])
-
-    def a_shared_lane_reports_one_session_per_step(self):
-        plan = core.plan(
-            [
-                briefed("s0", files=["shared.py", "f0.py"], msp="m"),
-                briefed("s1", files=["shared.py", "f1.py"], msp="m"),
-                briefed("s2", files=["shared.py", "f2.py"], msp="m"),
-            ]
-        )
-        self.assertEqual(
-            mitosis.session_lines(plan),
-            (
-                "Lanes 0 to 2 are the Steps of one Lane of MSP m, each built in its own Worker "
-                "session in a row on its branch and landing its own commit",
-            ),
-        )
-
-    def lone_steps_report_one_session_each(self):
-        plan = core.plan([briefed("s0"), briefed("s1")])
-        self.assertEqual(
-            mitosis.session_lines(plan),
-            ("every Lane holds one Step and runs as one Worker session",),
-        )
 
     def a_coalesce_cap_below_one_is_a_usage_error(self):
         code, _, err = self._plan_only(shared_lane_items(1), "--coalesce-max", "0")
@@ -2524,7 +2343,6 @@ def load_tests(loader, tests, pattern):
         ItemsEntryPointRefusals,
         ReconcileReporting,
         ReportSections,
-        BriefStageReport,
         CoverageRendering,
         LaneCycleFusion,
         HeldRun,
@@ -2535,7 +2353,7 @@ def load_tests(loader, tests, pattern):
         PushOnly,
         ProvenHead,
         RenderPreflight,
-        SessionReport,
+        LaneReport,
         GateClassRefusals,
         FrontEnds,
     ):

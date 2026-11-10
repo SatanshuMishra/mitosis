@@ -2124,6 +2124,21 @@ def failing_properties(result):
     return tuple(entry for entry in (result or {}).get("properties") or () if fails_with_the_work(entry))
 
 
+def cannot_run_with_the_work(entry):
+    code = entry.get("with_work")
+    return isinstance(code, int) and not isinstance(code, bool) and code not in (0, ACCEPTANCE_FAILURE_EXIT)
+
+
+def needs_repair(entry):
+    return fails_with_the_work(entry) or cannot_run_with_the_work(entry)
+
+
+def unrunnable_properties(result):
+    return tuple(
+        entry for entry in (result or {}).get("properties") or () if cannot_run_with_the_work(entry)
+    )
+
+
 NEVER_JUDGED = "the gate never judged this property, so it proves nothing yet"
 
 
@@ -3682,6 +3697,14 @@ REPAIR_NOTE = (
     "code can fix it, say so in your notes and report failed.\n\nOutput of the failing run:\n%s"
 )
 
+UNRUNNABLE_NOTE = (
+    "\n\nThe acceptance command could not run %s against this Lane's work, so nothing judged it. "
+    "The command is given the test file and the test's name separately; change the test file so "
+    "each test runs under exactly the name given, and leave the name as it is. If the failure "
+    "comes from the environment and no change to the code can fix it, say so in your notes and "
+    "report failed.\n\nOutput of the run:\n%s"
+)
+
 
 def _gate_log_tail(settings, msp, entry):
     log = os.path.join(settings["run_dir"], "gate", "msp-%d" % msp, "%s-with-work.log" % entry)
@@ -3705,16 +3728,21 @@ def _failing_by_lane(plan, gate_result):
     every = tuple((gate_result or {}).get("properties") or ())
     grouped = {}
     for position, entry in enumerate(every):
-        if fails_with_the_work(entry) and entry.get("step") in owners:
+        if needs_repair(entry) and entry.get("step") in owners:
             lane = owners[entry["step"]]
             grouped = {**grouped, lane: grouped.get(lane, ()) + ((position, entry),)}
     return grouped
 
 
 def _repair_note(settings, msp, failing):
-    names = ", ".join(property_key(entry["file"], entry["test"]) for _, entry in failing)
-    logs = "\n".join(_gate_log_tail(settings, msp, position) for position, _ in failing)
-    return REPAIR_NOTE % (names, logs[-MAX_OUTPUT:])
+    notes = ()
+    for note, wanted in ((REPAIR_NOTE, fails_with_the_work), (UNRUNNABLE_NOTE, cannot_run_with_the_work)):
+        chosen = tuple((position, entry) for position, entry in failing if wanted(entry))
+        if chosen:
+            names = ", ".join(property_key(entry["file"], entry["test"]) for _, entry in chosen)
+            logs = "\n".join(_gate_log_tail(settings, msp, position) for position, _ in chosen)
+            notes = notes + (note % (names, logs[-MAX_OUTPUT:]),)
+    return "".join(notes)
 
 
 def _repaired_lane(plan, lane, tree, settings, note):
@@ -4273,7 +4301,8 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
         else None
     )
     held_back = _held_back(gated, tree["branch"], refused) if judged_now else None
-    if held_back is not None:
+    unrunnable = judged_now and refused is None and bool(unrunnable_properties(gated["gate"]))
+    if held_back is not None or unrunnable:
         owed = recorded_gate is None or prior.get("state") != MSP_GATE_FAILED
         repair = (
             _repair_lanes(plan, msp, tree, state, settings, gated)
@@ -4292,6 +4321,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
             )
         if repair["landed"]:
             return _finish_msp(plan, msp, trees, producers, repair["state"], settings, repairable=False)
+    if held_back is not None:
         return write_state(
             run_dir,
             _msp_record(

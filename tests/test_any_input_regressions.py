@@ -10,7 +10,7 @@ import test_accept_any_input as any_input
 import test_accept_structure_parity as parity
 from test_accept_execution import tail
 
-STEP = {"name": "a", "files": ["a.py"], "spec_ref": ["1.1"], "acceptance": []}
+STEP = {"name": "a", "task": "Build a.", "files": ["a.py"], "spec_ref": ["1.1"], "acceptance": []}
 HEADER = b"# Spec\n\n## 1.1 Build\n"
 TOO_LARGE_FOR_ONE_ENVIRONMENT_VALUE = 2000000
 TEMPLATE = ("--recon-prompt-template", "ASK<{ask}>")

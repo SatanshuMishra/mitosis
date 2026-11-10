@@ -18,7 +18,6 @@ VENDORED = (
     "h9-mitosis-state.schema.json",
     "h10-worker-return.schema.json",
     "h10b-decompose-return.schema.json",
-    "h10c-brief-return.schema.json",
     "h11-interphase-record.schema.json",
     "h12-interphase-items.schema.json",
     "h15-pr-fields.schema.json",
@@ -155,7 +154,7 @@ class Refusals(unittest.TestCase):
     def the_call_schema_has_an_object_root_and_no_meta_schema(self):
         handoff = module("handoff")
         validator = vendored_validator()
-        names = ("h10-worker-return", "h10b-decompose-return", "h10c-brief-return")
+        names = ("h10-worker-return", "h10b-decompose-return")
         before = {name: read_bytes(os.path.join(CONTRACTS, name + ".schema.json")) for name in names}
         called = {name: handoff.call_schema(name) for name in names}
         for name, schema in called.items():
@@ -163,11 +162,10 @@ class Refusals(unittest.TestCase):
             self.assertEqual(schema.get("type"), "object", name)
             for key in COMBINATORS:
                 self.assertNotIn(key, schema, name)
-        for name in ("h10-worker-return", "h10c-brief-return"):
-            vendored = read_schema(name)
-            self.assertEqual(
-                called[name], {key: value for key, value in vendored.items() if key != "$schema"}
-            )
+        vendored = read_schema("h10-worker-return")
+        self.assertEqual(
+            called["h10-worker-return"], {key: value for key, value in vendored.items() if key != "$schema"}
+        )
         wrapped = called["h10b-decompose-return"]
         vendored = read_schema("h10b-decompose-return")
         self.assertEqual(wrapped["required"], ["reply"])
