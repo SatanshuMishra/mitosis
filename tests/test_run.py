@@ -321,16 +321,18 @@ class RepoCase(unittest.TestCase):
         path = os.path.join(self.markers, "gate")
         return read(path).splitlines() if os.path.exists(path) else []
 
+    def filter_landings(self, pattern, clean):
+        sh(["git", "config", "filter.landing.clean", clean], self.repo)
+        sh(["git", "config", "filter.landing.required", "true"], self.repo)
+        write(os.path.join(self.repo, ".git", "info", "attributes"), "%s filter=landing\n" % pattern)
+
     def release_the_held_lane_when_landing(self, path, before_release=":"):
         os.makedirs(self.markers, exist_ok=True)
         released = shlex.quote(os.path.join(self.markers, "released"))
-        hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
-        write(
-            hook,
-            "#!/bin/sh\n%s\ngit diff --cached --name-only | grep -qx %s && touch %s\nexit 0\n"
-            % (before_release, shlex.quote(path), released),
-        )
-        os.chmod(hook, 0o755)
+        script = os.path.join(self.markers, "landing.sh")
+        write(script, "#!/bin/sh\nif [ ! -e %s ]; then\n%s\ntouch %s\nfi\ncat\n" % (released, before_release, released))
+        os.chmod(script, 0o755)
+        self.filter_landings(path, shlex.quote(script))
 
     def execute(self, plan, mode="ok", accept="real", pr=PR_STUB, **extra):
         return run.execute(
@@ -558,10 +560,10 @@ class Dispatch(RepoCase):
         self.assertEqual(records[0]["exit"], 0)
         self.assertIsNone(records[0]["returned"])
         self.assertIn("h10-worker-return", records[0]["reason"])
-        self.assertTrue(records[0]["stdout"].endswith("0.reask.out"))
+        self.assertTrue(records[0]["stdout"].endswith("0.retry.reask.out"))
         asked = self.reask_calls()
-        self.assertEqual(len(asked), 1)
-        self.assertEqual(asked[0][1], records[0]["session_id"])
+        self.assertEqual(len(asked), 2)
+        self.assertEqual(asked[-1][1], records[0]["session_id"])
         self.assertEqual(asked[0][2], run.worker_schema())
         self.assertIn("stdout is not one JSON object", asked[0][0])
 
@@ -674,20 +676,12 @@ class Dispatch(RepoCase):
         self.assertEqual(len(self.pull_requests()), 1)
 
     def a_refused_commit_fails_its_lane_and_the_run_goes_on(self):
-        hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
-        write(hook, "#!/bin/sh\ngit diff --cached --name-only | grep -qx refused.txt && exit 1\nexit 0\n")
-        os.chmod(hook, 0o755)
+        self.filter_landings("refused.txt", "false")
         self._commit_refused_run(["refused.txt"])
-
-    def a_write_set_path_git_ignores_fails_its_lane_and_the_run_goes_on(self):
-        self.seed_existing(".gitignore", "build/\n")
-        self._commit_refused_run(["build/out.txt"])
 
     def a_refused_commit_leaves_nothing_staged_to_block_a_siblings_merge(self):
         self.add_remote()
-        hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
-        write(hook, "#!/bin/sh\ngit diff --cached --name-only | grep -qx refused.txt && exit 1\nexit 0\n")
-        os.chmod(hook, 0o755)
+        self.filter_landings("refused.txt", "false")
         plan = core.plan(
             [
                 step("p", ["p.txt"]),
@@ -704,14 +698,14 @@ class Dispatch(RepoCase):
         m = next(int(i) for i, msp in enumerate(plan["msps"]) if "a" in msp["steps"])
         self.assertIn("is failed", final["msps"][str(m)]["reason"])
 
-    def a_commit_msg_hook_that_refuses_every_landing_fails_each_lane_and_stops_nothing(self):
+    def a_commit_msg_hook_never_refuses_a_landing(self):
         hook = os.path.join(self.repo, ".git", "hooks", "commit-msg")
         write(hook, "#!/bin/sh\ngrep -q '^JIRA-' \"$1\" || { echo 'needs a ticket' >&2; exit 1; }\n")
         os.chmod(hook, 0o755)
         plan = core.plan([step(name, [name + ".txt"]) for name in "abc"])
         final = self.execute(plan)
-        self.assertEqual({r["state"] for r in final["lanes"].values()}, {"failed"})
-        self.assertTrue(all("needs a ticket" in r["reason"] for r in final["lanes"].values()))
+        self.assertEqual({r["state"] for r in final["lanes"].values()}, {"ok"})
+        self.assertTrue(all(r["commit"] for r in final["lanes"].values()))
 
     def a_repository_without_a_commit_identity_is_refused_before_anything_is_written(self):
         sh(["git", "config", "user.useConfigOnly", "true"], self.repo)
@@ -733,9 +727,7 @@ class Dispatch(RepoCase):
         self.assertEqual({r["state"] for r in final["lanes"].values()}, {"ok"})
 
     def two_lane_specific_refusals_first_never_stop_the_lanes_after_them(self):
-        hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
-        write(hook, "#!/bin/sh\ngit diff --cached --name-only | grep -q '^refused' && exit 1\nexit 0\n")
-        os.chmod(hook, 0o755)
+        self.filter_landings("refused*", "false")
         plan = core.plan(
             [step("refused-%d" % n, ["refused-%d.txt" % n]) for n in range(2)]
             + [step("fine-%d" % n, ["fine-%d.txt" % n]) for n in range(4)]
@@ -853,9 +845,7 @@ class Dispatch(RepoCase):
         self.assertEqual(merged, (producer["branch"],))
 
     def a_refused_lane_does_not_halt_a_run_whose_other_commits_land(self):
-        hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
-        write(hook, "#!/bin/sh\ngit diff --cached --name-only | grep -q '^refused' && exit 1\nexit 0\n")
-        os.chmod(hook, 0o755)
+        self.filter_landings("refused*", "false")
         plan = core.plan(
             [step("fine", ["fine.txt"])]
             + [step("refused-%d" % n, ["refused-%d.txt" % n]) for n in range(3)]
@@ -1114,27 +1104,27 @@ class Resume(RepoCase):
         self.assertEqual(first["lanes"]["0"]["state"], "ok")
         self.assertEqual(first["lanes"]["1"]["state"], "failed")
         self.assertEqual(self.marker(0).count("ran"), 1)
-        self.assertEqual(self.marker(1).count("ran"), 1)
+        self.assertEqual(self.marker(1).count("ran"), 2)
         second = self.execute(plan, mode="ok", resume=True)
         self.assertEqual(second["lanes"]["0"], first["lanes"]["0"])
         self.assertEqual(second["lanes"]["1"]["state"], "ok")
         self.assertEqual(self.marker(0).count("ran"), 1)
-        self.assertEqual(self.marker(1).count("ran"), 2)
+        self.assertEqual(self.marker(1).count("ran"), 3)
 
     def a_held_back_gate_is_gated_again_on_resume_without_repeating_the_lane(self):
         self.add_remote()
         plan = core.plan([gated_step()])
-        first = self.execute(plan, accept="inert")
+        first = self.execute(plan, accept="failing")
         self.assertEqual(first["lanes"]["0"]["state"], "ok")
         self.assertEqual(first["msps"]["0"]["state"], "gate-failed")
-        self.assertEqual(first["msps"]["0"]["gate"]["outcome"], "inert")
-        self.assertEqual(self.marker(0).count("ran"), 1)
+        self.assertEqual(first["msps"]["0"]["gate"]["outcome"], "inconclusive")
+        self.assertEqual(self.marker(0).count("ran"), 2)
         self.assertEqual(self.remote_heads(), [])
         self.assertEqual(self.pull_requests(), [])
         first_gate_runs = len(self.gate_runs())
         self.assertGreater(first_gate_runs, 0)
         second = self.execute(plan, accept="real", resume=True)
-        self.assertEqual(self.marker(0).count("ran"), 1)
+        self.assertEqual(self.marker(0).count("ran"), 2)
         self.assertEqual(len(self.gate_runs()), first_gate_runs + 3)
         self.assertEqual(second["msps"]["0"]["state"], "shipped")
         self.assertEqual(second["msps"]["0"]["gate"]["outcome"], "pass")
@@ -1200,7 +1190,7 @@ class Resume(RepoCase):
         self.assertTrue(second["drift"]["drifted"])
         self.assertEqual(second["drift"]["path"], "docs/change.md")
         self.assertEqual(second["lanes"]["0"]["state"], "ok")
-        self.assertEqual(self.marker(0).count("ran"), 2)
+        self.assertEqual(self.marker(0).count("ran"), 3)
 
 
 class Gate(RepoCase):
@@ -1229,24 +1219,25 @@ class Gate(RepoCase):
         self.assertFalse(any(b.startswith("probe/") for b in self.branches()))
         self.assertEqual(self.gate_checkouts(), [])
 
-    def an_inert_acceptance_property_holds_the_msp_back(self):
+    def an_inert_acceptance_property_ships_and_is_reported(self):
         plan = core.plan([gated_step()])
         trees = self.build(plan)
         result = self.gate(plan, trees, accept="inert")
         self.assertEqual(result["outcome"], "inert")
-        self.assertTrue(result["blocks"])
-        self.assertEqual(run.gate_state(result), "gate-inert")
+        self.assertFalse(result["blocks"])
+        self.assertEqual(run.failing_properties(result), ())
         shutil.rmtree(self.run_dir, ignore_errors=True)
         self.add_remote()
         state = self.execute(core.plan([gated_step()]), accept="inert", pr=self.pr_command())
         record = state["msps"]["0"]
-        self.assertEqual(record["state"], "gate-failed")
+        self.assertEqual(record["state"], "shipped")
         self.assertEqual(record["gate"]["outcome"], "inert")
+        self.assertEqual(self.remote_heads(), ["mitosis/impl"])
+        self.assertEqual(len(self.pull_requests()), 1)
         self.assertEqual(
-            record["reason"], "the gate judged inert, so mitosis/impl was committed and not pushed"
+            self.fields(0)["testing"],
+            [{"check": "tests/t_impl.txt::property", "result": "passes with and without the work"}],
         )
-        self.assertEqual(self.remote_heads(), [])
-        self.assertEqual(self.pull_requests(), [])
 
     def a_step_that_changed_no_implementation_does_not_block(self):
         self.seed_existing("impl.txt", "already works\n")
@@ -1255,7 +1246,7 @@ class Gate(RepoCase):
         result = self.gate(plan, trees, accept="inert")
         self.assertEqual(result["outcome"], "not-applicable")
         self.assertFalse(result["blocks"])
-        self.assertIsNone(run.gate_state(result))
+        self.assertEqual(run.failing_properties(result), ())
         self.assertEqual(result["counts"]["inert"], 0)
         self.assertIn("changed no implementation", result["properties"][0]["reason"])
 
@@ -1271,9 +1262,9 @@ class Gate(RepoCase):
         trees = self.build(plan)
         result = self.gate(plan, trees, accept="inert")
         self.assertEqual(result["outcome"], "inert")
-        self.assertTrue(result["blocks"])
+        self.assertFalse(result["blocks"])
 
-    def a_step_with_nothing_to_change_and_nothing_to_implement_still_blocks(self):
+    def a_step_with_nothing_to_change_and_nothing_to_implement_is_called_inert(self):
         self.seed_existing("tests/t_impl.txt", "a property that already holds\n")
         only_test = step(
             "impl",
@@ -1284,7 +1275,7 @@ class Gate(RepoCase):
         trees = self.build(plan, mode="nothing")
         result = self.gate(plan, trees, accept="inert")
         self.assertEqual(result["outcome"], "inert")
-        self.assertTrue(result["blocks"])
+        self.assertFalse(result["blocks"])
 
     def a_step_that_did_change_implementation_is_still_called_inert(self):
         self.seed_existing("impl.txt", "already works\n")
@@ -1292,15 +1283,15 @@ class Gate(RepoCase):
         trees = self.build(plan, mode="ok")
         result = self.gate(plan, trees, accept="inert")
         self.assertEqual(result["outcome"], "inert")
-        self.assertTrue(result["blocks"])
+        self.assertFalse(result["blocks"])
 
     def a_reverted_build_error_is_inconclusive_not_a_pass(self):
         plan = core.plan([gated_step()])
         trees = self.build(plan)
         result = self.gate(plan, trees, accept="brittle")
         self.assertEqual(result["outcome"], "inconclusive")
-        self.assertTrue(result["blocks"])
-        self.assertEqual(run.gate_state(result), "gate-inconclusive")
+        self.assertFalse(result["blocks"])
+        self.assertEqual(run.failing_properties(result), ())
         self.assertEqual(result["properties"][0]["reverted"], 2)
         self.assertEqual(result["counts"]["pass"], 0)
 
@@ -1310,7 +1301,7 @@ class Gate(RepoCase):
         result = self.gate(plan, trees, accept="failing")
         self.assertEqual(result["outcome"], "inconclusive")
         self.assertTrue(result["blocks"])
-        self.assertIn("work present", result["properties"][0]["reason"])
+        self.assertEqual(result["properties"][0]["reason"], run.FAILS_WITH_THE_WORK)
         self.assertEqual(len(self.gate_runs()), 1)
 
     def a_step_whose_test_file_is_not_named_is_counted_not_passed(self):
@@ -1324,7 +1315,7 @@ class Gate(RepoCase):
             result["counts"], {"pass": 0, "weak": 0, "inert": 0, "inconclusive": 0, "not-applicable": 1}
         )
         self.assertEqual(self.gate_runs(), [])
-        self.assertIsNone(run.gate_state(result))
+        self.assertEqual(run.failing_properties(result), ())
 
     def the_implementation_set_is_the_write_set_minus_named_acceptance_files(self):
         plan = core.plan(
@@ -1376,7 +1367,7 @@ class Gate(RepoCase):
         self.assertEqual(sh(["git", "status", "--porcelain"], tree), "")
         self.assertEqual(read(os.path.join(tree, "impl.txt")), "work by lane 0\n")
 
-    def a_gate_that_throws_records_the_error_and_holds_the_msp_back(self):
+    def a_gate_that_throws_records_the_error_and_ships(self):
         self.add_remote()
         plan = core.plan([gated_step()])
         state = run.execute(
@@ -1393,12 +1384,15 @@ class Gate(RepoCase):
             render_command=self.render_command,
             env=spawn_env(),
         )
-        self.assertEqual(state["msps"]["0"]["state"], "gate-failed")
+        self.assertEqual(state["msps"]["0"]["state"], "shipped")
         self.assertIsNone(state["msps"]["0"]["gate"])
         self.assertIn("no-such-runner", state["msps"]["0"]["gate_error"])
-        self.assertIn("the gate could not run", state["msps"]["0"]["reason"])
-        self.assertEqual(self.remote_heads(), [])
-        self.assertEqual(self.pull_requests(), [])
+        self.assertEqual(self.remote_heads(), ["mitosis/impl"])
+        self.assertEqual(len(self.pull_requests()), 1)
+        self.assertIn(
+            {"check": "Acceptance gate", "result": "Not run: the gate could not run"},
+            self.fields(0)["testing"],
+        )
 
     def _setup_gate(self, plan, trees, names):
         script = os.path.join(self.tmp, "setup.py")
@@ -1440,11 +1434,11 @@ class Gate(RepoCase):
     def an_unproven_property_is_named_in_the_body_with_its_step(self):
         self.add_remote()
         plan = core.plan([gated_step()])
-        held = self.execute(plan, accept="inert", pr=self.pr_command())
+        held = self.execute(plan, accept="failing", pr=self.pr_command())
         self.assertEqual(held["msps"]["0"]["state"], "gate-failed")
         head = held["msps"]["0"]["gate"]["commit"]
         state = self.execute(
-            plan, accept="inert", pr=self.pr_command(), resume=True, proven_heads={0: head}
+            plan, accept="failing", pr=self.pr_command(), resume=True, proven_heads={0: head}
         )
         self.assertEqual(state["msps"]["0"]["state"], "shipped")
         self.assertEqual(state["msps"]["0"]["proven_head"], head)
@@ -1452,7 +1446,7 @@ class Gate(RepoCase):
         self.assertEqual(self.fields(0)["change"], ["Do impl."])
         self.assertEqual(
             self.fields(0)["testing"],
-            [{"check": "tests/t_impl.txt::property", "result": "passes with and without the work"}],
+            [{"check": "tests/t_impl.txt::property", "result": "Not run: the acceptance command was inconclusive"}],
         )
 
 
@@ -1491,7 +1485,7 @@ class GateReuse(RepoCase):
     def test_resume_after_a_blocking_gate_gates_again(self):
         self.add_remote()
         plan = core.plan([gated_step()])
-        held = self.execute(plan, accept="exit7", no_push=True)
+        held = self.execute(plan, accept="failing", no_push=True)
         self.assertEqual(held["msps"]["0"]["state"], "gate-failed")
         self.assertEqual(held["msps"]["0"]["gate"]["outcome"], "inconclusive")
         gate_runs = len(self.gate_runs())
@@ -1528,25 +1522,27 @@ class GateReuse(RepoCase):
     def a_blocked_gate_resumed_with_the_same_command_reuses_its_verdict_without_a_run(self):
         self.add_remote()
         plan = core.plan([gated_step()])
-        held = self.execute(plan, accept="inert", no_push=True)
-        self.assertEqual(held["msps"]["0"]["gate"]["outcome"], "inert")
+        held = self.execute(plan, accept="failing", no_push=True)
+        self.assertEqual(held["msps"]["0"]["gate"]["outcome"], "inconclusive")
         gate_runs = len(self.gate_runs())
-        resumed = self.execute(plan, accept="inert", no_push=True, resume=True)
+        builds = self.marker(0).count("ran")
+        resumed = self.execute(plan, accept="failing", no_push=True, resume=True)
         self.assertEqual(len(self.gate_runs()), gate_runs)
+        self.assertEqual(self.marker(0).count("ran"), builds)
         self.assertEqual(resumed["msps"]["0"]["state"], "gate-failed")
         self.assertEqual(resumed["msps"]["0"]["gate"], held["msps"]["0"]["gate"])
 
     def a_covered_elsewhere_class_passes_the_property_without_a_run(self):
         self.add_remote()
         plan = core.plan([gated_step()])
-        held = self.execute(plan, accept="inert", no_push=True)
+        held = self.execute(plan, accept="failing", no_push=True)
         gate_runs = len(self.gate_runs())
         classes = (
             {"test": "tests/t_impl.txt::property", "class": "covered-elsewhere", "reason": "the suite"},
         )
         resumed = self.execute(
             plan,
-            accept="inert",
+            accept="failing",
             no_push=True,
             resume=True,
             gate_classes=classes,
@@ -1897,9 +1893,9 @@ class Ship(RepoCase):
     def a_held_back_msp_blocks_the_cluster_below_it(self):
         self.add_remote()
         plan = core.plan([gated_step(), step("b", ["b.txt"], after=["impl"])])
-        state = self.execute(plan, accept="inert", pr=self.pr_command())
+        state = self.execute(plan, accept="failing", pr=self.pr_command())
         self.assertEqual(state["msps"]["0"]["state"], "gate-failed")
-        self.assertEqual(state["msps"]["0"]["gate"]["outcome"], "inert")
+        self.assertEqual(state["msps"]["0"]["gate"]["outcome"], "inconclusive")
         self.assertEqual(state["msps"]["1"]["state"], run.MSP_BLOCKED)
         self.assertEqual(self.pull_requests(), [])
         self.assertEqual(self.remote_heads(), [])
@@ -2167,7 +2163,8 @@ class Ship(RepoCase):
             if lane_state != "ok":
                 self.assertFalse(run.succeeded(state_with("shipped", lane_state, clean)), lane_state)
         self.assertFalse(run.succeeded(state_with("shipped", findings={**clean, "undeclared": ["x"]})))
-        self.assertFalse(run.succeeded(state_with("shipped", findings={**clean, "unwritten": ["x"]})))
+        self.assertTrue(run.succeeded(state_with("shipped", findings={**clean, "unwritten": ["x"]})))
+        self.assertFalse(run.succeeded(state_with(run.MSP_UNCHANGED, findings={**clean, "unwritten": ["x"]})))
         self.assertFalse(run.succeeded(state_with("shipped", findings=None)))
         self.assertFalse(run.succeeded({"lanes": {}, "msps": {}}))
 
@@ -2247,7 +2244,7 @@ class Sessions(RepoCase):
         self.assertEqual(first["msps"]["0"]["state"], run.MSP_BLOCKED)
         second = self.execute(plan, accept="real", pr=None, no_push=True, resume=True)
         self.assertEqual(second["lanes"]["0"], first["lanes"]["0"])
-        self.assertEqual([self.marker(i).count("ran") for i in range(3)], [1, 2, 1])
+        self.assertEqual([self.marker(i).count("ran") for i in range(3)], [1, 3, 1])
         self.assertEqual([second["lanes"][str(i)]["state"] for i in range(3)], ["ok", "ok", "ok"])
         self.assertEqual(self._landings(second), ["feat(ship): s0", "feat(ship): s1", "feat(ship): s2"])
         self.assertEqual(second["msps"]["0"]["state"], run.MSP_COMMITTED)

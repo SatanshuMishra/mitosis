@@ -77,16 +77,10 @@ class GateSymlink(unittest.TestCase):
         extra = ("--charter", self.scratch.file("charter.md", charter)) if charter else ()
         return self.scratch.build(items, *extra, push=True), placed
 
-    def _held_back(self, completed, code):
-        self.assertEqual(completed.returncode, code, "mitosis exit code" + teeth.tail(completed))
-        msp = teeth.summary_of(completed)["msps"][0]
-        self.assertEqual(msp["state"], "gate-failed")
-        self.assertEqual(self.scratch.checked("ls-remote", "origin", "mitosis/demo"), "")
-        self.assertFalse(os.path.exists(self.scratch.pr_log), "pr.log exists")
-        return msp
-
     def _inconclusive_link(self, completed, path):
-        msp = self._held_back(completed, 21)
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + teeth.tail(completed))
+        msp = teeth.summary_of(completed)["msps"][0]
+        self.assertEqual(msp["state"], "shipped")
         first = msp["gate"]["properties"][0]
         self.assertEqual(first["outcome"], "inconclusive")
         self.assertEqual(first["reason"], link_reason(path))

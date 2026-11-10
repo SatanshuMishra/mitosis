@@ -407,7 +407,7 @@ class PinnedDiffEnv(unittest.TestCase):
         items = scratch.items([step("label", ["calc.py", TEST_FILE], "demo", acceptance=[AREAS])])
         scratch.jobs({"label": {"writes": {"calc.py": AREA_AFTER, TEST_FILE: AREA_TEST}}})
         completed = scratch.build(items, env={"GIT_DIFF_OPTS": "--unified=5"})
-        self.assertEqual(completed.returncode, 24, "mitosis exit code" + tail(completed))
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
         first = self._first_property(summary_of(completed))
         self.assertEqual(first["outcome"], "weak")
         self.assertRegex(first["reason"] or "", r"calc\.py:3\b")

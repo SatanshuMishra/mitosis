@@ -370,6 +370,17 @@ class GateTeeth(unittest.TestCase):
         self.assertTrue(summary.get("msps"), "the JSON summary lists no MSP" + tail(completed))
         return summary["msps"][0]
 
+    def _shipped(self, completed, outcome):
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
+        msp = self._msp(completed)
+        self.assertEqual(self._first_property(msp)["outcome"], outcome)
+        self.assertEqual(msp["state"], "shipped")
+        self.assertEqual(
+            len(self.scratch.checked("ls-remote", "origin", "mitosis/demo").splitlines()), 1
+        )
+        with open(self.scratch.pr_log, encoding="utf-8") as handle:
+            self.assertEqual(len(handle.read().splitlines()), 1)
+
     def _held_back(self, completed, code, outcome):
         self.assertEqual(completed.returncode, code, "mitosis exit code" + tail(completed))
         msp = self._msp(completed)
@@ -392,11 +403,11 @@ class GateTeeth(unittest.TestCase):
 
     def an_existence_only_test_of_a_broken_add_is_weak(self):
         completed = self._gated({"calc.py": BROKEN_ADD, "tests/test_calc.py": EXISTENCE_TEST})
-        self._held_back(completed, 24, "weak")
+        self._shipped(completed, "weak")
 
-    def a_skipped_test_fails_the_gate(self):
+    def a_skipped_test_is_called_weak_and_ships(self):
         completed = self._gated({"calc.py": CORRECT_ADD, "tests/test_calc.py": SKIPPED_TEST})
-        self._held_back(completed, 24, "weak")
+        self._shipped(completed, "weak")
 
     def a_guard_beside_a_proven_test_ships(self):
         completed = self._gated(
@@ -423,18 +434,18 @@ class GateTeeth(unittest.TestCase):
         )
         self._held_back(completed, 21, "inconclusive")
 
-    def an_inert_test_holds_the_msp_back(self):
+    def an_inert_test_is_reported_and_ships(self):
         completed = self._gated(
             {"calc.py": SWAPPED_ADD, "tests/test_calc.py": EXACT_TEST},
             seeded={"calc.py": CORRECT_ADD},
         )
-        self._held_back(completed, 20, "inert")
+        self._shipped(completed, "inert")
 
-    def an_inconclusive_property_holds_the_msp_back(self):
+    def an_inconclusive_property_is_reported_and_ships(self):
         completed = self._gated(
             {"calc.py": CORRECT_ADD, "tests/test_calc.py": EXACT_TEST}, acceptance="exit-2"
         )
-        self._held_back(completed, 21, "inconclusive")
+        self._shipped(completed, "inconclusive")
 
     def a_test_that_kills_a_mutant_passes_and_ships(self):
         completed = self._gated({"calc.py": CORRECT_ADD, "tests/test_calc.py": EXACT_TEST})
@@ -477,11 +488,11 @@ def load_tests(loader, standard, pattern):
             (
                 "mutants_match_receipts_g14",
                 "an_existence_only_test_of_a_broken_add_is_weak",
-                "a_skipped_test_fails_the_gate",
+                "a_skipped_test_is_called_weak_and_ships",
                 "a_guard_beside_a_proven_test_ships",
                 "a_guard_the_work_breaks_holds_the_msp_back",
-                "an_inert_test_holds_the_msp_back",
-                "an_inconclusive_property_holds_the_msp_back",
+                "an_inert_test_is_reported_and_ships",
+                "an_inconclusive_property_is_reported_and_ships",
                 "a_test_that_kills_a_mutant_passes_and_ships",
                 "a_data_file_is_judged_by_the_drop_added_lines_mutant",
             ),

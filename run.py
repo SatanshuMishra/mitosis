@@ -10,7 +10,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import xml.etree.ElementTree as ElementTree
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -93,16 +92,6 @@ TRACE_FOLDER_VARIABLE = "MITOSIS_LINE_TRACE"
 
 TRACE_ROOT_VARIABLE = "MITOSIS_TRACE_ROOT"
 
-SUITE_FAILURE_EXIT = 1
-
-SUITE_BASELINE = "unmutated"
-
-UNITTEST_FAILURE = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([^)\s]+)\)", re.MULTILINE)
-
-PYTEST_FAILURE = re.compile(r"^FAILED (\S+::\S+)", re.MULTILINE)
-
-UNSAFE_XML = re.compile(r"<!(?:DOCTYPE|ENTITY)", re.IGNORECASE)
-
 SAMPLED_CODE = "code"
 
 SAMPLED_DATA = "data"
@@ -111,7 +100,7 @@ SAMPLED_UNLOADED = "unloaded"
 
 MSP_GATE_FAILED = "gate-failed"
 
-BLOCKING_OUTCOMES = ("weak", "inert", "inconclusive")
+UNPROVEN_OUTCOMES = ("weak", "inert", "inconclusive")
 
 PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 
@@ -265,9 +254,11 @@ def _decoded(data):
     return data.decode("utf-8", "surrogateescape")
 
 
-def _git_kept_environ():
+def _git_kept_environ(source=None):
     return {
-        name: value for name, value in os.environ.items() if name not in UNPINNED_GIT_VARIABLES
+        name: value
+        for name, value in (os.environ if source is None else source).items()
+        if name not in UNPINNED_GIT_VARIABLES
     }
 
 
@@ -309,6 +300,19 @@ def _config_count(base):
     return int(raw)
 
 
+def _config_added(base, settings):
+    count = _config_count(base)
+    added = {
+        name: value
+        for offset, (key, setting) in enumerate(settings)
+        for name, value in (
+            ("GIT_CONFIG_KEY_%d" % (count + offset), key),
+            ("GIT_CONFIG_VALUE_%d" % (count + offset), setting),
+        )
+    }
+    return {**added, "GIT_CONFIG_COUNT": str(count + len(settings))}
+
+
 def _config_entries(base):
     count = _config_count(base)
     held = tuple(
@@ -317,15 +321,7 @@ def _config_entries(base):
     )
     if count >= len(HTTP_SETTINGS) and held[count - len(HTTP_SETTINGS):] == HTTP_SETTINGS:
         return {}
-    added = {
-        name: value
-        for offset, (key, setting) in enumerate(HTTP_SETTINGS)
-        for name, value in (
-            ("GIT_CONFIG_KEY_%d" % (count + offset), key),
-            ("GIT_CONFIG_VALUE_%d" % (count + offset), setting),
-        )
-    }
-    return {**added, "GIT_CONFIG_COUNT": str(count + len(HTTP_SETTINGS))}
+    return _config_added(base, HTTP_SETTINGS)
 
 
 def process_environ(env=None, repo=None):
@@ -338,8 +334,21 @@ def process_environ(env=None, repo=None):
     }
 
 
+REPOSITORY_PROGRAMS_OFF = (("core.hooksPath", os.devnull), ("core.fsmonitor", "false"))
+
+_programs_off_for_unconfined_git = ()
+
+
+def _keep_repository_programs_confined(sandbox):
+    global _programs_off_for_unconfined_git
+    _programs_off_for_unconfined_git = () if sandbox is None else REPOSITORY_PROGRAMS_OFF
+
+
 def git_environ(env=None, cwd=None):
-    return {**process_environ(_git_kept_environ(), cwd), **(env or {})}
+    merged = {**process_environ(_git_kept_environ(), cwd), **(env or {})}
+    if not _programs_off_for_unconfined_git:
+        return merged
+    return {**merged, **_config_added(merged, _programs_off_for_unconfined_git)}
 
 
 def _git_once(args, cwd, raw=False, data=None, env=None):
@@ -570,7 +579,6 @@ TEMPLATE_PLACEHOLDERS = {
     "decompose": ("prompt", "model", "document", "session_id"),
     "acceptance": ("file", "test", "worktree"),
     "gate-setup": ("worktree",),
-    "suite": ("worktree", "report"),
     "pull-request": ("branch", "base", "title", "body", "worktree", "msp", "remote"),
 }
 
@@ -810,16 +818,108 @@ def _attached_branch(tree):
     return git(["symbolic-ref", "--short", "HEAD"], tree, env=PINNED_GIT)
 
 
+HOOKS_OFF = ("-c", "core.hooksPath=" + os.devnull)
+
+
+def _ignored_of(tree, paths):
+    listed = git_run(["check-ignore", "-z", "--stdin"], tree, raw=True, data=b"\0".join(map(os.fsencode, paths)) + b"\0")
+    if listed.returncode not in (0, 1):
+        raise GitError(["check-ignore"], listed.returncode, listed.stderr)
+    return frozenset(os.fsdecode(name) for name in listed.stdout.split(b"\0") if name)
+
+
+def _stage(tree, paths, force):
+    if paths:
+        git(["add", "-A", *force, "--", *paths], tree)
+
+
 def commit_paths(tree, paths, message, branch=None):
     msp_branch = branch or _attached_branch(tree)
     present = [p for p in paths if os.path.lexists(os.path.join(tree, p))]
     tracked = git_paths(["ls-files", "-z", "--", *paths], tree) if paths else []
-    targets = sorted(set(present) | set(tracked))
+    wanted = sorted(set(present) | set(tracked))
+    ignored = _ignored_of(tree, wanted) if wanted else frozenset()
+    targets = [path for path in wanted if path not in ignored]
     if targets:
-        git(["add", "-A", "--", *targets], tree)
+        known = frozenset(tracked)
+        _stage(tree, [path for path in targets if path not in known], ())
+        _stage(tree, [path for path in targets if path in known], ("-f",))
         if git(["status", "--porcelain", "--", *targets], tree):
-            git(["commit", "-q", "-m", message, "--", *targets], tree)
+            git([*HOOKS_OFF, "commit", "-q", "--no-verify", "-m", message, "--", *targets], tree)
     return branch_commit(tree, msp_branch, required=True)
+
+
+GIT_HELP_EXITS = (0, 129)
+
+PRE_COMMIT = ("git", "hook", "run", "--ignore-missing", "pre-commit")
+
+HOOK_COULD_NOT_RUN = "mitosis could not run the pre-commit hook over the whole change: %s"
+
+
+def _hook_quarantine(log_dir):
+    return os.path.join(log_dir, "quarantine")
+
+
+def _hook_path(tree):
+    named = subprocess.run(
+        ["git", "rev-parse", "--git-path", "hooks/pre-commit"],
+        cwd=tree,
+        env=_git_kept_environ(),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+    )
+    return os.path.join(tree, named.stdout.strip()) if named.returncode == 0 else None
+
+
+def _pre_commit_installed(tree):
+    hook = _hook_path(tree)
+    return (
+        hook is not None
+        and os.access(hook, os.X_OK)
+        and git_run(["hook", "run", "-h"], tree).returncode in GIT_HELP_EXITS
+    )
+
+
+def _pre_commit_exit(folder, base, head, tree, log_dir, env, sandbox, out, err):
+    git([*HOOKS_OFF, "worktree", "add", "-q", "--detach", folder, head], tree)
+    git([*HOOKS_OFF, "reset", "-q", "--soft", base], folder)
+    admin = git(["rev-parse", "--absolute-git-dir"], folder)
+    stored = os.path.join(folder, git(["rev-parse", "--git-path", "objects"], folder))
+    quarantine = _hook_quarantine(log_dir)
+    objects = os.path.join(quarantine, "objects")
+    os.makedirs(objects)
+    index = shutil.copyfile(os.path.join(admin, "index"), os.path.join(quarantine, "index"))
+    confinement = isolation.gate_confinement(sandbox, log_dir, folder, quarantine)
+    quarantined = {
+        **_git_kept_environ(env),
+        "GIT_INDEX_FILE": index,
+        "GIT_OBJECT_DIRECTORY": objects,
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": stored,
+    }
+    return run_command(list(PRE_COMMIT), folder, out, err, quarantined, confinement)
+
+
+def msp_hook_refusal(tree, base, head, log_dir, env=None, sandbox=None):
+    if head == base or not _pre_commit_installed(tree):
+        return None
+    os.makedirs(log_dir, exist_ok=True)
+    _remove_gate_folders(log_dir)
+    shutil.rmtree(_hook_quarantine(log_dir), ignore_errors=True)
+    folder = tempfile.mkdtemp(prefix=GATE_FOLDER_PREFIX, dir=log_dir)
+    out, err = os.path.join(log_dir, "pre-commit.out"), os.path.join(log_dir, "pre-commit.err")
+    try:
+        code = _pre_commit_exit(folder, base, head, tree, log_dir, env, sandbox, out, err)
+    except (GitError, OSError) as error:
+        return HOOK_COULD_NOT_RUN % error
+    finally:
+        git_run(["worktree", "remove", "--force", folder], tree)
+        shutil.rmtree(folder, ignore_errors=True)
+        shutil.rmtree(_hook_quarantine(log_dir), ignore_errors=True)
+        isolation.release_gate(isolation.gate_folders(log_dir))
+    if code == 0:
+        return None
+    return (_read_tail(err) or _read_tail(out)).strip() or "exit %d" % code
 
 
 def cluster_label(steps, index):
@@ -912,7 +1012,7 @@ def templated_task(plan, lane, label, template):
     brief = plan["briefs"][lane]
     rendered = (
         template.replace("{cluster}", ", ".join(plan["lanes"][lane]["steps"]))
-        .replace("{spec}", brief["spec"])
+        .replace("{spec}", core.whole_spec(brief["steps"]))
         .replace("{tier}", str(plan["lanes"][lane].get("tier") or ""))
         .replace("{contract}", core.RETURN_CONTRACT)
     )
@@ -937,6 +1037,41 @@ def _worker_values(plan, lane, tree, models, run_dir, session_id, template=None)
         "session_id": session_id,
         "schema": worker_schema(),
     }
+
+
+RETRY_NOTE = "\n\nAn earlier attempt at this work failed: %s. Start again from this clone."
+
+OUTSIDE_WRITE_NOTE = (
+    " If the obstacle was a file outside your write-set, change that file as well and name it in "
+    "your notes: mitosis keeps the write, shows it to the gate and reports it."
+)
+
+RETRY_STEM = "retry"
+
+REPAIR_STEM = "repair"
+
+
+def _attempt_stem(lane, retrying):
+    return "%s.%s" % (lane, RETRY_STEM) if retrying else str(lane)
+
+
+def _retry_note(judged):
+    told = (judged.get("returned") or {}).get("notes")
+    return (
+        RETRY_NOTE % ("%s (%s)" % (judged["reason"], told) if told else judged["reason"])
+        + OUTSIDE_WRITE_NOTE
+    )
+
+
+def _with_note(values, note):
+    return values if note is None else {**values, "task": values["task"] + note}
+
+
+def _noting_retry(judged, note):
+    if note is None:
+        return judged
+    earlier = "retried once: " + note.strip().split("\n")[0]
+    return {**judged, "reason": "%s; %s" % (judged["reason"], earlier) if judged["reason"] else earlier}
 
 
 def _landing_message(plan, lane, header):
@@ -1119,6 +1254,10 @@ def _landed(plan, lane, tree, record, run_dir, header):
     return {**record, **outside, "commit": commit}
 
 
+def _open_to_the_gate(record):
+    return {**record, "replayed": {}}
+
+
 def _land_batch(plan, msp, tree, batch, held, records, run_dir, settle, header):
     lanes = plan["lanes"]
     landed = {}
@@ -1183,6 +1322,7 @@ def dispatch(
     pending = [i for i in every if i not in records and i not in held]
     running = {}
     parked_by = None
+    retried = {}
     cap = max(1, int(concurrency))
 
     def settle(known, lane, record):
@@ -1204,7 +1344,7 @@ def dispatch(
                         records,
                         lane,
                         {
-                            **landed[lane],
+                            **(_open_to_the_gate(landed[lane]) if lane in retried else landed[lane]),
                             "foreign_writes": [
                                 {**entry, "suspects": suspects}
                                 for entry in foreign
@@ -1303,7 +1443,7 @@ def dispatch(
                     )
                     progressed = True
                     continue
-                files = call_files(lane_dir, str(lane))
+                files = call_files(lane_dir, _attempt_stem(lane, lane in retried))
                 session = core.new_session_id()
                 folders = isolation.lane_folders(run_dir, lane)
                 values = _worker_values(
@@ -1315,7 +1455,7 @@ def dispatch(
                     session,
                     prompt_template,
                 )
-                argv = build_argv(command, values)
+                argv = build_argv(command, _with_note(values, retried.get(lane)))
                 asked = {"template": reask, "values": reask_values(values)}
                 carried = core.carried_session(argv, session)
                 try:
@@ -1378,6 +1518,11 @@ def dispatch(
                         "start": start,
                         **_seed_fields(seeding),
                     }
+                    if judged["state"] == "failed" and lane not in retried:
+                        retried = {**retried, lane: _retry_note(judged)}
+                        pending = [lane] + pending
+                        continue
+                    judged = _noting_retry(judged, retried.get(lane))
                     if judged["state"] == "ok":
                         held = {**held, lane: judged}
                         if on_lane is not None:
@@ -1564,6 +1709,14 @@ def step_implementation_paths(plan, msp, name):
     ]
 
 
+def step_mutable_paths(plan, msp, name):
+    return tuple(
+        path
+        for path in step_implementation_paths(plan, msp, name)
+        if not referee.in_test_location(path)
+    )
+
+
 def steps_without_implementation_change(plan, msp, tree, base, commit):
     changed = _changed_paths(_committed_entries(tree, base), _committed_entries(tree, commit))
     unchanged = ()
@@ -1625,7 +1778,7 @@ def commit_all(tree, message, branch=None):
     msp_branch = branch or _attached_branch(tree)
     git(["add", "-A"], tree)
     if not git_ok(["diff", "--cached", "--quiet", "--ignore-submodules=none"], tree):
-        git(["commit", "-q", "-m", message], tree)
+        git([*HOOKS_OFF, "commit", "-q", "--no-verify", "-m", message], tree)
     return branch_commit(tree, msp_branch, required=True)
 
 
@@ -1881,9 +2034,14 @@ def run_acceptance(command, tree, entry, log_path, env=None, sandbox=None):
     return run_command(argv, tree, log_path, log_path + ".err", env, sandbox)
 
 
+FAILS_WITH_THE_WORK = "fails against the finished work"
+
+
 def probe_outcome(with_work, reverted):
+    if with_work == ACCEPTANCE_FAILURE_EXIT:
+        return "inconclusive", FAILS_WITH_THE_WORK
     if with_work != 0:
-        return "inconclusive", "exit %d with the work present" % with_work
+        return "inconclusive", "exit %d with the work present, so nothing judged it" % with_work
     if reverted == 0:
         return "inert", "passes with the implementation reverted"
     if reverted == ACCEPTANCE_FAILURE_EXIT:
@@ -1913,11 +2071,15 @@ def gate_outcome(properties):
     return "not-applicable"
 
 
-GATE_STATES = {"weak": "gate-weak", "inert": "gate-inert", "inconclusive": "gate-inconclusive"}
+GATE_HELD = "gate-inconclusive"
 
 
-def gate_state(result):
-    return GATE_STATES.get(result.get("outcome"))
+def fails_with_the_work(entry):
+    return entry.get("with_work") == ACCEPTANCE_FAILURE_EXIT
+
+
+def failing_properties(result):
+    return tuple(entry for entry in (result or {}).get("properties") or () if fails_with_the_work(entry))
 
 
 NEVER_JUDGED = "the gate never judged this property, so it proves nothing yet"
@@ -1935,7 +2097,7 @@ def _gate_result(properties, implementation, commit, reverted):
     outcome = gate_outcome(resolved)
     return {
         "outcome": outcome,
-        "blocks": outcome in BLOCKING_OUTCOMES,
+        "blocks": any(fails_with_the_work(entry) for entry in resolved),
         "properties": resolved,
         "implementation": list(implementation),
         "reverted": list(reverted),
@@ -2242,7 +2404,7 @@ def _sampled(found):
 
 
 def property_sample(plan, msp, tree, base, commit, entry, trace=None):
-    paths = tuple(step_implementation_paths(plan, msp, entry["step"]))
+    paths = step_mutable_paths(plan, msp, entry["step"])
     if not paths:
         return (), SAMPLED_CODE, False
     pairs, texts = _step_added(tree, base, commit, paths)
@@ -2277,6 +2439,19 @@ def property_mutants(plan, msp, tree, base, commit, entry, trace=None):
     return property_sample(plan, msp, tree, base, commit, entry, trace)[0]
 
 
+def structural_mutants(plan, msp, tree, base, commit, entry):
+    paths = step_mutable_paths(plan, msp, entry["step"])
+    if not paths:
+        return []
+    pairs, texts = _step_added(tree, base, commit, paths)
+    held = dict(texts)
+
+    def read(path):
+        return _decoded(held[path])
+
+    return mutants.structural(dict(pairs), read)
+
+
 def _run_mutant(command, folder, entry, mutant, log_path, env, reset, sandbox=None):
     written = reset()
     path = mutant["file"]
@@ -2292,129 +2467,37 @@ def _mutant_place(mutant):
     return {"file": mutant["file"], "line": mutant["line"], "op": mutant["op"]}
 
 
-def _mutant_key(mutant):
-    return (mutant["file"], mutant["line"], mutant["op"])
-
-
 def _timed(call):
     started = time.monotonic()
     result = call()
     return result, time.monotonic() - started
 
 
-def _read_log(path):
-    if not os.path.isfile(path):
-        return ""
-    with open(path, encoding="utf-8", errors="replace") as handle:
-        return handle.read()
-
-
-def _junit_failures(report):
-    if not os.path.isfile(report):
-        return None
-    text = _read_log(report)
-    if not text.strip() or UNSAFE_XML.search(text):
-        return None
-    try:
-        root = ElementTree.fromstring(text)
-    except ElementTree.ParseError:
-        return None
-    return tuple(
-        ".".join(part for part in (case.get("classname"), case.get("name")) if part)
-        for case in root.iter("testcase")
-        if any(child.tag in ("failure", "error") for child in case)
-    )
-
-
-def _unittest_name(name, dotted):
-    return dotted if dotted.endswith("." + name) else "%s.%s" % (dotted, name)
-
-
-def _logged_failures(text):
-    return tuple(
-        _unittest_name(match.group(1), match.group(2)) for match in UNITTEST_FAILURE.finditer(text)
-    ) + tuple(match.group(1) for match in PYTEST_FAILURE.finditer(text))
-
-
-def suite_killers(report, log_path):
-    from_report = _junit_failures(report)
-    if from_report is not None:
-        return tuple(sorted(set(from_report)))
-    text = _read_log(log_path) + "\n" + _read_log(log_path + ".err")
-    return tuple(sorted(set(_logged_failures(text))))
-
-
-def _run_suite_mutant(suite, folder, mutant, report, log_path, env, reset, sandbox=None):
-    written = reset()
-    path = mutant["file"]
-    mutated = mutants.apply(_read_text(folder, path), mutant)
-    if mutated is None:
-        return None, written
-    clear_caches_beside(folder, (path,))
-    _write_text(folder, path, mutated)
-    _removed(report)
-    argv = build_argv(suite, {"worktree": folder, "report": report})
-    return run_command(argv, folder, log_path, log_path + ".err", env, sandbox), written
-
-
-def _run_suite_unmutated(suite, folder, log_dir, env, reset, sandbox=None):
-    written = reset()
-    report = os.path.join(isolation.gate_outputs(log_dir, sandbox), "suite-unmutated.xml")
-    log_path = os.path.join(log_dir, "suite-unmutated.log")
-    _removed(report)
-    argv = build_argv(suite, {"worktree": folder, "report": report})
-    return run_command(argv, folder, log_path, log_path + ".err", env, sandbox), written
-
-
-def suite_baseline_fault(seen):
-    ran = seen.get(SUITE_BASELINE)
-    if ran is None or ran == 0:
-        return None
-    return "the suite fails before any mutant is applied (exit %d)" % ran
-
-
-def _suite_verdicts(
-    suite, survivors, index, log_dir, env, folder, reset, seen, sandbox=None
-):
+def _first_kill(candidates, attempt, log_name):
+    tried = ()
     written = ()
     seconds = 0
-    verdicts = ()
-    if SUITE_BASELINE not in seen:
-        (ran, written), seconds = _timed(
-            lambda: _run_suite_unmutated(suite, folder, log_dir, env, reset, sandbox)
+    for mutant in candidates:
+        (ran, left), spent = _timed(
+            lambda mutant=mutant: attempt(mutant, log_name(len(tried)))
         )
-        seen = {**seen, SUITE_BASELINE: ran}
-    if suite_baseline_fault(seen) is not None:
-        return ((survivors[0], (False, ())),), written, seconds, seen
-    for position, mutant in enumerate(survivors):
-        key = _mutant_key(mutant)
-        if key not in seen:
-            report = os.path.join(
-                isolation.gate_outputs(log_dir, sandbox), "%d-suite-%d.xml" % (index, position)
-            )
-            log_path = os.path.join(log_dir, "%d-suite-%d.log" % (index, position))
-            (ran, left), spent = _timed(
-                lambda mutant=mutant, report=report, log_path=log_path: _run_suite_mutant(
-                    suite, folder, mutant, report, log_path, env, reset, sandbox
-                )
-            )
-            seconds = seconds + spent
-            written = written + left
-            killed = ran == SUITE_FAILURE_EXIT
-            seen = {**seen, key: (killed, suite_killers(report, log_path) if killed else ())}
-        verdicts = verdicts + ((mutant, seen[key]),)
-        if not seen[key][0]:
-            break
-    return verdicts, written, seconds, seen
+        seconds = seconds + spent
+        written = written + left
+        if ran is None:
+            continue
+        tried = tried + (mutant,)
+        if ran != 0:
+            return mutant, tried, written, seconds
+    return None, tried, written, seconds
 
 
-def _weak(entry, mutant, record, coverage, seconds, fault=None):
+def _weak(entry, mutant, record, coverage, seconds):
     return {
         **entry,
         "seconds": seconds,
         "outcome": "weak",
-        "reason": "no mutant of the work fails it: it still passes when %s:%d changes by %s%s"
-        % (mutant["file"], mutant["line"], mutant["op"], "" if fault is None else ", and " + fault),
+        "reason": "no mutant of the work fails it: it still passes when %s:%d changes by %s"
+        % (mutant["file"], mutant["line"], mutant["op"]),
         "mutants": record,
         "mutation": "weak",
         "coverage": coverage,
@@ -2435,11 +2518,9 @@ def mutant_verdict(
     folder,
     reset,
     trace=None,
-    suite=None,
     seen=None,
     sandbox=None,
 ):
-    tried = ()
     written = ()
     seen = dict(seen or {})
     seconds = entry.get("seconds", 0)
@@ -2470,37 +2551,39 @@ def mutant_verdict(
             written,
             seen,
         )
-    for mutant in sampled:
-        (ran, left), spent = _timed(
-            lambda mutant=mutant: _run_mutant(
-                command,
-                folder,
-                entry,
-                mutant,
-                os.path.join(log_dir, "%d-mutant-%d.log" % (index, len(tried))),
-                env,
-                reset,
-                sandbox,
-            )
+    def attempt(mutant, name):
+        return _run_mutant(
+            command, folder, entry, mutant, os.path.join(log_dir, name), env, reset, sandbox
+        )
+
+    killer, tried, left, spent = _first_kill(
+        sampled, attempt, lambda count: "%d-mutant-%d.log" % (index, count)
+    )
+    seconds = seconds + spent
+    written = written + left
+    attempts = tried
+    if killer is None and tried:
+        killer, extra, left, spent = _first_kill(
+            structural_mutants(plan, msp, tree, base, commit, entry),
+            attempt,
+            lambda count: "%d-structural-%d.log" % (index, count),
         )
         seconds = seconds + spent
         written = written + left
-        if ran is None:
-            continue
-        tried = tried + (mutant,)
-        if ran != 0:
-            return (
-                {
-                    **entry,
-                    "mutants": {"tried": len(tried), "killed": _mutant_place(mutant)},
-                    "mutation": "killed",
-                    "coverage": coverage,
-                    "seconds": seconds,
-                },
-                written,
-                seen,
-            )
-    record = {"tried": len(tried), "killed": None}
+        attempts = tried + extra
+    if killer is not None:
+        return (
+            {
+                **entry,
+                "mutants": {"tried": len(attempts), "killed": _mutant_place(killer)},
+                "mutation": "killed",
+                "coverage": coverage,
+                "seconds": seconds,
+            },
+            written,
+            seen,
+        )
+    record = {"tried": len(attempts), "killed": None}
     if not tried:
         return {**entry, "mutants": record, "coverage": coverage, "seconds": seconds}, written, seen
     if kind == SAMPLED_DATA:
@@ -2515,29 +2598,7 @@ def mutant_verdict(
             written,
             seen,
         )
-    if suite is None:
-        return _weak(entry, tried[0], record, coverage, seconds), written, seen
-    verdicts, left, spent, seen = _suite_verdicts(
-        suite, tried, index, log_dir, env, folder, reset, seen, sandbox
-    )
-    written = written + left
-    seconds = seconds + spent
-    missed = [mutant for mutant, (killed, _) in verdicts if not killed]
-    if missed:
-        fault = suite_baseline_fault(seen)
-        return _weak(entry, missed[0], record, coverage, seconds, fault), written, seen
-    return (
-        {
-            **entry,
-            "mutants": record,
-            "mutation": "covered-elsewhere",
-            "killers": sorted({name for _, (_, names) in verdicts for name in names}),
-            "coverage": coverage,
-            "seconds": seconds,
-        },
-        written,
-        seen,
-    )
+    return _weak(entry, tried[0], record, coverage, seconds), written, seen
 
 
 def _remove_gate_folders(log_dir):
@@ -2621,7 +2682,6 @@ def gate(
     setup=None,
     head=None,
     replayed=None,
-    suite=None,
     classes=None,
     recorded_gate=None,
     sandbox=None,
@@ -2659,7 +2719,6 @@ def gate(
             repo,
             setup,
             replayed or {},
-            suite,
             confinement,
         )
     finally:
@@ -2697,7 +2756,6 @@ def _gate_runs(
     repo,
     setup,
     replayed,
-    suite=None,
     sandbox=None,
 ):
     locked = tuple(plan.get("locked") or ())
@@ -2792,7 +2850,6 @@ def _gate_runs(
             folder,
             lambda: reset(with_work_tree),
             traces[index],
-            suite,
             seen,
             sandbox,
         )
@@ -3436,10 +3493,10 @@ def pull_request_url(out, branch, pushed):
     return printed
 
 
-def _reconcile_clean(findings):
+def _reconcile_clean(findings, state=None):
     return isinstance(findings, dict) and not (
         findings.get("undeclared")
-        or findings.get("unwritten")
+        or (findings.get("unwritten") and state == MSP_UNCHANGED)
         or findings.get("crossing")
         or findings.get("fatal")
     )
@@ -3452,7 +3509,7 @@ def succeeded(state):
         return False
     return all(record.get("state") == "ok" for record in lanes.values()) and all(
         record.get("state") in core.DELIVERED_STATES
-        and _reconcile_clean(record.get("reconcile"))
+        and _reconcile_clean(record.get("reconcile"), record.get("state"))
         for record in msps.values()
     )
 
@@ -3512,7 +3569,6 @@ def _gate_stage(plan, msp, tree, settings, head, replayed, recorded_gate=None):
             settings.get("gate_setup"),
             head,
             replayed,
-            settings.get("suite_command"),
             settings.get("gate_classes"),
             recorded_gate,
             settings.get("sandbox"),
@@ -3525,11 +3581,177 @@ def _gate_stage(plan, msp, tree, settings, head, replayed, recorded_gate=None):
 def gate_inputs(settings, replayed):
     named = {
         "acceptance_command": settings["acceptance_command"],
-        "suite_command": settings.get("suite_command"),
         "gate_setup": settings.get("gate_setup"),
         "replayed": replayed,
     }
     return hashlib.sha256(json.dumps(named, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+REPAIR_NOTE = (
+    "\n\nThe finished build fails %s against this Lane's work. Change the work until each passes, "
+    "and leave the test as it is. If the failure comes from the environment and no change to the "
+    "code can fix it, say so in your notes and report failed.\n\nOutput of the failing run:\n%s"
+)
+
+
+def _gate_log_tail(settings, msp, entry):
+    log = os.path.join(settings["run_dir"], "gate", "msp-%d" % msp, "%s-with-work.log" % entry)
+    found = tuple(
+        text
+        for path in (log, log + ".err")
+        if os.path.isfile(path)
+        for text in (_read_tail(path),)
+        if text
+    )
+    return "\n".join(found)
+
+
+def _read_tail(path):
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        return handle.read()[-MAX_OUTPUT:]
+
+
+def _failing_by_lane(plan, gate_result):
+    owners = {step: lane for lane, entry in enumerate(plan["lanes"]) for step in entry["steps"]}
+    every = tuple((gate_result or {}).get("properties") or ())
+    grouped = {}
+    for position, entry in enumerate(every):
+        if fails_with_the_work(entry) and entry.get("step") in owners:
+            lane = owners[entry["step"]]
+            grouped = {**grouped, lane: grouped.get(lane, ()) + ((position, entry),)}
+    return grouped
+
+
+def _repair_note(settings, msp, failing):
+    names = ", ".join(property_key(entry["file"], entry["test"]) for _, entry in failing)
+    logs = "\n".join(_gate_log_tail(settings, msp, position) for position, _ in failing)
+    return REPAIR_NOTE % (names, logs[-MAX_OUTPUT:])
+
+
+def _repaired_lane(plan, lane, tree, settings, note):
+    run_dir, worker = settings["run_dir"], settings["worker"]
+    folders = isolation.lane_folders(run_dir, lane)
+    session = core.new_session_id()
+    started = now()
+    values = _worker_values(
+        plan, lane, {**tree, "path": folders["clone"]}, worker["models"], run_dir, session, worker["template"]
+    )
+    argv = build_argv(worker["command"], _with_note(values, note))
+    try:
+        start = isolation.cut_clone(tree, folders)
+        seeding = _seeding(settings.get("seeds"), folders["clone"])
+        confinement = isolation.worker_confinement(folders, settings.get("sandbox"), settings.get("env"))
+    except (GitError, OSError) as error:
+        return lane_record(lane, tree["msp"], "failed", reason="mitosis could not repair the Lane: %s" % error)
+    called = worker_call(
+        argv,
+        {"template": settings["reask_command"], "values": reask_values(values)},
+        folders["clone"],
+        call_files(os.path.join(run_dir, "lanes"), "%d.%s" % (lane, REPAIR_STEM)),
+        _lane_environ(plan, lane, tree["branch"], settings.get("env")),
+        confinement,
+    )
+    judged = {
+        **_verdict(lane, tree, started, [], called, core.carried_session(argv, session), worker["max_output"]),
+        "clone": folders["clone"],
+        "start": start,
+        **_seed_fields(seeding),
+    }
+    if judged["state"] != "ok":
+        return judged
+    landed = _landed(plan, lane, tree, judged, run_dir, worker["header"])
+    if landed["state"] == "ok":
+        isolation.discard_landed_folders(folders)
+    return landed
+
+
+OUTSIDE_PATH_KEYS = ("unreplayed", "ignored")
+
+NO_REPAIR = {"state": None, "landed": False, "parked": None, "failed": ()}
+
+
+def _keeping_outside_writes(earlier, repaired):
+    return {
+        **repaired,
+        "replayed": {**(repaired.get("replayed") or {}), **(earlier.get("replayed") or {})},
+        **{
+            key: sorted(set(earlier.get(key) or ()) | set(repaired.get(key) or ()))
+            for key in OUTSIDE_PATH_KEYS
+        },
+    }
+
+
+def _carried_foreign(earlier, found):
+    new = frozenset(entry["path"] for entry in found)
+    return [entry for entry in earlier if entry["path"] not in new] + list(found)
+
+
+def _with_repair(plan, msp, tree, lanes, lane, repaired):
+    claimed = plan["briefs"][lane]["write_set"]
+    freed = {
+        key: record
+        if int(key) == lane or plan["lanes"][int(key)]["msp"] != msp
+        else isolation.released(record, claimed)
+        for key, record in lanes.items()
+    }
+    foreign = _foreign_writes(plan, msp, tree, [lane], {int(key): record for key, record in freed.items()})
+    earlier = freed[str(lane)]
+    return {
+        **freed,
+        str(lane): {
+            **_keeping_outside_writes(earlier, repaired),
+            "foreign_writes": _carried_foreign(
+                earlier.get("foreign_writes") or (),
+                [{**entry, "suspects": [lane]} for entry in foreign],
+            ),
+        },
+    }
+
+
+def _repair_lanes(plan, msp, tree, state, settings, gated):
+    lanes = state["lanes"]
+    outcomes = ()
+    for lane, failing in sorted(_failing_by_lane(plan, gated["gate"]).items()):
+        record = _repaired_lane(plan, lane, tree, settings, _repair_note(settings, msp, failing))
+        outcomes = outcomes + ((lane, record),)
+        if record["state"] == "ok":
+            lanes = _with_repair(plan, msp, tree, lanes, lane, record)
+    return {
+        "state": {**state, "lanes": lanes},
+        "landed": any(record["state"] == "ok" for _, record in outcomes),
+        "parked": next(
+            (record["reason"] for _, record in outcomes if record["state"] == LANE_PARKED), None
+        ),
+        "failed": tuple(
+            "the repair of Lane %d failed: %s" % (lane, record["reason"])
+            for lane, record in outcomes
+            if record["state"] == "failed"
+        ),
+    }
+
+
+REPAIR_PARKED = "the repair of a failing test stopped (%s); pass --resume to finish it"
+
+PRODUCER_REPAIR_CONFLICT = "a producer's repair would not merge into this MSP: %s"
+
+
+def _merged_producer_repairs(tree, producers, trees, base):
+    tips = tuple(
+        {"branch": trees[producer]["branch"]}
+        for producer in producers
+        if branch_exists(tree["path"], trees[producer]["branch"])
+    )
+    return merge_producers(tree["path"], tree["branch"], tips, base)[1]
+
+
+def _head_with_producers(plan, msp, tree, producers, trees, base):
+    head, commit_error = _committed_head(plan, msp, tree)
+    if commit_error is not None:
+        return None, commit_error, None
+    conflict = _merged_producer_repairs(tree, producers, trees, base)
+    if conflict is not None:
+        return None, None, {"state": MSP_BLOCKED, "reason": PRODUCER_REPAIR_CONFLICT % conflict}
+    return branch_commit(tree["path"], tree["branch"], required=True), None, None
 
 
 def _committed_head(plan, msp, tree):
@@ -3798,19 +4020,20 @@ def _with_gate_referee(reconciled, tampered):
     }
 
 
-def _held_back(gated, branch):
-    if gated["gate_error"] is not None:
+def _held_back(gated, branch, hook_refusal=None):
+    if hook_refusal is not None:
         return {
             "state": MSP_GATE_FAILED,
-            "reason": "the gate could not run, so %s was committed and not pushed: %s"
-            % (branch, gated["gate_error"]),
+            "reason": "the repository's pre-commit hook refused the MSP's whole change, so %s was "
+            "committed and not pushed: %s" % (branch, hook_refusal),
         }
-    if not (gated["gate"] or {}).get("blocks"):
+    failing = failing_properties(gated["gate"])
+    if not failing:
         return None
     return {
         "state": MSP_GATE_FAILED,
-        "reason": "the gate judged %s, so %s was committed and not pushed"
-        % (gated["gate"]["outcome"], branch),
+        "reason": "%s failed against the finished work, so %s was committed and not pushed"
+        % (", ".join(property_key(entry["file"], entry["test"]) for entry in failing), branch),
     }
 
 
@@ -3839,7 +4062,7 @@ def _pushed_ship(record):
     return shipped if shipped.get("pushed") else None
 
 
-def _finish_msp(plan, msp, trees, producers, state, settings):
+def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
     run_dir = settings["run_dir"]
     tree = trees[msp]
     prior = state["msps"].get(str(msp)) or {}
@@ -3857,7 +4080,12 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
     replayed = isolation.msp_replayed(plan, msp, state["lanes"])
     unreplayed = isolation.msp_unreplayed(plan, msp, state["lanes"])
     state = write_state(run_dir, _msp_record(state, msp, replayed=replayed))
-    head, commit_error = (None, None) if block is not None else _committed_head(plan, msp, tree)
+    head, commit_error, conflict = (
+        (None, None, None)
+        if block is not None
+        else _head_with_producers(plan, msp, tree, producers, trees, settings["base_commit"])
+    )
+    block = block or conflict
     if block is None:
         ignored = set(ignored_paths(tree["path"])) | set(
             isolation.msp_ignored(plan, msp, state["lanes"])
@@ -3943,9 +4171,49 @@ def _finish_msp(plan, msp, trees, producers, state, settings):
                 "owns, so mitosis held %s back" % (", ".join(tampered), tree["branch"]),
             ),
         )
-    held_back = _held_back(gated, tree["branch"]) if judged_now else None
+    refused = (
+        msp_hook_refusal(
+            tree["path"],
+            settings["base_commit"],
+            head,
+            os.path.join(run_dir, "gate", "hook-msp-%d" % msp),
+            settings.get("env"),
+            settings.get("sandbox"),
+        )
+        if judged_now
+        else None
+    )
+    held_back = _held_back(gated, tree["branch"], refused) if judged_now else None
     if held_back is not None:
-        return write_state(run_dir, _msp_record(state, msp, **held_back))
+        owed = recorded_gate is None or prior.get("state") != MSP_GATE_FAILED
+        repair = (
+            _repair_lanes(plan, msp, tree, state, settings, gated)
+            if repairable and refused is None and owed
+            else NO_REPAIR
+        )
+        if repair["parked"] is not None:
+            return write_state(
+                run_dir,
+                _msp_record(
+                    repair["state"],
+                    msp,
+                    state=MSP_PARKED,
+                    reason=REPAIR_PARKED % repair["parked"],
+                ),
+            )
+        if repair["landed"]:
+            return _finish_msp(plan, msp, trees, producers, repair["state"], settings, repairable=False)
+        return write_state(
+            run_dir,
+            _msp_record(
+                state,
+                msp,
+                **{
+                    **held_back,
+                    "reason": "; ".join((held_back["reason"], *repair["failed"])),
+                },
+            ),
+        )
     base, exception = pr_base(
         plan, msp, settings["feature_branch"], trees, settings["repo"], state["msps"]
     )
@@ -4064,15 +4332,15 @@ def _check_author_environ(entry, plan_id, branch, env):
     )
 
 
-def _dispatch_check_author(entry, settings, command, models, sandbox, base):
+def _dispatch_check_author(entry, settings, command, models, sandbox, base, note=None):
     run_dir = settings["run_dir"]
     folders = isolation.lock_folders(run_dir, entry["msp"])
     lane_dir = os.path.join(run_dir, "lanes")
     os.makedirs(lane_dir, exist_ok=True)
-    files = call_files(lane_dir, _lock_name(entry))
+    files = call_files(lane_dir, _attempt_stem(_lock_name(entry), note is not None))
     session = core.new_session_id()
     values = _lock_values(entry, folders, settings["feature_branch"], models, run_dir, session)
-    argv = build_argv(command, values)
+    argv = build_argv(command, _with_note(values, note))
     asked = {"template": settings["reask_command"], "values": reask_values(values)}
     carried = core.carried_session(argv, session)
     seeded = {}
@@ -4102,6 +4370,10 @@ def _dispatch_check_author(entry, settings, command, models, sandbox, base):
         ),
         confinement,
     )
+    return _check_author_outcome(entry, called, carried, folders, seeded)
+
+
+def _check_author_outcome(entry, called, carried, folders, seeded):
     judged, why = called_verdict(called)
     ran = {
         "stdout": called["stdout"],
@@ -4384,17 +4656,68 @@ def _landed_lock(plan, entry, settings, record, base):
     }
 
 
-def _msp_lock(plan, entry, settings, command, models, sandbox, base):
-    slice_paths = tuple(entry["slice"])
-    if not missing_paths(settings["repo"], base, slice_paths):
-        return lock_record("ok", ALREADY_LOCKED % (", ".join(slice_paths), base[:12]), commit=base)
-    record = _dispatch_check_author(entry, settings, command, models, sandbox, base)
-    if record["state"] != "ok":
-        return record
+def _judged_lock(plan, entry, settings, record, base):
     landed = _landed_lock(plan, entry, settings, record, base)
     if landed["state"] == "ok":
         isolation.discard_landed_folders(isolation.lock_folders(settings["run_dir"], entry["msp"]))
     return landed
+
+
+def _lock_attempt(plan, entry, settings, command, models, sandbox, base, note=None):
+    record = _dispatch_check_author(entry, settings, command, models, sandbox, base, note)
+    return record if record["state"] != "ok" else _judged_lock(plan, entry, settings, record, base)
+
+
+LOCK_REFUSED_NOTE = (
+    "mitosis refused the checks you wrote: %s. Correct them in this clone, keeping the rest of "
+    "your work, and reply again."
+)
+
+SEED_FIELDS = ("seeded", "seed_skipped", "seed_seconds")
+
+
+def _refused_after_reply(record):
+    return bool(record.get("session_id")) and (record.get("returned") or {}).get("status") == "ok"
+
+
+def _continued_lock(plan, entry, settings, models, sandbox, base, first):
+    run_dir = settings["run_dir"]
+    folders = isolation.lock_folders(run_dir, entry["msp"])
+    session = first["session_id"]
+    values = _lock_values(entry, folders, settings["feature_branch"], models, run_dir, session)
+    asked = {"template": settings["reask_command"], "values": reask_values(values)}
+    argv = build_argv(asked["template"], {**asked["values"], "prompt": LOCK_REFUSED_NOTE % first["reason"]})
+    try:
+        confinement = isolation.worker_confinement(folders, sandbox, settings["env"])
+    except (GitError, OSError) as error:
+        return lock_record("failed", "mitosis could not confine the continued lock: %s" % error)
+    called = worker_call(
+        argv,
+        asked,
+        folders["clone"],
+        call_files(os.path.join(run_dir, "lanes"), _attempt_stem(_lock_name(entry), True)),
+        _check_author_environ(entry, settings["plan_id"], settings["feature_branch"], settings["env"]),
+        confinement,
+    )
+    seeded = {key: first[key] for key in SEED_FIELDS if key in first}
+    record = _check_author_outcome(entry, called, session, folders, seeded)
+    return record if record["state"] != "ok" else _judged_lock(plan, entry, settings, record, base)
+
+
+def _msp_lock(plan, entry, settings, command, models, sandbox, base):
+    slice_paths = tuple(entry["slice"])
+    if not missing_paths(settings["repo"], base, slice_paths):
+        return lock_record("ok", ALREADY_LOCKED % (", ".join(slice_paths), base[:12]), commit=base)
+    first = _lock_attempt(plan, entry, settings, command, models, sandbox, base)
+    if first["state"] != "failed":
+        return first
+    if settings.get("reask_command") and _refused_after_reply(first):
+        continued = _continued_lock(plan, entry, settings, models, sandbox, base, first)
+        if continued["state"] != "failed" or _refused_after_reply(continued):
+            return continued
+    return _lock_attempt(
+        plan, entry, settings, command, models, sandbox, base, RETRY_NOTE % first["reason"]
+    )
 
 
 def commit_exists(repo, commit):
@@ -4407,6 +4730,10 @@ def kept_lock(repo, record):
         and record.get("state") == "ok"
         and commit_exists(repo, record.get("commit"))
     )
+
+
+def settled_lock(repo, record):
+    return kept_lock(repo, record) or (record or {}).get("state") == "failed"
 
 
 def lock_of(state, msp):
@@ -4424,7 +4751,7 @@ def lock_stage(plan, state, settings, command, models, sandbox, concurrency=1):
     pending = [
         entry
         for entry in plan.get("check_authors") or ()
-        if not kept_lock(repo, lock_of(state, entry["msp"]))
+        if not settled_lock(repo, lock_of(state, entry["msp"]))
     ]
     if not pending:
         return state
@@ -4474,12 +4801,15 @@ def _carried_stop(plan, entry, record, consumer, own):
     }
 
 
+LOCK_FALLS_BACK = ("ok", "failed")
+
+
 def lock_stops(plan, state):
     entries = _lock_entries(plan)
     failing = {
         msp: lock_of(state, msp) or {}
         for msp in sorted(entries)
-        if (lock_of(state, msp) or {}).get("state") != "ok"
+        if (lock_of(state, msp) or {}).get("state") not in LOCK_FALLS_BACK
     }
     own = {msp: _own_stop(plan, entries[msp], record) for msp, record in failing.items()}
     mergers = core.msp_mergers(plan)
@@ -4528,7 +4858,7 @@ def referee_holders(plan, state, msp, base):
     sliced = {
         _norm(path): msp_base(plan, state, holder, base)
         for holder in (msp,) + core.msp_merges(plan).get(msp, ())
-        if holder in entries
+        if holder in entries and (lock_of(state, holder) or {}).get("state") == "ok"
         for path in entries[holder]["slice"]
     }
     return {
@@ -4612,7 +4942,6 @@ def execute(
     base_commit=None,
     worker_sandbox=False,
     worker_writes=(),
-    suite_command=None,
     gate_classes=None,
     gate_classes_sha256=None,
     reask_command=None,
@@ -4628,8 +4957,6 @@ def execute(
         check_template("pull-request", pr_command)
     if gate_setup is not None:
         check_template("gate-setup", gate_setup)
-    if suite_command is not None:
-        check_template("suite", suite_command)
     checked_writes = isolation.refuse_overlapping_writes(run_dir, worker_writes, repo, trees_root)
     if not no_push and header is None:
         raise ConfigError(
@@ -4644,6 +4971,7 @@ def execute(
             (os.path.abspath(run_dir), isolation.worker_home(env)) + checked_writes
         )
     sandbox = None if program is None else {"program": program, "writes": checked_writes}
+    _keep_repository_programs_confined(sandbox)
     recorded = (prior or {}).get("lanes") or {}
     if any(
         (recorded.get(str(index)) or {}).get("state") != "ok"
@@ -4668,12 +4996,18 @@ def execute(
         "env": env,
         "trajectory": trajectory,
         "gate_setup": gate_setup,
-        "suite_command": suite_command,
         "gate_classes": tuple(gate_classes or ()),
         "sandbox": sandbox,
         "seeds": seeds,
         "reask_command": reask_command,
         "plan_id": plan["plan_id"],
+        "worker": {
+            "command": worker_command,
+            "models": models,
+            "template": prompt_template,
+            "max_output": max_output,
+            "header": landing or header,
+        },
     }
     os.makedirs(run_dir, exist_ok=True)
     write_json(os.path.join(run_dir, PLAN_FILE), plan)
@@ -4786,12 +5120,34 @@ def execute(
     return state
 
 
+UNLOCKED_REASON = "its check author could not lock it (%s), so nothing built it to judge"
+
+
+def unlocked_classes(plan, state, msp):
+    entry = _lock_entries(plan).get(msp)
+    record = lock_of(state, msp) or {}
+    if entry is None or record.get("state") != "failed":
+        return ()
+    held = frozenset(_norm(path) for path in entry["slice"])
+    return tuple(
+        {
+            "test": property_key(check["file"], check["test"]),
+            "class": "not-applicable",
+            "reason": UNLOCKED_REASON % record.get("reason"),
+        }
+        for item in plan.get("items") or ()
+        for check in item.get("acceptance") or ()
+        if _norm(check["file"]) in held
+    )
+
+
 def msp_settings(plan, state, settings, msp):
     if not plan.get("check_authors"):
         return settings
     holders = referee_holders(plan, state, msp, settings["base_commit"])
     return {
         **settings,
+        "gate_classes": tuple(settings.get("gate_classes") or ()) + unlocked_classes(plan, state, msp),
         "base_commit": msp_base(plan, state, msp, settings["base_commit"]),
         "referee_held": referee_entries(settings["repo"], holders) if holders else None,
         "referee_holders": {_norm(path): commit for path, commit in holders.items()} or None,

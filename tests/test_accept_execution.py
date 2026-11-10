@@ -450,7 +450,7 @@ class BriefFormat(Case):
         self.assertTrue(briefs, "plan.json holds no briefs" + tail(completed))
         text = briefs[0].get("text") or ""
         leaves = json.dumps(
-            {"leaves": [{"name": "a", "task": "Build a", "edit": ["a.py"], "read": []}]}, indent=2
+            {"leaves": [{"name": "a", "edit": ["a.py"], "read": []}]}, indent=2
         )
         self.assertTrue(text.startswith("Lane 0 of MSP a\n"), text)
         self.assertIn("Task: Build a", text.splitlines(), text)

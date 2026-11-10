@@ -1,3 +1,4 @@
+import ast
 import os
 import re
 
@@ -82,7 +83,15 @@ HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 DROP_ADDED = "drop added lines"
 
+NEGATE_BRANCH = "negate branch"
+
+DROP_FUNCTION = "drop function"
+
+FUNCTION_NODES = (ast.FunctionDef, ast.AsyncFunctionDef)
+
 LINE_WITH_END = re.compile(r"[^\n]*\n|[^\n]+$")
+
+LONE_RETURN = re.compile(r"\r(?!\n)")
 
 
 def mask_strings(line):
@@ -199,4 +208,86 @@ def fallback(added, read):
         found = found + (
             {"file": path, "line": numbers[0], "op": DROP_ADDED, "text": "".join(kept)},
         )
+    return list(found)
+
+
+def _offset(lines, number, column):
+    before = sum(len(line) for line in lines[: number - 1])
+    return before + len(lines[number - 1].encode("utf-8")[:column].decode("utf-8"))
+
+
+def _opening(text, lines, node):
+    decorators = getattr(node, "decorator_list", None)
+    if not decorators:
+        return _offset(lines, node.lineno, node.col_offset)
+    return text.rindex("@", 0, _offset(lines, decorators[0].lineno, decorators[0].col_offset))
+
+
+def _span(text, lines, start, end):
+    return (_opening(text, lines, start), _offset(lines, end.end_lineno, end.end_col_offset))
+
+
+def _replaced(text, span, replacement):
+    return text[: span[0]] + replacement + text[span[1]:]
+
+
+def _parsed(text):
+    try:
+        return ast.parse(text)
+    except (SyntaxError, ValueError):
+        return None
+
+
+def _holds(node, numbers):
+    return any(node.lineno <= number <= node.end_lineno for number in numbers)
+
+
+def _within(node, functions):
+    return any(
+        function.lineno <= node.lineno and node.end_lineno <= function.end_lineno
+        for function in functions
+    )
+
+
+def _negated(text, lines, test):
+    span = _span(text, lines, test, test)
+    return _replaced(text, span, "not (%s)" % text[span[0]: span[1]])
+
+
+def _dropped(text, lines, function):
+    return _replaced(text, _span(text, lines, function.body[0], function.body[-1]), "return None")
+
+
+def _structural_for(path, text, numbers):
+    tree = None if LONE_RETURN.search(text) else _parsed(text)
+    if tree is None:
+        return ()
+    lines = LINE_WITH_END.findall(text)
+    nodes = tuple(ast.walk(tree))
+    functions = tuple(node for node in nodes if isinstance(node, FUNCTION_NODES))
+    added_functions = tuple(node for node in functions if node.lineno in numbers)
+    branches = tuple(
+        node
+        for node in nodes
+        if isinstance(node, ast.If) and _holds(node, numbers) and _within(node, functions)
+    )
+    negated = tuple(
+        (node.lineno, NEGATE_BRANCH, _negated(text, lines, node.test)) for node in branches
+    )
+    dropped = tuple(
+        (node.lineno, DROP_FUNCTION, _dropped(text, lines, node)) for node in added_functions
+    )
+    return tuple(
+        {"file": path, "line": line, "op": op, "text": mutated}
+        for line, op, mutated in sorted(negated + dropped, key=lambda found: found[:2])
+        if mutated != text
+    )
+
+
+def structural(added, read):
+    found = ()
+    for path in sorted(added):
+        if _extension(path) != "py":
+            continue
+        found = found + _structural_for(path, read(path), frozenset(added[path]))
     return list(found)

@@ -8,7 +8,6 @@ DOCS = ("README.md", os.path.join("skills", "mitosis", "SKILL.md"))
 TERMS = (
     "--worker-sandbox",
     "--worker-write",
-    "--suite-command",
     "--gate-classes",
     "check-author",
     "not-applicable",

@@ -158,7 +158,7 @@ TWO_TESTS = (
     "        self.assertEqual(calc.add(2, 3), 5)\n"
     "\n"
     "    def exists(self):\n"
-    "        self.assertTrue(callable(calc.add))\n"
+    "        self.assertTrue(callable(calc.subtract))\n"
 )
 REASON = "the existence check proves nothing the exact check does not already prove"
 
@@ -371,7 +371,7 @@ class GateClasses(unittest.TestCase):
         items = self.scratch.items([step("add", ["calc.py"], "demo", acceptance=[ADDS, EXISTS])])
         self.scratch.jobs({"add": {"writes": {"calc.py": CORRECT_ADD}}})
         completed = self.scratch.build(items, "--trajectory", self._store())
-        self.assertEqual(completed.returncode, 24, "the first run's exit code" + tail(completed))
+        self.assertEqual(completed.returncode, 21, "the first run's exit code" + tail(completed))
         return items, completed
 
     def dropping_a_property_after_a_gate_failure_resumes_without_rebuilding(self):

@@ -36,6 +36,8 @@ EXIT_REFEREE = 9
 
 TIMEOUT_NOTICE = "mitosis: --timeout is deprecated and ignored; mitosis has no wall-clock limit"
 
+SUITE_NOTICE = "mitosis: --suite-command is deprecated and ignored; a surviving mutant is reported and holds nothing"
+
 EXIT_HANDOFF = 15
 
 LANE_EXIT = {
@@ -57,18 +59,19 @@ MSP_EXIT = {
     run.MSP_PARKED: 13,
 }
 
-GATE_EXIT = {"gate-inert": 20, "gate-inconclusive": 21, "gate-weak": 24}
+EXIT_HELD = 21
 
-EXIT_SEVERITY = (9, 7, 8, 24, 20, 21, 22, 10, 12, 11, 13, 6, 4)
+EXIT_SEVERITY = (9, 7, 8, 21, 22, 10, 12, 11, 13, 6, 4)
 
 EXIT_MEANING = {
-    EXIT_SHIPPED: "every MSP reached shipped, pushed, unchanged or committed, and reconcile found "
-    "nothing",
+    EXIT_SHIPPED: "every MSP reached shipped, pushed, unchanged or committed; anything reported "
+    "along the way is named in the result and the pull request",
     EXIT_USAGE: "the flags did not parse",
     EXIT_REFUSED: "refused to start",
     EXIT_INCOMPLETE: "the run stopped before every Lane and MSP reached a terminal state",
     EXIT_NO_BRANCHES: "the run created no branches",
-    EXIT_RECONCILE: "reconcile found a write outside the declaration or a declared path never written",
+    EXIT_RECONCILE: "reconcile found a write outside the declaration, or an MSP that changed "
+    "nothing though it declared files",
     EXIT_CROSSING: "an MSP branch, pushed or with its pull request open, writes files another MSP "
     "owns and also changes",
     EXIT_FOREIGN: "a Lane changed a file another Lane of its MSP owns and had already committed",
@@ -81,12 +84,9 @@ EXIT_MEANING = {
     LANE_EXIT["merge-blocked"]: "a producer branch would not merge",
     LANE_EXIT[run.LANE_PARKED]: "a Worker stopped at a usage limit; the run is parked: pass "
     "--resume after the limit resets",
-    GATE_EXIT["gate-inert"]: "an MSP was held back instead of pushed: an acceptance property "
-    "proves nothing, because it passes with the implementation reverted",
-    GATE_EXIT["gate-inconclusive"]: "an MSP was held back instead of pushed: the gate could not "
-    "judge an acceptance property, or could not run",
-    GATE_EXIT["gate-weak"]: "an acceptance property passes against a mutant of the work, so it "
-    "cannot tell working code from broken code",
+    EXIT_HELD: "an MSP was held back instead of pushed: an acceptance test fails "
+    "against the finished work, the repository's hook refused the whole change, or the work could "
+    "not be committed",
     MSP_EXIT["ship-failed"]: "a commit, push or pull-request command failed",
 }
 
@@ -147,7 +147,6 @@ PLACEHOLDER_HELP = {
     "brief": " ".join("{%s}" % key for key in BRIEF_PLACEHOLDERS),
     "acceptance": "{file} {test} {worktree}",
     "gate-setup": "{worktree}",
-    "suite": "{worktree} {report}",
     "pull-request": "{branch} {base} {title} {body} {worktree} {msp} {remote}",
 }
 
@@ -322,12 +321,8 @@ FLAG_SPECS = {
     },
     "--suite-command": {
         "metavar": "TEMPLATE",
-        "help": "the project's full test suite, run in the gate's checkout once with no mutant "
-        "and then once for each mutant that every acceptance test of a property survives; "
-        "placeholders %s, where {report} is a fresh path for an optional JUnit XML report; "
-        "exit 1 kills the mutant only when the run with no mutant passed, and makes the property "
-        "covered-elsewhere when every survivor is killed; any other exit, or a run with no mutant "
-        "that fails, keeps the property weak" % PLACEHOLDER_HELP["suite"],
+        "help": "deprecated and ignored: a test no mutant fails is reported and holds nothing, "
+        "so nothing needs the suite run against each survivor",
     },
     "--gate-classes": {
         "metavar": "PATH",
@@ -527,7 +522,7 @@ FLAG_SPECS = {
         "help": "run every Worker under sandbox-exec with a profile that refuses file writes "
         "outside its clone, a private temp folder passed as TMPDIR, its Claude Code transcript "
         "folder, /dev/null, /dev/tty, /dev/fd and each --worker-write path, and run the gate's "
-        "setup, acceptance, mutant and suite runs and the lock stage's checks under sandbox-exec "
+        "setup, acceptance and mutant runs and the lock stage's checks under sandbox-exec "
         "too, writing only their checkout, a private temp folder and each --worker-write path; "
         "a host without sandbox-exec refuses the run before any Worker starts",
     },
@@ -755,7 +750,6 @@ TEMPLATE_FLAGS = {
     "brief": "--brief-command",
     "acceptance": "--acceptance-command",
     "gate-setup": "--gate-setup",
-    "suite": "--suite-command",
     "pull-request": "--pr-command",
 }
 
@@ -799,7 +793,6 @@ def check_templates(args):
         ("brief", args.brief_command),
         ("acceptance", args.acceptance_command),
         ("gate-setup", args.gate_setup),
-        ("suite", args.suite_command),
         ("pull-request", args.pr_command),
     ):
         if template is None:
@@ -1763,7 +1756,7 @@ def _tally(counts):
     return ", ".join("%d %s" % (counts.get(key, 0), key) for key in core.GATE_OUTCOMES)
 
 
-def _mutant_line(record, mutation=None, killers=()):
+def _mutant_line(record, mutation=None):
     if not isinstance(record, dict):
         return None
     killed = record.get("killed")
@@ -1773,9 +1766,7 @@ def _mutant_line(record, mutation=None, killers=()):
     if mutation == "not-applicable":
         return tried + ", none killed it; the Step added no code, so mutation does not apply"
     if mutation == "covered-elsewhere":
-        return tried + ", none killed it; the suite killed each, failing %s" % (
-            ", ".join(killers) or "tests it did not name"
-        )
+        return tried + ", none killed it; the caller classed it as covered elsewhere"
     if not isinstance(killed, dict):
         return tried + ", none killed it"
     return tried + ", killed by %s:%s changed by %s" % (
@@ -1805,9 +1796,7 @@ def gate_lines(plan, state):
         totals = {key: totals[key] + counts.get(key, 0) for key in totals}
         lines = lines + ("MSP %s: %s (%s)" % (_label(plan, index), gate.get("outcome"), _tally(counts)),)
         for entry in gate.get("properties") or []:
-            tried = _mutant_line(
-                entry.get("mutants"), entry.get("mutation"), tuple(entry.get("killers") or ())
-            )
+            tried = _mutant_line(entry.get("mutants"), entry.get("mutation"))
             if entry.get("outcome") == "pass" and tried is None:
                 continue
             where = "%s::%s" % (entry.get("file"), entry.get("test")) if entry.get("file") else entry.get("step")
@@ -1917,21 +1906,7 @@ def stacking_lines(plan, state):
 def reconcile_dirty(findings):
     if not isinstance(findings, dict):
         return True
-    return bool(
-        findings.get("undeclared")
-        or findings.get("unwritten")
-        or findings.get("crossing")
-        or findings.get("fatal")
-    )
-
-
-def gate_exit(record):
-    if record.get("proven_head"):
-        return None
-    if record.get("gate_error"):
-        return GATE_EXIT["gate-inconclusive"]
-    flag = run.gate_state(record.get("gate") or {})
-    return GATE_EXIT.get(flag)
+    return bool(findings.get("undeclared") or findings.get("crossing") or findings.get("fatal"))
 
 
 def _finding(msp, lane, kind, code, detail):
@@ -1959,25 +1934,17 @@ def _lane_findings(plan, lane_records):
 
 
 def _gate_detail(record):
-    if record.get("gate_error"):
-        return record["gate_error"]
-    gate = record.get("gate") or {}
     named = [
         "%s::%s: %s" % (entry.get("file"), entry.get("test"), _whole(entry.get("reason")))
-        for entry in gate.get("properties") or []
-        if entry.get("outcome") in run.GATE_STATES
+        for entry in run.failing_properties(record.get("gate"))
     ]
-    return "; ".join(named) or record.get("reason") or ""
+    return "; ".join(named) or record.get("reason") or record.get("gate_error") or ""
 
 
 def _gate_findings(label, record):
-    flag = gate_exit(record)
-    if flag is None and record.get("state") == run.MSP_GATE_FAILED:
-        flag = GATE_EXIT["gate-inconclusive"]
-    if flag is None:
+    if record.get("state") != run.MSP_GATE_FAILED:
         return []
-    kind = next(name for name, code in GATE_EXIT.items() if code == flag)
-    return [_finding(label, None, kind, flag, _gate_detail(record))]
+    return [_finding(label, None, run.GATE_HELD, EXIT_HELD, _gate_detail(record))]
 
 
 def _reconcile_findings(label, found):
@@ -2021,11 +1988,15 @@ def _msp_findings(plan, index, record, lane_records):
         + _reconcile_findings(label, found)
         + foreign
         + [_finding(label, None, "undeclared", EXIT_RECONCILE, path) for path in found.get("undeclared") or []]
-        + [_finding(label, None, "unwritten", EXIT_RECONCILE, path) for path in found.get("unwritten") or []]
+        + (
+            [_finding(label, None, "unwritten", EXIT_RECONCILE, path) for path in found.get("unwritten") or []]
+            if state == run.MSP_UNCHANGED
+            else []
+        )
     )
 
 
-LOCK_EXIT = {"failed": LANE_EXIT["failed"], run.MSP_PARKED: MSP_EXIT[run.MSP_PARKED]}
+LOCK_EXIT = {run.MSP_PARKED: MSP_EXIT[run.MSP_PARKED]}
 
 
 def locks(state, plan):
@@ -2037,14 +2008,14 @@ def locks(state, plan):
 
 
 def lock_stopped(state, plan):
-    return any(lock.get("state") != "ok" for _, lock in locks(state, plan))
+    return any(lock.get("state") not in run.LOCK_FALLS_BACK for _, lock in locks(state, plan))
 
 
 def _lock_findings(state, plan):
     found = []
     for msp, lock in locks(state, plan):
         label = _label(plan, msp)
-        if lock.get("state") != "ok":
+        if lock.get("state") not in run.LOCK_FALLS_BACK:
             found = found + [
                 _finding(
                     label,
@@ -2054,10 +2025,6 @@ def _lock_findings(state, plan):
                     lock.get("reason") or "",
                 )
             ]
-        found = found + [
-            _finding(label, None, "undeclared", EXIT_RECONCILE, path)
-            for path in lock.get("undeclared") or []
-        ]
     return found
 
 
@@ -2198,7 +2165,7 @@ def _msp_summary(plan, state):
                             },
                             **{
                                 key: entry[key]
-                                for key in ("mutation", "coverage", "killers")
+                                for key in ("mutation", "coverage")
                                 if key in entry
                             },
                         }
@@ -2207,7 +2174,7 @@ def _msp_summary(plan, state):
                     "unproven": [
                         "%s::%s %s" % (entry.get("file"), entry.get("test"), entry.get("outcome"))
                         for entry in gate.get("properties") or []
-                        if entry.get("outcome") in run.BLOCKING_OUTCOMES
+                        if entry.get("outcome") in run.UNPROVEN_OUTCOMES
                     ],
                 },
                 "reconcile": {
@@ -2519,7 +2486,6 @@ def execute(args, plan, models, run_dir, repo, root, base=None):
             env=recorder_of(args).env,
             trajectory=args.trajectory,
             gate_setup=args.gate_setup,
-            suite_command=args.suite_command,
             base_commit=base,
             worker_sandbox=args.worker_sandbox,
             worker_writes=tuple(args.worker_write),
@@ -2680,6 +2646,8 @@ def main(argv=None):
         )
     if args.timeout is not None:
         _print((TIMEOUT_NOTICE,), sys.stderr)
+    if args.suite_command is not None:
+        _print((SUITE_NOTICE,), sys.stderr)
     malformed = next(
         (value for value in args.proven_head if PROVEN_HEAD.fullmatch(value) is None), None
     )

@@ -755,7 +755,7 @@ class WorkerIsolation(unittest.TestCase):
         self.assertEqual(scratch.checked("show", "mitosis/demo:shim.py"), CORRECT_ADD)
         first = self._first_property(self._msp(summary))
         self.assertEqual(first["outcome"], "inconclusive", "gate property" + tail(completed))
-        self.assertEqual(first["reason"], "exit 1 with the work present")
+        self.assertEqual(first["reason"], "fails against the finished work")
         self.assertEqual(completed.returncode, 21, "mitosis exit code" + tail(completed))
 
     def a_locked_write_in_the_clone_is_reverted_and_fatal(self):

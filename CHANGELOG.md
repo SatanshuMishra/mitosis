@@ -3,6 +3,45 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.16.0 - 2026-11-09
+
+- The gate holds an MSP only when a named test fails against the finished
+  work, and gives the owning Lane one repair first. A test that proves little,
+  passes without the work or could not be judged is named in the pull request
+  and no longer stops it. Exits 20 and 24 are gone.
+- Mutation stays as a finding for reviewers and never touches a file in a test
+  location. `--suite-command` is accepted and ignored.
+- A gate that could not run is named in the pull request and holds nothing.
+- A Lane that fails is dispatched once more, told why. A check-author whose
+  lock is refused continues its session once, told what was refused, rather
+  than writing its tests again, and a lock refused twice no longer stops the
+  build.
+- A Lane commits without the repository's hooks, and the pre-commit hook runs
+  once per MSP over its whole change, in a throwaway checkout that never moves
+  the branch. Under the Worker sandbox it runs confined, and no other repository
+  hook or fsmonitor runs outside the sandbox.
+- A repair reports writes to other Lanes' files, reaches the gate even where a
+  sibling overwrote the file, and reaches any MSP built on the repaired one. A
+  usage limit during a repair parks the MSP and a resume finishes the repair.
+- A retried Lane's write outside its write-set reaches the gate and is reported.
+  A check-author's discarded write no longer sets an exit code.
+- A declared path never written is reported and exits 0, unless the whole MSP
+  changed nothing. A gitignored path in a write-set no longer fails its Lane.
+
+## 0.15.3 - 2026-11-08
+
+- Every Worker and check-author is told to run only the tests its brief names
+  and the test files it edits, never the project's full suite, which took 59
+  to 73 percent of a measured build's elapsed time.
+- A one-part brief states its task once instead of twice, which halves the
+  largest prompts.
+- Before judging a Python test weak, the gate tries negating each branch that
+  decides whether added code runs and emptying each function the Step added,
+  so a correct build whose tests run in a subprocess or check that nothing
+  happens is no longer held back.
+- Workers are asked for at most 150 characters of notes, leaving room under
+  the 200 the return schema allows, so a near miss no longer costs a re-ask.
+
 ## 0.15.2 - 2026-11-08
 
 - The skill file is back within its size cap, and the any-input release test

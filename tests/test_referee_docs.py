@@ -21,7 +21,6 @@ TERMS = (
     "--trajectory",
     "9",
     "13",
-    "24",
 )
 REMOVED = "never withholds a pull request"
 RELEASED = (0, 12, 0)

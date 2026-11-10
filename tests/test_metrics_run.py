@@ -978,7 +978,7 @@ class NoWorkContent(unittest.TestCase):
                 "--no-push",
                 accept=acceptance(elsewhere, {"print": MARKER, "exit": 3}),
             )
-            self.assertEqual(code, 21, out + err)
+            self.assertEqual(code, 0, out + err)
             self.assert_store_clean(store)
 
     def test_no_pull_request_text_or_msp_reason_stored(self):

@@ -417,7 +417,7 @@ class WorkerReplies(ScratchCase):
         )
         self.scratch.job("reask", reply={**VALID_RETURN, "status": "done"})
         completed = self.scratch.held()
-        self.assertEqual(len(self.scratch.calls("reask")), 1, tail(completed))
+        self.assertEqual(len(self.scratch.calls("reask")), 2, tail(completed))
         lane = self.scratch.state()["lanes"]["0"]
         self.assertEqual(lane["state"], "failed", tail(completed))
         self.assertIsNone(lane["returned"])

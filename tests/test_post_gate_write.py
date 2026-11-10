@@ -129,11 +129,10 @@ class PostGateWrite(unittest.TestCase):
             {"demo": {"step": "add", "writes": {"calc.py": teeth.BROKEN_ADD, CALC_TEST: FIRST_RUN_TEST}}}
         )
         completed = self.scratch.build(items, push=True)
-        self.assertEqual(completed.returncode, 24, "mitosis exit code" + teeth.tail(completed))
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + teeth.tail(completed))
         msp = teeth.summary_of(completed)["msps"][0]
-        self.assertEqual(msp["state"], "gate-failed")
+        self.assertEqual(msp["state"], "shipped")
         self.assertEqual(msp["gate"]["properties"][0]["outcome"], "weak")
-        self.assertEqual(self.scratch.checked("ls-remote", "origin", "mitosis/demo"), "")
         self.assertFalse(os.path.lexists(self._tree("ran.flag")), "ran.flag is still on disk")
 
 

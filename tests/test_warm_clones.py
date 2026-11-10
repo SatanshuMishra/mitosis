@@ -193,7 +193,7 @@ put(os.path.join("cache", "new.bin"), "new\n")
 DIRTY_FIRST_THEN_RECORD = r'''
 with open(os.path.join(here, "dispatch.log"), encoding="utf-8") as handle:
     dispatches = handle.read().splitlines().count(name)
-if dispatches == 1:
+if dispatches <= 2:
     attempt(os.path.join("cache", "sub", "a.bin"), "dirty\n")
     sys.exit(1)
 record = {**record, **seeded_state(os.path.join("cache", "sub", "a.bin"))}
@@ -955,7 +955,7 @@ class WarmClones(unittest.TestCase):
         self.assertEqual(self._lane(summary_of(first.stdout), "left").get("state"), "failed", tail(first))
         resumed = scratch.build(items, "--resume")
         self.assertEqual(resumed.returncode, 0, "resumed mitosis exit code" + tail(resumed))
-        self.assertEqual(scratch.dispatched(), ["left", "left"])
+        self.assertEqual(scratch.dispatched(), ["left", "left", "left"])
         record = scratch.record("left")
         self.assertIs(record.get("present"), True, "the second Worker saw no seeded file" + tail(resumed))
         self.assertEqual(record.get("bytes"), WARM)
@@ -969,6 +969,7 @@ class WarmClones(unittest.TestCase):
             {"left": {"declared": ["left.py"], "left": LEFT, "script": WRITE_DIRTY_THEN_FAIL}}
         )
         first = scratch.build(items)
+        dispatched = scratch.dispatched()
         state = scratch.state()
         lanes = state.get("lanes") or {}
         self.assertIn("0", lanes, "state.json holds no Lane 0" + tail(first))
@@ -977,7 +978,7 @@ class WarmClones(unittest.TestCase):
         scratch.write_state({**state, "lanes": {**lanes, "0": held}})
         resumed = scratch.build(items, "--resume")
         self.assertEqual(resumed.returncode, 0, "resumed mitosis exit code" + tail(resumed))
-        self.assertEqual(scratch.dispatched(), ["left"])
+        self.assertEqual(scratch.dispatched(), dispatched)
         paths = scratch.tree_paths("mitosis/demo")
         self.assertIn("left.py", paths)
         self.assertEqual([path for path in paths if under_cache(path)], [])
