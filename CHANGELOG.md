@@ -3,6 +3,17 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.17.1 - 2026-11-09
+
+- The split rates each Step simple or complex with the reference planner's
+  meanings: simple for mechanical, fully specified work, and complex for work
+  that needs judgement, is unfamiliar or is easy to get wrong. An assumption
+  no longer raises a Step to complex, so a simple Step's brief runs on the cheap
+  tier, as does its Lane unless a risk marker or its history holds it on top.
+- The split call's schema requires each Step's name, files and acceptance, and
+  a split whose Steps fail the Step check is asked again once in the same
+  session before the build refuses.
+
 ## 0.17.0 - 2026-11-09
 
 - `--shared-files LIST` names files that MSPs may each edit without being
