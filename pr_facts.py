@@ -118,13 +118,11 @@ def _title(header, plan, msp):
     subject = header["subject"]
     if len(plan.get("msps") or []) <= 1:
         return "%s: %s" % (prefix, subject)
-    label = plan["msps"][msp]["label"]
-    labelled = tuple("%s: %s (%s)" % (prefix, candidate, label) for candidate in _subject_candidates(subject))
-    fitting = next((title for title in labelled if _accepted(title)), None)
-    if fitting is not None:
-        return fitting
-    bare = "%s: %s" % (prefix, subject)
-    return bare if _accepted(bare) else labelled[0]
+    tags = (plan["msps"][msp]["label"], "part %d of %d" % (msp + 1, len(plan["msps"])))
+    tagged = tuple(
+        "%s: %s (%s)" % (prefix, candidate, tag) for tag in tags for candidate in _subject_candidates(subject)
+    )
+    return next((title for title in tagged if _accepted(title)), tagged[0])
 
 
 def _problem(header):

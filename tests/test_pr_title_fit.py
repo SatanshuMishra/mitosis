@@ -46,14 +46,18 @@ class TitleFit(unittest.TestCase):
         title = pr_facts._title(header(LONG_SUBJECT + " and more words", None), TWO_MSPS, 0)
         self.assertEqual(title, "feat: %s (m)" % LONG_SUBJECT)
 
-    def a_label_too_long_for_any_subject_falls_back_to_the_bare_title(self):
+    def a_label_with_no_room_gives_way_to_the_msp_number_so_siblings_differ(self):
         plan = {
-            "msps": [{"label": "m", "steps": ["a"]}, {"label": "x" * 80, "steps": ["b"]}],
+            "msps": [
+                {"label": "checkout-payment-provider-migration-for-every-stored-card-step-one", "steps": ["a"]},
+                {"label": "checkout-payment-provider-migration-for-every-stored-card-step-two", "steps": ["b"]},
+            ],
             "items": [],
         }
+        subject = "move checkout onto the new payment provider"
         self.assertEqual(
-            pr_facts._title(header("hand facts to render"), plan, 1),
-            "feat(ship): hand facts to render",
+            [pr_facts._title(header(subject), plan, msp) for msp in (0, 1)],
+            ["feat(ship): %s (part 1 of 2)" % subject, "feat(ship): %s (part 2 of 2)" % subject],
         )
 
 
