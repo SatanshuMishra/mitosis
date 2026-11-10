@@ -245,7 +245,8 @@ class NothingWaits(unittest.TestCase):
         if configure is not None:
             configure(scratch)
         scratch.jobs(scaffold.standard_jobs())
-        completed = scratch.build(scratch.items(scaffold.labelled()), "--no-push", env=env)
+        items = scratch.items(scaffold.labelled())
+        completed = scratch.build(items, "--plan-file", scratch.saved(items), "--no-push", env=env)
         records = scratch.records()
         self.assertEqual(sorted(records), sorted(DISPATCHED), "recorded dispatches" + scaffold.tail(completed))
         return records

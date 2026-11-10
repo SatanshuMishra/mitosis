@@ -28,6 +28,7 @@ from test_mutant_coverage import (
     summary_of,
     tail,
 )
+from test_check_author_lane import saved_plan
 
 EXACT_TEST = (
     "import unittest\n"
@@ -135,7 +136,14 @@ class Receipts(unittest.TestCase):
         self.assertEqual(self.scratch.git("rev-parse", "--verify", "-q", "refs/heads/escaped").returncode, 1)
 
     def _sandboxed(
-        self, seeded, jobs, flags=lambda scratch: (), acceptance="unittest", steps=None, hooks=None
+        self,
+        seeded,
+        jobs,
+        flags=lambda scratch: (),
+        acceptance="unittest",
+        steps=None,
+        hooks=None,
+        saved=False,
     ):
         scratch = self._scratch(seeded)
         for name, body in (hooks(self._escape_targets()) if hooks else {}).items():
@@ -145,11 +153,13 @@ class Receipts(unittest.TestCase):
             os.chmod(path, 0o755)
         items = scratch.items(steps or [step("add", ["calc.py"], "demo", acceptance=[ADDS])])
         scratch.jobs(jobs(self._escape_targets()))
+        planned = ("--plan-file", saved_plan(items, scratch.repo)) if saved else ()
         return scratch.build(
             items,
             "--worker-sandbox",
             "--worker-write",
             scratch.stubs,
+            *planned,
             *flags(scratch),
             acceptance=acceptance,
         )
@@ -235,6 +245,7 @@ class Receipts(unittest.TestCase):
                 check_author(),
                 step("add", ["calc.py"], "demo", [ADDS], ("check-author",)),
             ],
+            saved=True,
         )
         self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
         self.assertNotIn("lock", summary_of(completed))
@@ -321,7 +332,7 @@ class Receipts(unittest.TestCase):
         self.assertEqual(len(findings), 1, "undeclared findings naming sub/.GIT" + tail(completed))
         self.assertEqual(scratch.checked("ls-tree", "mitosis/demo", "sub"), "")
         self.assertFalse(os.path.lexists(os.path.join(scratch.run_dir, "trees", "demo", "sub")))
-        self.assertEqual(completed.returncode, 6, "mitosis exit code" + tail(completed))
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
 
     def a_step_with_no_traced_python_is_marked_untraced(self):
         hook, text, needle, op = MIXED_HOOKS[0]

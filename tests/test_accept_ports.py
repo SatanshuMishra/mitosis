@@ -91,7 +91,9 @@ class PromptTemplate(accept.Case):
         self.assertIn('"edit": [', printed)
 
     def a_check_author_lane_keeps_its_brief(self):
-        completed = self.scratch.full_run(checked_steps(), "--prompt-template", "CUSTOM task-a {spec}")
+        completed = self.scratch.full_run(
+            checked_steps(), "--prompt-template", "CUSTOM task-a {spec}", saved=True
+        )
         plan = self.plan(completed)
         authors = plan.get("check_authors") or []
         self.assertTrue(authors, "plan.json holds no check_authors" + tail(completed))
@@ -183,7 +185,7 @@ class PlanFile(accept.Case):
 
     def a_saved_plan_gets_back_its_check_author_locks(self):
         first = self.scratch.path("r1")
-        self.planned(checked_steps(), run_dir=first)
+        self.planned(checked_steps(), run_dir=first, saved=True)
         saved, original = self.saved(first, "saved.json", lambda plan: {**plan, "locked": []})
         second = self.scratch.path("r2")
         completed, plan = self.planned(checked_steps(), "--plan-file", saved, run_dir=second)
@@ -192,7 +194,7 @@ class PlanFile(accept.Case):
 
     def a_saved_plan_without_its_check_authors_is_refused(self):
         first = self.scratch.path("r1")
-        self.planned(checked_steps(), run_dir=first)
+        self.planned(checked_steps(), run_dir=first, saved=True)
         saved, _ = self.saved(
             first, "saved.json", lambda plan: {k: v for k, v in plan.items() if k != "check_authors"}
         )
@@ -202,6 +204,12 @@ class PlanFile(accept.Case):
         self.assertIn("has no check_authors", completed.stderr)
         self.assertIn("check-author-a", completed.stderr)
         self.assertFalse(os.path.exists(os.path.join(second, "plan.json")))
+
+    def a_saved_plan_that_is_no_json_object_is_refused(self):
+        saved = accept.put_json(self.scratch.path("saved.json"), [])
+        completed = self.scratch.plan_only(checked_steps(), "--plan-file", saved, run_dir=self.scratch.path("r1"))
+        self.exits(completed, 3)
+        self.assertIn("does not hold a JSON object", completed.stderr)
 
     def a_saved_plan_lacking_a_part_is_refused_by_name(self):
         first = self.scratch.path("r1")

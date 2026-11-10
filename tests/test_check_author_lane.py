@@ -13,7 +13,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
+import core
 import handoff
+import mitosis
 
 MITOSIS = os.path.join(ROOT, "mitosis.py")
 CALL_LIMIT = 60
@@ -213,6 +215,21 @@ def read_bytes(path):
         return handle.read()
 
 
+def lock_plan(items, root, *flags):
+    args = mitosis.build_parser().parse_args(["--items", items, "--no-trajectories", *flags])
+    return mitosis.build_plan(
+        args,
+        mitosis.read_items(items),
+        root,
+        mitosis.check_charter(args.charter),
+        mitosis.load_graph(args.graph),
+    )
+
+
+def saved_plan(items, root, *flags):
+    return put(os.path.splitext(items)[0] + "-plan.json", json.dumps(lock_plan(items, root, *flags)))
+
+
 SPEC_SECTION = "1.1"
 SPEC_DOCUMENT = "# Spec\n\n## 1.1 Build\n"
 
@@ -360,6 +377,9 @@ class Scratch:
             env=env,
         )
 
+    def saved(self, items, *flags):
+        return saved_plan(items, self.repo, *flags)
+
     def record(self, name):
         path = os.path.join(self.stubs, "records", name + ".json")
         if not os.path.exists(path):
@@ -422,7 +442,7 @@ class CheckAuthorLane(unittest.TestCase):
         ).split()
         return listed[0] if listed else None
 
-    def _plan_only(self, steps, label):
+    def _plan_only(self, steps, label, *flags):
         scratch = self.scratch
         return scratch.mitosis(
             "--items",
@@ -432,11 +452,16 @@ class CheckAuthorLane(unittest.TestCase):
             "feature",
             "--run-dir",
             os.path.join(scratch.tmp, "runs", label),
+            *flags,
         )
 
-    def an_items_file_with_a_check_author_plans(self):
+    def _saved_plan_only(self, steps, label, saved_steps=None):
+        saved = self.scratch.saved(self.scratch.items(saved_steps or steps, label + "-saved.json"))
+        return self._plan_only(steps, label, "--plan-file", saved)
+
+    def a_saved_plan_with_a_check_author_plans(self):
         scratch = self._scratch()
-        completed = self._plan_only([check_author(), builder()], "plan")
+        completed = self._saved_plan_only([check_author(), builder()], "plan")
         self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
         summary = summary_of(completed)
         self.assertEqual([msp.get("msp") for msp in summary.get("msps") or []], ["calc"])
@@ -469,16 +494,19 @@ class CheckAuthorLane(unittest.TestCase):
                     builder(after=("lock-one", "lock-two")),
                 ],
                 ("lock-one", "lock-two"),
+                None,
             ),
             (
                 "acceptance-entries",
                 [check_author(name="write-checks", acceptance=[ADDS]), builder(after=("write-checks",))],
                 ("write-checks",),
+                None,
             ),
             (
                 "unknown-role",
                 [{**step("add", ["calc.py"], "calc"), "role": "builder"}],
                 ("add",),
+                None,
             ),
             (
                 "shared-file",
@@ -487,11 +515,16 @@ class CheckAuthorLane(unittest.TestCase):
                     builder(files=("calc.py", TEST_FILE)),
                 ],
                 ("add",),
+                [check_author(), builder()],
             ),
         )
-        for label, steps, offenders in cases:
+        for label, steps, offenders, saved_steps in cases:
             with self.subTest(case=label):
-                completed = self._plan_only(steps, label)
+                completed = (
+                    self._plan_only(steps, label)
+                    if saved_steps is None
+                    else self._saved_plan_only(steps, label, saved_steps)
+                )
                 self.assertEqual(completed.returncode, 3, "mitosis exit code" + tail(completed))
                 self.assertTrue(
                     any(names_step(completed.stderr, name) for name in offenders),
@@ -508,7 +541,7 @@ class CheckAuthorLane(unittest.TestCase):
                 "add": {"writes": {"calc.py": CORRECT_ADD}, "msp": "calc"},
             }
         )
-        completed = scratch.build(items)
+        completed = scratch.build(items, "--plan-file", scratch.saved(items))
         self.assertEqual(self._gained(before), [], "commits the feature branch gained" + tail(completed))
         lock_commit = self._first_on(before, "mitosis/calc")
         self.assertIsNotNone(lock_commit, "mitosis/calc holds no commit" + tail(completed))
@@ -545,7 +578,10 @@ class CheckAuthorLane(unittest.TestCase):
             }
         )
         completed = scratch.build(
-            items, reask=scratch.stub("reask.py", "{prompt}", "{session_id}", "{schema}")
+            items,
+            "--plan-file",
+            scratch.saved(items),
+            reask=scratch.stub("reask.py", "{prompt}", "{session_id}", "{schema}"),
         )
         with open(os.path.join(scratch.stubs, "reask.log"), encoding="utf-8") as handle:
             asked = [json.loads(line) for line in handle if line.strip()]
@@ -570,7 +606,7 @@ class CheckAuthorLane(unittest.TestCase):
                 "add": {"writes": {"calc.py": CORRECT_ADD}, "msp": "calc"},
             }
         )
-        completed = scratch.build(items)
+        completed = scratch.build(items, "--plan-file", scratch.saved(items))
         summary = summary_of(completed)
         lock = self._lock(summary, completed)
         self.assertEqual(lock.get("state"), "failed")
@@ -597,7 +633,7 @@ class CheckAuthorLane(unittest.TestCase):
                 "add": {"writes": {"calc.py": CORRECT_ADD + DOUBLES_LINES}, "msp": "calc"},
             }
         )
-        completed = scratch.build(items)
+        completed = scratch.build(items, "--plan-file", scratch.saved(items))
         summary = summary_of(completed)
         lock = self._lock(summary, completed)
         self.assertEqual(lock.get("state"), "ok", lock.get("reason"))
@@ -626,7 +662,7 @@ class CheckAuthorLane(unittest.TestCase):
                 "add": {"writes": {"calc.py": CORRECT_ADD + DOUBLES_LINES}, "msp": "calc"},
             }
         )
-        completed = scratch.build(items)
+        completed = scratch.build(items, "--plan-file", scratch.saved(items))
         lock = self._lock(summary_of(completed), completed)
         self.assertEqual(lock.get("state"), "failed", lock.get("reason"))
         self.assertIn(
@@ -651,7 +687,7 @@ class CheckAuthorLane(unittest.TestCase):
                 "add": {"writes": {"calc.py": CORRECT_ADD}, "msp": "calc"},
             }
         )
-        completed = scratch.build(items)
+        completed = scratch.build(items, "--plan-file", scratch.saved(items))
         lock = self._lock(summary_of(completed), completed)
         self.assertEqual(lock.get("state"), "failed", lock.get("reason"))
         self.assertEqual(lock["reason"].count("Calc.adds"), 1, lock["reason"])
@@ -673,13 +709,13 @@ class CheckAuthorLane(unittest.TestCase):
                 "add": {"writes": {"calc.py": CORRECT_ADD + DOUBLES_LINES}, "msp": "calc"},
             }
         )
-        completed = scratch.build(items)
+        completed = scratch.build(items, "--plan-file", scratch.saved(items))
         lock = self._lock(summary_of(completed), completed)
         self.assertEqual(lock.get("state"), "failed", lock.get("reason"))
         self.assertIn("tests/test_calc.py::Calc.adds fails with the check-author's probe", lock["reason"])
         self.assertEqual(scratch.dispatched(), ["check-author", "check-author", "add"])
 
-    def a_step_proving_nothing_beside_a_proven_step_is_reported_at_the_gate(self):
+    def a_step_guarding_kept_behaviour_beside_a_proven_step_passes_at_the_gate(self):
         scratch = self._scratch({"calc.py": CORRECT_ADD})
         doubles = {"file": "tests/test_maths.py", "test": "Maths.doubles"}
         items = scratch.items(
@@ -713,7 +749,56 @@ class CheckAuthorLane(unittest.TestCase):
         gate = self._msp(summary_of(completed), "calc")["gate"]
         self.assertEqual(
             {entry["step"]: entry["outcome"] for entry in gate["properties"]},
+            {"double": "pass", "keep": "pass"},
+        )
+        kept = next(entry for entry in gate["properties"] if entry["step"] == "keep")
+        self.assertEqual(kept["mutation"], "killed", tail(completed))
+        place = kept["mutants"]["killed"]
+        self.assertEqual(place["file"], "calc.py")
+        self.assertEqual(kept["reason"], core.GUARD_KILLED_REASON % (place["file"], place["line"], place["op"]))
+
+    def a_step_proving_nothing_beside_a_proven_step_stays_inert_at_the_gate(self):
+        scratch = self._scratch({"calc.py": CORRECT_ADD})
+        doubles = {"file": "tests/test_maths.py", "test": "Maths.doubles"}
+        exists = {"file": TEST_FILE, "test": "Calc.exists"}
+        items = scratch.items(
+            [
+                step("double", ("maths.py", "tests/test_maths.py"), "calc", [doubles]),
+                step("keep", ("calc.py", TEST_FILE), "calc", [exists]),
+            ]
+        )
+        scratch.jobs(
+            {
+                "double": {
+                    "writes": {
+                        "maths.py": "def double(a):\n    return a * 2\n",
+                        "tests/test_maths.py": (
+                            "import unittest\n\nimport maths\n\n\n"
+                            "class Maths(unittest.TestCase):\n"
+                            "    def doubles(self):\n"
+                            "        self.assertEqual(maths.double(3), 6)\n"
+                        ),
+                    },
+                    "msp": "calc",
+                },
+                "keep": {
+                    "writes": {
+                        "calc.py": "def add(a, b):\n    return b + a\n",
+                        TEST_FILE: (
+                            "import unittest\n\nimport calc\n\n\nclass Calc(unittest.TestCase):\n"
+                            "    def exists(self):\n        self.assertTrue(callable(calc.add))\n"
+                        ),
+                    },
+                    "msp": "calc",
+                },
+            }
+        )
+        completed = scratch.build(items)
+        gate = self._msp(summary_of(completed), "calc")["gate"]
+        self.assertEqual(
+            {entry["step"]: entry["outcome"] for entry in gate["properties"]},
             {"double": "pass", "keep": "inert"},
+            tail(completed),
         )
 
     def a_check_author_write_outside_the_locked_paths_is_not_landed(self):
@@ -730,7 +815,7 @@ class CheckAuthorLane(unittest.TestCase):
                 "add": {"writes": {"calc.py": CORRECT_ADD}, "msp": "calc"},
             }
         )
-        completed = scratch.build(items)
+        completed = scratch.build(items, "--plan-file", scratch.saved(items))
         self.assertEqual(self._gained(before), [], "commits the feature branch gained" + tail(completed))
         lock_commit = self._first_on(before, "mitosis/calc")
         self.assertIsNotNone(lock_commit, "mitosis/calc holds no commit" + tail(completed))
@@ -759,7 +844,7 @@ class CheckAuthorLane(unittest.TestCase):
                 "add": {"writes": {"calc.py": CORRECT_ADD}, "msp": "calc"},
             }
         )
-        completed = scratch.build(items)
+        completed = scratch.build(items, "--plan-file", scratch.saved(items))
         self.assertEqual(scratch.dispatched(), ["add"], "dispatch log" + tail(completed))
         summary = summary_of(completed)
         lock = self._lock(summary, completed)
@@ -778,7 +863,7 @@ def load_tests(loader, standard, pattern):
         (
             CheckAuthorLane,
             (
-                "an_items_file_with_a_check_author_plans",
+                "a_saved_plan_with_a_check_author_plans",
                 "a_malformed_check_author_is_refused",
                 "a_check_author_lane_locks_then_the_build_runs",
                 "a_check_author_reply_that_fails_h10_is_reasked_in_its_own_session",
@@ -787,7 +872,8 @@ def load_tests(loader, standard, pattern):
                 "a_step_whose_locked_tests_all_pass_before_the_build_is_refused",
                 "a_check_two_steps_share_is_named_once_when_refused",
                 "a_guard_that_fails_with_its_probe_is_refused",
-                "a_step_proving_nothing_beside_a_proven_step_is_reported_at_the_gate",
+                "a_step_guarding_kept_behaviour_beside_a_proven_step_passes_at_the_gate",
+                "a_step_proving_nothing_beside_a_proven_step_stays_inert_at_the_gate",
                 "a_check_author_write_outside_the_locked_paths_is_not_landed",
                 "locked_files_already_on_the_feature_branch_skip_the_lane",
             ),

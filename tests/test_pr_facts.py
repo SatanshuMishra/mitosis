@@ -285,6 +285,17 @@ class Facts(unittest.TestCase):
             pr_facts.facts(HEADER, first_plan(), 0, inert)["testing"][0]["result"],
             "passes with and without the work",
         )
+        killed = {"file": "a.py", "line": 2, "op": "== -> !="}
+        mutated = {
+            **gate,
+            "properties": [
+                {**gate["properties"][0], "outcome": "pass", "mutation": "killed", "mutants": {"tried": 1, "killed": killed}}
+            ],
+        }
+        self.assertEqual(
+            pr_facts.facts(HEADER, first_plan(), 0, mutated)["testing"][0]["result"],
+            "passes with and without the work, so it guards behaviour that must stay the same",
+        )
 
     def folded_guards_are_counted_apart_from_unproven_tests(self):
         import pr_facts
@@ -295,10 +306,12 @@ class Facts(unittest.TestCase):
             [{"name": "a", "task": "Build it.", "files": ["a.py"], "acceptance": tests}],
         )
         guard = {"outcome": "not-applicable", "with_work": 0, "reverted": 0}
+        mutation_guard = {"outcome": "pass", "with_work": 0, "reverted": 0, "mutation": "killed"}
+        kinds = {9: guard, 10: mutation_guard, 11: guard}
         gate = {
             "commit": GATED,
             "properties": [
-                {"step": "a", "file": "tests/t.py", "test": entry["test"], **(guard if number > 8 else {"outcome": "pass"})}
+                {"step": "a", "file": "tests/t.py", "test": entry["test"], **kinds.get(number, {"outcome": "pass"})}
                 for number, entry in enumerate(tests)
             ],
         }

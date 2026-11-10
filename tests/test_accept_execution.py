@@ -11,6 +11,8 @@ import sys
 import tempfile
 import unittest
 
+from test_check_author_lane import saved_plan
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 MITOSIS = os.path.join(ROOT, "mitosis.py")
@@ -332,30 +334,36 @@ class Scratch:
             timeout=RUN_LIMIT,
         )
 
-    def plan_only(self, steps, *flags, cwd=None, run_dir=None, env=None):
+    def saved_flags(self, items, flags, saved):
+        return ("--plan-file", saved_plan(items, self.repo, *flags)) if saved else ()
+
+    def plan_only(self, steps, *flags, cwd=None, run_dir=None, env=None, saved=False):
+        items = self.items(steps)
         return self.mitosis(
             "--items",
-            self.items(steps),
+            items,
             "--plan-only",
             "--feature-branch",
             "feature",
             "--run-dir",
             run_dir or self.run_dir,
+            *self.saved_flags(items, flags, saved),
             *flags,
             cwd=cwd,
             env=env,
         )
 
-    def full_run(self, steps, *flags, control=None, writes=None, run_dir=None, env=None):
+    def full_run(self, steps, *flags, control=None, writes=None, run_dir=None, env=None, saved=False):
         jobs = {
             step["name"]: {path: "work of %s\n" % step["name"] for path in step["files"]}
             for step in steps
         }
         put_json(os.path.join(self.stubs, "worker.json"), {**jobs, **(writes or {})})
         put_json(os.path.join(self.stubs, "control.json"), control or {})
+        items = self.items(steps)
         return self.mitosis(
             "--items",
-            self.items(steps),
+            items,
             "--run-dir",
             run_dir or self.run_dir,
             "--feature-branch",
@@ -367,6 +375,7 @@ class Scratch:
             "--acceptance-command",
             self.stub("accept.py", "{file}", "{test}"),
             "--no-push",
+            *self.saved_flags(items, flags, saved),
             *flags,
             env=env,
         )

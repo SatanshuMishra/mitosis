@@ -1724,7 +1724,11 @@ class GateExit(unittest.TestCase):
         undeclared = {"undeclared": ["stray.txt"], "unwritten": [], "crossing": [], "fatal": False}
         self.assertEqual(
             mitosis.exit_code(self._state(gate={"outcome": "pass", "blocks": False}, reconcile=undeclared), self.PLAN),
-            mitosis.EXIT_RECONCILE,
+            mitosis.EXIT_SHIPPED,
+        )
+        self.assertEqual(
+            mitosis.EXIT_MEANING[mitosis.EXIT_RECONCILE],
+            "reconcile found an MSP that changed nothing though it declared files",
         )
 
     def a_lane_that_changed_a_siblings_file_exits_eight(self):

@@ -25,7 +25,7 @@ class PerMspLockPlan(unittest.TestCase):
         self.addCleanup(self.scratch.close)
 
     def _planned(self, steps, label):
-        completed = self.scratch.plan_only(steps, label)
+        completed = self.scratch.saved_plan_only(steps, label)
         self.assertEqual(completed.returncode, 0, "mitosis exit code" + scaffold.tail(completed))
         plan = self.scratch.plan(label)
         entries = plan.get("check_authors")
@@ -33,7 +33,7 @@ class PerMspLockPlan(unittest.TestCase):
         return plan, entries
 
     def _refused(self, steps, label, paths=(), words=()):
-        completed = self.scratch.plan_only(steps, label)
+        completed = self.scratch.saved_plan_only(steps, label, scaffold.labelled())
         self.assertEqual(completed.returncode, EXIT_REFUSED, "mitosis exit code" + scaffold.tail(completed))
         output = completed.stdout + completed.stderr
         for path in paths:

@@ -9,7 +9,7 @@ import uuid
 
 import referee
 
-__version__ = "0.18.0"
+__version__ = "0.19.0"
 
 PLAN_KEYS = (
     "plan_id",
@@ -34,6 +34,7 @@ PLAN_KEYS = (
     "shared_file_candidates",
     "briefs",
     "check_authors",
+    "folded_check_authors",
 )
 
 BRIEF_KEYS = ("briefs", "check_authors")
@@ -96,9 +97,15 @@ GATE_OUTCOMES = ("pass", "weak", "inert", "inconclusive", "not-applicable")
 
 GUARD_REASON = "passes with and without the work, so it guards behaviour that must stay the same"
 
+GUARD_KILLED_REASON = (
+    "passes with and without the work and fails when %s:%d changes by %s, so it guards "
+    "behaviour the work must keep"
+)
+
 
 def is_guard(judged):
-    return judged.get("outcome") == "not-applicable" and judged.get("reverted") == 0
+    proven_by_mutation = judged.get("outcome") == "pass" and judged.get("mutation") == "killed"
+    return judged.get("reverted") == 0 and (judged.get("outcome") == "not-applicable" or proven_by_mutation)
 
 STEP_TYPES = ("fix", "feature", "port", "design", "sweep", "contract")
 
@@ -1743,6 +1750,7 @@ def plan(
     coalesce_max=4,
     briefs=True,
     shared_files=(),
+    folded=(),
 ):
     shared = tuple(shared_files or ())
     items = [with_task(item) for item in items] if isinstance(items, list) else items
@@ -1831,6 +1839,7 @@ def plan(
             for parts in (_slice_parts(authors, placed, index),)
             if parts
         ],
+        "folded_check_authors": list(folded),
     }
     shaped = body if briefs else {key: value for key, value in body.items() if key not in BRIEF_KEYS}
     kept = {key: shaped[key] for key in PLAN_KEYS if key in shaped and _present(shaped[key])}

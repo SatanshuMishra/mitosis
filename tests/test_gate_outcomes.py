@@ -275,7 +275,6 @@ def summary_of(completed):
 
 
 CORRECT_ADD = "def add(a, b):\n    return a + b\n"
-SWAPPED_ADD = "def add(a, b):\n    return b + a\n"
 
 EXACT_TEST = (
     "import unittest\n"
@@ -361,10 +360,15 @@ class GateOutcomes(unittest.TestCase):
         )
 
     def a_property_that_does_not_pass_appends_unverified_reasoned(self):
-        self.scratch = Scratch({"calc.py": CORRECT_ADD})
-        items = self.scratch.items([step("add", ["calc.py", "tests/test_calc.py"], "demo", [ADDS])])
+        self.scratch = Scratch({"calc.py": CORRECT_ADD, "tests/test_calc.py": EXACT_TEST})
+        items = self.scratch.items([step("add", ["calc.py"], "demo", [ADDS])])
         self.scratch.jobs(
-            {"demo": {"step": "add", "writes": {"calc.py": SWAPPED_ADD, "tests/test_calc.py": EXACT_TEST}}}
+            {
+                "demo": {
+                    "step": "add",
+                    "writes": {"calc.py": CORRECT_ADD + "\n\ndef double(a):\n    return a * 2\n"},
+                }
+            }
         )
         completed = self.scratch.build(items, "--trajectory", self._store(), push=True)
         entries = self._entries(self._store())
@@ -373,6 +377,7 @@ class GateOutcomes(unittest.TestCase):
         self.assertEqual(entry["outcome"], "unverified-reasoned")
         gate = self._gate(completed)
         self.assertTrue(gate.get("properties"), "the MSP's gate object carries no properties")
+        self.assertEqual(gate["properties"][0]["outcome"], "inert", tail(completed))
         self.assertEqual(entry.get("symptom"), gate["properties"][0]["reason"])
 
     def a_guard_appends_no_entry(self):

@@ -2548,13 +2548,19 @@ def _first_kill(candidates, attempt, log_name):
     return None, tried, written, seconds
 
 
+WEAK_REASON = "no mutant of the work fails it: it still passes when %s:%d changes by %s"
+
+WEAK_PLACE = re.compile(
+    "^" + re.escape(WEAK_REASON.split("%s", 1)[0]) + r"(?P<file>.+):(?P<line>\d+) changes by (?P<op>.+)$"
+)
+
+
 def _weak(entry, mutant, record, coverage, seconds):
     return {
         **entry,
         "seconds": seconds,
         "outcome": "weak",
-        "reason": "no mutant of the work fails it: it still passes when %s:%d changes by %s"
-        % (mutant["file"], mutant["line"], mutant["op"]),
+        "reason": WEAK_REASON % (mutant["file"], mutant["line"], mutant["op"]),
         "mutants": record,
         "mutation": "weak",
         "coverage": coverage,
@@ -2799,6 +2805,20 @@ def _setup_unrun(properties, written):
     )
 
 
+MUTATED_OUTCOMES = ("pass", "inert")
+
+
+def guarded_by_mutation(inert, mutated):
+    if mutated.get("mutation") != "killed":
+        return {**inert, "mutants": mutated["mutants"]}
+    place = mutated["mutants"]["killed"]
+    return {
+        **mutated,
+        "outcome": "pass",
+        "reason": core.GUARD_KILLED_REASON % (place["file"], place["line"], place["op"]),
+    }
+
+
 def _gate_runs(
     plan,
     msp,
@@ -2890,10 +2910,10 @@ def _gate_runs(
     verdicts = ()
     seen = {}
     for index, entry in enumerate(with_guards(judged)):
-        if index not in with_work or entry["outcome"] != "pass":
+        if index not in with_work or entry["outcome"] not in MUTATED_OUTCOMES:
             verdicts = verdicts + ((entry, ()),)
             continue
-        toothed, left, seen = mutant_verdict(
+        mutated, left, seen = mutant_verdict(
             plan,
             msp,
             tree,
@@ -2910,8 +2930,9 @@ def _gate_runs(
             seen,
             sandbox,
         )
+        toothed = guarded_by_mutation(entry, mutated) if entry["outcome"] == "inert" else mutated
         verdicts = verdicts + ((toothed, left),)
-    toothed = tuple(entry for entry, _ in verdicts)
+    toothed = with_guards(tuple(entry for entry, _ in verdicts))
     written = (
         tuple(path for left, _ in with_work_runs.values() for path in left)
         + tuple(path for left, _ in without_runs.values() for path in left)
@@ -3599,8 +3620,7 @@ def pull_request_url(out, branch, pushed):
 
 def _reconcile_clean(findings, state=None):
     return isinstance(findings, dict) and not (
-        findings.get("undeclared")
-        or (findings.get("unwritten") and state == MSP_UNCHANGED)
+        (findings.get("unwritten") and state == MSP_UNCHANGED)
         or findings.get("crossing")
         or findings.get("fatal")
     )
@@ -3706,6 +3726,21 @@ UNRUNNABLE_NOTE = (
 )
 
 
+WEAK_NOTE = (
+    "\n\nThe gate changed %s in this Lane's work and %s still passed, so the test cannot tell "
+    "working code from broken code. Change the test so it fails on that change and passes on the "
+    "work, and keep the work as it is unless it is wrong.\n\nOutput of the run:\n%s"
+)
+
+INERT_NOTE = (
+    "\n\n%s passes with this Lane's work reverted and no change to the work makes it fail, so it "
+    "cannot tell the work from its absence. Change it so it fails without the work and passes with "
+    "it.\n\nOutput of the run:\n%s"
+)
+
+RETURNED_OUTCOMES = ("weak", "inert")
+
+
 def _gate_log_tail(settings, msp, entry):
     log = os.path.join(settings["run_dir"], "gate", "msp-%d" % msp, "%s-with-work.log" % entry)
     found = tuple(
@@ -3723,15 +3758,37 @@ def _read_tail(path):
         return handle.read()[-MAX_OUTPUT:]
 
 
+def _owned_unproven(plan, lane, entry):
+    if entry.get("outcome") not in RETURNED_OUTCOMES:
+        return False
+    target = _norm(entry["file"])
+    written = {_norm(path) for path in plan["briefs"][lane]["write_set"]}
+    return target in written and target not in {_norm(path) for path in plan.get("locked") or ()}
+
+
 def _failing_by_lane(plan, gate_result):
     owners = {step: lane for lane, entry in enumerate(plan["lanes"]) for step in entry["steps"]}
     every = tuple((gate_result or {}).get("properties") or ())
     grouped = {}
     for position, entry in enumerate(every):
-        if needs_repair(entry) and entry.get("step") in owners:
-            lane = owners[entry["step"]]
+        lane = owners.get(entry.get("step"))
+        if lane is not None and (needs_repair(entry) or _owned_unproven(plan, lane, entry)):
             grouped = {**grouped, lane: grouped.get(lane, ()) + ((position, entry),)}
     return grouped
+
+
+def _survivor(entry):
+    matched = WEAK_PLACE.match(entry.get("reason") or "")
+    if matched is None:
+        return "the work"
+    return "%s:%s by %s" % (matched.group("file"), matched.group("line"), matched.group("op"))
+
+
+def _unproven_note(entry, log):
+    key = property_key(entry["file"], entry["test"])
+    if entry["outcome"] == "weak":
+        return WEAK_NOTE % (_survivor(entry), key, log)
+    return INERT_NOTE % (key, log)
 
 
 def _repair_note(settings, msp, failing):
@@ -3742,7 +3799,12 @@ def _repair_note(settings, msp, failing):
             names = ", ".join(property_key(entry["file"], entry["test"]) for _, entry in chosen)
             logs = "\n".join(_gate_log_tail(settings, msp, position) for position, _ in chosen)
             notes = notes + (note % (names, logs[-MAX_OUTPUT:]),)
-    return "".join(notes)
+    unproven = tuple(
+        _unproven_note(entry, _gate_log_tail(settings, msp, position)[-MAX_OUTPUT:])
+        for position, entry in failing
+        if entry.get("outcome") in RETURNED_OUTCOMES and not needs_repair(entry)
+    )
+    return "".join(notes + unproven)
 
 
 def _repaired_lane(plan, lane, tree, settings, note):
@@ -4302,7 +4364,8 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
     )
     held_back = _held_back(gated, tree["branch"], refused) if judged_now else None
     unrunnable = judged_now and refused is None and bool(unrunnable_properties(gated["gate"]))
-    if held_back is not None or unrunnable:
+    returned = judged_now and refused is None and bool(_failing_by_lane(plan, gated["gate"]))
+    if held_back is not None or unrunnable or returned:
         owed = recorded_gate is None or prior.get("state") != MSP_GATE_FAILED
         repair = (
             _repair_lanes(plan, msp, tree, state, settings, gated)
