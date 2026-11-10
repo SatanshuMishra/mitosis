@@ -103,7 +103,8 @@ GUARD_KILLED_REASON = (
 
 
 def is_guard(judged):
-    return judged.get("outcome") == "not-applicable" and judged.get("reverted") == 0
+    proven_by_mutation = judged.get("outcome") == "pass" and judged.get("mutation") == "killed"
+    return judged.get("reverted") == 0 and (judged.get("outcome") == "not-applicable" or proven_by_mutation)
 
 STEP_TYPES = ("fix", "feature", "port", "design", "sweep", "contract")
 

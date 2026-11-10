@@ -169,7 +169,7 @@ def _result(judged):
 
 
 def _passed(judged):
-    return judged.get("outcome") == "pass" and not judged.get("class")
+    return judged.get("outcome") == "pass" and not judged.get("class") and not core.is_guard(judged)
 
 
 def _tally(fold, judged):

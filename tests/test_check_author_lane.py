@@ -757,6 +757,50 @@ class CheckAuthorLane(unittest.TestCase):
         self.assertEqual(place["file"], "calc.py")
         self.assertEqual(kept["reason"], core.GUARD_KILLED_REASON % (place["file"], place["line"], place["op"]))
 
+    def a_step_proving_nothing_beside_a_proven_step_stays_inert_at_the_gate(self):
+        scratch = self._scratch({"calc.py": CORRECT_ADD})
+        doubles = {"file": "tests/test_maths.py", "test": "Maths.doubles"}
+        exists = {"file": TEST_FILE, "test": "Calc.exists"}
+        items = scratch.items(
+            [
+                step("double", ("maths.py", "tests/test_maths.py"), "calc", [doubles]),
+                step("keep", ("calc.py", TEST_FILE), "calc", [exists]),
+            ]
+        )
+        scratch.jobs(
+            {
+                "double": {
+                    "writes": {
+                        "maths.py": "def double(a):\n    return a * 2\n",
+                        "tests/test_maths.py": (
+                            "import unittest\n\nimport maths\n\n\n"
+                            "class Maths(unittest.TestCase):\n"
+                            "    def doubles(self):\n"
+                            "        self.assertEqual(maths.double(3), 6)\n"
+                        ),
+                    },
+                    "msp": "calc",
+                },
+                "keep": {
+                    "writes": {
+                        "calc.py": "def add(a, b):\n    return b + a\n",
+                        TEST_FILE: (
+                            "import unittest\n\nimport calc\n\n\nclass Calc(unittest.TestCase):\n"
+                            "    def exists(self):\n        self.assertTrue(callable(calc.add))\n"
+                        ),
+                    },
+                    "msp": "calc",
+                },
+            }
+        )
+        completed = scratch.build(items)
+        gate = self._msp(summary_of(completed), "calc")["gate"]
+        self.assertEqual(
+            {entry["step"]: entry["outcome"] for entry in gate["properties"]},
+            {"double": "pass", "keep": "inert"},
+            tail(completed),
+        )
+
     def a_check_author_write_outside_the_locked_paths_is_not_landed(self):
         scratch = self._scratch()
         before = self._feature()
@@ -829,6 +873,7 @@ def load_tests(loader, standard, pattern):
                 "a_check_two_steps_share_is_named_once_when_refused",
                 "a_guard_that_fails_with_its_probe_is_refused",
                 "a_step_guarding_kept_behaviour_beside_a_proven_step_passes_at_the_gate",
+                "a_step_proving_nothing_beside_a_proven_step_stays_inert_at_the_gate",
                 "a_check_author_write_outside_the_locked_paths_is_not_landed",
                 "locked_files_already_on_the_feature_branch_skip_the_lane",
             ),

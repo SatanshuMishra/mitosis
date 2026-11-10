@@ -59,6 +59,16 @@ class Guards(unittest.TestCase):
         self.assertEqual(judged["reason"], core.GUARD_KILLED_REASON % ("a.py", place["line"], place["op"]))
         self.assertEqual(completed.returncode, 0, fixtures.tail(completed))
 
+    def a_test_beside_a_mutation_proven_test_of_its_step_is_a_guard_and_never_sent_back(self):
+        both = CLEAN_SLUG + "\n    def exists(self):\n        self.assertTrue(callable(a.cut))\n"
+        acceptance = ({"file": finishes.TEST_FILE, "test": "A.works"}, {"file": finishes.TEST_FILE, "test": "A.exists"})
+        work = {"writes": {"a.py": STRIPPED_FIRST, finishes.TEST_FILE: both}}
+        completed, summary = self.scratch.built([finishes.built_step(acceptance=acceptance)], {"first": [work, work]})
+        gate = finishes.msp_of(summary, "first")["gate"]
+        outcomes = {entry["test"]: entry["outcome"] for entry in gate["properties"]}
+        self.assertEqual(outcomes, {"A.works": "pass", "A.exists": "not-applicable"}, fixtures.tail(completed))
+        self.assertEqual(len(self.scratch.attempts("first")), 1, fixtures.tail(completed))
+
     def a_test_that_passes_without_the_work_and_no_mutant_fails_stays_inert(self):
         completed, gate, judged = self._judged(BESIDE)
         self.assertEqual(judged["outcome"], "inert", fixtures.tail(completed))
@@ -73,6 +83,7 @@ def load_tests(loader, tests, pattern):
         Guards(name)
         for name in (
             "a_test_that_passes_without_the_work_and_kills_a_mutant_gates_pass",
+            "a_test_beside_a_mutation_proven_test_of_its_step_is_a_guard_and_never_sent_back",
             "a_test_that_passes_without_the_work_and_no_mutant_fails_stays_inert",
         )
     )

@@ -2932,7 +2932,7 @@ def _gate_runs(
         )
         toothed = guarded_by_mutation(entry, mutated) if entry["outcome"] == "inert" else mutated
         verdicts = verdicts + ((toothed, left),)
-    toothed = tuple(entry for entry, _ in verdicts)
+    toothed = with_guards(tuple(entry for entry, _ in verdicts))
     written = (
         tuple(path for left, _ in with_work_runs.values() for path in left)
         + tuple(path for left, _ in without_runs.values() for path in left)
