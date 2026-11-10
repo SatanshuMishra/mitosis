@@ -11,11 +11,13 @@ rather than about the code, now finish, as `docs/adr/0027` settles.
 - An `--items` file's check-author Steps fold into the Steps whose acceptance
   names their files, so an items build runs no lock stage. The lock had
   refused 83 Lanes whose tests passed at the base and blocked 67 more behind
-  them. A saved plan given by `--plan-file` keeps its lock when it was
-  planned with one.
+  them. A saved plan given by `--plan-file` keeps its lock when its
+  `check_authors` show it was planned with one.
 - An `inert` test runs against the work's mutants, and one a mutant fails
   passes as a guard of behaviour the work must keep, so a Step that only
-  guards behaviour no longer ends a run with exit 20.
+  guards behaviour no longer ends a run with exit 20. The Testing table
+  reports it as a guard, and its Step's other tests that pass either way
+  are guards beside it.
 - A `weak` or `inert` test its Lane wrote and no lock holds goes back to that
   Lane once, told the surviving mutant or that the test passes without the
   work, before the MSP ships or holds as before.
@@ -24,7 +26,8 @@ rather than about the code, now finish, as `docs/adr/0027` settles.
   28 of them otherwise ready to ship.
 - A title for one of several MSPs shortens its subject at a word boundary so
   the title with its MSP label fits the 72 characters the pull-request format
-  allows.
+  allows, and names the MSP's place, such as part 2 of 3, when no subject
+  fits beside the label, so sibling titles still differ.
 
 ## 0.18.0 - 2026-11-09
 

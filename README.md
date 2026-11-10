@@ -446,7 +446,9 @@ also tries negating each `if` that holds added code inside a function and
 emptying each function the Step added. A property no mutant fails is judged
 `weak`: reviewers see it in the Testing table and it holds nothing. An
 `inert` property runs against the mutants too, and one a mutant fails passes,
-because it guards behaviour the work must keep. A `weak` or `inert` property
+because it guards behaviour the work must keep; the Testing table reports it
+as a guard, and its Step's other properties that pass either way are guards
+beside it. A `weak` or `inert` property
 that its Lane wrote and no lock holds goes back to that Lane once, told the
 surviving mutant or that the test passes without the work, and the MSP is
 gated again; after that it ships as before.
