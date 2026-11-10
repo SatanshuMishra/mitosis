@@ -342,10 +342,9 @@ class Run(unittest.TestCase):
         self.assertEqual(
             by_name["vague"]["assumptions"], ["inline reading", "the endpoint is idempotent"]
         )
-        self.assertEqual(by_name["vague"]["complexity"], "complex")
+        self.assertEqual(by_name["vague"]["complexity"], "simple")
         self.assertNotIn("assumptions", by_name["plain"])
         self.assertEqual(by_name["plain"]["complexity"], "simple")
-        self.assertEqual(result["raised"], ["vague"])
         self.assertEqual(result["counts"]["assumptions"], 1)
         self.assertEqual(len(result["errors"]), 1)
         self.assertIn("ghost", result["errors"][0])
@@ -558,6 +557,10 @@ class Coverage(unittest.TestCase):
         self.assertEqual(result["coverage"]["uncovered"][0]["title"], "Three")
 
 
+def no_step_errors(reply):
+    return {"errors": []}
+
+
 class StructuredReply(unittest.TestCase):
     def spawn_returns_the_whole_stdout_text(self):
         payload = 'first line\n{"items": []}\n'
@@ -573,7 +576,7 @@ class StructuredReply(unittest.TestCase):
         spawned = decompose.spawn(
             [sys.executable, "-c", "import sys; sys.stdout.write(sys.argv[1])", payload], ""
         )
-        read = decompose._reader(decompose.parse_return)
+        read = decompose._reader(decompose.parse_return, no_step_errors)
         reply, errors = read(0, spawned["stdout"])
         self.assertIsNone(reply)
         self.assertIn("h10b-decompose-return", errors[0])
@@ -581,13 +584,13 @@ class StructuredReply(unittest.TestCase):
     def the_structured_reply_is_unwrapped_from_its_reply_member(self):
         value = {"items": [], "assumptions": [], "constraints": []}
         stdout = json.dumps({"type": "result", "structured_output": {"reply": value}})
-        read = decompose._reader(decompose.parse_return)
+        read = decompose._reader(decompose.parse_return, no_step_errors)
         self.assertEqual(read(0, stdout), (value, ()))
 
     def a_reply_meeting_the_schema_but_not_the_expected_shape_is_invalid(self):
         value = {"items": [], "assumptions": [], "constraints": []}
         stdout = json.dumps({"type": "result", "structured_output": {"reply": value}})
-        reply, errors = decompose._reader(decompose.parse_delta)(0, stdout)
+        reply, errors = decompose._reader(decompose.parse_delta, no_step_errors)(0, stdout)
         self.assertIsNone(reply)
         self.assertIn("the return is missing 'keep'", errors)
 

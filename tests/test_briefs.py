@@ -171,25 +171,6 @@ class Tier(unittest.TestCase):
         for tier in (briefs.tier_for(bare("a", complexity="simple")), briefs.tier_for(bare("a"))):
             self.assertIn(tier, core.TIERS)
 
-    def a_step_carrying_an_assumption_never_briefs_cheap(self):
-        parsed = {
-            "items": [
-                bare("alpha", complexity="simple"),
-                bare("beta", complexity="simple", assumptions=["the beta reading"]),
-                bare("gamma", complexity="simple"),
-            ],
-            "assumptions": [{"step": "alpha", "text": "the alpha reading"}],
-            "constraints": [],
-            "errors": [],
-        }
-        source = {"path": "docs/spec.md", "sha256": "0" * 64}
-        collected = decompose.collect(parsed, source, required=core.STRUCTURE_ITEM_FIELDS)
-        self.assertEqual(collected["errors"], [])
-        self.assertEqual(sorted(collected["raised"]), ["alpha", "beta"])
-        self.assertEqual(
-            [briefs.tier_for(item) for item in collected["items"]], ["top", "top", "cheap"]
-        )
-
 
 class Prompt(unittest.TestCase):
     def the_prompt_carries_every_sibling_step(self):

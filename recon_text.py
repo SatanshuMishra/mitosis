@@ -61,6 +61,8 @@ LINES = tuple(RECON_CONTRACT.splitlines())
 
 SPEC_LINES = LINES[12:20] + LINES[30:37] + LINES[42:]
 
+COMPLEXITY_LINES = LINES[22:24]
+
 GRAPH_LINE = (
     "A graphify graph IS available at %s - query it FIRST, before "
     "grepping. It is the difference between a predicted file list "
