@@ -1,4 +1,5 @@
 import ast
+import fcntl
 import hashlib
 import json
 import os
@@ -501,12 +502,49 @@ def _files_built_in(tree):
     )
 
 
-def _retried_by(holder, files):
+BRANCH_HOLDS = "mitosis-branch-holds"
+BRANCH_IN_USE = "branch %s is in use by another running mitosis"
+
+_held_branches = {}
+
+
+def _branch_hold_path(repo, branch, suffix):
+    common = os.path.realpath(os.path.join(repo, git(["rev-parse", "--git-common-dir"], repo)))
+    return os.path.join(common, BRANCH_HOLDS, hashlib.sha256(branch.encode("utf-8")).hexdigest() + suffix)
+
+
+def _hold_branch(repo, branch):
+    lock = _branch_hold_path(repo, branch, ".lock")
+    if lock in _held_branches:
+        return
+    os.makedirs(os.path.dirname(lock), exist_ok=True)
+    handle = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as error:
+        os.close(handle)
+        raise GitError(["worktree", "add", branch], 1, BRANCH_IN_USE % branch) from error
+    _held_branches[lock] = handle
+
+
+def _branch_builder(repo, branch):
+    try:
+        return read_json(_branch_hold_path(repo, branch, ".json"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _retried_by(repo, branch, holder, files):
+    wanted = frozenset(_norm(path) for path in files)
     run_dir = os.path.dirname(os.path.dirname(holder))
-    return not _run_is_live(run_dir) and bool(_files_built_in(holder) & frozenset(_norm(path) for path in files))
+    if os.path.isfile(os.path.join(run_dir, STATE_FILE)):
+        return not _run_is_live(run_dir) and bool(_files_built_in(holder) & wanted)
+    builder = _branch_builder(repo, branch)
+    return builder.get("tree") == holder and bool(frozenset(builder.get("files") or ()) & wanted)
 
 
 def prepare_worktree(repo, base, branch, path, files=()):
+    _hold_branch(repo, branch)
     git(["worktree", "prune"], repo)
     registered = registered_worktrees(repo)
     real = os.path.realpath(path)
@@ -522,11 +560,15 @@ def prepare_worktree(repo, base, branch, path, files=()):
     if branch_exists(repo, branch):
         holders = sorted(tree for tree, held in registered.items() if held == branch and tree != real)
         for holder in holders:
-            if _retried_by(holder, files):
+            if _retried_by(repo, branch, holder, files):
                 git(["switch", "--detach"], holder)
         git(["worktree", "add", path, branch], repo)
     else:
         git(["worktree", "add", "-b", branch, path, base], repo)
+    write_json(
+        _branch_hold_path(repo, branch, ".json"),
+        {"tree": real, "files": sorted(_norm(built) for built in files)},
+    )
 
 
 def prepare_worktrees(msps, base, root, repo, prefix=BRANCH_PREFIX, bases=None, skipped=()):
@@ -3281,10 +3323,56 @@ def referee_writes(plan, tree, head, base, held=None):
     return sorted(judged | moved)
 
 
+def _declaring_msps(plan, path, msp):
+    normalized = _norm(path)
+    return tuple(
+        index
+        for index, entry in enumerate(plan.get("msps") or [])
+        if index != msp and normalized in {_norm(f) for f in entry.get("files") or ()}
+    )
+
+
+def _plan_msp_rank(plan):
+    items = plan.get("items") or []
+    index_of = {item.get("name"): index for index, item in enumerate(items)}
+    msps = tuple(
+        tuple(index_of[name] for name in entry.get("steps") or () if name in index_of)
+        for entry in plan.get("msps") or []
+    )
+    return core.msp_rank(items, msps)
+
+
+def shared_overlaps(plan, msp, undeclared):
+    shared = core.shared_matcher(plan.get("shared_files") or ())
+    found = tuple(
+        (path, others)
+        for path in undeclared
+        if shared(_norm(path))
+        for others in (_declaring_msps(plan, path, msp),)
+        if others
+    )
+    if not found:
+        return ()
+    rank = _plan_msp_rank(plan)
+    return tuple(
+        {
+            "path": path,
+            "also_in": [_label(plan, index) for index in others],
+            "integration_order": [
+                _label(plan, index) for index in rank if index in others or index == msp
+            ],
+        }
+        for path, others in found
+    )
+
+
 def reconcile(plan, msp, tree, head, base, producer_heads=(), held=None):
     changed = changed_files(tree, head, base, producer_heads)
     declared = sorted({_norm(f) for f in plan["msps"][msp].get("files") or ()})
-    undeclared = [path for path in changed if _norm(path) not in declared]
+    outside = [path for path in changed if _norm(path) not in declared]
+    overlaps = shared_overlaps(plan, msp, outside)
+    overlapping = frozenset(entry["path"] for entry in overlaps)
+    undeclared = [path for path in outside if path not in overlapping]
     missing = [path for path in declared if path not in {_norm(c) for c in changed}]
     unproven = _unproven_paths(plan, msp)
     untouched = [
@@ -3309,6 +3397,7 @@ def reconcile(plan, msp, tree, head, base, producer_heads=(), held=None):
         "crossing": list(crossing),
         "referee": written,
         "fatal": bool(crossing or written),
+        **({"shared_overlaps": list(overlaps)} if overlaps else {}),
     }
 
 

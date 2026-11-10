@@ -35,7 +35,7 @@ def plan_clusters(plan):
     items = plan.get("items") or []
     index_of = {item.get("name"): index for index, item in enumerate(items)}
     lanes = tuple(tuple(index_of[name] for name in lane.get("steps") or ()) for lane in plan.get("lanes") or ())
-    return core.clusters(items, lanes)
+    return core.clusters(items, lanes, plan.get("shared_files") or ())
 
 
 def field_name(value):

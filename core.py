@@ -9,7 +9,7 @@ import uuid
 
 import referee
 
-__version__ = "0.16.0"
+__version__ = "0.17.0"
 
 PLAN_KEYS = (
     "plan_id",
@@ -29,6 +29,9 @@ PLAN_KEYS = (
     "coupling_review",
     "verdict_groups",
     "counts",
+    "shared_files",
+    "integration_order",
+    "shared_file_candidates",
     "briefs",
     "check_authors",
 )
@@ -151,6 +154,7 @@ FLAG_NAMES = (
     "--coalesce-max",
     "--graph",
     "--risk-markers",
+    "--shared-files",
     "--serial-verify-markers",
     "--serial-markers",
     "--trajectory",
@@ -231,18 +235,36 @@ def _tag(item, field):
     return ((field, str(value)),)
 
 
-def msp_items(items):
+def shared_matcher(shared_files=()):
+    entries = tuple(shared_files or ())
+
+    def matches(path):
+        return any(
+            path == entry or path.endswith("/" + entry) or fnmatch.fnmatchcase(path, entry)
+            for entry in entries
+        )
+
+    return matches
+
+
+def _unshared_files(shared_files):
+    shared = shared_matcher(shared_files)
+    return lambda item: tuple(path for path in _files(item) if not shared(path))
+
+
+def msp_items(items, shared_files=()):
     pairs = (
-        _shared(items, _files)
+        _shared(items, _unshared_files(shared_files))
         + _shared(items, lambda item: _tag(item, "contract_group"))
         + _shared(items, lambda item: _tag(item, "msp"))
     )
     return union_find(len(items), pairs)
 
 
-def _conflict_adjacency(items):
+def _conflict_adjacency(items, shared_files=()):
+    shared = shared_matcher(shared_files)
     names = [it["name"] for it in items]
-    files = {it["name"]: set(it["files"]) for it in items}
+    files = {it["name"]: {path for path in it["files"] if not shared(path)} for it in items}
     group = {it["name"]: it.get("contract_group") for it in items}
     adj = {n: set() for n in names}
     for i in range(len(names)):
@@ -318,9 +340,9 @@ def global_waves(items, adj, order_index, priority=None):
     return [w for w in waves if w]
 
 
-def ready_after(items, waves):
+def ready_after(items, waves, shared_files=()):
     after = {it["name"]: list(it.get("after") or []) for it in items}
-    adj = _conflict_adjacency(items)
+    adj = _conflict_adjacency(items, shared_files)
     wave_of = {n: i for i, w in enumerate(waves) for n in w}
     return {
         it["name"]: sorted(
@@ -357,7 +379,7 @@ def _first_build_steps(items):
     return first
 
 
-def build_waves(items):
+def build_waves(items, shared_files=()):
     first = _first_build_steps(items)
     looped = frozenset(name for group in cycles(list(first.values())) for name in group)
     names = tuple(name for name in first if name not in looped)
@@ -373,12 +395,14 @@ def build_waves(items):
     ]
     cost = {name: item_cost(first[name]) for name in names}
     order_index = {name: index for index, name in enumerate(names)}
-    waves = global_waves(steps, _conflict_adjacency(steps), order_index, downstream_cost(steps, cost))
+    waves = global_waves(
+        steps, _conflict_adjacency(steps, shared_files), order_index, downstream_cost(steps, cost)
+    )
     return steps, cost, waves
 
 
-def wave_sequence(items):
-    _, _, waves = build_waves(items)
+def wave_sequence(items, shared_files=()):
+    _, _, waves = build_waves(items, shared_files)
     return {n: i for i, n in enumerate(n for w in waves for n in w)}
 
 
@@ -460,8 +484,17 @@ def _interface_pairs(items):
     )
 
 
-def lane_pairs(items):
-    owner = _owners(msp_items(items), len(items))
+def _lane_file_pairs(items, owner, shared_files):
+    shared = shared_matcher(shared_files)
+    keys = tuple(
+        tuple((path, owner[index]) if shared(path) else path for path in _files(item))
+        for index, item in enumerate(items)
+    )
+    return _shared(tuple(range(len(items))), lambda index: keys[index])
+
+
+def lane_pairs(items, shared_files=()):
+    owner = _owners(msp_items(items, shared_files), len(items))
     by_name = _by_name(items)
     consumers = {}
     for consumer, item in enumerate(items):
@@ -481,29 +514,34 @@ def lane_pairs(items):
         producer = producers[0]
         if owner[producer] == owner[consumer] and consumers.get(producer) == 1:
             chain_pairs.append((producer, consumer))
-    return _shared(items, _files), tuple(chain_pairs), _interface_pairs(items)
+    return _lane_file_pairs(items, owner, shared_files), tuple(chain_pairs), _interface_pairs(items)
 
 
-def _uncontracted(items, owner, seq):
-    shared, chained, interfaced = lane_pairs(items)
+def _uncontracted(items, owner, seq, shared_files=()):
+    shared, chained, interfaced = lane_pairs(items, shared_files)
     groups = union_find(len(items), shared + chained + interfaced)
     lanes = tuple(_in_sequence(items, group, seq) for group in groups)
     return tuple(sorted(lanes, key=lambda lane: (owner[lane[0]], min(lane))))
 
 
-def uncontracted_lanes(items):
-    return _uncontracted(items, _owners(msp_items(items), len(items)), wave_sequence(items))
+def uncontracted_lanes(items, shared_files=()):
+    return _uncontracted(
+        items,
+        _owners(msp_items(items, shared_files), len(items)),
+        wave_sequence(items, shared_files),
+        shared_files,
+    )
 
 
-def lane_items(items):
-    owner = _owners(msp_items(items), len(items))
-    seq = wave_sequence(items)
-    lanes = _contract_within_msp(items, _uncontracted(items, owner, seq), owner, seq)
+def lane_items(items, shared_files=()):
+    owner = _owners(msp_items(items, shared_files), len(items))
+    seq = wave_sequence(items, shared_files)
+    lanes = _contract_within_msp(items, _uncontracted(items, owner, seq, shared_files), owner, seq)
     return tuple(sorted(lanes, key=lambda lane: (owner[lane[0]], min(lane))))
 
 
-def lane_msps(items, lanes):
-    owner = _owners(msp_items(items), len(items))
+def lane_msps(items, lanes, shared_files=()):
+    owner = _owners(msp_items(items, shared_files), len(items))
     return tuple(owner[lane[0]] for lane in lanes)
 
 
@@ -525,9 +563,9 @@ def lane_after(items, lanes):
     return edges
 
 
-def clusters(items, lanes):
-    msp_count = len(msp_items(items))
-    lane_owner = lane_msps(items, lanes)
+def clusters(items, lanes, shared_files=()):
+    msp_count = len(msp_items(items, shared_files))
+    lane_owner = lane_msps(items, lanes, shared_files)
     pairs = tuple(
         (lane_owner[producer], lane_owner[consumer])
         for consumer, producers in lane_after(items, lanes).items()
@@ -535,6 +573,86 @@ def clusters(items, lanes):
         if lane_owner[producer] != lane_owner[consumer]
     )
     return union_find(msp_count, pairs)
+
+
+def _msp_producers(items, msps):
+    owner = _owners(msps, len(items))
+    by_name = _by_name(items)
+    return tuple(
+        frozenset(
+            owner[by_name[name]]
+            for member in msp
+            for name in _after(items[member])
+            if name in by_name and owner[by_name[name]] not in (None, index)
+        )
+        for index, msp in enumerate(msps)
+    )
+
+
+def _msp_chains(items, msps):
+    known = frozenset(_by_name(items))
+    steps = [
+        {
+            "name": item["name"],
+            "after": [name for name in _after(item) if name in known and name != item["name"]],
+        }
+        for item in items
+    ]
+    reach = downstream_cost(steps, {item["name"]: item_cost(item) for item in items})
+    return tuple(max((reach[items[member]["name"]] for member in msp), default=0.0) for msp in msps)
+
+
+def _msp_levels(producers):
+    levels = [0] * len(producers)
+    waiting = [len(needed) for needed in producers]
+    finished = [index for index, count in enumerate(waiting) if not count]
+    for producer in finished:
+        for consumer, needed in enumerate(producers):
+            if producer in needed:
+                levels[consumer] = max(levels[consumer], levels[producer] + 1)
+                waiting[consumer] -= 1
+                if not waiting[consumer]:
+                    finished.append(consumer)
+    return tuple(levels)
+
+
+def msp_rank(items, msps):
+    levels = _msp_levels(_msp_producers(items, msps))
+    chains = _msp_chains(items, msps)
+    return tuple(sorted(range(len(msps)), key=lambda index: (levels[index], -chains[index], index)))
+
+
+def integration_order(items, msps, shared_files=()):
+    shared = shared_matcher(shared_files)
+    editors = {}
+    for index in msp_rank(items, msps):
+        for path in sorted({path for member in msps[index] for path in _files(items[member]) if shared(path)}):
+            editors = {**editors, path: editors.get(path, ()) + (index,)}
+    return {path: list(found) for path, found in sorted(editors.items()) if len(found) > 1}
+
+
+def shared_file_candidates(items, shared_files=(), min_items=3, cap=20):
+    declared = tuple(shared_files or ())
+    shared = shared_matcher(declared)
+    counts = collections.Counter(path for item in items for path in frozenset(_files(item)))
+    walk = sorted(
+        ((path, count) for path, count in counts.items() if count >= min_items and not shared(path)),
+        key=lambda pair: (-pair[1], pair[0]),
+    )
+    msps_now = len(msp_items(items, declared))
+    trial = declared
+    previous = msps_now
+    files = ()
+    reach = 0
+    for path, count in walk:
+        trial = trial + (path,)
+        after = len(msp_items(items, trial))
+        files = files + ({"file": path, "items": count, "msps_after": after},)
+        reach = len(files) if after > previous else reach
+        previous = after
+    if not reach:
+        return None
+    return {"msps_now": msps_now, "files": list(files[:reach][:cap])}
 
 
 def _label(item, index):
@@ -1034,7 +1152,12 @@ def _ordered(items, a, b, by_name):
     return _waits_on(items, a, b, by_name) or _waits_on(items, b, a, by_name)
 
 
-def coupling_review(items, lanes, graph, risk_markers=(), history=()):
+def _shared_file_signals(overlap, shared):
+    return tuple("shared-file:" + path for path in sorted(overlap) if shared(path))
+
+
+def coupling_review(items, lanes, graph, risk_markers=(), history=(), shared_files=()):
+    shared = shared_matcher(shared_files)
     lane_of = _owners(lanes, len(items))
     by_name = _by_name(items)
     adjacency = _file_coupling(graph)
@@ -1043,9 +1166,11 @@ def coupling_review(items, lanes, graph, risk_markers=(), history=()):
     review = []
     for a in range(len(items)):
         for b in range(a + 1, len(items)):
-            if lane_of[a] == lane_of[b] or sides[a]["files"] & sides[b]["files"]:
+            overlap = sides[a]["files"] & sides[b]["files"]
+            if lane_of[a] == lane_of[b] or any(not shared(path) for path in overlap):
                 continue
-            signals, default = _pair_signals(sides[a], sides[b], adjacency, risk_markers or ())
+            found, default = _pair_signals(sides[a], sides[b], adjacency, risk_markers or ())
+            signals = found + list(_shared_file_signals(overlap, shared))
             if not signals or _ordered(items, a, b, by_name):
                 continue
             review.append(
@@ -1659,7 +1784,7 @@ LockedSteps = collections.namedtuple(
 )
 
 
-def locked_steps(items, charter=None, root=None):
+def locked_steps(items, charter=None, root=None, shared_files=()):
     charter_locked, lock_errors = charter_locks(charter, root)
     checked = validate(items, root=root)
     if checked["errors"] or lock_errors:
@@ -1670,7 +1795,7 @@ def locked_steps(items, charter=None, root=None):
     refused = referee_errors(built, locked)
     if refused:
         raise ValidationError(refused)
-    msps = msp_items(built)
+    msps = msp_items(built, shared_files)
     slice_errors, placed = check_author_slices(authors, built, msps)
     if slice_errors:
         raise ValidationError(slice_errors)
@@ -1704,26 +1829,30 @@ def plan(
     coalesce_below=2.0,
     coalesce_max=4,
     briefs=True,
+    shared_files=(),
 ):
+    shared = tuple(shared_files or ())
     items = [with_task(item) for item in items] if isinstance(items, list) else items
-    counts, authors, locked, items, msps, placed = locked_steps(items, charter, root)
-    whole = lane_items(items)
+    counts, authors, locked, items, msps, placed = locked_steps(items, charter, root, shared)
+    whole = lane_items(items, shared)
     tiered = {item["name"]: _tiered(item, risk_markers, history) for item in items}
     tiers = {name: tier for name, (tier, _) in tiered.items()}
     tier_notes = {name: note for name, (_, note) in tiered.items() if note}
     packs = context_packs(items, graph, hops, cap)
     labels = tuple(_msp_label(items, msp) for msp in msps)
     source = items[0].get("source") if items else None
-    steps, cost, waves = build_waves(items)
+    steps, cost, waves = build_waves(items, shared)
     groups = tuple(session_batches(lane) for lane in whole)
     lanes = tuple(batch for group in groups for batch in group)
-    review = _session_review(coupling_review(items, whole, graph, risk_markers, history), items, lanes)
+    review = _session_review(
+        coupling_review(items, whole, graph, risk_markers, history, shared), items, lanes
+    )
     places = _session_places(groups)
     group_tiers = tuple(
         "top" if any(tiers[items[i]["name"]] == "top" for i in lane) else "cheap" for lane in whole
     )
     lane_tiers = tuple(group_tiers[g] for g, group in enumerate(groups) for _ in group)
-    owners = lane_msps(items, lanes)
+    owners = lane_msps(items, lanes, shared)
     edges = chained_after(lane_after(items, lanes), groups)
     msp_entries = [
         {
@@ -1763,11 +1892,14 @@ def plan(
         "shared_context": shared_context(packs, waves),
         "lane_order": list(lane_order(lanes, edges, items)),
         "coalesce": coalesce_groups(
-            steps, waves, tiers, cost, coalesce_below, coalesce_max, ready_after(steps, waves)
+            steps, waves, tiers, cost, coalesce_below, coalesce_max, ready_after(steps, waves, shared)
         ),
         "coupling_review": review,
         "verdict_groups": verdict_groups(review),
         "counts": counts,
+        "shared_files": list(shared),
+        "integration_order": integration_order(items, msps, shared),
+        "shared_file_candidates": shared_file_candidates(items, shared),
         "briefs": [
             _brief(
                 items,

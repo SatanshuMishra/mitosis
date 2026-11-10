@@ -271,6 +271,21 @@ def _paths_of(entries):
     return list(dict.fromkeys(entry.get("path") for entry in entries or ()))
 
 
+def _overlap_lead(entry):
+    others = list(entry.get("also_in") or ())
+    order = list(entry.get("integration_order") or ())
+    if not others or not all(_nameable(label) for label in others + order):
+        return "A shared file this branch writes is also changed by another MSP"
+    return "A shared file this branch writes is also changed by MSP %s, so merge in the order %s" % (
+        ", ".join(others),
+        " then ".join(order),
+    )
+
+
+def _overlap_sentences(entries):
+    return tuple(_sentence(_overlap_lead(entry), [entry.get("path")]) for entry in entries or ())
+
+
 def _tradeoffs(plan, msp, findings, exception, foreign):
     found = findings or {}
     undeclared = list(dict.fromkeys(found.get("undeclared") or ()))
@@ -314,7 +329,7 @@ def _tradeoffs(plan, msp, findings, exception, foreign):
         exception is not None
         and "This MSP has %s, so its base is the feature branch."
         % _counted(len(exception.get("producers") or ()), "producer", "producers"),
-    )
+    ) + _overlap_sentences(found.get("shared_overlaps"))
     return [sentence for sentence in sentences if sentence]
 
 

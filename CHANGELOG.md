@@ -3,6 +3,23 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.17.0 - 2026-11-09
+
+- `--shared-files LIST` names files that MSPs may each edit without being
+  fused. An overlap only on such a file makes no MSP, Lane edge or scheduling
+  conflict, and is listed in the coupling review with one shared-file signal
+  per file. The plan carries the declared files, the order to integrate each
+  file two MSPs edit, and the undeclared files whose declaration would split
+  the plan further. A Worker's write into a shared file another MSP declares
+  is reported with that order and named in the pull request, and is not fatal.
+- `--worktree-root PATH` places each MSP's worktree in a folder named after
+  its slug under PATH.
+- `--no-run-dir` keeps the run's state in a private temp folder removed before
+  mitosis exits, prints each Worker's output before the report, and leaves the
+  result line without a run directory.
+- A second live run on a branch a running mitosis holds is refused with exit 5,
+  and a later run takes the branch back from a stopped tree wherever it was.
+
 ## 0.16.0 - 2026-11-09
 
 - The gate holds an MSP only when a named test fails against the finished

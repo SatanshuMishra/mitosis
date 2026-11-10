@@ -55,9 +55,10 @@ def _fused_pairs(items, lanes):
     )
 
 
-def scalars(items):
-    msps = core.msp_items(items)
-    lanes = core.lane_items(items)
+def scalars(items, shared_files=()):
+    shared = tuple(shared_files or ())
+    msps = core.msp_items(items, shared)
+    lanes = core.lane_items(items, shared)
     edges = core.lane_after(items, lanes)
     depths = _depths(range(len(lanes)), lambda lane: edges.get(lane, ()))
     steps = len(items)
@@ -70,7 +71,7 @@ def scalars(items):
         "parallelism": _widest_layer(depths),
         "fused_without_overlap": len(_fused_pairs(items, lanes)),
         "lane_cycles": sum(
-            len(group) for group in core.lane_cycles(items, core.uncontracted_lanes(items))
+            len(group) for group in core.lane_cycles(items, core.uncontracted_lanes(items, shared))
         ),
     }
 
@@ -201,12 +202,12 @@ def _joined_by(items, a, b, by_name, pairs, uncontracted, pinned):
     return "joined through other Steps in the Lane by " + _listed(kinds)
 
 
-def _fused_findings(items, lanes, by_name):
+def _fused_findings(items, lanes, by_name, shared_files=()):
     fused = _fused_pairs(items, lanes)
     if not fused:
         return []
-    pairs = core.lane_pairs(items)
-    uncontracted = core.uncontracted_lanes(items)
+    pairs = core.lane_pairs(items, shared_files)
+    uncontracted = core.uncontracted_lanes(items, shared_files)
     pinned = core.pinned_groups(items)
     return [
         {
@@ -349,18 +350,19 @@ def _readable(items):
     return isinstance(items, list) and all(isinstance(item, dict) for item in items)
 
 
-def findings(items):
+def findings(items, shared_files=()):
+    shared = tuple(shared_files or ())
     if not _readable(items):
         return []
     try:
-        lanes = core.lane_items(items)
+        lanes = core.lane_items(items, shared)
         by_name = core._by_name(items)
     except TypeError:
         return []
     groups = _groups(items)
     found = (
         _chain_findings(items, groups, by_name)
-        + _fused_findings(items, lanes, by_name)
+        + _fused_findings(items, lanes, by_name, shared)
         + _manifest_findings(items)
     )
     ranked = sorted(

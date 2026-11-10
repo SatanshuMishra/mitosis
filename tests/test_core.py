@@ -678,7 +678,17 @@ class Plan(unittest.TestCase):
     def the_plan_emits_exactly_the_declared_keys(self):
         result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
         self.assertEqual(
-            set(result), set(core.PLAN_KEYS) - {"locked", "check_authors", "tier_notes", "shared_context"}
+            set(result),
+            set(core.PLAN_KEYS)
+            - {
+                "locked",
+                "check_authors",
+                "tier_notes",
+                "shared_context",
+                "shared_files",
+                "integration_order",
+                "shared_file_candidates",
+            },
         )
         self.assertEqual(list(result), [key for key in core.PLAN_KEYS if key in result])
         for gone in ("version", "clusters", "session_tokens", "sizes"):
@@ -765,7 +775,17 @@ class Plan(unittest.TestCase):
         with mock.patch.object(builtins, "open", side_effect=AssertionError("plan opened a file")):
             result = core.plan(rich_items(), charter="docs/charter.md", graph=RICH_GRAPH)
         self.assertEqual(
-            set(result), set(core.PLAN_KEYS) - {"locked", "check_authors", "tier_notes", "shared_context"}
+            set(result),
+            set(core.PLAN_KEYS)
+            - {
+                "locked",
+                "check_authors",
+                "tier_notes",
+                "shared_context",
+                "shared_files",
+                "integration_order",
+                "shared_file_candidates",
+            },
         )
 
     def a_shape_only_plan_holds_no_briefs(self):
