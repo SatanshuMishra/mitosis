@@ -3,6 +3,29 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.19.0 - 2026-11-10
+
+Runs that the recorded history shows stopping for verdicts about tests,
+rather than about the code, now finish, as `docs/adr/0027` settles.
+
+- An `--items` file's check-author Steps fold into the Steps whose acceptance
+  names their files, so an items build runs no lock stage. The lock had
+  refused 83 Lanes whose tests passed at the base and blocked 67 more behind
+  them. A saved plan given by `--plan-file` keeps its lock when it was
+  planned with one.
+- An `inert` test runs against the work's mutants, and one a mutant fails
+  passes as a guard of behaviour the work must keep, so a Step that only
+  guards behaviour no longer ends a run with exit 20.
+- A `weak` or `inert` test its Lane wrote and no lock holds goes back to that
+  Lane once, told the surviving mutant or that the test passes without the
+  work, before the MSP ships or holds as before.
+- An undeclared write is reported and no longer sets the run's exit code; exit 6 now means
+  only an MSP that declared files and changed none. It had ended 41 runs,
+  28 of them otherwise ready to ship.
+- A title for one of several MSPs shortens its subject at a word boundary so
+  the title with its MSP label fits the 72 characters the pull-request format
+  allows.
+
 ## 0.18.0 - 2026-11-09
 
 - Every Lane is one Worker session that builds its Steps in order and lands
