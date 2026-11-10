@@ -703,8 +703,7 @@ def _reasked(job, first, reask, owned, cwd, env):
 
 def _needs_reask(read):
     return (
-        read["reply"] is None
-        and read["reason"] is None
+        read["reason"] is None
         and bool(read["reply_errors"])
         and not _usage_limited(read)
     )
@@ -775,19 +774,28 @@ def parse_delta(value):
     return _parse_lists(value, DELTA_KEYS)
 
 
+REPLY_STEP_FIELDS = tuple(field for field in core.STRUCTURE_ITEM_FIELDS if field != "source")
+
+
+def call_schema():
+    base = handoff.call_schema(REPLY_SCHEMA)
+    step = {**base["$defs"]["step"], "required": list(REPLY_STEP_FIELDS)}
+    return {**base, "$defs": {**base["$defs"], "step": step}}
+
+
 def call_schema_text():
-    return json.dumps(handoff.call_schema(REPLY_SCHEMA), sort_keys=True)
+    return json.dumps(call_schema(), sort_keys=True)
 
 
-def _reader(parse):
+def _reader(shape, checked):
     def read(index, stdout):
         reply, errors = handoff.read_reply(stdout, REPLY_SCHEMA)
         if errors:
             return None, errors
-        found = parse(reply)["errors"]
+        found = shape(reply)["errors"]
         if found:
             return None, tuple(found)
-        return reply, ()
+        return reply, tuple(checked(reply)["errors"])
 
     return read
 
@@ -978,20 +986,27 @@ def _argv_for(frozen, template, prompt, model, session_id, schema):
     return build_argv(template, substitutions)
 
 
+def _collected(frozen, root, required, parsed):
+    collected = collect(parsed, source_of(frozen), root, required)
+    return {**collected, "errors": collected["errors"] + _empty_errors(frozen, collected["items"])}
+
+
+def _step_check(frozen, root, required, parse):
+    return lambda reply: _collected(frozen, root, required, parse(reply))
+
+
 def _assemble(frozen, spawned, log, root, required=None, parse=parse_return):
-    source = source_of(frozen)
-    spawn_errors = _spawn_errors(spawned)
     parsed = (
         parse(spawned["reply"])
         if spawned["reply"] is not None
         else _empty_return(_reply_errors(spawned))
     )
-    collected = collect(parsed, source, root, required)
+    collected = _collected(frozen, root, required, parsed)
     return {
-        "source": source,
+        "source": source_of(frozen),
         "items": collected["items"],
         "constraints": collected["constraints"],
-        "errors": spawn_errors + collected["errors"] + _empty_errors(frozen, collected["items"]),
+        "errors": _spawn_errors(spawned) + collected["errors"],
         "counts": collected["counts"],
         "coverage": coverage(frozen["text"], collected["items"]),
         "exit": spawned["exit"],
@@ -1023,9 +1038,8 @@ def decompose(
         "schema": schema,
         "model": model,
     }
-    spawned = spawn_replies(
-        [job], 1, root, _reader(parse_return), REPLY_SCHEMA, reask=reask, env=env
-    )[0]
+    read = _reader(parse_return, _step_check(frozen, root, None, parse_return))
+    spawned = spawn_replies([job], 1, root, read, REPLY_SCHEMA, reask=reask, env=env)[0]
     return _assemble(frozen, spawned, log, root)
 
 
@@ -1055,25 +1069,22 @@ def _delta_return(prior, value):
     return {"items": items, **carried, "errors": errors}
 
 
-def _renamed_return(value):
+def _structure_return(value):
     parsed = parse_return(value)
-    return {**parsed, "items": step_names.renamed(list(parsed["items"]))}
+    items = step_names.renamed(list(parsed["items"]))
+    return {**parsed, "items": items, "errors": parsed["errors"] + _task_errors(items)}
+
+
+def _structure_parse(prior):
+    if prior:
+        return lambda value: _delta_return(prior, value)
+    return _structure_return
 
 
 def _assemble_structure(frozen, spawned, log, root, prior=None):
-    if prior:
-        return _assemble(
-            frozen,
-            spawned,
-            log,
-            root,
-            core.STRUCTURE_ITEM_FIELDS,
-            parse=lambda value: _delta_return(prior, value),
-        )
-    assembled = _assemble(
-        frozen, spawned, log, root, core.STRUCTURE_ITEM_FIELDS, parse=_renamed_return
+    return _assemble(
+        frozen, spawned, log, root, core.STRUCTURE_ITEM_FIELDS, parse=_structure_parse(prior)
     )
-    return {**assembled, "errors": assembled["errors"] + _task_errors(assembled["items"])}
 
 
 def _sample_logs(log, count):
@@ -1128,7 +1139,10 @@ def sample_structures(
         }
         for sample_log in logs
     ]
-    read = _reader(parse_delta if prior else parse_return)
+    read = _reader(
+        parse_delta if prior else parse_return,
+        _step_check(frozen, root, core.STRUCTURE_ITEM_FIELDS, _structure_parse(prior)),
+    )
     spawned = spawn_replies(jobs, count, root, read, REPLY_SCHEMA, reask=reask, env=recon_env)
     if on_sessions is not None:
         on_sessions([one["session_id"] for one in spawned])
