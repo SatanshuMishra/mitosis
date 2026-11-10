@@ -35,11 +35,13 @@ import tempfile
 
 here = os.path.dirname(os.path.abspath(__file__))
 sys.stdin.read()
-try:
-    os.remove(os.path.join(here, "fail-once-structure"))
-    failed = True
-except FileNotFoundError:
-    failed = False
+failed = False
+if os.path.exists(os.path.join(here, "fail-once-structure")):
+    try:
+        os.close(os.open(os.path.join(here, "fail-once-structure.claimed"), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        failed = True
+    except FileExistsError:
+        pass
 prefix = "structure-failed-" if failed else "structure-"
 handle, _ = tempfile.mkstemp(dir=os.path.join(here, "sessions"), prefix=prefix)
 os.write(handle, sys.argv[-1].encode("utf-8"))
