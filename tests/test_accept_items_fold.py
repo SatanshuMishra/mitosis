@@ -119,6 +119,18 @@ class ItemsFold(unittest.TestCase):
         self.assertEqual(by_name(plan_of(scratch), "first")["files"], ["a.py"])
         self.assertNotIn("folded", completed.stderr)
 
+    def a_folded_plan_saved_with_a_charter_lock_plans_again_from_its_file(self):
+        scratch = finishes.Scratch({finishes.TEST_FILE: finishes.PROPERTY_TEXT})
+        self.addCleanup(scratch.close)
+        charter = scratch.file("charter.md", "# Charter\n\n- Locked: %s\n" % finishes.TEST_FILE)
+        items = scratch.items([finishes.lock_author(), finishes.builder()])
+        common = ("--items", items, "--plan-only", "--no-trajectories", "--feature-branch", "feature", "--charter", charter)
+        first = scratch.mitosis(*common, "--run-dir", scratch.run_dir)
+        self._exit(first, 0)
+        saved = scratch.file("saved.json", json.dumps(plan_of(scratch)))
+        again = scratch.mitosis(*common, "--plan-file", saved, "--run-dir", scratch.run_dir + "-again")
+        self._exit(again, 0)
+
     def a_check_author_file_no_step_names_is_reported_dropped(self):
         steps = [author((finishes.TEST_FILE, OTHER_TEST)), finishes.builder()]
         completed = self._plan_only(self.scratch.items(steps))
@@ -138,5 +150,6 @@ def load_tests(loader, tests, pattern):
             "a_folded_build_lands_and_gates_the_work_with_no_lock_folder",
             "items_with_no_check_author_keep_their_plan_id",
             "a_check_author_file_no_step_names_is_reported_dropped",
+            "a_folded_plan_saved_with_a_charter_lock_plans_again_from_its_file",
         )
     )

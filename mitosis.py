@@ -1126,20 +1126,13 @@ def asks_input(args, root, repo, models, charter, run_dir):
     return staged(owned, load_decomposed(run_dir), run_dir, None, notices)
 
 
-def planned_with_lock(path, items):
+def planned_with_lock(path):
     loaded = read_json(path, "--plan-file")
-    if not isinstance(loaded, dict) or loaded.get("check_authors"):
-        return True
-    authored = {
-        referee.normalised(written)
-        for author in core.check_author_steps(items)
-        for written in core._files(author)
-    }
-    return any(referee.normalised(locked) in authored for locked in loaded.get("locked") or ())
+    return not isinstance(loaded, dict) or bool(loaded.get("check_authors"))
 
 
 def folded_items(args, items):
-    if args.plan_file is not None and planned_with_lock(args.plan_file, items):
+    if args.plan_file is not None and planned_with_lock(args.plan_file):
         return items, ()
     return own_tests.folded(items)
 
