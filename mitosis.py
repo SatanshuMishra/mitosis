@@ -172,6 +172,7 @@ STAGE_FLAG_NAMES = (
 )
 
 SAVED_PLAN_KEYS = ("msps", "lanes", "briefs")
+FOLDED_KEY = "folded_check_authors"
 
 GATE_CLASS_KEYS = ("class", "reason", "test")
 
@@ -1028,13 +1029,14 @@ def structure_document(args, root, run_dir, models, charter, graph, decisions, p
     return result["items"], record
 
 
-def staged(items, decomposed, run_dir, decisions, troubles=()):
+def staged(items, decomposed, run_dir, decisions, troubles=(), folded=()):
     return {
         "items": items,
         "decomposed": decomposed,
         "run_dir": run_dir,
         "decisions": decisions,
         "troubles": tuple(troubles),
+        "folded": tuple(folded),
     }
 
 
@@ -1126,34 +1128,26 @@ def asks_input(args, root, repo, models, charter, run_dir):
     return staged(owned, load_decomposed(run_dir), run_dir, None, notices)
 
 
-def normalised_files(paths):
-    return frozenset(referee.normalised(path) for path in paths or ())
+def check_author_names(items):
+    return [item.get("name") for item in core.check_author_steps(items)]
 
 
-def saved_plan_folds(path, folded, charter):
+def saved_plan_folds(path, items):
     loaded = read_json(path, "--plan-file")
-    if not isinstance(loaded, dict) or loaded.get("check_authors"):
-        return False
-    charter_locked, _ = core.charter_locks(charter)
-    held = {
-        item.get("name"): normalised_files(item.get("files")) | normalised_files(charter_locked)
-        for item in loaded.get("items") or ()
-        if isinstance(item, dict)
-    }
-    return all(normalised_files(item.get("files")) <= held.get(item.get("name"), frozenset()) for item in folded)
+    return isinstance(loaded, dict) and loaded.get(FOLDED_KEY) == check_author_names(items)
 
 
 def folded_items(args, items):
-    folded = own_tests.folded(items)
-    if args.plan_file is None or saved_plan_folds(args.plan_file, folded[0], args.charter):
-        return folded
-    return items, ()
+    if args.plan_file is not None and not saved_plan_folds(args.plan_file, items):
+        return items, (), ()
+    kept, notices = own_tests.folded(items)
+    return kept, notices, check_author_names(items)
 
 
 def items_input(args, run_dir):
-    items, notices = folded_items(args, read_items(os.path.abspath(args.items)))
+    items, notices, folded = folded_items(args, read_items(os.path.abspath(args.items)))
     _print(tuple("mitosis: " + notice for notice in notices), sys.stderr)
-    return staged(items, load_decomposed(run_dir), run_dir, None, notices)
+    return staged(items, load_decomposed(run_dir), run_dir, None, notices, folded)
 
 
 def input_run_dir(args, root):
@@ -1226,7 +1220,7 @@ def refused_steps(error):
     )
 
 
-def build_plan(args, items, root, charter, graph):
+def build_plan(args, items, root, charter, graph, folded=()):
     try:
         return core.plan(
             items,
@@ -1242,6 +1236,7 @@ def build_plan(args, items, root, charter, graph):
             coalesce_max=args.coalesce_max,
             briefs=not args.no_briefs,
             shared_files=shared_list(args.shared_files),
+            folded=folded,
         )
     except core.ValidationError as error:
         raise refused_steps(error)
@@ -1272,9 +1267,9 @@ def saved_plan(path, items, charter, root):
     return {**loaded, "locked": list(locked)}
 
 
-def planned(args, items, root, charter, graph):
+def planned(args, items, root, charter, graph, folded=()):
     if args.plan_file is None:
-        return build_plan(args, items, root, charter, graph)
+        return build_plan(args, items, root, charter, graph, folded)
     return saved_plan(args.plan_file, items, charter, root)
 
 
@@ -2559,7 +2554,7 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     from_items = bool(args.items)
     notices = resolved["troubles"]
     shown = None if args.no_run_dir else run_dir
-    plan = planned(args, items, root, charter, graph)
+    plan = planned(args, items, root, charter, graph, resolved["folded"])
     if args.plan_file is None:
         refuse_unwritten(plan, base_holds(args, repo))
     recorder.planned(plan, lane_width(plan), len(empty_manifests(plan.get("items") or [])))

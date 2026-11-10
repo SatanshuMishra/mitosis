@@ -656,6 +656,7 @@ class Plan(unittest.TestCase):
             - {
                 "locked",
                 "check_authors",
+                "folded_check_authors",
                 "tier_notes",
                 "shared_context",
                 "shared_files",
@@ -750,6 +751,7 @@ class Plan(unittest.TestCase):
             - {
                 "locked",
                 "check_authors",
+                "folded_check_authors",
                 "tier_notes",
                 "shared_context",
                 "shared_files",

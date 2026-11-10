@@ -205,6 +205,12 @@ class PlanFile(accept.Case):
         self.assertIn("check-author-a", completed.stderr)
         self.assertFalse(os.path.exists(os.path.join(second, "plan.json")))
 
+    def a_saved_plan_that_is_no_json_object_is_refused(self):
+        saved = accept.put_json(self.scratch.path("saved.json"), [])
+        completed = self.scratch.plan_only(checked_steps(), "--plan-file", saved, run_dir=self.scratch.path("r1"))
+        self.exits(completed, 3)
+        self.assertIn("does not hold a JSON object", completed.stderr)
+
     def a_saved_plan_lacking_a_part_is_refused_by_name(self):
         first = self.scratch.path("r1")
         self.planned([S("a", ["a.py"])], run_dir=first)

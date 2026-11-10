@@ -327,10 +327,11 @@ a file the check-author writes writes that file with its work, the
 check-author's `after` edges go, a file no Step's acceptance names is dropped
 with a notice, and no lock stage runs. Only a saved plan given by
 `--plan-file` that was planned with check-authors keeps them, and they run as
-the lock stage below. A saved plan without them has its items folded the same
-way when each Step it plans already writes, or the charter locks, the files
-the fold gives that Step; otherwise it is refused as a plan that lost its
-check-authors.
+the lock stage below. A plan made from folded items records the check-author
+Steps it folded under `folded_check_authors`, and a saved plan has its items
+folded the same way only when that record names exactly the items'
+check-author Steps; one with neither that record nor check-authors is refused
+as a plan that lost its check-authors.
 
 A Step with `"role": "check-author"` writes the locked acceptance checks and
 builds nothing. It never becomes a Lane, an MSP or a pull request, and its

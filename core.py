@@ -34,6 +34,7 @@ PLAN_KEYS = (
     "shared_file_candidates",
     "briefs",
     "check_authors",
+    "folded_check_authors",
 )
 
 BRIEF_KEYS = ("briefs", "check_authors")
@@ -1749,6 +1750,7 @@ def plan(
     coalesce_max=4,
     briefs=True,
     shared_files=(),
+    folded=(),
 ):
     shared = tuple(shared_files or ())
     items = [with_task(item) for item in items] if isinstance(items, list) else items
@@ -1837,6 +1839,7 @@ def plan(
             for parts in (_slice_parts(authors, placed, index),)
             if parts
         ],
+        "folded_check_authors": list(folded),
     }
     shaped = body if briefs else {key: value for key, value in body.items() if key not in BRIEF_KEYS}
     kept = {key: shaped[key] for key in PLAN_KEYS if key in shaped and _present(shaped[key])}

@@ -41,6 +41,23 @@ def plan_of(scratch):
         return json.load(handle)
 
 
+def charter_lock_plan(case):
+    scratch = finishes.Scratch({finishes.TEST_FILE: finishes.PROPERTY_TEXT})
+    case.addCleanup(scratch.close)
+    charter = scratch.file("charter.md", "# Charter\n\n- Locked: %s\n" % finishes.TEST_FILE)
+    items = scratch.items([finishes.lock_author(), finishes.builder()])
+    args = mitosis.build_parser().parse_args(["--items", items, "--no-trajectories", "--charter", charter])
+    lock = mitosis.build_plan(args, mitosis.read_items(items), scratch.repo, mitosis.check_charter(charter), None)
+    return scratch, items, charter, lock
+
+
+def planned_from(scratch, items, charter, saved):
+    return scratch.mitosis(
+        "--items", items, "--plan-only", "--no-trajectories", "--feature-branch", "feature",
+        "--charter", charter, "--plan-file", saved, "--run-dir", scratch.run_dir,
+    )
+
+
 def by_name(plan, name):
     return next(item for item in plan["items"] if item["name"] == name)
 
@@ -131,22 +148,33 @@ class ItemsFold(unittest.TestCase):
         again = scratch.mitosis(*common, "--plan-file", saved, "--run-dir", scratch.run_dir + "-again")
         self._exit(again, 0)
 
-    def a_lock_plan_saved_with_a_charter_lock_keeps_its_check_authors(self):
+    def a_folded_plan_plans_again_from_its_file_without_its_charter(self):
         scratch = finishes.Scratch({finishes.TEST_FILE: finishes.PROPERTY_TEXT})
         self.addCleanup(scratch.close)
         charter = scratch.file("charter.md", "# Charter\n\n- Locked: %s\n" % finishes.TEST_FILE)
         items = scratch.items([finishes.lock_author(), finishes.builder()])
-        args = mitosis.build_parser().parse_args(["--items", items, "--no-trajectories", "--charter", charter])
-        lock = mitosis.build_plan(args, mitosis.read_items(items), scratch.repo, mitosis.check_charter(charter), None)
+        common = ("--items", items, "--plan-only", "--no-trajectories", "--feature-branch", "feature")
+        first = scratch.mitosis(*common, "--charter", charter, "--run-dir", scratch.run_dir)
+        self._exit(first, 0)
+        saved = scratch.file("saved.json", json.dumps(plan_of(scratch)))
+        again = scratch.mitosis(*common, "--plan-file", saved, "--run-dir", scratch.run_dir + "-again")
+        self._exit(again, 0)
+
+    def a_lock_plan_saved_with_a_charter_lock_keeps_its_check_authors(self):
+        scratch, items, charter, lock = charter_lock_plan(self)
         authors = [entry["name"] for entry in lock["check_authors"]]
         self.assertEqual(authors, [AUTHOR])
-        saved = scratch.file("saved.json", json.dumps(lock))
-        again = scratch.mitosis(
-            "--items", items, "--plan-only", "--no-trajectories", "--feature-branch", "feature",
-            "--charter", charter, "--plan-file", saved, "--run-dir", scratch.run_dir,
-        )
+        again = planned_from(scratch, items, charter, scratch.file("saved.json", json.dumps(lock)))
         self._exit(again, 0)
         self.assertEqual([entry["name"] for entry in plan_of(scratch)["check_authors"]], authors)
+        self.assertNotIn(FOLDED, again.stderr.splitlines())
+
+    def a_lock_plan_saved_with_a_charter_lock_that_lost_its_check_authors_is_refused(self):
+        scratch, items, charter, lock = charter_lock_plan(self)
+        stripped = {key: value for key, value in lock.items() if key != "check_authors"}
+        again = planned_from(scratch, items, charter, scratch.file("saved.json", json.dumps(stripped)))
+        self._exit(again, 3)
+        self.assertIn("has no check_authors", again.stderr)
         self.assertNotIn(FOLDED, again.stderr.splitlines())
 
     def a_check_author_file_no_step_names_is_reported_dropped(self):
@@ -170,5 +198,7 @@ def load_tests(loader, tests, pattern):
             "a_check_author_file_no_step_names_is_reported_dropped",
             "a_folded_plan_saved_with_a_charter_lock_plans_again_from_its_file",
             "a_lock_plan_saved_with_a_charter_lock_keeps_its_check_authors",
+            "a_lock_plan_saved_with_a_charter_lock_that_lost_its_check_authors_is_refused",
+            "a_folded_plan_plans_again_from_its_file_without_its_charter",
         )
     )
