@@ -342,10 +342,9 @@ class Run(unittest.TestCase):
         self.assertEqual(
             by_name["vague"]["assumptions"], ["inline reading", "the endpoint is idempotent"]
         )
-        self.assertEqual(by_name["vague"]["complexity"], "complex")
+        self.assertEqual(by_name["vague"]["complexity"], "simple")
         self.assertNotIn("assumptions", by_name["plain"])
         self.assertEqual(by_name["plain"]["complexity"], "simple")
-        self.assertEqual(result["raised"], ["vague"])
         self.assertEqual(result["counts"]["assumptions"], 1)
         self.assertEqual(len(result["errors"]), 1)
         self.assertIn("ghost", result["errors"][0])

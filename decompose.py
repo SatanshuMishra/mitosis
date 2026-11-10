@@ -67,7 +67,7 @@ OPTIONAL_FIELD_LINES = (
     " directly or through other Steps. Only a pinned group's other Steps run in parallel."
     " To ship Steps as one pull request without making them one Worker's, use msp instead",
     "  type: one of " + ", ".join(core.STEP_TYPES),
-    "  complexity: one of " + ", ".join(core.COMPLEXITY_VALUES),
+    *recon_text.COMPLEXITY_LINES,
     "  file_notes: {path: what changes there}",
     "  msp: a tag forcing Steps to ship as one pull request",
     "  spec_ref: the sections this Step came from, each as its number or its exact heading"
@@ -101,8 +101,7 @@ SCHEDULING_LINES = (
 )
 
 TOP_LEVEL_LINES = (
-    '"assumptions" at the top level lists every such reading with the "step" it belongs to;'
-    " a Step with any assumption is never rated simple",
+    '"assumptions" at the top level lists every such reading with the "step" it belongs to',
     '"constraints" lists the document\'s global statements that belong to no single Step,'
     " one string each; return an empty list when there are none",
 )
@@ -931,23 +930,14 @@ def fold_assumptions(items, assumptions):
     return folded, errors
 
 
-def _raise_vague(item):
-    if isinstance(item, dict) and item.get("assumptions") and item.get("complexity") == "simple":
-        return {**item, "complexity": "complex"}
-    return item
-
-
 def collect(parsed, source, root=None, required=None):
     folded, fold_errors = fold_assumptions(parsed["items"], parsed["assumptions"])
-    lifted = [_raise_vague(item) for item in folded]
-    raised = [after["name"] for before, after in zip(folded, lifted) if after is not before]
-    checked = check_items(lifted, source, root, required)
+    checked = check_items(folded, source, root, required)
     return {
         "items": checked["items"],
         "constraints": parsed["constraints"],
         "errors": parsed["errors"] + fold_errors + checked["errors"],
         "counts": checked["counts"],
-        "raised": raised,
     }
 
 
@@ -1003,7 +993,6 @@ def _assemble(frozen, spawned, log, root, required=None, parse=parse_return):
         "constraints": collected["constraints"],
         "errors": spawn_errors + collected["errors"] + _empty_errors(frozen, collected["items"]),
         "counts": collected["counts"],
-        "raised": collected["raised"],
         "coverage": coverage(frozen["text"], collected["items"]),
         "exit": spawned["exit"],
         "log": log,
@@ -1252,12 +1241,6 @@ def report(result):
         "%d Steps declare no acceptance" % counts.get("no_acceptance", 0),
         "%d write-set paths do not exist yet" % counts.get("missing_paths", 0),
     ]
-    raised = result.get("raised") or []
-    if raised:
-        lines.append(
-            "%d Steps raised from simple for carrying assumptions: %s"
-            % (len(raised), ", ".join(raised))
-        )
     covered = result.get("coverage") or {}
     if covered.get("mode") == "none":
         lines.append("coverage not computable: %s" % covered.get("reason"))
