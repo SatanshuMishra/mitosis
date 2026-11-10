@@ -5,6 +5,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+from test_check_author_lane import saved_plan
 from test_warm_clones import (
     ADDS,
     APFS_ONLY,
@@ -63,7 +64,7 @@ class SeededWriteSet(unittest.TestCase):
                 "add": {"writes": {"calc.py": CORRECT_ADD}, "msp": "calc"},
             }
         )
-        completed = scratch.build(items)
+        completed = scratch.build(items, "--plan-file", saved_plan(items, scratch.repo))
         self.assertEqual(
             scratch.record("check-author").get("bytes"), WARM, "no seeded copy" + tail(completed)
         )

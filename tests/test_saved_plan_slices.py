@@ -31,7 +31,7 @@ class SavedPlanSlices(accept.Case):
     def a_saved_plan_whose_slice_claims_a_charter_lock_is_refused(self):
         charter = accept.put(self.scratch.path("charter.md"), "# Charter\n\n- Locked: tests/test_b.py\n")
         first = self.scratch.path("r1")
-        self.planned(checked_steps(), "--charter", charter, run_dir=first)
+        self.planned(checked_steps(), "--charter", charter, run_dir=first, saved=True)
         saved = self.saved_with(first, with_claimed("tests/test_b.py"))
         second = self.scratch.path("r2")
         completed = self.scratch.plan_only(
@@ -41,7 +41,7 @@ class SavedPlanSlices(accept.Case):
 
     def a_saved_plan_whose_slice_claims_a_build_file_is_refused(self):
         first = self.scratch.path("r1")
-        self.planned(checked_steps(), run_dir=first)
+        self.planned(checked_steps(), run_dir=first, saved=True)
         saved = self.saved_with(first, with_claimed("a.py"))
         second = self.scratch.path("r2")
         completed = self.scratch.plan_only(checked_steps(), "--plan-file", saved, run_dir=second)

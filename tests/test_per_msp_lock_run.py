@@ -9,6 +9,8 @@ import sys
 import tempfile
 import unittest
 
+from test_check_author_lane import saved_plan
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 MITOSIS = os.path.join(ROOT, "mitosis.py")
@@ -531,7 +533,10 @@ class Scratch:
             env=env,
         )
 
-    def plan_only(self, steps, label):
+    def saved(self, items, *flags):
+        return saved_plan(items, self.repo, *flags)
+
+    def plan_only(self, steps, label, *flags):
         return self.mitosis(
             "--items",
             self.items(steps, label + ".json"),
@@ -540,7 +545,12 @@ class Scratch:
             "feature",
             "--run-dir",
             os.path.join(self.tmp, "runs", label),
+            *flags,
         )
+
+    def saved_plan_only(self, steps, label, saved_steps=None):
+        saved = self.saved(self.items(saved_steps or steps, label + "-saved.json"))
+        return self.plan_only(steps, label, "--plan-file", saved)
 
     def plan(self, label):
         with open(os.path.join(self.tmp, "runs", label, "plan.json"), encoding="utf-8") as handle:
@@ -607,7 +617,8 @@ class PerMspLockRun(unittest.TestCase):
         scratch = self._scratch(seeded)
         before = scratch.feature()
         scratch.jobs(jobs or standard_jobs())
-        completed = scratch.build(scratch.items(steps or labelled()), *LOCK_TIMEOUT, "--no-push")
+        items = scratch.items(steps or labelled())
+        completed = scratch.build(items, "--plan-file", scratch.saved(items), *LOCK_TIMEOUT, "--no-push")
         return scratch, before, completed, summary_of(completed)
 
     def _committed(self, summary, label, completed):
@@ -721,7 +732,8 @@ class PerMspLockRun(unittest.TestCase):
         before = scratch.feature()
         scratch.checked("push", "-q", "origin", "refs/heads/feature:refs/heads/feature")
         scratch.jobs(standard_jobs(**{"check-author-beta": {"exit": 1}}))
-        completed = scratch.pushing(scratch.items(labelled()), *LOCK_TIMEOUT)
+        items = scratch.items(labelled())
+        completed = scratch.pushing(items, "--plan-file", scratch.saved(items), *LOCK_TIMEOUT)
         self.assertEqual(scratch.remote_ref("refs/heads/feature"), before, "remote feature" + tail(completed))
         fallen_back = scratch.first_after(before, "refs/heads/mitosis/beta", git_dir=scratch.remote)
         self.assertNotIn(("A", TEST_B), scratch.changes(before, fallen_back, git_dir=scratch.remote))
@@ -780,8 +792,9 @@ class PerMspLockRun(unittest.TestCase):
         )
         self.assertEqual(lock_of(self, summary, "alpha", completed).get("state"), "failed")
         first_run = len(scratch.dispatched())
+        items = os.path.join(scratch.tmp, "items.json")
         resumed = scratch.build(
-            os.path.join(scratch.tmp, "items.json"), *LOCK_TIMEOUT, "--no-push", "--resume"
+            items, "--plan-file", scratch.saved(items), *LOCK_TIMEOUT, "--no-push", "--resume"
         )
         self.assertEqual(scratch.dispatched()[first_run:], [], tail(resumed))
         result = summary_of(resumed)
@@ -791,7 +804,7 @@ class PerMspLockRun(unittest.TestCase):
 
     def test_the_check_author_brief_names_the_files_its_probe_may_write(self):
         scratch = self._scratch()
-        completed = scratch.plan_only(labelled(b_after_a=True), "brief")
+        completed = scratch.saved_plan_only(labelled(b_after_a=True), "brief")
         self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
         entries = {entry.get("name"): entry for entry in scratch.plan("brief").get("check_authors") or []}
         self.assertIn("check-author-beta", entries, tail(completed))

@@ -96,6 +96,11 @@ GATE_OUTCOMES = ("pass", "weak", "inert", "inconclusive", "not-applicable")
 
 GUARD_REASON = "passes with and without the work, so it guards behaviour that must stay the same"
 
+GUARD_KILLED_REASON = (
+    "passes with and without the work and fails when %s:%d changes by %s, so it guards "
+    "behaviour the work must keep"
+)
+
 
 def is_guard(judged):
     return judged.get("outcome") == "not-applicable" and judged.get("reverted") == 0

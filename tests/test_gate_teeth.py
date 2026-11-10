@@ -14,6 +14,8 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
+import core
+
 G14_CASES = os.path.join(HERE, "fixtures", "g14-cases.json")
 MITOSIS = os.path.join(ROOT, "mitosis.py")
 CALL_LIMIT = 60
@@ -434,12 +436,17 @@ class GateTeeth(unittest.TestCase):
         )
         self._held_back(completed, 21, "inconclusive")
 
-    def an_inert_test_is_reported_and_ships(self):
+    def an_inert_test_a_mutant_fails_ships_as_a_guard(self):
         completed = self._gated(
             {"calc.py": SWAPPED_ADD, "tests/test_calc.py": EXACT_TEST},
             seeded={"calc.py": CORRECT_ADD},
         )
-        self._shipped(completed, "inert")
+        self._shipped(completed, "pass")
+        judged = self._first_property(self._msp(completed))
+        self.assertEqual(judged["mutation"], "killed", tail(completed))
+        place = judged["mutants"]["killed"]
+        self.assertEqual(place["file"], "calc.py")
+        self.assertEqual(judged["reason"], core.GUARD_KILLED_REASON % (place["file"], place["line"], place["op"]))
 
     def an_inconclusive_property_is_reported_and_ships(self):
         completed = self._gated(
@@ -491,7 +498,7 @@ def load_tests(loader, standard, pattern):
                 "a_skipped_test_is_called_weak_and_ships",
                 "a_guard_beside_a_proven_test_ships",
                 "a_guard_the_work_breaks_holds_the_msp_back",
-                "an_inert_test_is_reported_and_ships",
+                "an_inert_test_a_mutant_fails_ships_as_a_guard",
                 "an_inconclusive_property_is_reported_and_ships",
                 "a_test_that_kills_a_mutant_passes_and_ships",
                 "a_data_file_is_judged_by_the_drop_added_lines_mutant",

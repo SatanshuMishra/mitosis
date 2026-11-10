@@ -258,8 +258,8 @@ without running git in the clone, writes those paths into its checkout and
 commits them as the Lane's landing; a write-set path behind a symbolic-link
 folder fails the Lane. A file changed outside the write-set is replayed into
 mitosis's checkout as an uncommitted change and judged by reconcile alone:
-an undeclared write is kept and exits 6, and a referee write is reverted and
-exits 9. The gate and every acceptance run see such a path as it stood when
+an undeclared write is kept and reported and does not set the run's exit code, and a
+referee write is reverted and exits 9. The gate and every acceptance run see such a path as it stood when
 the Lane started, so an uncommitted helper never makes a test pass. A Lane
 does not see a sibling's uncommitted writes.
 
@@ -322,7 +322,13 @@ record list `seeded`, seed_skipped and seed_seconds. With no
 
 mitosis never writes a check-author Step itself, and a structure reply whose
 Step carries a `role` is asked again in the same session. An `--items` file
-may still declare one, and then it runs as the lock stage below.
+may still declare one, and mitosis folds it: each Step whose acceptance names
+a file the check-author writes writes that file with its work, the
+check-author's `after` edges go, a file no Step's acceptance names is dropped
+with a notice, and no lock stage runs. Only a saved plan given by
+`--plan-file` that was planned with check-authors keeps them, and they run as
+the lock stage below; a saved plan without them has its items folded the same
+way.
 
 A Step with `"role": "check-author"` writes the locked acceptance checks and
 builds nothing. It never becomes a Lane, an MSP or a pull request, and its
@@ -438,7 +444,12 @@ comments are left alone, and when no operator applies to any added line the
 gate drops the added lines of each file instead. For a Python Step the gate
 also tries negating each `if` that holds added code inside a function and
 emptying each function the Step added. A property no mutant fails is judged
-`weak`: reviewers see it in the Testing table and it holds nothing.
+`weak`: reviewers see it in the Testing table and it holds nothing. An
+`inert` property runs against the mutants too, and one a mutant fails passes,
+because it guards behaviour the work must keep. A `weak` or `inert` property
+that its Lane wrote and no lock holds goes back to that Lane once, told the
+surviving mutant or that the test passes without the work, and the MSP is
+gated again; after that it ships as before.
 
 The with-work run of each property records, through a standard-library
 tracer first on `PYTHONPATH`, the lines it executed, and the gate samples its
@@ -568,7 +579,8 @@ After the limit resets, `--resume` runs every Lane that is not `ok`.
 
 The JSON result's `findings` list carries one entry per problem the run
 found, each naming its MSP, its Lane, its kind, its exit code and a detail,
-and the exit code is the most severe finding's.
+and the exit code is the most severe finding's, an undeclared write aside,
+which is reported with exit 6 and sets no exit code.
 
 ## Metrics
 

@@ -18,6 +18,9 @@ import unittest.mock
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
+sys.path.insert(0, HERE)
+
+from test_check_author_lane import saved_plan
 
 MITOSIS = os.path.join(ROOT, "mitosis.py")
 CALL_LIMIT = 60
@@ -677,7 +680,7 @@ class WarmClones(unittest.TestCase):
                 "add": {"writes": {"calc.py": CORRECT_ADD}, "msp": "calc", "script": RECORD_SEEDED},
             }
         )
-        completed = scratch.build(items)
+        completed = scratch.build(items, "--plan-file", saved_plan(items, scratch.repo))
         self._warm_record("check-author", completed)
         lock = ((scratch.state().get("msps") or {}).get("0") or {}).get("lock")
         self.assertIsInstance(lock, dict, "state.json holds no lock record for MSP calc" + tail(completed))

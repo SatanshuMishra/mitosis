@@ -32,7 +32,7 @@ class InterphaseCheckAuthorShape(unittest.TestCase):
         self.addCleanup(self.scratch.close)
 
     def test_the_check_author_interphase_0_14_renders_is_split_by_acceptance(self):
-        completed = self.scratch.plan_only(
+        completed = self.scratch.saved_plan_only(
             interphase_0_14([scaffold.TEST_A, scaffold.TEST_B]), "interphase-0-14"
         )
         self.assertEqual(completed.returncode, 0, "mitosis exit code" + scaffold.tail(completed))
@@ -60,10 +60,11 @@ class ConsumerTouchesProducerLock(unittest.TestCase):
         self.addCleanup(self.scratch.close)
         scaffold.put(os.path.join(self.scratch.stubs, "worker.py"), DELETING_WORKER)
         self.items = self.scratch.items(scaffold.labelled(b_after_a=True))
+        self.saved = self.scratch.saved(self.items)
 
     def _consumer_build(self, consumer_job):
         self.scratch.jobs(scaffold.standard_jobs(**{"build-b": consumer_job}))
-        return self.scratch.build(self.items, "--no-push")
+        return self.scratch.build(self.items, "--plan-file", self.saved, "--no-push")
 
     def _locked_content(self, ref):
         shown = self.scratch.git("show", "%s:%s" % (ref, scaffold.TEST_A))
@@ -86,7 +87,7 @@ class ConsumerTouchesProducerLock(unittest.TestCase):
 
     def test_a_consumer_whose_producer_failed_holds_no_producer_test(self):
         self.scratch.jobs(scaffold.standard_jobs(**{"build-a": {"exit": 1}}))
-        completed = self.scratch.build(self.items, "--no-push")
+        completed = self.scratch.build(self.items, "--plan-file", self.saved, "--no-push")
         beta = msp_named(completed, "beta")
         self.assertNotEqual(beta.get("state"), REFEREE_REVERTED, scaffold.tail(completed))
         self.assertEqual((beta.get("reconcile") or {}).get("referee") or [], [])
@@ -98,7 +99,7 @@ class ConsumerTouchesProducerLock(unittest.TestCase):
         )
         self.assertEqual(msp_named(first, "beta").get("state"), REFEREE_REVERTED, scaffold.tail(first))
         self.assertEqual(self._locked_content("mitosis/beta"), self._locked_content("mitosis/alpha"))
-        resumed = self.scratch.build(self.items, "--no-push", "--resume")
+        resumed = self.scratch.build(self.items, "--plan-file", self.saved, "--no-push", "--resume")
         self.assertIn(scaffold.TEST_A, self.scratch.tree("mitosis/beta"), scaffold.tail(resumed))
         self.assertEqual(self._locked_content("mitosis/beta"), self._locked_content("mitosis/alpha"))
 

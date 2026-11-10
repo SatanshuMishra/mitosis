@@ -1,0 +1,9 @@
+# A test verdict returns the test to its Lane instead of ending the run
+
+Status: accepted. Refines 0024 and 0025.
+
+The recorded runs stopped far more often on verdicts about tests than on wrong code. The lock refused 83 Lanes whose locked tests passed at the base and blocked 67 more behind them; 18 runs ended with exit 24 on weak tests that nobody sent back to their Worker; 6 ended with exit 20 on Steps whose tests all guard behaviour that must stay the same; and 41 ended with exit 6 on a write outside the declaration, 28 of them otherwise ready to ship. The reference planner, which has no lock and treats an undeclared write inside an MSP as noise, finished the same items.
+
+An items file's check-author Steps now fold into the Steps whose acceptance names their files, so each Step writes its tests with its work and an items build runs no lock stage; a saved plan planned with a lock keeps it. An inert test runs against the work's mutants, and one a mutant fails passes, because a test that catches a broken change guards behaviour the work must keep. A weak or inert test that its Lane wrote and no lock holds goes back to that Lane once, told the surviving mutant or that the test passes without the work, and the MSP is gated again before it ships or holds as 0025 says. An undeclared write is reported and carries no exit code, and exit 6 keeps only an MSP that declared files and changed none. A title for one of several MSPs shortens its subject at a word boundary so it fits 72 characters with its label.
+
+We chose to return a test to its Lane over holding the MSP, because a Worker told what its test misses can fix it and a held MSP waits for a person. The cost is one more Worker session for each Lane with a weak or inert test, mutation runs for inert tests, and an undeclared write that no longer stops a ship, so the reviewer reads it in the result instead.

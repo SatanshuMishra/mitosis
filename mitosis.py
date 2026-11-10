@@ -73,8 +73,7 @@ EXIT_MEANING = {
     EXIT_REFUSED: "refused to start",
     EXIT_INCOMPLETE: "the run stopped before every Lane and MSP reached a terminal state",
     EXIT_NO_BRANCHES: "the run created no branches",
-    EXIT_RECONCILE: "reconcile found a write outside the declaration, or an MSP that changed "
-    "nothing though it declared files",
+    EXIT_RECONCILE: "reconcile found an MSP that changed nothing though it declared files",
     EXIT_CROSSING: "an MSP branch, pushed or with its pull request open, writes files another MSP "
     "owns and also changes",
     EXIT_FOREIGN: "a Lane changed a file another Lane of its MSP owns and had already committed",
@@ -1127,6 +1126,30 @@ def asks_input(args, root, repo, models, charter, run_dir):
     return staged(owned, load_decomposed(run_dir), run_dir, None, notices)
 
 
+def planned_with_lock(path, items):
+    loaded = read_json(path, "--plan-file")
+    if not isinstance(loaded, dict) or loaded.get("check_authors"):
+        return True
+    authored = {
+        referee.normalised(written)
+        for author in core.check_author_steps(items)
+        for written in core._files(author)
+    }
+    return any(referee.normalised(locked) in authored for locked in loaded.get("locked") or ())
+
+
+def folded_items(args, items):
+    if args.plan_file is not None and planned_with_lock(args.plan_file, items):
+        return items, ()
+    return own_tests.folded(items)
+
+
+def items_input(args, run_dir):
+    items, notices = folded_items(args, read_items(os.path.abspath(args.items)))
+    _print(tuple("mitosis: " + notice for notice in notices), sys.stderr)
+    return staged(items, load_decomposed(run_dir), run_dir, None, notices)
+
+
 def input_run_dir(args, root):
     if args.run_dir:
         return os.path.abspath(os.path.join(root, args.run_dir))
@@ -1155,8 +1178,7 @@ def default_input_run_dir(args, root):
 
 def resolve_input(args, root, repo, models, charter, graph, run_dir):
     if args.items:
-        items = read_items(os.path.abspath(args.items))
-        return staged(items, load_decomposed(run_dir), run_dir, None)
+        return items_input(args, run_dir)
     if args.asks:
         return asks_input(args, root, repo, models, charter, run_dir)
     document = check_document(args, root)
@@ -1855,7 +1877,7 @@ def stacking_lines(plan, state):
 def reconcile_dirty(findings):
     if not isinstance(findings, dict):
         return True
-    return bool(findings.get("undeclared") or findings.get("crossing") or findings.get("fatal"))
+    return bool(findings.get("crossing") or findings.get("fatal"))
 
 
 def _finding(msp, lane, kind, code, detail):
@@ -1990,10 +2012,13 @@ def findings(state, plan):
     return _lock_findings(state, plan) + _lane_findings(plan, lane_records) + msps
 
 
+NOISE_KINDS = ("undeclared",)
+
+
 def exit_code(state, plan):
     if not plan.get("msps") or not ((state or {}).get("worktrees") or lock_stopped(state, plan)):
         return EXIT_NO_BRANCHES
-    carried = {entry["exit"] for entry in findings(state, plan)}
+    carried = {entry["exit"] for entry in findings(state, plan) if entry["kind"] not in NOISE_KINDS}
     worst = next((code for code in EXIT_SEVERITY if code in carried), None)
     if worst is not None:
         return worst

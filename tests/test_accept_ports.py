@@ -91,7 +91,9 @@ class PromptTemplate(accept.Case):
         self.assertIn('"edit": [', printed)
 
     def a_check_author_lane_keeps_its_brief(self):
-        completed = self.scratch.full_run(checked_steps(), "--prompt-template", "CUSTOM task-a {spec}")
+        completed = self.scratch.full_run(
+            checked_steps(), "--prompt-template", "CUSTOM task-a {spec}", saved=True
+        )
         plan = self.plan(completed)
         authors = plan.get("check_authors") or []
         self.assertTrue(authors, "plan.json holds no check_authors" + tail(completed))
@@ -183,7 +185,7 @@ class PlanFile(accept.Case):
 
     def a_saved_plan_gets_back_its_check_author_locks(self):
         first = self.scratch.path("r1")
-        self.planned(checked_steps(), run_dir=first)
+        self.planned(checked_steps(), run_dir=first, saved=True)
         saved, original = self.saved(first, "saved.json", lambda plan: {**plan, "locked": []})
         second = self.scratch.path("r2")
         completed, plan = self.planned(checked_steps(), "--plan-file", saved, run_dir=second)
@@ -192,7 +194,7 @@ class PlanFile(accept.Case):
 
     def a_saved_plan_without_its_check_authors_is_refused(self):
         first = self.scratch.path("r1")
-        self.planned(checked_steps(), run_dir=first)
+        self.planned(checked_steps(), run_dir=first, saved=True)
         saved, _ = self.saved(
             first, "saved.json", lambda plan: {k: v for k, v in plan.items() if k != "check_authors"}
         )

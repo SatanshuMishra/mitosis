@@ -12,6 +12,7 @@ sys.path.insert(0, HERE)
 import run
 import test_every_finding as fixtures
 import test_gate_teeth as teeth
+from test_check_author_lane import saved_plan
 
 WORKER = r'''
 import json
@@ -107,8 +108,10 @@ class Scratch(fixtures.Scratch):
     def hook(self, body, name="pre-commit"):
         executable(os.path.join(self.repo, ".git", "hooks", name), "#!/bin/sh\n" + body)
 
-    def built(self, steps, jobs, push=False, acceptance="unittest", flags=(), reask=None):
+    def built(self, steps, jobs, push=False, acceptance="unittest", flags=(), reask=None, saved=False):
         self.jobs(jobs)
+        items = self.items(steps)
+        planned = ("--plan-file", saved_plan(items, self.repo)) if saved else ()
         shipping = (
             (*fixtures.PR_FLAGS, "--pr-command", self.stub("pr.py", "{branch}"), "--render-command", self.render)
             if push
@@ -116,7 +119,7 @@ class Scratch(fixtures.Scratch):
         )
         completed = self.mitosis(
             "--items",
-            self.items(steps),
+            items,
             "--run-dir",
             self.run_dir,
             "--feature-branch",
@@ -128,6 +131,7 @@ class Scratch(fixtures.Scratch):
             "--acceptance-command",
             self.stub("accept.py", acceptance, "{file}", "{test}"),
             *shipping,
+            *planned,
             *flags,
         )
         return completed, fixtures.summary_of(completed)
@@ -391,6 +395,7 @@ class FinishesTheWork(unittest.TestCase):
             },
             push=True,
             reask=scratch.continuing_worker(),
+            saved=True,
         )
         self._exit(completed, 0)
         tasks = scratch.attempts("check-author")
@@ -417,6 +422,7 @@ class FinishesTheWork(unittest.TestCase):
             },
             push=True,
             reask=scratch.continuing_worker(),
+            saved=True,
         )
         self._exit(completed, 0)
         record = msp_of(summary, "first")
@@ -441,6 +447,7 @@ class FinishesTheWork(unittest.TestCase):
                 "first": [{"writes": {"a.py": RIGHT}}],
             },
             reask=scratch.continuing_worker(),
+            saved=True,
         )
         self._exit(completed, 0)
         self.assertEqual(msp_of(summary, "first")["lock"]["state"], "ok")
@@ -461,6 +468,7 @@ class FinishesTheWork(unittest.TestCase):
                 "first": [{"writes": {"a.py": RIGHT}}],
             },
             reask="%s -c 'raise SystemExit(1)' {prompt} {session_id} {schema}" % sys.executable,
+            saved=True,
         )
         self._exit(completed, 0)
         self.assertEqual(msp_of(summary, "first")["lock"]["state"], "ok")
@@ -589,7 +597,7 @@ class FinishesTheWork(unittest.TestCase):
                 ]
             },
         )
-        self._exit(completed, 6)
+        self._exit(completed, 0)
         self.assertIn("mitosis keeps the write", scratch.attempts("first")[1])
         record = msp_of(summary, "first")
         self.assertEqual(record["gate"]["outcome"], "pass")
