@@ -24,6 +24,7 @@ from test_mutant_coverage import (
     summary_of,
     tail,
 )
+from test_check_author_lane import saved_plan
 from test_round1_receipts import EXACT_TEST, check_author, msp_lock
 
 OUTSIDE_BYTES = b"outside the sandbox, never rewritten by mitosis\n"
@@ -131,10 +132,11 @@ class Receipts(unittest.TestCase):
         )
         self._assert_unchanged_file(os.path.join(folder, KEPT_NAME), completed)
 
-    def _sandboxed_build(self, items, jobs):
+    def _sandboxed_build(self, items, jobs, saved=False):
         self.scratch.jobs(jobs)
+        planned = ("--plan-file", saved_plan(items, self.scratch.repo)) if saved else ()
         return self.scratch.build(
-            items, "--worker-sandbox", "--worker-write", self.scratch.stubs
+            items, "--worker-sandbox", "--worker-write", self.scratch.stubs, *planned
         )
 
     def _assert_shipped_pass(self, completed):
@@ -172,6 +174,7 @@ class Receipts(unittest.TestCase):
                 },
                 "add": {"writes": {"calc.py": CORRECT_ADD}, "msp": "demo"},
             },
+            saved=True,
         )
         self._assert_unchanged_file(outside, completed)
         self.assertFalse(os.path.islink(link), "sandboxed code planted %s" % link + tail(completed))

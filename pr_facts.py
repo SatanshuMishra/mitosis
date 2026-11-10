@@ -24,6 +24,12 @@ CHANGE_WORD_LIMIT = 300
 
 TESTING_ROW_LIMIT = 12
 
+TITLE_RULE = "#/properties/title"
+
+CONNECTORS = ("and", "or", "the", "a", "an", "of", "to", "with", "for", "in", "on")
+
+TRAILING_PUNCTUATION = ".,;:!?-"
+
 SENTENCE_RULE = "#/$defs/sentence"
 
 CHECK_RULE = "#/$defs/cell"
@@ -88,15 +94,35 @@ def conventional_prefix(kind, scope):
     return "%s%s" % (kind, "(%s)" % scope if scope else "")
 
 
+def _accepted(title):
+    return not handoff.errors_at(RENDER_SCHEMA, TITLE_RULE, title)
+
+
+def _trimmed(words):
+    if len(words) <= 1:
+        return tuple(words)
+    last = words[-1].rstrip(TRAILING_PUNCTUATION)
+    if not last or last.lower() in CONNECTORS:
+        return _trimmed(words[:-1])
+    return tuple(words[:-1]) + (last,)
+
+
+def _subject_candidates(subject):
+    words = subject.split()
+    shortened = tuple(" ".join(_trimmed(words[:count])) for count in range(len(words) - 1, 0, -1))
+    return (subject,) + shortened
+
+
 def _title(header, plan, msp):
-    scope = header.get("scope")
+    prefix = conventional_prefix(header["type"], header.get("scope"))
     subject = header["subject"]
-    labelled = (
-        "%s (%s)" % (subject, plan["msps"][msp]["label"])
-        if len(plan.get("msps") or []) > 1
-        else subject
+    if len(plan.get("msps") or []) <= 1:
+        return "%s: %s" % (prefix, subject)
+    tags = (plan["msps"][msp]["label"], "part %d of %d" % (msp + 1, len(plan["msps"])))
+    tagged = tuple(
+        "%s: %s (%s)" % (prefix, candidate, tag) for tag in tags for candidate in _subject_candidates(subject)
     )
-    return "%s: %s" % (conventional_prefix(header["type"], scope), labelled)
+    return next((title for title in tagged if _accepted(title)), tagged[0])
 
 
 def _problem(header):
@@ -141,7 +167,7 @@ def _result(judged):
 
 
 def _passed(judged):
-    return judged.get("outcome") == "pass" and not judged.get("class")
+    return judged.get("outcome") == "pass" and not judged.get("class") and not core.is_guard(judged)
 
 
 def _tally(fold, judged):

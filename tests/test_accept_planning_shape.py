@@ -169,7 +169,7 @@ class ReadCap(accept.Case):
             check_author("check-author-x", ["tests/test_a.py"], "x"),
             check_author("check-author-y", ["tests/test_b.py"], "y"),
         ]
-        completed, plan = self.planned(steps, "--graph", graph, "--context-cap", "2")
+        completed, plan = self.planned(steps, "--graph", graph, "--context-cap", "2", saved=True)
         authors = plan.get("check_authors") or []
         self.assertEqual(len(authors), 1, json.dumps(authors))
         brief = authors[0].get("brief") or {}

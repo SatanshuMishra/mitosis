@@ -2162,7 +2162,9 @@ class Ship(RepoCase):
         for lane_state in core.LANE_STATES:
             if lane_state != "ok":
                 self.assertFalse(run.succeeded(state_with("shipped", lane_state, clean)), lane_state)
-        self.assertFalse(run.succeeded(state_with("shipped", findings={**clean, "undeclared": ["x"]})))
+        self.assertTrue(run.succeeded(state_with("shipped", findings={**clean, "undeclared": ["x"]})))
+        self.assertFalse(run.succeeded(state_with("shipped", findings={**clean, "crossing": ["x"]})))
+        self.assertFalse(run.succeeded(state_with("shipped", findings={**clean, "fatal": True})))
         self.assertTrue(run.succeeded(state_with("shipped", findings={**clean, "unwritten": ["x"]})))
         self.assertFalse(run.succeeded(state_with(run.MSP_UNCHANGED, findings={**clean, "unwritten": ["x"]})))
         self.assertFalse(run.succeeded(state_with("shipped", findings=None)))

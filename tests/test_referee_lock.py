@@ -504,7 +504,7 @@ class RefereeLock(unittest.TestCase):
             }
         )
         completed = scratch.build(items, "--charter", charter)
-        self.assertEqual(completed.returncode, 6, "mitosis exit code" + tail(completed))
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
         msp = self._msp(summary_of(completed))
         reconcile = self._reconcile(msp)
         self.assertEqual(reconcile["referee"], [])

@@ -73,8 +73,7 @@ EXIT_MEANING = {
     EXIT_REFUSED: "refused to start",
     EXIT_INCOMPLETE: "the run stopped before every Lane and MSP reached a terminal state",
     EXIT_NO_BRANCHES: "the run created no branches",
-    EXIT_RECONCILE: "reconcile found a write outside the declaration, or an MSP that changed "
-    "nothing though it declared files",
+    EXIT_RECONCILE: "reconcile found an MSP that changed nothing though it declared files",
     EXIT_CROSSING: "an MSP branch, pushed or with its pull request open, writes files another MSP "
     "owns and also changes",
     EXIT_FOREIGN: "a Lane changed a file another Lane of its MSP owns and had already committed",
@@ -173,6 +172,7 @@ STAGE_FLAG_NAMES = (
 )
 
 SAVED_PLAN_KEYS = ("msps", "lanes", "briefs")
+FOLDED_KEY = "folded_check_authors"
 
 GATE_CLASS_KEYS = ("class", "reason", "test")
 
@@ -1029,13 +1029,14 @@ def structure_document(args, root, run_dir, models, charter, graph, decisions, p
     return result["items"], record
 
 
-def staged(items, decomposed, run_dir, decisions, troubles=()):
+def staged(items, decomposed, run_dir, decisions, troubles=(), folded=()):
     return {
         "items": items,
         "decomposed": decomposed,
         "run_dir": run_dir,
         "decisions": decisions,
         "troubles": tuple(troubles),
+        "folded": tuple(folded),
     }
 
 
@@ -1127,6 +1128,28 @@ def asks_input(args, root, repo, models, charter, run_dir):
     return staged(owned, load_decomposed(run_dir), run_dir, None, notices)
 
 
+def check_author_names(items):
+    return [item.get("name") for item in core.check_author_steps(items)]
+
+
+def saved_plan_folds(path, items):
+    loaded = read_json(path, "--plan-file")
+    return isinstance(loaded, dict) and loaded.get(FOLDED_KEY) == check_author_names(items)
+
+
+def folded_items(args, items):
+    if args.plan_file is not None and not saved_plan_folds(args.plan_file, items):
+        return items, (), ()
+    kept, notices = own_tests.folded(items)
+    return kept, notices, check_author_names(items)
+
+
+def items_input(args, run_dir):
+    items, notices, folded = folded_items(args, read_items(os.path.abspath(args.items)))
+    _print(tuple("mitosis: " + notice for notice in notices), sys.stderr)
+    return staged(items, load_decomposed(run_dir), run_dir, None, notices, folded)
+
+
 def input_run_dir(args, root):
     if args.run_dir:
         return os.path.abspath(os.path.join(root, args.run_dir))
@@ -1155,8 +1178,7 @@ def default_input_run_dir(args, root):
 
 def resolve_input(args, root, repo, models, charter, graph, run_dir):
     if args.items:
-        items = read_items(os.path.abspath(args.items))
-        return staged(items, load_decomposed(run_dir), run_dir, None)
+        return items_input(args, run_dir)
     if args.asks:
         return asks_input(args, root, repo, models, charter, run_dir)
     document = check_document(args, root)
@@ -1198,7 +1220,7 @@ def refused_steps(error):
     )
 
 
-def build_plan(args, items, root, charter, graph):
+def build_plan(args, items, root, charter, graph, folded=()):
     try:
         return core.plan(
             items,
@@ -1214,6 +1236,7 @@ def build_plan(args, items, root, charter, graph):
             coalesce_max=args.coalesce_max,
             briefs=not args.no_briefs,
             shared_files=shared_list(args.shared_files),
+            folded=folded,
         )
     except core.ValidationError as error:
         raise refused_steps(error)
@@ -1244,9 +1267,9 @@ def saved_plan(path, items, charter, root):
     return {**loaded, "locked": list(locked)}
 
 
-def planned(args, items, root, charter, graph):
+def planned(args, items, root, charter, graph, folded=()):
     if args.plan_file is None:
-        return build_plan(args, items, root, charter, graph)
+        return build_plan(args, items, root, charter, graph, folded)
     return saved_plan(args.plan_file, items, charter, root)
 
 
@@ -1855,7 +1878,7 @@ def stacking_lines(plan, state):
 def reconcile_dirty(findings):
     if not isinstance(findings, dict):
         return True
-    return bool(findings.get("undeclared") or findings.get("crossing") or findings.get("fatal"))
+    return bool(findings.get("crossing") or findings.get("fatal"))
 
 
 def _finding(msp, lane, kind, code, detail):
@@ -1990,10 +2013,13 @@ def findings(state, plan):
     return _lock_findings(state, plan) + _lane_findings(plan, lane_records) + msps
 
 
+NOISE_KINDS = ("undeclared",)
+
+
 def exit_code(state, plan):
     if not plan.get("msps") or not ((state or {}).get("worktrees") or lock_stopped(state, plan)):
         return EXIT_NO_BRANCHES
-    carried = {entry["exit"] for entry in findings(state, plan)}
+    carried = {entry["exit"] for entry in findings(state, plan) if entry["kind"] not in NOISE_KINDS}
     worst = next((code for code in EXIT_SEVERITY if code in carried), None)
     if worst is not None:
         return worst
@@ -2528,7 +2554,7 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     from_items = bool(args.items)
     notices = resolved["troubles"]
     shown = None if args.no_run_dir else run_dir
-    plan = planned(args, items, root, charter, graph)
+    plan = planned(args, items, root, charter, graph, resolved["folded"])
     if args.plan_file is None:
         refuse_unwritten(plan, base_holds(args, repo))
     recorder.planned(plan, lane_width(plan), len(empty_manifests(plan.get("items") or [])))

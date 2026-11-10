@@ -220,9 +220,9 @@ class IntegrationOrder(OptionsCase):
             S("b", [SHARED, "b.py"], msp="m2", acceptance=b_acceptance),
         ]
 
-    def _saved_first_plan(self):
+    def _saved_first_plan(self, saved=False):
         steps = self._locked_pair([{"file": "tests/test_b.py", "test": "B.works"}])
-        completed = self.scratch.plan_only(steps, "--shared-files", SHARED)
+        completed = self.scratch.plan_only(steps, "--shared-files", SHARED, saved=saved)
         self.exits(completed, 0)
         saved = self.scratch.path("saved-plan.json")
         shutil.copyfile(os.path.join(self.scratch.run_dir, "plan.json"), saved)
@@ -261,7 +261,7 @@ class IntegrationOrder(OptionsCase):
         self.assertEqual(plan.get("shared_files"), [SHARED], tail(completed))
 
     def a_saved_plan_is_judged_with_its_shared_files(self):
-        saved = self._saved_first_plan()
+        saved = self._saved_first_plan(saved=True)
         other = self.scratch.path("run-again")
         steps = self._locked_pair(
             [{"file": "tests/test_b.py", "test": "B.works"}, {"file": "tests/test_a.py", "test": "A.also"}]
@@ -405,7 +405,7 @@ class SharedReconcile(OptionsCase):
             "s.txt",
             writes={"a": {"a.py": "a\n", "s.txt": "a\n"}},
         )
-        self.exits(completed, 6)
+        self.exits(completed, 0)
         record = self._reconcile(completed)
         self.assertEqual(record.get("undeclared"), ["s.txt"], tail(completed))
         self.assertNotIn("shared_overlaps", record, tail(completed))
