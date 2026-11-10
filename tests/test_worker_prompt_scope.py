@@ -58,10 +58,8 @@ class WorkerPromptScope(unittest.TestCase):
         result = core.plan(
             [step("a", ["shared.py"], task=first), step("b", ["shared.py"], task=second)]
         )
-        leaves = [brief["steps"][0] for brief in result["briefs"]]
-        self.assertEqual(len(leaves), 2)
-        lane = {**result["briefs"][0], "steps": leaves, "spec": core.brief_spec(leaves)}
-        text = core.brief_text(lane)
+        self.assertEqual([[leaf["name"] for leaf in brief["steps"]] for brief in result["briefs"]], [["a", "b"]])
+        text = result["briefs"][0]["text"]
         self.assertIn('"task": "%s"' % first, text)
         self.assertIn('"task": "%s"' % second, text)
         self.assertEqual(text.count(first), 1)

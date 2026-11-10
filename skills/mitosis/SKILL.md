@@ -44,19 +44,18 @@ quotes or newlines lands as one argument and is never reinterpreted by a shell.
 
 | Flag | Spawns | Placeholders |
 |---|---|---|
-| `--dispatch-command` | one Worker session per Step, in its own clone | listed under --help |
+| `--dispatch-command` | one Worker session per Lane, in its own clone | listed under --help |
 | `--acceptance-command` | one acceptance property, in a worktree | file, test, worktree |
 | `--pr-command` | one pull request per MSP; optional, refused with `--no-push` | listed under --help |
 | `--render-command` | render --fields, per MSP at start and ship | none |
 | `--pr-type` `--pr-scope` `--pr-subject` `--pr-why` `--pr-impact` `--pr-blast-radius` | nothing; they are facts handed to render | none |
-| `--decompose-command` | the structure pass that turns a document into unbriefed Steps | prompt, model, document, session_id, schema |
-| `--brief-command` | one Worker per unbriefed Step, writing its task | prompt, model, step, document, session_id, schema |
+| `--decompose-command` | the structure pass that turns a document into Steps, each with its task | prompt, model, document, session_id, schema |
 | `--reask-command` | the same session once more, for a reply failing its owned schema; required to call a model | prompt, session_id, schema, model |
 | `--worker-sandbox` | each Worker, gate and lock-stage run under sandbox-exec, writing only its clone or checkout, temp, transcript and `--worker-write` paths; exit 3 without it | none |
 | `--worker-write` | nothing; one more sandbox-writable path; repeatable; exit 3 if it overlaps the run directory, repository or its git directory | none |
 | `--gate-classes` | nothing; a JSON `{test, class, reason}` list classing properties | none |
 
-A Worker's prompt is its whole brief. Dispatch, decompose and brief templates
+A Worker's prompt is its whole brief. Dispatch and decompose templates
 must carry `{schema}`, the call schema as JSON text, and `{session_id}`, or
 mitosis exits 3; the runs below show them with the re-ask template. A reply is read
 only from the structured_output of the JSON object printed; one failing its
@@ -173,7 +172,7 @@ recorded as the pull request.
 ### Spec: a document
 
 `--spec` takes a document in any format and reaches the plan in stages, so you
-can read its split before any brief is bought.
+can read its split before any Worker is paid for.
 
 `--plan-only` runs one structure dispatch over the whole document, because the
 two fields that join its distant parts, `after` and `contract_group`, cannot
@@ -189,40 +188,41 @@ python3 "${CLAUDE_PLUGIN_ROOT}/mitosis.py" --spec docs/specs/search.md --plan-on
 ```
 
 It persists its Steps and reports the Split shape findings, scalars,
-unclaimed sections and assumptions, each keeping its Step from `simple`.
+unclaimed sections and assumptions.
 
 No finding stops a run; each is printed, put in its pull request and given an
 exit code.
 
 An assumption you would decide differently goes into the decisions file,
 `--decisions PATH` (default: `<document without extension>.decisions.md` when
-it exists), which binds every later structure dispatch and brief.
+it exists), which binds every later structure dispatch.
 
 `--structure-samples N` runs N structure dispatches, ranks them and shows
 where they disagree; the best is persisted, or the Kth with `--pick K`.
 
 Add `--revise` to the same `--plan-only` command to revise the structure: one
-small dispatch returns a delta, and only the Steps it touches cost a brief.
+small dispatch returns a delta, carrying whole Steps only for those it touches.
 
 When the plan reads right, run it with `--resume`, the items run's flags with
-`--spec` in place of `--items`, plus `--brief-command`; it briefs every
-unbriefed Step in parallel, then builds.
+`--spec` in place of `--items`; it plans the persisted Steps and builds.
 
 The report's drift section says whether the document `source` names changed
 since the Steps were cut.
 
 ## What a run does
 
-Validate, schedule, lock the checks, one worktree and branch per MSP under the
-run directory, one Worker session per Step, producers merged in first, then
+Validate, schedule, lock the checks an items file declares, one worktree and
+branch per MSP under the run directory, one Worker session per Lane, producers
+merged in first, then
 per MSP: land, commit, gate, reconcile, push, open a pull request stacked on its single
 predecessor when `--pr-command` is given, report.
 
-Every Step of a Lane is its own Worker session, in Step order on its MSP's
-branch, and lands one commit: subject `<type>(<scope>): <step>` (chore, no
-scope, if absent), body its task's first sentence. Each starts once the one
-before lands, may edit what earlier ones wrote and is told which Steps they
-built; a resume starts at the first not `ok`.
+Every Lane is one Worker session, which builds its Steps in Step order on its
+MSP's branch and lands one commit: subject `<type>(<scope>): <steps>` (chore,
+no scope, if absent), body each Step's task's first sentence. Steps share a
+Lane exactly when they share a file. On `--spec` and `--asks` each Step writes
+its own acceptance tests, whose files join its write-set unless the charter
+locks them.
 
 Each session builds in its own clone of the MSP branch under the run
 directory's `clones` folder, never in the MSP worktree.
@@ -271,7 +271,8 @@ of the Step's files) or covered-elsewhere (classed so); `coverage` is
 without a run and kept out of the plan id, so `--resume` rebuilds nothing; an
 entry naming no property is refused.
 
-A Step with `"role": "check-author"` is the lock stage, never a Lane, MSP
+mitosis never writes a check-author Step; an items file may declare one. A
+Step with `"role": "check-author"` is the lock stage, never a Lane, MSP
 or pull request. Each MSP's check-author locks its tests on that MSP's branch,
 from its own clone at the feature base: one per `msp` label, or the unlabelled
 one split by acceptance owner. Each test must exit 0 with its uncommitted

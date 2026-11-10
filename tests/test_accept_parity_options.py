@@ -37,7 +37,7 @@ def steps_of(plan):
 
 
 def lane_shape(plan):
-    return [(lane.get("msp"), lane.get("steps"), lane.get("session")) for lane in plan.get("lanes") or []]
+    return [(lane.get("msp"), lane.get("steps")) for lane in plan.get("lanes") or []]
 
 
 def two_editors(first, second):
@@ -162,16 +162,16 @@ class SharedOverlap(OptionsCase):
             [S("a", [SHARED, "x.py"]), S("b", [SHARED, "x.py"])], "--shared-files", SHARED
         )
         self.assertEqual(steps_of(plan), [["a", "b"]], tail(completed))
-        self.assertEqual(lane_shape(plan), [(0, ["a"], [1, 2]), (0, ["b"], [2, 2])], tail(completed))
-        self.assertEqual(plan.get("lane_after"), {"1": [0]}, tail(completed))
+        self.assertEqual(lane_shape(plan), [(0, ["a", "b"])], tail(completed))
+        self.assertNotIn("lane_after", plan, tail(completed))
 
     def steps_of_one_msp_on_a_shared_file_share_a_lane(self):
         completed, plan = self.planned(
             [S("a", [SHARED, "a.py"], msp="m"), S("b", [SHARED, "b.py"], msp="m")], "--shared-files", SHARED
         )
         self.assertEqual(len(plan.get("msps") or []), 1, tail(completed))
-        self.assertEqual(lane_shape(plan), [(0, ["a"], [1, 2]), (0, ["b"], [2, 2])], tail(completed))
-        self.assertEqual(plan.get("lane_after"), {"1": [0]}, tail(completed))
+        self.assertEqual(lane_shape(plan), [(0, ["a", "b"])], tail(completed))
+        self.assertNotIn("lane_after", plan, tail(completed))
 
     def a_shared_overlap_is_no_scheduling_conflict(self):
         completed, plan = self.planned(
@@ -270,7 +270,7 @@ class IntegrationOrder(OptionsCase):
         self.exits(completed, 3)
         self.assertIn("tests/test_a.py", completed.stderr)
 
-    def the_lock_stage_makes_one_author_per_separate_msp(self):
+    def each_step_beside_a_shared_file_writes_its_own_test_in_its_own_msp(self):
         built = any_input.reply(
             any_input.item(
                 "a", [SHARED, "a.py"], "a works", tests=[{"file": "tests/test_a.py", "test": "A.works"}]
@@ -283,8 +283,12 @@ class IntegrationOrder(OptionsCase):
         self.exits(completed, 0)
         plan = self.plan(completed)
         self.assertEqual(len(plan.get("msps") or []), 2, tail(completed))
-        authors = plan.get("check_authors") or []
-        self.assertEqual(sorted(entry.get("msp") for entry in authors), [0, 1], tail(completed))
+        self.assertFalse(plan.get("check_authors"), tail(completed))
+        self.assertEqual(
+            sorted(item.get("files") for item in plan.get("items") or []),
+            [[SHARED, "a.py", "tests/test_a.py"], [SHARED, "b.py", "tests/test_b.py"]],
+            tail(completed),
+        )
 
 
 class SharedCandidates(OptionsCase):

@@ -259,7 +259,7 @@ class FinishesTheWork(unittest.TestCase):
             [entry["kind"] for entry in summary["findings"]], ["gate-inconclusive"]
         )
 
-    def an_acceptance_command_that_cannot_judge_never_holds_the_msp(self):
+    def an_acceptance_command_that_cannot_judge_gets_one_repair_and_never_holds_the_msp(self):
         scratch = self._scratch()
         completed, summary = scratch.built(
             [built_step()],
@@ -268,7 +268,9 @@ class FinishesTheWork(unittest.TestCase):
             acceptance="exit-2",
         )
         self._exit(completed, 0)
-        self.assertEqual(len(scratch.attempts("first")), 1)
+        tasks = scratch.attempts("first")
+        self.assertEqual(len(tasks), 2, fixtures.tail(completed))
+        self.assertIn("could not run tests/test_a.py::A.works", tasks[1])
         self.assertEqual(msp_of(summary, "first")["state"], "shipped")
         self.assertEqual(msp_of(summary, "first")["gate"]["outcome"], "inconclusive")
 
@@ -762,7 +764,7 @@ def load_tests(loader, standard, pattern):
             "a_lane_failing_twice_ships_nothing_for_its_msp_and_its_sibling_still_ships",
             "a_test_failing_against_the_work_is_repaired_once_and_ships",
             "a_test_still_failing_after_the_repair_holds_its_msp_and_names_the_test",
-            "an_acceptance_command_that_cannot_judge_never_holds_the_msp",
+            "an_acceptance_command_that_cannot_judge_gets_one_repair_and_never_holds_the_msp",
             "a_mutant_is_never_taken_from_a_test_file",
             "a_gitignored_path_in_a_write_set_never_fails_its_lane",
             "a_hook_sees_the_whole_msp_once_and_never_a_partial_lane",

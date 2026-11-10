@@ -42,7 +42,6 @@ class PinnedGroups(accept.Case):
         )
         lanes = plan.get("lanes") or []
         self.assertEqual(len(lanes), 4, tail(completed))
-        self.assertEqual([lane for lane in lanes if "session" in lane], [], json.dumps(lanes))
 
     def a_member_waiting_only_through_another_step_unpins_the_group(self):
         completed, plan = self.planned(
@@ -54,10 +53,7 @@ class PinnedGroups(accept.Case):
             ]
         )
         lanes = plan.get("lanes") or []
-        self.assertEqual(len(lanes), 4, json.dumps(lanes))
-        self.assertEqual(
-            sorted(lane.get("session") or [] for lane in lanes), [[1, 4], [2, 4], [3, 4], [4, 4]], json.dumps(lanes)
-        )
+        self.assertEqual([lane.get("steps") for lane in lanes], [["p", "c1", "c2", "c3"]], json.dumps(lanes))
 
 
 class LaneOrder(accept.Case):
@@ -66,9 +62,7 @@ class LaneOrder(accept.Case):
             [S("a", ["shared.py"]), S("b", ["shared.py", "x.py", "y.py", "z.py"])]
         )
         lanes = plan.get("lanes") or []
-        self.assertEqual(len(lanes), 2, json.dumps(lanes))
-        self.assertEqual((lanes[0].get("steps"), lanes[0].get("session")), (["b"], [1, 2]), json.dumps(lanes))
-        self.assertEqual((lanes[1].get("steps"), lanes[1].get("session")), (["a"], [2, 2]), json.dumps(lanes))
+        self.assertEqual([lane.get("steps") for lane in lanes], [["b", "a"]], json.dumps(lanes))
 
 
 class TokenEstimates(accept.Case):
@@ -213,7 +207,7 @@ class GraphInput(accept.Case):
         accept.put_json(
             os.path.join(scratch.stubs, "structure-reply.json"),
             {
-                "items": [{"name": "a", "files": ["a.py"], "spec_ref": ["1.1"], "acceptance": []}],
+                "items": [{"name": "a", "task": "Build a.", "files": ["a.py"], "spec_ref": ["1.1"], "acceptance": []}],
                 "assumptions": [],
                 "constraints": [],
             },

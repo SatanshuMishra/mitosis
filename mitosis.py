@@ -11,12 +11,11 @@ import tempfile
 from datetime import datetime
 
 import asks
-import briefs
 import core
 import decompose
 import handoff
 import isolation
-import lock_stage
+import own_tests
 import metrics
 import referee
 import pr_facts
@@ -39,6 +38,8 @@ EXIT_REFEREE = 9
 TIMEOUT_NOTICE = "mitosis: --timeout is deprecated and ignored; mitosis has no wall-clock limit"
 
 SUITE_NOTICE = "mitosis: --suite-command is deprecated and ignored; a surviving mutant is reported and holds nothing"
+
+BRIEF_NOTICE = "mitosis: --brief-command is deprecated and ignored; the split writes each Step's task, so no brief call runs"
 
 EXIT_HANDOFF = 15
 
@@ -128,16 +129,9 @@ REPORT_SECTIONS = (
     "Outcome",
 )
 
-NO_PLAN = (
-    "unavailable: the Steps are not briefed yet, so no plan exists; "
-    "--resume writes the briefs and builds the plan"
-)
-
-BRIEF_PLACEHOLDERS = ("prompt", "model", "step", "document", "session_id", "schema")
-
 DECOMPOSE_PLACEHOLDERS = ("prompt", "model", "document", "session_id", "schema")
 
-TEMPLATE_PLACEHOLDERS = {"brief": BRIEF_PLACEHOLDERS, "decompose": DECOMPOSE_PLACEHOLDERS}
+TEMPLATE_PLACEHOLDERS = {"decompose": DECOMPOSE_PLACEHOLDERS}
 
 PLACEHOLDER_HELP = {
     "dispatch": (
@@ -146,7 +140,6 @@ PLACEHOLDER_HELP = {
     ),
     "reask": " ".join("{%s}" % key for key in run.TEMPLATE_PLACEHOLDERS["reask"]),
     "decompose": " ".join("{%s}" % key for key in DECOMPOSE_PLACEHOLDERS),
-    "brief": " ".join("{%s}" % key for key in BRIEF_PLACEHOLDERS),
     "acceptance": "{file} {test} {worktree}",
     "gate-setup": "{worktree}",
     "pull-request": "{branch} {base} {title} {body} {worktree} {msp} {remote}",
@@ -206,9 +199,8 @@ FLAG_SPECS = {
     },
     "--spec": {
         "metavar": "PATH",
-        "help": "a document in any format; the structure stage turns it into unbriefed Steps, "
-        "which needs --decompose-command, and the brief stage writes each Step's task, "
-        "which needs --brief-command",
+        "help": "a document in any format; the structure stage turns it into Steps, each with "
+        "its task, which needs --decompose-command",
     },
     "--asks": {
         "metavar": "PATH",
@@ -241,7 +233,7 @@ FLAG_SPECS = {
     "--resume": {
         "action": "store_true",
         "help": "continue the run in --run-dir: with --spec, load the persisted structure and "
-        "brief every Step still unbriefed before planning; Lanes already ok are skipped, "
+        "plan it; Lanes already ok are skipped, "
         "a gate that blocked is re-run, and a passing gate is reused when it was recorded at "
         "the commit mitosis gates now, the MSP branch's commit after its pre-gate commit of the "
         "worktree, so a leftover edit that commit takes forces a new gate, and a worktree HEAD "
@@ -269,7 +261,7 @@ FLAG_SPECS = {
     },
     "--reask-command": {
         "metavar": "TEMPLATE",
-        "help": "asks a Worker, check-author, decompose or brief Worker whose reply fails its "
+        "help": "asks a Worker, check-author or decompose Worker whose reply fails its "
         "owned schema once more, in the same session; placeholders %s; required for a run "
         "that calls a model, whose command also needs {schema} and {session_id}; replies are "
         "read from structured_output" % PLACEHOLDER_HELP["reask"],
@@ -282,15 +274,12 @@ FLAG_SPECS = {
     },
     "--brief-command": {
         "metavar": "TEMPLATE",
-        "help": "one brief Worker per unbriefed Step; placeholders %s; the prompt also "
-        "arrives on stdin; required for the brief stage; needs {schema} and {session_id}, and "
-        "its reply meets %s as structured output"
-        % (PLACEHOLDER_HELP["brief"], briefs.REPLY_SCHEMA),
+        "help": "deprecated and ignored; the split writes each Step's task, so no brief call runs",
     },
     "--decisions": {
         "metavar": "PATH",
-        "help": "the settled-questions file, injected verbatim into every structure and "
-        "brief prompt (default: <document>%s when it exists)" % decompose.DECISIONS_SUFFIX,
+        "help": "the settled-questions file, injected verbatim into every structure prompt "
+        "(default: <document>%s when it exists)" % decompose.DECISIONS_SUFFIX,
     },
     "--structure-samples": {
         "metavar": "N",
@@ -307,7 +296,7 @@ FLAG_SPECS = {
     "--revise": {
         "action": "store_true",
         "help": "the structure in --run-dir is the base: the structure Worker returns a delta "
-        "against it and every kept Step keeps its brief",
+        "against it and every kept Step keeps its task",
     },
     "--acceptance-command": {
         "metavar": "TEMPLATE",
@@ -417,7 +406,7 @@ FLAG_SPECS = {
         "metavar": "N",
         "type": int,
         "default": DEFAULT_CONCURRENCY,
-        "help": "Workers running at once, for the asks stage, the brief stage and the build "
+        "help": "Workers running at once, for the asks stage and the build "
         "(default: %d)" % DEFAULT_CONCURRENCY,
     },
     "--context-hops": {
@@ -587,7 +576,7 @@ def build_parser():
         prog="mitosis",
         add_help=False,
         description="Split a document or an items file into MSPs, build each on its own "
-        "branch with every Step of a Lane its own Worker session, gate the work, hand each MSP's "
+        "branch with each Lane one Worker session, gate the work, hand each MSP's "
         "facts to pull-request render --fields, and push each branch with the title and body "
         "render printed, opening one pull request per MSP when --pr-command is given. "
         "mitosis never merges.",
@@ -776,7 +765,6 @@ TEMPLATE_FLAGS = {
     "dispatch": "--dispatch-command",
     "reask": "--reask-command",
     "decompose": "--decompose-command",
-    "brief": "--brief-command",
     "acceptance": "--acceptance-command",
     "gate-setup": "--gate-setup",
     "pull-request": "--pr-command",
@@ -819,7 +807,6 @@ def check_templates(args):
         ("dispatch", args.dispatch_command),
         ("reask", args.reask_command),
         ("decompose", args.decompose_command),
-        ("brief", args.brief_command),
         ("acceptance", args.acceptance_command),
         ("gate-setup", args.gate_setup),
         ("pull-request", args.pr_command),
@@ -842,17 +829,7 @@ def check_templates(args):
 def called_model_templates(args):
     from_document = not args.items
     decomposes = from_document and not args.resume and args.decompose_command is not None
-    briefing = (
-        from_document and args.brief_command is not None and (args.resume or not args.plan_only)
-    )
-    return tuple(
-        (flag, template)
-        for flag, template, calls in (
-            ("--decompose-command", args.decompose_command, decomposes),
-            ("--brief-command", args.brief_command, briefing),
-        )
-        if calls
-    )
+    return (("--decompose-command", args.decompose_command),) if decomposes else ()
 
 
 def missing_placeholders(template, needed):
@@ -948,7 +925,7 @@ def load_structure(run_dir, root, purpose):
             % (purpose, run_dir, STRUCTURE_FILE)
         )
     items = read_json(path, "the persisted structure")
-    checked = core.validate(items, root=root, required=core.STRUCTURE_ITEM_FIELDS)
+    checked = core.validate(items, root=root, required=core.REQUIRED_ITEM_FIELDS)
     if checked["errors"]:
         raise Refusal(
             "the persisted structure %s did not validate:\n" % path
@@ -1052,87 +1029,12 @@ def structure_document(args, root, run_dir, models, charter, graph, decisions, p
     return result["items"], record
 
 
-def refuse_unmapped_briefs(template, pending, models):
-    if "{model}" not in template:
-        return
-    missing = sorted({briefs.tier_for(step) for step in pending} - set(models or {}))
-    if missing:
-        raise Refusal(
-            "the brief command uses {model} but no model is mapped for tier %s; "
-            "map every tier with --tier-model or the brief would run on the agent's default"
-            % ", ".join(missing)
-        )
-
-
-def brief_lines(written):
-    reasked = written.get("reasked") or []
-    lines = (
-        "brief stage: %s written, %s reused"
-        % (_n(len(written["written"]), "brief"), _n(len(written["reused"]), "brief")),
-    )
-    if reasked:
-        lines = lines + (
-            "%s re-asked in the same session after a reply that failed %s: %s"
-            % (_n(len(reasked), "brief"), briefs.REPLY_SCHEMA, ", ".join(reasked)),
-        )
-    return lines + tuple(written["errors"])
-
-
-def refuse_unbriefable(args, pending):
-    if args.brief_command is None:
-        raise Refusal(
-            "the brief stage needs --brief-command for %s; pass --plan-only to stop at "
-            "the structure" % _n(len(pending), "unbriefed Step")
-        )
-
-
-def brief_structure(args, items, root, run_dir, models, charter, graph, decisions, document):
-    pending = briefs.pending(items)
-    if not pending:
-        _print(brief_lines({"written": [], "reused": [step["name"] for step in items], "errors": []}))
-        return items
-    refuse_unbriefable(args, pending)
-    refuse_unmapped_briefs(args.brief_command, pending, models)
-    log_dir = os.path.join(run_dir, BRIEFS_DIR)
-    os.makedirs(log_dir, exist_ok=True)
-    recorder = recorder_of(args)
-    began = run.now()
-    try:
-        written = briefs.write(
-            items,
-            args.brief_command,
-            root,
-            models=models,
-            concurrency=args.concurrency,
-            log_dir=log_dir,
-            document=document,
-            packs=core.context_packs(items, graph, args.context_hops, args.context_cap),
-            charter=charter,
-            decisions=decisions,
-            env=run.process_environ(recorder.env, root),
-            on_sessions=lambda sessions: recorder.stage_ended("brief", began, sessions),
-            reask=args.reask_command,
-        )
-    except (ValueError, OSError) as error:
-        raise Refusal("the brief stage could not run: %s" % error)
-    _print(brief_lines(written))
-    run.write_json(os.path.join(run_dir, STRUCTURE_FILE), written["items"])
-    unbriefed = briefs.pending(written["items"])
-    if unbriefed:
-        raise Refusal(
-            "%s still unbriefed after the brief stage: %s; the logs are in %s"
-            % (_n(len(unbriefed), "Step"), ", ".join(step["name"] for step in unbriefed), log_dir)
-        )
-    return written["items"]
-
-
-def staged(items, decomposed, run_dir, decisions, briefed, troubles=()):
+def staged(items, decomposed, run_dir, decisions, troubles=()):
     return {
         "items": items,
         "decomposed": decomposed,
         "run_dir": run_dir,
         "decisions": decisions,
-        "briefed": briefed,
         "troubles": tuple(troubles),
     }
 
@@ -1149,19 +1051,14 @@ def planning_shared_files(args):
     return tuple(loaded.get("shared_files") or ()) if isinstance(loaded, dict) else ()
 
 
-def with_lock_stage(args, items, repo, root, charter):
-    return lock_stage.check_authors(
-        items, base_holds(args, repo), core.charter_locks(charter, root)[0], planning_shared_files(args)
-    )
-
-
-def locked_items(args, items, repo, root, charter, run_dir):
+def owned_items(args, items, root, charter, run_dir):
     path = os.path.join(run_dir, ITEMS_FILE)
     if args.resume and os.path.isfile(path):
         return run.read_json(path)
-    locked = with_lock_stage(args, items, repo, root, charter)
-    run.write_json(path, locked)
-    return locked
+    owned = own_tests.owned(items, core.charter_locks(charter, root)[0])
+    run.write_json(path, owned)
+    emit_items(args.emit_items, owned)
+    return owned
 
 
 def load_notices(run_dir):
@@ -1226,9 +1123,8 @@ def asks_input(args, root, repo, models, charter, run_dir):
     else:
         refuse_held_run(run_dir)
         items, notices = planned_asks(args, root, models, run_dir)
-        emit_items(args.emit_items, items)
-    locked = locked_items(args, items, repo, root, charter, run_dir)
-    return staged(locked, load_decomposed(run_dir), run_dir, None, True, notices)
+    owned = owned_items(args, items, root, charter, run_dir)
+    return staged(owned, load_decomposed(run_dir), run_dir, None, notices)
 
 
 def input_run_dir(args, root):
@@ -1260,7 +1156,7 @@ def default_input_run_dir(args, root):
 def resolve_input(args, root, repo, models, charter, graph, run_dir):
     if args.items:
         items = read_items(os.path.abspath(args.items))
-        return staged(items, load_decomposed(run_dir), run_dir, None, True)
+        return staged(items, load_decomposed(run_dir), run_dir, None)
     if args.asks:
         return asks_input(args, root, repo, models, charter, run_dir)
     document = check_document(args, root)
@@ -1275,17 +1171,11 @@ def resolve_input(args, root, repo, models, charter, graph, run_dir):
     else:
         refuse_held_run(run_dir)
         prior = load_structure(run_dir, root, "nothing to revise") if args.revise else None
-        if not args.plan_only:
-            refuse_unbriefable(args, briefs.pending(prior or [{}]))
         items, decomposed = structure_document(
             args, root, run_dir, models, charter, graph, decisions, prior
         )
-        if args.plan_only:
-            return staged(items, decomposed, run_dir, decisions, False)
-    briefed = brief_structure(args, items, root, run_dir, models, charter, graph, decisions, document)
-    emit_items(args.emit_items, briefed)
-    locked = locked_items(args, briefed, repo, root, charter, run_dir)
-    return staged(locked, decomposed, run_dir, decisions, True)
+    owned = owned_items(args, items, root, charter, run_dir)
+    return staged(owned, decomposed, run_dir, decisions)
 
 
 def marker_list(text):
@@ -1679,7 +1569,7 @@ def assumption_lines(plan):
 def decision_lines(decisions, from_items, root):
     if from_items:
         return (
-            "unavailable: decisions reach the structure and brief prompts, and this run took an items file",
+            "unavailable: decisions reach the structure prompt, and this run took an items file",
         )
     if decisions is None:
         return ("none: no decisions file was supplied",)
@@ -1755,27 +1645,6 @@ def achieved_parallelism(records):
     return peak, len(spans)
 
 
-def session_runs(plan):
-    runs = ()
-    for index, lane in enumerate(plan.get("lanes") or []):
-        session = lane.get("session") or ()
-        if len(session) == 2 and session[0] == 1:
-            runs = runs + ((index, session[1]),)
-    return runs
-
-
-def session_lines(plan):
-    runs = session_runs(plan)
-    if not runs:
-        return ("every Lane holds one Step and runs as one Worker session",)
-    return tuple(
-        "Lanes %d to %d are the Steps of one Lane of MSP %s, each built in its own Worker session "
-        "in a row on its branch and landing its own commit"
-        % (start, start + count - 1, _label(plan, plan["lanes"][start]["msp"]))
-        for start, count in runs
-    )
-
-
 def lock_stage_lines(plan):
     return tuple(
         "lock stage: the %s Step %s writes and locks %s for MSP %s as the first commit of its "
@@ -1786,8 +1655,6 @@ def lock_stage_lines(plan):
 
 
 def split_lines(plan, state):
-    if plan is None:
-        return (NO_PLAN,)
     lanes = plan.get("lanes") or []
     msps = plan.get("msps") or []
     counts = plan.get("counts") or {}
@@ -1798,7 +1665,7 @@ def split_lines(plan, state):
         "%d of %s declare no acceptance property; %s do not exist yet"
         % (counts.get("no_acceptance", 0), _n(total, "Step"), _n(counts.get("missing_paths", 0), "write-set path")),
     )
-    lines = lines + session_lines(plan) + lock_stage_lines(plan)
+    lines = lines + lock_stage_lines(plan)
     lines = lines + tuple(
         "Lane %d (MSP %s, %s): %s, cost %s%s: %s"
         % (
@@ -1936,8 +1803,6 @@ def reconcile_lines(plan, state):
 
 
 def coupling_lines(plan, state):
-    if plan is None:
-        return (NO_PLAN,)
     pairs = plan.get("coupling_review") or []
     if not pairs:
         return ("none: no write-set-disjoint pair in different Lanes shares a coupling signal",)
@@ -1963,8 +1828,6 @@ COUPLING_LINE = {
 
 
 def stacking_lines(plan, state):
-    if plan is None:
-        return (NO_PLAN,)
     if state is None:
         producers = core.msp_producers(plan)
         many = tuple((msp, found) for msp, found in sorted(producers.items()) if len(found) > 1)
@@ -2138,17 +2001,6 @@ def exit_code(state, plan):
 
 
 def outcome_lines(plan, state, run_dir, code):
-    if plan is None:
-        return (
-            "run directory: %s" % (run_dir or "none"),
-            "exit %d: %s"
-            % (
-                code,
-                EXIT_MEANING[code]
-                if code != EXIT_SHIPPED
-                else "the structure was written and no brief was bought",
-            ),
-        )
     lines = ("run directory: %s" % (run_dir or "none"), "plan id: %s" % plan.get("plan_id"))
     if state is None:
         return lines + (
@@ -2190,11 +2042,6 @@ def outcome_lines(plan, state, run_dir, code):
     return lines + ("exit %d: %s" % (code, EXIT_MEANING.get(code, "not shipped")),)
 
 
-def outline(items):
-    first = items[0] if items and isinstance(items[0], dict) else {}
-    return {"items": items, "source": first.get("source")}
-
-
 def _lane_summary(plan, state, outputs_kept=True):
     records = (state or {}).get("lanes") or {}
     return [
@@ -2202,7 +2049,7 @@ def _lane_summary(plan, state, outputs_kept=True):
             "lane": index,
             "msp": _label(plan, lane["msp"]),
             "steps": list(lane.get("steps") or ()),
-            "session": list(lane["session"]) if lane.get("session") else None,
+            "session": None,
             "state": (records.get(str(index)) or {}).get("state"),
             "reason": _whole((records.get(str(index)) or {}).get("reason")),
             "notes": ((records.get(str(index)) or {}).get("returned") or {}).get("notes"),
@@ -2527,8 +2374,8 @@ def locked_referee(args, plan, repo, base):
         raise Refusal(str(error))
 
 
-def report(plan, state, decomposed, root, run_dir, code, from_items, decisions=None, items=None):
-    steps = plan if plan is not None else outline(items or [])
+def report(plan, state, decomposed, root, run_dir, code, from_items, decisions=None):
+    steps = plan
     sections = (
         coverage_lines(steps, decomposed, root),
         assumption_lines(steps),
@@ -2681,14 +2528,6 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     from_items = bool(args.items)
     notices = resolved["troubles"]
     shown = None if args.no_run_dir else run_dir
-    if not resolved["briefed"]:
-        _print(
-            report(
-                None, None, decomposed, root, shown, EXIT_SHIPPED, from_items,
-                decisions, items,
-            )
-        )
-        return _summarised({"items": items}, None, shown, EXIT_SHIPPED, troubles=notices)
     plan = planned(args, items, root, charter, graph)
     if args.plan_file is None:
         refuse_unwritten(plan, base_holds(args, repo))
@@ -2739,7 +2578,7 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
 
 
 def refuse_unwritten(plan, held):
-    lines = lock_stage.unwritten(plan, held)
+    lines = own_tests.unwritten(plan, held)
     if lines:
         raise Refusal("the plan names tests nothing writes:\n" + "\n".join("  " + line for line in lines))
 
@@ -2780,6 +2619,8 @@ def main(argv=None):
         _print((TIMEOUT_NOTICE,), sys.stderr)
     if args.suite_command is not None:
         _print((SUITE_NOTICE,), sys.stderr)
+    if args.brief_command is not None:
+        _print((BRIEF_NOTICE,), sys.stderr)
     malformed = next(
         (value for value in args.proven_head if PROVEN_HEAD.fullmatch(value) is None), None
     )

@@ -128,7 +128,7 @@ PUSH_FLAGS = (
 
 SPEC_DOCUMENT = "# Spec\n\n## 1. Alpha\n\nBuild alpha.\n\n## 2. Beta\n\nBuild beta too.\n"
 
-ALPHA = {"name": "alpha", "files": ["alpha.py"], "source": None, "acceptance": []}
+ALPHA = {"name": "alpha", "task": "Build alpha.", "files": ["alpha.py"], "source": None, "acceptance": []}
 
 STRUCTURE = {"items": [ALPHA], "assumptions": [], "constraints": []}
 
@@ -221,7 +221,7 @@ class Scratch:
             }
         ]
         self.items_path = put(os.path.join(self.tmp, "items.json"), json.dumps(self.items))
-        for role in ("dispatch", "reask", "decompose", "brief"):
+        for role in ("dispatch", "reask", "decompose"):
             put(os.path.join(self.stubs, role + ".py"), MODEL)
         put(os.path.join(self.stubs, "pr.py"), PULL_REQUEST)
         put(os.path.join(self.stubs, "accept.py"), ACCEPT)
@@ -324,23 +324,6 @@ class Scratch:
             *extra,
         ]
 
-    def brief_flags(self, *extra):
-        return [
-            "--spec",
-            "docs/spec.md",
-            "--resume",
-            "--plan-only",
-            "--run-dir",
-            self.run_dir,
-            "--brief-command",
-            self.stub("brief.py", "{step}", "{session_id}", "{schema}"),
-            "--reask-command",
-            self.reask_template(),
-            "--timeout",
-            "120",
-            *extra,
-        ]
-
     def mitosis(self, *flags):
         return subprocess.run(
             [sys.executable, MITOSIS, *flags],
@@ -437,7 +420,7 @@ class WorkerReplies(ScratchCase):
         self.assertEqual(completed.returncode, 13, tail(completed))
 
 
-class DecomposeAndBriefReplies(ScratchCase):
+class DecomposeReplies(ScratchCase):
     def _structure_names(self):
         return [step["name"] for step in read_json(self.scratch.structure_path())]
 
@@ -466,27 +449,6 @@ class DecomposeAndBriefReplies(ScratchCase):
         self.assertEqual(reasked[0][1], decomposed[0][1])
         self.assertEqual(completed.returncode, 0, tail(completed))
         self.assertEqual(self._structure_names(), ["alpha"])
-
-    def a_brief_naming_another_step_is_reasked(self):
-        self.scratch.job("decompose", reply={"reply": STRUCTURE})
-        structured = self.scratch.mitosis(*self.scratch.decompose_flags())
-        self.assertEqual(structured.returncode, 0, tail(structured))
-        self.assertEqual(self._structure_names(), ["alpha"])
-        self.assertFalse(os.path.exists(self.scratch.log("reask")))
-        self.scratch.job("brief", reply={"name": "beta", "task": "Build it."})
-        self.scratch.job("reask", reply={"name": "alpha", "task": "Build alpha."})
-        completed = self.scratch.mitosis(*self.scratch.brief_flags())
-        briefed = self.scratch.calls("brief")
-        self.assertEqual(len(briefed), 1, tail(completed))
-        self.assertEqual(briefed[0][0], "alpha")
-        schema = json.loads(briefed[0][2])
-        self.assertEqual(schema["properties"]["name"]["const"], "alpha")
-        reasked = self.scratch.calls("reask")
-        self.assertEqual(len(reasked), 1, tail(completed))
-        self.assertIn("alpha", reasked[0][0])
-        items = read_json(os.path.join(self.scratch.run_dir, "items.json"))
-        tasks = {item["name"]: item.get("task") for item in items}
-        self.assertEqual(tasks, {"alpha": "Build alpha."})
 
     def a_second_invalid_decompose_reply_refuses_with_the_errors(self):
         self.scratch.job("decompose", reply={"reply": {"items": []}})
@@ -599,7 +561,7 @@ class Loader(unittest.TestLoader):
 
 def load_tests(loader, standard, pattern):
     suite = unittest.TestSuite()
-    for case in (WorkerReplies, DecomposeAndBriefReplies, TemplateContract, ShipUrl):
+    for case in (WorkerReplies, DecomposeReplies, TemplateContract, ShipUrl):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

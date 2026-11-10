@@ -9,7 +9,7 @@ import uuid
 
 import referee
 
-__version__ = "0.17.1"
+__version__ = "0.18.0"
 
 PLAN_KEYS = (
     "plan_id",
@@ -63,7 +63,6 @@ REQUIRED_ITEM_FIELDS = (
     "acceptance",
 )
 
-STRUCTURE_ITEM_FIELDS = tuple(field for field in REQUIRED_ITEM_FIELDS if field != "task")
 
 ACCEPTANCE_KEYS = ("file", "test")
 
@@ -1224,42 +1223,6 @@ def lane_cost(items, lane):
     return sum(item_cost(items[i]) for i in lane)
 
 
-def session_batches(lane):
-    return tuple((index,) for index in lane)
-
-
-def _session_spans(groups):
-    spans = ()
-    start = 0
-    for group in groups:
-        spans = spans + tuple((start, start + len(group) - 1) for _ in group)
-        start = start + len(group)
-    return spans
-
-
-def chained_after(edges, groups):
-    spans = _session_spans(groups)
-    chained = {
-        int(consumer): tuple(
-            sorted(
-                {
-                    int(producer) if spans[int(producer)] == spans[int(consumer)]
-                    else spans[int(producer)][1]
-                    for producer in producers
-                }
-            )
-        )
-        for consumer, producers in edges.items()
-    }
-    for session, (first, _) in enumerate(spans):
-        if session > first:
-            chained = {
-                **chained,
-                session: tuple(sorted(set(chained.get(session, ())) | {session - 1})),
-            }
-    return dict(sorted(chained.items()))
-
-
 def build_file_coupling(nodes_by_id, links):
     adj = collections.defaultdict(set)
     for ln in links:
@@ -1419,14 +1382,16 @@ TEST_SCOPE_LINE = (
 )
 
 
+REFEREE_FILES = (
+    "test configuration, snapshot, baseline, allowlist or skip list: mitosis reverts such a write "
+    "and holds the MSP back."
+)
+
+
 def referee_line(locked):
-    named = (
-        "The locked checks %s are read-only. " % ", ".join(locked) if locked else ""
-    )
-    return (
-        "%sNever write them or any test configuration, snapshot, baseline, allowlist or skip "
-        "list: mitosis reverts such a write and holds the MSP back." % named
-    )
+    if locked:
+        return "The locked checks %s are read-only. Never write them or any %s" % (", ".join(locked), REFEREE_FILES)
+    return "Never write any %s" % REFEREE_FILES
 
 
 PROBE_LINE = (
@@ -1463,22 +1428,6 @@ def brief_text(brief):
             "Document: %s (open it from your worktree; it carries what no Step owns)"
             % brief["document"]
         )
-    session = brief.get("session")
-    if session:
-        header.append(
-            "Session %d of %d: each Step of this Lane is built in its own Worker session, "
-            "in a row on one branch, and lands as its own commit"
-            % (session["index"], session["count"])
-        )
-        if session.get("built"):
-            header.append(
-                "Built and committed on this branch by earlier sessions, read what you build "
-                "on: %s" % ", ".join(session["built"])
-            )
-        if session.get("later"):
-            header.append(
-                "Left for later sessions, do not start them: %s" % ", ".join(session["later"])
-            )
     body = [_task_line(brief["steps"]), "", brief["spec"], "", EDIT_RULE]
     footer = [CLONE_LINE, TEST_SCOPE_LINE] + (
         [probe_line(brief["probe_files"])] if brief.get("probe_files") is not None else []
@@ -1499,16 +1448,11 @@ def _brief(
     packs,
     charter,
     source,
-    earlier=(),
-    session=None,
     locked=(),
 ):
-    write_set = tuple(
-        dict.fromkeys(path for i in tuple(lane) + tuple(earlier) for path in _files(items[i]))
-    )
+    write_set = tuple(dict.fromkeys(path for i in lane for path in _files(items[i])))
     read_set, read_overflow = _lane_read_set(items, lane, packs, write_set)
-    edit = write_set if tuple(earlier) else None
-    leaves = [_step_brief(items[i], packs.get(items[i]["name"], {}), edit) for i in lane]
+    leaves = [_step_brief(items[i], packs.get(items[i]["name"], {})) for i in lane]
     partial = {
         "lane": lane_index,
         "msp": msp_index,
@@ -1522,7 +1466,6 @@ def _brief(
         "document": source.get("path") if isinstance(source, dict) else None,
         "return_contract": RETURN_CONTRACT,
         "locked": list(locked),
-        **({"session": session} if session else {}),
     }
     return {**partial, "text": brief_text(partial)}
 
@@ -1711,36 +1654,6 @@ def _present(value):
     return True
 
 
-def _session_places(groups):
-    return tuple(
-        {
-            "index": position,
-            "count": len(group),
-            "earlier": tuple(i for batch in group[: position - 1] for i in batch),
-            "later": tuple(i for batch in group[position:] for i in batch),
-        }
-        for group in groups
-        for position in range(1, len(group) + 1)
-    )
-
-
-def _session(items, place):
-    if place["count"] < 2:
-        return None
-    return {
-        "index": place["index"],
-        "count": place["count"],
-        "built": [items[i]["name"] for i in place["earlier"]],
-        "later": [items[i]["name"] for i in place["later"]],
-    }
-
-
-def _session_review(review, items, lanes):
-    lane_of = _owners(lanes, len(items))
-    by_name = _by_name(items)
-    return [{**pair, "lanes": [lane_of[by_name[name]] for name in pair["steps"]]} for pair in review]
-
-
 def _charter_text(charter, root):
     if not isinstance(charter, str) or not charter:
         return ""
@@ -1834,7 +1747,7 @@ def plan(
     shared = tuple(shared_files or ())
     items = [with_task(item) for item in items] if isinstance(items, list) else items
     counts, authors, locked, items, msps, placed = locked_steps(items, charter, root, shared)
-    whole = lane_items(items, shared)
+    lanes = lane_items(items, shared)
     tiered = {item["name"]: _tiered(item, risk_markers, history) for item in items}
     tiers = {name: tier for name, (tier, _) in tiered.items()}
     tier_notes = {name: note for name, (_, note) in tiered.items() if note}
@@ -1842,18 +1755,12 @@ def plan(
     labels = tuple(_msp_label(items, msp) for msp in msps)
     source = items[0].get("source") if items else None
     steps, cost, waves = build_waves(items, shared)
-    groups = tuple(session_batches(lane) for lane in whole)
-    lanes = tuple(batch for group in groups for batch in group)
-    review = _session_review(
-        coupling_review(items, whole, graph, risk_markers, history, shared), items, lanes
+    review = coupling_review(items, lanes, graph, risk_markers, history, shared)
+    lane_tiers = tuple(
+        "top" if any(tiers[items[i]["name"]] == "top" for i in lane) else "cheap" for lane in lanes
     )
-    places = _session_places(groups)
-    group_tiers = tuple(
-        "top" if any(tiers[items[i]["name"]] == "top" for i in lane) else "cheap" for lane in whole
-    )
-    lane_tiers = tuple(group_tiers[g] for g, group in enumerate(groups) for _ in group)
     owners = lane_msps(items, lanes, shared)
-    edges = chained_after(lane_after(items, lanes), groups)
+    edges = lane_after(items, lanes)
     msp_entries = [
         {
             "label": labels[index],
@@ -1868,11 +1775,6 @@ def plan(
             "steps": [items[i]["name"] for i in lane],
             "tier": lane_tiers[index],
             "cost": lane_cost(items, lane),
-            **(
-                {"session": [places[index]["index"], places[index]["count"]]}
-                if places[index]["count"] > 1
-                else {}
-            ),
         }
         for index, lane in enumerate(lanes)
     ]
@@ -1910,8 +1812,6 @@ def plan(
                 packs,
                 charter,
                 source,
-                places[index]["earlier"],
-                _session(items, places[index]),
                 locked,
             )
             for index, lane in enumerate(lanes)

@@ -17,7 +17,6 @@ CONTRACT_BYTES = 3202
 RECON_LEAD = "You are doing RECON for a parallel build planner"
 FIND_FILES = "HOW TO FIND THE FILES"
 NO_GRAPH = "No graphify graph is available"
-UNWRITTEN = "the plan names tests nothing writes"
 
 RECON = r'''
 import json
@@ -89,20 +88,6 @@ with open(os.path.join(here, "structure-reply.json"), encoding="utf-8") as handl
 print(json.dumps({"type": "result", "session_id": sys.argv[1], "result": "done", "structured_output": {"reply": reply}}))
 '''
 
-BRIEF = r'''
-import json
-import os
-import sys
-
-here = os.path.dirname(os.path.abspath(__file__))
-sys.stdin.read()
-with open(os.path.join(here, "briefs.jsonl"), "a", encoding="utf-8") as handle:
-    handle.write(json.dumps({"argv": sys.argv[1:]}) + "\n")
-with open(os.path.join(here, "brief-reply.json"), encoding="utf-8") as handle:
-    reply = json.load(handle)
-print(json.dumps({"type": "result", "session_id": sys.argv[-2], "result": "done", "structured_output": reply}))
-'''
-
 FAIL = r'''
 import sys
 
@@ -167,7 +152,6 @@ class AsksCase(accept.Case):
         accept.put(os.path.join(scratch.stubs, "recon.py"), RECON)
         accept.put(os.path.join(scratch.stubs, "reask_recon.py"), REASK_RECON)
         accept.put(os.path.join(scratch.stubs, "structure.py"), STRUCTURE)
-        accept.put(os.path.join(scratch.stubs, "brief.py"), BRIEF)
         accept.put(os.path.join(scratch.stubs, "fail.py"), FAIL)
         return scratch
 
@@ -406,23 +390,14 @@ class AsksObservable(AsksCase):
     def the_observable_is_kept_word_for_word(self):
         observable = "pipeline affected prints one JSON line"
         built = item("affected", ["a.py"], observable, tests=[{"file": "tests/test_a.py", "test": "A.prints_json"}])
-        accept.put_json(os.path.join(self.scratch.stubs, "brief-reply.json"), {"name": "affected", "task": "briefed"})
-        completed = self._asks_run(
-            "report the affected tests\n",
-            {"report the affected tests": reply(built)},
-            "--brief-command",
-            self.scratch.stub("brief.py", "{step}", "{session_id}", "{schema}"),
-        )
+        completed = self._asks_run("report the affected tests\n", {"report the affected tests": reply(built)})
         self.exits(completed, 0)
         steps = self._items(completed)
         builds = named(steps)
-        authors = named(steps, "check-author")
         self.assertEqual(len(builds), 1, tail(completed))
-        self.assertEqual([author.get("files") for author in authors], [["tests/test_a.py"]], tail(completed))
         self.assertEqual(builds[0].get("observable"), observable)
         self.assertEqual(builds[0].get("acceptance"), [{"file": "tests/test_a.py", "test": "A.prints_json"}])
         self.assertEqual(builds[0].get("task"), built["task"])
-        self.assertEqual(lines_of(os.path.join(self.scratch.stubs, "briefs.jsonl")), [])
 
     def the_observable_reaches_the_building_workers_brief(self):
         built = item(
@@ -474,123 +449,6 @@ class BriefObservable(unittest.TestCase):
         )
 
 
-class LockStage(AsksCase):
-    def _reader_run(self, files):
-        built = item(
-            "reader", files, "reader prints the count", tests=[{"file": "tests/test_reader.py", "test": "R.reads"}]
-        )
-        return self._asks_run("add a reader\n", {"add a reader": reply(built)})
-
-    def an_unwritten_named_test_gets_a_check_author(self):
-        completed = self._reader_run(["reader.py"])
-        self.exits(completed, 0)
-        authors = self.plan(completed).get("check_authors") or []
-        self.assertEqual(len(authors), 1, tail(completed))
-        self.assertEqual(authors[0].get("slice"), ["tests/test_reader.py"], tail(completed))
-        self.assertIn("reader prints the count", (authors[0].get("brief") or {}).get("text") or "")
-        steps = self._items(completed)
-        written = named(steps, "check-author")
-        self.assertEqual([author.get("files") for author in written], [["tests/test_reader.py"]], tail(completed))
-        reader = by_name(steps, "reader")
-        self.assertIsInstance(reader, dict, tail(completed))
-        self.assertIn(written[0].get("name"), reader.get("after") or [], tail(completed))
-
-    def a_step_that_writes_its_own_test_needs_no_check_author(self):
-        completed = self._reader_run(["reader.py", "tests/test_reader.py"])
-        self.exits(completed, 0)
-        self.assertFalse(self.plan(completed).get("check_authors"), tail(completed))
-        self.assertEqual(named(self._items(completed), "check-author"), [], tail(completed))
-
-    def a_named_test_the_base_holds_gets_no_check_author(self):
-        accept.put(os.path.join(self.scratch.repo, "tests", "test_reader.py"), "import unittest\n")
-        self.scratch.checked("add", "tests/test_reader.py")
-        self.scratch.checked("commit", "-q", "-m", "reader test")
-        completed = self._reader_run(["reader.py"])
-        self.exits(completed, 0)
-        self.assertFalse(self.plan(completed).get("check_authors"), tail(completed))
-        steps = self._items(completed)
-        self.assertEqual(named(steps, "check-author"), [], tail(completed))
-        reader = by_name(steps, "reader")
-        self.assertIsInstance(reader, dict, tail(completed))
-        self.assertEqual(reader.get("acceptance"), [{"file": "tests/test_reader.py", "test": "R.reads"}])
-
-    def two_msps_get_two_check_authors(self):
-        import lock_stage
-
-        a = {
-            "name": "a",
-            "task": "t",
-            "files": ["a.py"],
-            "source": None,
-            "observable": "a works",
-            "acceptance": [{"file": "tests/test_a.py", "test": "A.works"}],
-        }
-        b = {
-            "name": "b",
-            "task": "t",
-            "files": ["b.py"],
-            "source": None,
-            "observable": "b works",
-            "acceptance": [{"file": "tests/test_b.py", "test": "B.works"}],
-        }
-        result = list(lock_stage.check_authors([a, b]))
-        authors = named(result, "check-author")
-        self.assertEqual(sorted(author.get("files") for author in authors), [["tests/test_a.py"], ["tests/test_b.py"]])
-        first = [author for author in authors if author.get("files") == ["tests/test_a.py"]][0]
-        second = [author for author in authors if author.get("files") == ["tests/test_b.py"]][0]
-        self.assertIn(first.get("name"), (by_name(result, "a") or {}).get("after") or [])
-        self.assertIn(second.get("name"), (by_name(result, "b") or {}).get("after") or [])
-
-    def a_spec_run_gets_the_lock_stage(self):
-        scratch = self.scratch
-        scratch.checked("checkout", "-q", "feature")
-        accept.put(os.path.join(scratch.repo, "spec.md"), accept.SPEC_DOCUMENT)
-        scratch.checked("add", "spec.md")
-        scratch.checked("commit", "-q", "-m", "spec")
-        accept.put_json(
-            os.path.join(scratch.stubs, "structure-reply.json"),
-            {
-                "items": [
-                    {
-                        "name": "reader",
-                        "files": ["reader.py"],
-                        "spec_ref": ["1.1"],
-                        "acceptance": [{"file": "tests/test_reader.py", "test": "R.reads"}],
-                    }
-                ],
-                "assumptions": [],
-                "constraints": [],
-            },
-        )
-        accept.put_json(os.path.join(scratch.stubs, "brief-reply.json"), {"name": "reader", "task": "Read it."})
-        completed = scratch.mitosis(
-            "--spec",
-            "spec.md",
-            "--run-dir",
-            scratch.run_dir,
-            "--feature-branch",
-            "feature",
-            "--no-push",
-            "--decompose-command",
-            scratch.stub("structure.py", "{session_id}", "{schema}"),
-            "--brief-command",
-            scratch.stub("brief.py", "{step}", "{session_id}", "{schema}"),
-            "--reask-command",
-            scratch.stub("fail.py", "{prompt}", "{session_id}", "{schema}"),
-            "--dispatch-command",
-            scratch.stub("fail.py", "{task}", "{session_id}", "{schema}"),
-            "--acceptance-command",
-            scratch.stub("fail.py", "{file}", "{test}"),
-        )
-        steps = self._items(completed)
-        written = named(steps, "check-author")
-        self.assertEqual([author.get("files") for author in written], [["tests/test_reader.py"]], tail(completed))
-        reader = by_name(steps, "reader")
-        self.assertIsInstance(reader, dict, tail(completed))
-        self.assertIn(written[0].get("name"), reader.get("after") or [], tail(completed))
-        self.assertNotIn(UNWRITTEN, completed.stderr)
-
-
 class UnwrittenTests(AsksCase):
     def an_items_file_naming_an_unwritten_test_is_refused(self):
         completed = self.scratch.plan_only(
@@ -609,7 +467,7 @@ class SpecPrompt(AsksCase):
         accept.put_json(
             os.path.join(scratch.stubs, "structure-reply.json"),
             {
-                "items": [{"name": "a", "files": ["a.py"], "spec_ref": ["1.1"], "acceptance": []}],
+                "items": [{"name": "a", "task": "Build a.", "files": ["a.py"], "spec_ref": ["1.1"], "acceptance": []}],
                 "assumptions": [],
                 "constraints": [],
             },
@@ -787,7 +645,6 @@ def load_tests(loader, standard, pattern):
         AsksObservable,
         ItemsObservable,
         BriefObservable,
-        LockStage,
         UnwrittenTests,
         SpecPrompt,
         ItemsSchema,

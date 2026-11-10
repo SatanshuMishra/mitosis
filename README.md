@@ -17,11 +17,15 @@ mitosis takes exactly one of three inputs, and needs nothing else to run:
 
 - `--items`, a JSON array of Steps, handed to it directly.
 - `--spec`, a document in any format, which mitosis decomposes into that same
-  Steps array before scheduling.
+  Steps array, each Step with its task, in one structure call before
+  scheduling.
 - `--asks`, an asks file, one ask per line, each planned by its own call
   through `--decompose-command`.
 
 All three converge on the same items format before anything downstream runs.
+On `--spec` and `--asks` each Step writes its own acceptance tests: mitosis adds
+every test file a Step's acceptance names to that Step's files, unless the
+charter locks it, so a plan mitosis makes has no check-author Step.
 
 The file `--items` names is read through mitosis's own items schema,
 `schemas/mitosis-items.schema.json`, which accepts every file h12 accepts and
@@ -87,11 +91,11 @@ claude plugin marketplace add SatanshuMishra/mitosis
 claude plugin install mitosis@mitosis
 ```
 
-The plugin carries the skill and the nineteen modules it runs — `core.py`,
-`shape.py`, `decompose.py`, `briefs.py`, `run.py`, `isolation.py`, `pr_facts.py`,
+The plugin carries the skill and the eighteen modules it runs — `core.py`,
+`shape.py`, `decompose.py`, `run.py`, `isolation.py`, `pr_facts.py`,
 `mitosis.py`, `metrics.py`, `spend.py`, `metrics_writer.py`, `referee.py`,
 `mutants.py`, `outcomes.py`, `handoff.py`, `recon_text.py`, `step_names.py`,
-`asks.py`, `lock_stage.py` — the two data files they read,
+`asks.py`, `own_tests.py` — the two data files they read,
 `prices.json` and `catalogue.json`, the `contracts/` folder beside the
 modules, which holds byte-identical copies of the program's
 `contracts/validator.py` and of every owned schema mitosis writes or reads,
@@ -159,12 +163,13 @@ render on each MSP's facts before any Worker is dispatched, so a missing
 pull-request command, one older than 0.3.0 or a refusal stops the run before
 a build is paid for.
 
-Every Step of a Lane is its own Worker session, run in Step order on its
-MSP's branch, and lands its own commit with the subject
-`<type>(<scope>): <step>`, from `--pr-type` and `--pr-scope`, or `chore`
-with no scope when the run names none, and its task's first sentence as the
-body. The branch's history is one commit per Step, and each Change entry
-maps to one of them.
+Every Lane is one Worker session, which builds the Lane's Steps in Step order
+on its MSP's branch, and lands one commit with the subject
+`<type>(<scope>): <steps>`, from `--pr-type` and `--pr-scope`, or `chore`
+with no scope when the run names none, its Steps' names joined by commas,
+and each Step's task's first sentence as a line of the body. Steps share a
+Lane exactly when they share a file, so the branch's history is one commit
+per Lane.
 
 Leave out `--pr-command` and mitosis pushes each branch, opens nothing, ends each such MSP `pushed`, and records
 the title and body in the run's state and in its JSON summary, so the caller
@@ -199,13 +204,14 @@ property:
 | `--worker-sandbox` | runs every Worker under sandbox-exec, refusing file writes outside its clone, a private temp folder, its session transcript folder, /dev/null, /dev/tty, /dev/fd and each `--worker-write` path; it also runs the gate's setup, acceptance, mutant and suite runs and the lock stage's checks under sandbox-exec, refusing writes outside their clean checkout, a private temp folder and each `--worker-write` path, so a `--gate-setup` that needs another writable path names it with `--worker-write`; a host without sandbox-exec refuses the run with exit 3 before any Worker starts |
 | `--worker-write PATH` | one more path a sandboxed Worker, gate run or lock-stage check may write under; repeatable; a path that is, holds or lies inside the run directory, the repository or its git directory refuses the run with exit 3 |
 | `--suite-command TEMPLATE` | deprecated and ignored; a surviving mutant is reported and holds nothing |
+| `--brief-command TEMPLATE` | deprecated and ignored; the split writes each Step's task, so no brief call runs |
 | `--gate-classes PATH` | a JSON list of `{test, class, reason}` objects classing a property `not-applicable`, covered-elsewhere or `removed`, judged without a run and kept out of the plan id |
 
 ## Model replies and owned hand-offs
 
 Every model call is a command template, and each reply has an owned schema
-in `contracts/`. `--dispatch-command`, `--decompose-command` and
-`--brief-command` must each carry `{schema}`, the call schema the reply must
+in `contracts/`. `--dispatch-command` and `--decompose-command` must each
+carry `{schema}`, the call schema the reply must
 meet as structured output, as JSON text, and `{session_id}`, the session a
 re-ask resumes; a template missing either is refused with exit 3 before
 anything is built. Any run that calls a model also needs `--reask-command`,
@@ -216,7 +222,7 @@ mitosis reads each reply only from the structured_output field of the JSON
 object the command prints, never from prose. A reply that is missing or fails
 its owned schema is asked again once, through `--reask-command`, in the same
 session, with the schema errors as `{prompt}`. A reply that still fails ends
-that Worker's Lane, or that structure or brief call, as failed, naming the
+that Worker's Lane, or that structure call, as failed, naming the
 errors; it is never defaulted, skipped, coerced or cut short. With Claude
 Code, the two templates are:
 
@@ -225,14 +231,14 @@ claude -p {task} --model {model} --session-id {session_id} --output-format json 
 claude -p {prompt} --resume {session_id} --model {model} --output-format json --json-schema {schema} --permission-mode bypassPermissions
 ```
 
-The structure and brief templates take `{prompt}` in place of `{task}`, or
-read the prompt from stdin.
+The structure template takes `{prompt}` in place of `{task}`, or reads the
+prompt from stdin.
 
 Every hand-off mitosis writes is checked against its owned schema in
 `contracts/` immediately before it is written: h8 for the result line, h9 for
 the run state, k2 for the lock record, h15 for each pull request's facts file
 and k6 for each `--trajectory` outcome entry. Render's reply is read through
-h16, and Worker, structure and brief replies meet h10, h10b and h10c. A run
+h16, and Worker and structure replies meet h10 and h10b. A run
 state, result line or lock record that fails stops the run with exit 15, its
 schema errors named and nothing written for it. A facts file that fails is a
 render refusal, so its MSP ends `ship-failed` with the errors as its reason,
@@ -312,7 +318,11 @@ land and never reach the gate's clean checkout. Each Lane record and the lock
 record list `seeded`, seed_skipped and seed_seconds. With no
 `.worktreeinclude`, nothing changes.
 
-## The check-author lock stage
+## Check-author Steps an items file declares
+
+mitosis never writes a check-author Step itself, and a structure reply whose
+Step carries a `role` is asked again in the same session. An `--items` file
+may still declare one, and then it runs as the lock stage below.
 
 A Step with `"role": "check-author"` writes the locked acceptance checks and
 builds nothing. It never becomes a Lane, an MSP or a pull request, and its
@@ -410,7 +420,10 @@ implementation reverted, and a property that exits 1 with the work present is
 the one verdict that holds its MSP. mitosis first gives the Lane that owns the
 failing Step one repair, with the test's name and output, and judges again. A
 test still failing after that ends the MSP `gate-failed`, with exit 21: its work
-is committed on its branch and never pushed.
+is committed on its branch and never pushed. A property the acceptance command
+cannot run with the work present, exiting with neither 0 nor 1, gets the same
+one repair, told that the command is given the test file and the test's name
+separately; when it still cannot run, its MSP ships with it `inconclusive`.
 
 Every other verdict ships and is named in the pull request's Testing table.
 `pass` is a property that failed without the work, `inert` one that passed
@@ -571,9 +584,9 @@ only, never a task, a brief, a Worker's output or file contents, and a
 metrics write that fails prints one line on stderr without changing the exit
 code or the last JSON line.
 
-mitosis gives every Worker dispatch, structure call and brief call a fresh
-session id, offered as the `{session_id}` placeholder on the dispatch,
-decompose and brief templates, each of which must carry it. The model
+mitosis gives every Worker dispatch and structure call a fresh session id,
+offered as the `{session_id}` placeholder on the dispatch and decompose
+templates, each of which must carry it. The model
 command names that call's transcript by it, and mitosis prices the call from
 that transcript when the summary is written:
 
