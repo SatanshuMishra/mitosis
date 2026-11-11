@@ -46,6 +46,11 @@ benchmark changes and against every verdict saved from past runs.
   run makes under any other name, is deleted before the next run, and a
   referee path in it is still fatal. What a test writes into the kept
   folder reaches the gate's later runs; `docs/adr/0029` holds the reasons.
+- The gate adds no defence against an acceptance run that forges or
+  prevents its own verdict. Work that ends the run with status 0, and a
+  test that leaves a file the gate cannot delete, ship on 0.19.1 and on
+  0.20.0 alike, and no past run recorded a gate error; `docs/adr/0030`
+  holds the measurements.
 
 ## 0.19.1 - 2026-11-10
 
