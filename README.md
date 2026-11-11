@@ -327,10 +327,12 @@ a file the check-author writes writes that file with its work, the
 check-author's `after` edges go, and no lock stage runs. A file the
 check-author writes that no Step's acceptance names, such as a helper its
 tests import, goes to every Step that takes one of that check-author's test
-files, with a notice, unless a Step already writes it; Steps that then write
-the same file build in one MSP, as any Steps that share a file do. It is
-dropped with a notice only when no Step takes one of that check-author's
-test files. Only a saved plan given by
+files; Steps that then write the same file build in one MSP, as any Steps
+that share a file do. Such a file stays with a Step that already writes it.
+It is dropped when no Step takes one of that check-author's test files, when
+the charter locks it or it matches a referee marker, which no Step may
+write, and when sharing it would leave Lanes waiting on each other. Each
+case prints a notice. Only a saved plan given by
 `--plan-file` that was planned with check-authors keeps them, and they run as
 the lock stage below. A plan made from folded items records the check-author
 Steps it folded under `folded_check_authors`, and a saved plan has its items
