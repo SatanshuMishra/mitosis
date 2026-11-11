@@ -483,6 +483,32 @@ class CleanGate(unittest.TestCase):
         for entry in entries:
             self.assertNotIn("leftover.txt", entry["listing"])
 
+    def a_dependency_folder_an_acceptance_run_installs_stays_for_the_next_run(self):
+        installed = "node_modules/dep/src/__tests__/__snapshots__/dep.ts.snap"
+        self._scratch(ignored=("node_modules/",))
+        self._accepting(writes={installed: "installed\n"})
+        self._worker([["write", "calc.py", CALC]])
+        completed = self._build(acceptance=TWO_RUNS)
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
+        self.assertEqual(self._msp(completed)["state"], "committed")
+        self.assertEqual(self._recorded()["gate"]["referee"], [])
+        entries = self._accept_log()
+        self.assertEqual(len(entries), 2)
+        self.assertNotIn(installed, entries[0]["listing"])
+        self.assertIn(installed, entries[1]["listing"])
+
+    def a_referee_folder_an_acceptance_run_dresses_as_a_dependency_folder_is_still_fatal(self):
+        planted = {"__snapshots__/pyvenv.cfg": "home = /usr\n", "__snapshots__/calc.snap": "planted\n"}
+        self._scratch()
+        self._accepting(writes=planted)
+        self._worker([["write", "calc.py", CALC]])
+        completed = self._build(acceptance=TWO_RUNS)
+        self.assertEqual(completed.returncode, 9, "mitosis exit code" + lock_fixtures.tail(completed))
+        self.assertEqual(self._msp(completed)["state"], "referee-reverted")
+        self.assertEqual(self._recorded()["gate"]["referee"], sorted(planted))
+        for entry in self._accept_log():
+            self.assertNotIn("__snapshots__/calc.snap", entry["listing"])
+
     def a_gate_setup_slower_than_the_ignored_timeout_runs_to_its_end(self):
         self._scratch()
         self._worker([["write", "calc.py", CALC]])
@@ -589,6 +615,8 @@ def load_tests(loader, standard, pattern):
                 "a_failing_gate_setup_is_recorded_and_never_holds_the_msp",
                 "a_locked_path_a_gate_run_writes_is_fatal",
                 "a_file_one_gate_run_leaves_never_reaches_the_next_run",
+                "a_dependency_folder_an_acceptance_run_installs_stays_for_the_next_run",
+                "a_referee_folder_an_acceptance_run_dresses_as_a_dependency_folder_is_still_fatal",
                 "a_gate_setup_slower_than_the_ignored_timeout_runs_to_its_end",
                 "a_conftest_committed_inside_a_base_submodule_fails_the_lane",
                 "a_committed_referee_write_never_lands_when_the_landing_commit_fails",

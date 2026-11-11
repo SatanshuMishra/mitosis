@@ -2304,7 +2304,13 @@ def _gate_runs(
         return _gate_result(unrun, implementation, commit), setup_written
 
     def reset():
-        return reset_gate_folder(tree, folder, with_work_tree, kept, locked)
+        return reset_gate_folder(
+            tree,
+            folder,
+            with_work_tree,
+            (*kept, *_installed_by_a_run(folder, top, locked)),
+            locked,
+        )
 
     def accepted(index):
         written = reset()
@@ -2638,6 +2644,14 @@ def _dependency_folders(repo, top):
         for name in names
         if name not in top
         and (name in INSTALLED_FOLDERS or os.path.isfile(os.path.join(root, name, VENV_MARKER)))
+    )
+
+
+def _installed_by_a_run(folder, top, locked):
+    return tuple(
+        name
+        for name in _dependency_folders(folder, top)
+        if referee.top_level_reason(name, locked) is None
     )
 
 

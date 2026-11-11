@@ -481,10 +481,17 @@ real content fails, and holds the MSP back as `gate-failed`, with exit 21, when
 the acceptance command exits 1. The gate cannot tell pointer text from real content, so a property
 that holds on pointer text is judged on pointer text.
 
-Dependency folders come from outside the Worker's control. Without
+Dependency folders stay between a gate's runs. Without
 `--gate-setup`, the gate links in each node_modules folder and each
 virtual-environment folder, one holding `pyvenv.cfg`, that the repository
-root holds and the commit lacks. With `--gate-setup`, the gate links nothing
+root holds and the commit lacks. A node_modules folder or a
+virtual-environment folder that an acceptance run installs at the top level
+of the clean checkout, under a name the commit lacks, also stays for the
+gate's later runs, and mitosis never walks into it; what a test writes into
+such a folder reaches those later runs, as it does through a linked folder.
+A folder an acceptance run makes under a referee name, such as
+`__snapshots__`, is deleted before the next run and is a referee write, fatal
+with exit 9, whatever it holds. With `--gate-setup`, the gate links nothing
 and runs that command once per gate in the clean checkout, with `{worktree}`
 naming it; a project whose root folders point back
 into the root checkout, such as an editable install, uses it. A gate setup

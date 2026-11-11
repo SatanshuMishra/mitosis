@@ -287,7 +287,8 @@ Every gate and acceptance run uses a clean checkout of the commit,
 not a git repository, reset to raw blobs before each run; files the commit
 lacks never reach it; `ignored` lists them.
 
-Dependencies are the root's node_modules and venvs, or `--gate-setup`, run
+Dependencies are the root's node_modules and venvs, a node_modules or venv an
+acceptance run installs, which stays for the gate's later runs, or `--gate-setup`, run
 once per gate with `{worktree}`; its output survives only at top-level names
 the commit lacks, such as the `.git` a git-running test needs. A top-level referee
 file or folder it makes, such as `conftest.py`, is fatal, exit 9. A Git LFS file stays
