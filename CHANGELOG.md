@@ -41,8 +41,10 @@ benchmark changes and against every verdict saved from past runs.
   referee marker: benchmark change A, whose acceptance script installs
   node_modules, ended that way after 62 gate runs of about 37 seconds each.
   Replayed on that build, the gate takes 168 seconds with the folder kept
-  where it took 546 without, and reports no referee write. A folder an
-  acceptance run makes under a referee name is still fatal.
+  where it took 546 without, and reports no referee write. Only a real
+  folder is kept: a symbolic link a run leaves under such a name is deleted
+  before the next run. A folder an acceptance run makes under a referee
+  name is still fatal.
 
 ## 0.19.1 - 2026-11-10
 

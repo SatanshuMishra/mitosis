@@ -489,6 +489,8 @@ virtual-environment folder that an acceptance run installs at the top level
 of the clean checkout, under a name the commit lacks, also stays for the
 gate's later runs, and mitosis never walks into it; what a test writes into
 such a folder reaches those later runs, as it does through a linked folder.
+Only a real folder stays: a symbolic link an acceptance run leaves under such
+a name is deleted before the next run.
 A folder an acceptance run makes under a referee name, such as
 `__snapshots__`, is deleted before the next run and is a referee write, fatal
 with exit 9, whatever it holds. With `--gate-setup`, the gate links nothing

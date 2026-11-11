@@ -173,6 +173,9 @@ for path, content in sorted(config["writes"].items()):
         os.makedirs(os.path.dirname(target), exist_ok=True)
     with open(target, "w", encoding="utf-8", newline="") as handle:
         handle.write(content)
+for path, target in sorted(config.get("links", {}).items()):
+    if not os.path.lexists(os.path.join(folder, path)):
+        os.symlink(target, os.path.join(folder, path))
 try:
     code = subprocess.run(
         [sys.executable, "-B", "-c", config["check"]], cwd=folder, capture_output=True, timeout=60
@@ -260,10 +263,12 @@ class CleanGate(unittest.TestCase):
         self._accepting()
         return self.scratch
 
-    def _accepting(self, read=(), writes=None):
+    def _accepting(self, read=(), writes=None, links=None):
         lock_fixtures.put(
             os.path.join(self.scratch.stubs, "accept.json"),
-            json.dumps({"read": list(read), "writes": writes or {}, "check": CALC_CHECK}),
+            json.dumps(
+                {"read": list(read), "writes": writes or {}, "links": links or {}, "check": CALC_CHECK}
+            ),
         )
 
     def _worker(self, actions, declared=("calc.py",)):
@@ -497,6 +502,20 @@ class CleanGate(unittest.TestCase):
         self.assertNotIn(installed, entries[0]["listing"])
         self.assertIn(installed, entries[1]["listing"])
 
+    def a_link_an_acceptance_run_names_as_a_dependency_folder_is_deleted_before_the_next_run(self):
+        self._scratch(ignored=("node_modules/",))
+        outside = os.path.join(self.scratch.tmp, "outside")
+        lock_fixtures.put(os.path.join(outside, "dep", "index.js"), "outside\n")
+        self._accepting(links={"node_modules": outside})
+        self._worker([["write", "calc.py", CALC]])
+        completed = self._build(acceptance=TWO_RUNS)
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
+        entries = self._accept_log()
+        self.assertEqual(len(entries), 2)
+        for entry in entries:
+            self.assertNotIn("node_modules", entry["listing"])
+        self.assertEqual(read_text(os.path.join(outside, "dep", "index.js")), "outside\n")
+
     def a_referee_folder_an_acceptance_run_dresses_as_a_dependency_folder_is_still_fatal(self):
         planted = {"__snapshots__/pyvenv.cfg": "home = /usr\n", "__snapshots__/calc.snap": "planted\n"}
         self._scratch()
@@ -616,6 +635,7 @@ def load_tests(loader, standard, pattern):
                 "a_locked_path_a_gate_run_writes_is_fatal",
                 "a_file_one_gate_run_leaves_never_reaches_the_next_run",
                 "a_dependency_folder_an_acceptance_run_installs_stays_for_the_next_run",
+                "a_link_an_acceptance_run_names_as_a_dependency_folder_is_deleted_before_the_next_run",
                 "a_referee_folder_an_acceptance_run_dresses_as_a_dependency_folder_is_still_fatal",
                 "a_gate_setup_slower_than_the_ignored_timeout_runs_to_its_end",
                 "a_conftest_committed_inside_a_base_submodule_fails_the_lane",

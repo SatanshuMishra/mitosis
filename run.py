@@ -2633,12 +2633,14 @@ def reset_gate_folder(tree, folder, target, kept, locked):
     return tuple(sorted(_referee_marked(set(removed) | set(stale), locked)))
 
 
-def _dependency_folders(repo, top):
+def _dependency_folders(repo, top, through_links=True):
     if repo is None:
         return ()
     root = os.path.abspath(repo)
     with os.scandir(root) as listing:
-        names = sorted(entry.name for entry in listing if entry.is_dir())
+        names = sorted(
+            entry.name for entry in listing if entry.is_dir(follow_symlinks=through_links)
+        )
     return tuple(
         name
         for name in names
@@ -2650,7 +2652,7 @@ def _dependency_folders(repo, top):
 def _installed_by_a_run(folder, top, locked):
     return tuple(
         name
-        for name in _dependency_folders(folder, top)
+        for name in _dependency_folders(folder, top, through_links=False)
         if referee.top_level_reason(name, locked) is None
     )
 
