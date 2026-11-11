@@ -21,6 +21,7 @@ TAMPERED_LOCKED = "import unittest\nraise SystemExit(0)\n"
 GATE_RUN_LOCKED = "raise SystemExit(0)\n"
 CALC_CHECK = "import calc; assert calc.add(2, 3) == 5"
 ACCEPTANCE = [{"file": "tests/test_calc.py", "test": "Calc.adds"}]
+TWO_RUNS = ACCEPTANCE + [{"file": "tests/test_calc.py", "test": "Calc.adds_again"}]
 FILE_PROTOCOL = ("-c", "protocol.file.allow=always")
 
 CALC_TEST = """import unittest
@@ -458,22 +459,6 @@ class CleanGate(unittest.TestCase):
         self.assertIn("gate-setup", self._recorded().get("gate_error") or "")
         self.assertFalse(os.path.exists(os.path.join(self.scratch.tmp, "accept.log")))
 
-    def a_no_diff_attribute_never_hides_the_added_lines_from_the_mutants(self):
-        self._scratch(seeded={"tests/test_calc.py": CALLABLE_TEST})
-        self._worker(
-            [
-                ["write", "calc.py", SUBTRACTING_CALC],
-                ["append-git-path", "info/attributes", "calc.py -diff"],
-            ]
-        )
-        completed = self._build(
-            accept=self.scratch.stub("accept_unittest.py", "{worktree}", "{file}", "{test}")
-        )
-        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
-        msp = self._msp(completed)
-        self.assertEqual(msp["gate"]["properties"][0]["outcome"], "weak")
-        self.assertEqual(msp["state"], "committed")
-
     def a_locked_path_a_gate_run_writes_is_fatal(self):
         self._scratch(seeded={lock_fixtures.LOCKED: lock_fixtures.LOCKED_TEXT})
         self._accepting(writes={lock_fixtures.LOCKED: GATE_RUN_LOCKED})
@@ -491,10 +476,10 @@ class CleanGate(unittest.TestCase):
         self._scratch()
         self._accepting(writes={"leftover.txt": "left\n"})
         self._worker([["write", "calc.py", CALC]])
-        completed = self._build()
+        completed = self._build(acceptance=TWO_RUNS)
         self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
         entries = self._accept_log()
-        self.assertGreaterEqual(len(entries), 2)
+        self.assertEqual(len(entries), 2)
         for entry in entries:
             self.assertNotIn("leftover.txt", entry["listing"])
 
@@ -505,7 +490,7 @@ class CleanGate(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
         self.assertEqual(self._msp(completed)["state"], "committed", lock_fixtures.tail(completed))
         self.assertIsNone(self._recorded().get("gate_error"), lock_fixtures.tail(completed))
-        self.assertGreaterEqual(len(self._accept_log()), 2, lock_fixtures.tail(completed))
+        self.assertEqual(len(self._accept_log()), 1, lock_fixtures.tail(completed))
 
     def a_conftest_committed_inside_a_base_submodule_fails_the_lane(self):
         self._scratch()
@@ -602,7 +587,6 @@ def load_tests(loader, standard, pattern):
                 "dependency_folders_come_from_the_repository_root",
                 "gate_setup_runs_in_the_clean_checkout_first",
                 "a_failing_gate_setup_is_recorded_and_never_holds_the_msp",
-                "a_no_diff_attribute_never_hides_the_added_lines_from_the_mutants",
                 "a_locked_path_a_gate_run_writes_is_fatal",
                 "a_file_one_gate_run_leaves_never_reaches_the_next_run",
                 "a_gate_setup_slower_than_the_ignored_timeout_runs_to_its_end",

@@ -278,34 +278,6 @@ class FinishesTheWork(unittest.TestCase):
         self.assertEqual(msp_of(summary, "first")["state"], "shipped")
         self.assertEqual(msp_of(summary, "first")["gate"]["outcome"], "inconclusive")
 
-    def a_mutant_is_never_taken_from_a_test_file(self):
-        scratch = self._scratch()
-        other = "tests/test_docs.py"
-        files = ("z.py", other, "tests/test_z.py")
-        check = {"file": "tests/test_z.py", "test": "Z.works"}
-        text = (
-            "import unittest\n\nimport z\n\n\nclass Z(unittest.TestCase):\n"
-            "    def works(self):\n        self.assertEqual(z.value(), 2)\n"
-        )
-        completed, summary = scratch.built(
-            [built_step(files=files, acceptance=(check,))],
-            {
-                "first": [
-                    {
-                        "writes": {
-                            "z.py": RIGHT,
-                            "tests/test_z.py": text,
-                            other: "VERSION = 1 + 1\n",
-                        }
-                    }
-                ]
-            },
-        )
-        self._exit(completed, 0)
-        judged = msp_of(summary, "first")["gate"]["properties"][0]
-        self.assertEqual(judged["mutants"]["killed"]["file"], "z.py")
-        self.assertEqual(judged["mutants"]["tried"], 1)
-
     def a_gitignored_path_in_a_write_set_never_fails_its_lane(self):
         scratch = self._scratch({".gitignore": "__pycache__/\nbuild/\n"})
         files = ("a.py", TEST_FILE, "build/out.txt")
@@ -773,7 +745,6 @@ def load_tests(loader, standard, pattern):
             "a_test_failing_against_the_work_is_repaired_once_and_ships",
             "a_test_still_failing_after_the_repair_holds_its_msp_and_names_the_test",
             "an_acceptance_command_that_cannot_judge_gets_one_repair_and_never_holds_the_msp",
-            "a_mutant_is_never_taken_from_a_test_file",
             "a_gitignored_path_in_a_write_set_never_fails_its_lane",
             "a_hook_sees_the_whole_msp_once_and_never_a_partial_lane",
             "a_hook_refusing_the_whole_change_holds_the_msp_and_says_why",

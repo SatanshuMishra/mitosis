@@ -3,6 +3,38 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.20.0 - 2026-11-11
+
+The gate runs each acceptance test once, against the finished work, as
+`docs/adr/0028` settles. Three stages are gone, each measured on seven built
+benchmark changes and against every verdict saved from past runs.
+
+- Mutation testing is removed, with `mutants.py`, the line tracer and the
+  `weak` verdict. It gave two weak verdicts in the seven builds, on a change
+  whose merged tests scored 600 of 613 before and after its Lane answered
+  them; none of the 37 weak verdicts on record named a defect in a test, and
+  mutant runs took 3 to 334 seconds of a gate.
+- The run of each test with the implementation reverted is removed, and with
+  it the `inert` verdict and the guard reading at the gate. It took 4 to 43
+  seconds of a gate, and the 17 verdicts it alone raised in past runs were on
+  Steps that only add tests, on a refactor that keeps behaviour and on one
+  Step with no traceable cause.
+- A test no longer returns to its Lane for passing. A test that fails against
+  the work, or that the acceptance command cannot run, still gets its one
+  repair.
+- Replayed on the seven built changes, the gates take 258 seconds in all
+  where the 0.19.1 gates took 798, and every test passes both ways.
+- The pull request's Testing table says a test passes against the finished
+  work. The gate no longer shows that a test fails without the work, so a
+  skipped test, or one that asserts only that a function exists, passes. A
+  plan with a lock stage still requires each locked test to fail at the
+  feature base.
+- The JSON result and the run state keep their fields: the `weak` and `inert`
+  counts read zero, each property's `mutants` is null and carries no
+  `mutation` or `coverage`, and the gate's `reverted` list is empty. A
+  recorded gate that `--resume` reuses at an unchanged commit is judged again
+  from its recorded exit codes.
+
 ## 0.19.1 - 2026-11-10
 
 - A file an `--items` file's check-author Step writes that no Step's

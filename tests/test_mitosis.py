@@ -1764,7 +1764,18 @@ class GateExit(unittest.TestCase):
         state = self._state(gate={"outcome": "weak", "blocks": True}, proven_head="a" * 40)
         self.assertEqual(mitosis.exit_code(state, self.PLAN), mitosis.EXIT_SHIPPED)
 
-    def a_property_with_no_line_to_mutate_is_named_for_attention(self):
+    def the_report_names_a_retired_verdict_only_when_a_recorded_gate_holds_one(self):
+        counts = {"pass": 2, "weak": 0, "inert": 0, "inconclusive": 0, "not-applicable": 1}
+        judged_now = mitosis.gate_lines(self.PLAN, self._state(gate={"outcome": "pass", "counts": counts}))
+        self.assertEqual(judged_now[0], "2 pass, 0 inconclusive, 1 not-applicable across 1 gated MSP")
+        recorded_earlier = mitosis.gate_lines(
+            self.PLAN, self._state(gate={"outcome": "weak", "counts": {**counts, "weak": 1}})
+        )
+        self.assertEqual(
+            recorded_earlier[0], "2 pass, 1 weak, 0 inconclusive, 1 not-applicable across 1 gated MSP"
+        )
+
+    def a_gated_property_is_summarised_with_its_commit(self):
         gate = {
             "outcome": "pass",
             "commit": "c" * 40,
@@ -1775,7 +1786,7 @@ class GateExit(unittest.TestCase):
                     "test": "Impl.works",
                     "outcome": "pass",
                     "reason": None,
-                    "mutants": {"tried": 0, "killed": None},
+                    "mutants": None,
                 }
             ],
         }
@@ -1791,14 +1802,9 @@ class GateExit(unittest.TestCase):
                     "step": "impl",
                     "outcome": "pass",
                     "reason": None,
-                    "mutants": {"tried": 0, "killed": None},
+                    "mutants": None,
                 }
             ],
-        )
-        self.assertIn(
-            "MSP impl: tests/test_impl.py::Impl.works passed on red and green alone; its Step "
-            "added no line to mutate",
-            mitosis._attention(self.PLAN, [], msps),
         )
 
     def a_shipped_msp_whose_gate_passed_exits_zero(self):

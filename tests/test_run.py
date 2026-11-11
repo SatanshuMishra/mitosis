@@ -1125,7 +1125,7 @@ class Resume(RepoCase):
         self.assertGreater(first_gate_runs, 0)
         second = self.execute(plan, accept="real", resume=True)
         self.assertEqual(self.marker(0).count("ran"), 2)
-        self.assertEqual(len(self.gate_runs()), first_gate_runs + 3)
+        self.assertEqual(len(self.gate_runs()), first_gate_runs + 1)
         self.assertEqual(second["msps"]["0"]["state"], "shipped")
         self.assertEqual(second["msps"]["0"]["gate"]["outcome"], "pass")
         self.assertEqual(len(self.pull_requests()), 1)
@@ -1194,50 +1194,23 @@ class Resume(RepoCase):
 
 
 class Gate(RepoCase):
-    def a_load_bearing_property_passes_the_gate(self):
+    def a_property_passing_against_the_work_passes_the_gate(self):
         plan = core.plan([gated_step()])
         trees = self.build(plan)
         result = self.gate(plan, trees, accept="real")
         self.assertEqual(result["outcome"], "pass")
         self.assertFalse(result["blocks"])
         self.assertEqual(result["counts"]["pass"], 1)
-        self.assertEqual(result["reverted"], ["impl.txt"])
         self.assertEqual([p["outcome"] for p in result["properties"]], ["pass"])
-        self.assertEqual(
-            result["properties"][0]["mutants"],
-            {"tried": 1, "killed": {"file": "impl.txt", "line": 1, "op": "drop added lines"}},
-        )
         runs = self.gate_runs()
-        self.assertEqual(len(runs), 3)
+        self.assertEqual(len(runs), 1)
         self.assertIn("work=True", runs[0])
-        self.assertIn("work=False", runs[1])
-        self.assertIn("work=False", runs[2])
         tree = trees[0]["path"]
         self.assertEqual(sh(["git", "rev-parse", "--abbrev-ref", "HEAD"], tree), trees[0]["branch"])
         self.assertEqual(sh(["git", "status", "--porcelain"], tree), "")
         self.assertEqual(read(os.path.join(tree, "impl.txt")), "work by lane 0\n")
         self.assertFalse(any(b.startswith("probe/") for b in self.branches()))
         self.assertEqual(self.gate_checkouts(), [])
-
-    def an_inert_acceptance_property_ships_and_is_reported(self):
-        plan = core.plan([gated_step()])
-        trees = self.build(plan)
-        result = self.gate(plan, trees, accept="inert")
-        self.assertEqual(result["outcome"], "inert")
-        self.assertFalse(result["blocks"])
-        self.assertEqual(run.failing_properties(result), ())
-        shutil.rmtree(self.run_dir, ignore_errors=True)
-        self.add_remote()
-        state = self.execute(core.plan([gated_step()]), accept="inert", pr=self.pr_command())
-        record = state["msps"]["0"]
-        self.assertEqual(record["state"], "shipped")
-        self.assertEqual(record["gate"]["outcome"], "inert")
-        self.assertEqual(self.remote_heads(), ["mitosis/impl"])
-        self.assertEqual(len(self.pull_requests()), 1)
-        self.assertEqual(
-            self.fields(0)["testing"],
-            [{"check": "tests/t_impl.txt::property", "result": "passes with and without the work"}],
-        )
 
     def a_step_that_changed_no_implementation_does_not_block(self):
         self.seed_existing("impl.txt", "already works\n")
@@ -1261,10 +1234,10 @@ class Gate(RepoCase):
         self.assertEqual(run.step_implementation_paths(plan, 0, "impl"), [])
         trees = self.build(plan)
         result = self.gate(plan, trees, accept="inert")
-        self.assertEqual(result["outcome"], "inert")
+        self.assertEqual(result["outcome"], "pass")
         self.assertFalse(result["blocks"])
 
-    def a_step_with_nothing_to_change_and_nothing_to_implement_is_called_inert(self):
+    def a_step_with_nothing_to_change_and_nothing_to_implement_is_judged_against_the_work(self):
         self.seed_existing("tests/t_impl.txt", "a property that already holds\n")
         only_test = step(
             "impl",
@@ -1274,26 +1247,16 @@ class Gate(RepoCase):
         plan = core.plan([only_test])
         trees = self.build(plan, mode="nothing")
         result = self.gate(plan, trees, accept="inert")
-        self.assertEqual(result["outcome"], "inert")
+        self.assertEqual(result["outcome"], "pass")
         self.assertFalse(result["blocks"])
 
-    def a_step_that_did_change_implementation_is_still_called_inert(self):
+    def a_step_that_did_change_implementation_is_judged_against_the_work(self):
         self.seed_existing("impl.txt", "already works\n")
         plan = core.plan([gated_step()])
         trees = self.build(plan, mode="ok")
         result = self.gate(plan, trees, accept="inert")
-        self.assertEqual(result["outcome"], "inert")
+        self.assertEqual(result["outcome"], "pass")
         self.assertFalse(result["blocks"])
-
-    def a_reverted_build_error_is_inconclusive_not_a_pass(self):
-        plan = core.plan([gated_step()])
-        trees = self.build(plan)
-        result = self.gate(plan, trees, accept="brittle")
-        self.assertEqual(result["outcome"], "inconclusive")
-        self.assertFalse(result["blocks"])
-        self.assertEqual(run.failing_properties(result), ())
-        self.assertEqual(result["properties"][0]["reverted"], 2)
-        self.assertEqual(result["counts"]["pass"], 0)
 
     def a_property_failing_with_the_work_present_is_inconclusive(self):
         plan = core.plan([gated_step()])
@@ -1339,7 +1302,7 @@ class Gate(RepoCase):
             result["counts"], {"pass": 1, "weak": 0, "inert": 0, "inconclusive": 0, "not-applicable": 0}
         )
         self.assertEqual([p["outcome"] for p in result["properties"]], ["pass"])
-        self.assertEqual(len(self.gate_runs()), 3)
+        self.assertEqual(len(self.gate_runs()), 1)
 
     def an_empty_acceptance_list_is_counted_and_does_not_block(self):
         plan = core.plan([step("a", ["a.txt"])])
@@ -1429,7 +1392,7 @@ class Gate(RepoCase):
         result = self._setup_gate(plan, trees, ["node_modules/pkg/conftest.py", "built.txt"])
         self.assertEqual(result["referee"], [])
         self.assertEqual(result["outcome"], "pass")
-        self.assertEqual(len(self.gate_runs()), 3)
+        self.assertEqual(len(self.gate_runs()), 1)
 
     def an_unproven_property_is_named_in_the_body_with_its_step(self):
         self.add_remote()
@@ -1532,6 +1495,34 @@ class GateReuse(RepoCase):
         self.assertEqual(resumed["msps"]["0"]["state"], "gate-failed")
         self.assertEqual(resumed["msps"]["0"]["gate"], held["msps"]["0"]["gate"])
 
+    def a_verdict_an_earlier_version_recorded_is_judged_again_from_its_exit_code(self):
+        plan, held, gate_runs = self._held_run()
+        recorded = held["msps"]["0"]["gate"]
+        earlier = {
+            **recorded,
+            "outcome": "inert",
+            "properties": [
+                {
+                    **entry,
+                    "outcome": "inert",
+                    "reason": "passes with the implementation reverted",
+                    "reverted": 0,
+                }
+                for entry in recorded["properties"]
+            ],
+        }
+        state = self.state()
+        write(
+            os.path.join(self.run_dir, run.STATE_FILE),
+            json.dumps({**state, "msps": {"0": {**state["msps"]["0"], "gate": earlier}}}),
+        )
+        resumed = self.execute(plan, resume=True)
+        self.assertEqual(len(self.gate_runs()), gate_runs)
+        gate = resumed["msps"]["0"]["gate"]
+        self.assertEqual(gate["outcome"], "pass")
+        self.assertEqual([entry["outcome"] for entry in gate["properties"]], ["pass"])
+        self.assertEqual(gate["counts"]["inert"], 0)
+
     def a_covered_elsewhere_class_passes_the_property_without_a_run(self):
         self.add_remote()
         plan = core.plan([gated_step()])
@@ -1554,7 +1545,6 @@ class GateReuse(RepoCase):
         self.assertEqual(record["gate"]["outcome"], "pass")
         self.assertEqual(record["gate"]["commit"], held["msps"]["0"]["gate"]["commit"])
         [judged] = record["gate"]["properties"]
-        self.assertEqual(judged["mutation"], "covered-elsewhere")
         self.assertEqual(judged["reason"], "covered elsewhere: the suite")
         self.assertEqual(resumed["gate_classes"], list(classes))
         self.assertEqual(resumed["gate_classes_sha256"], "0" * 64)
@@ -1828,7 +1818,7 @@ class Ship(RepoCase):
                 "testing": [
                     {
                         "check": "tests/t_impl.txt::property",
-                        "result": "passes with the work and fails without it",
+                        "result": "passes against the finished work",
                     }
                 ],
             },
@@ -1857,7 +1847,7 @@ class Ship(RepoCase):
             [
                 {
                     "check": "tests/t_impl.txt::property",
-                    "result": "passes with the work and fails without it",
+                    "result": "passes against the finished work",
                 }
             ],
         )

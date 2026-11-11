@@ -642,7 +642,6 @@ class GateResult(unittest.TestCase):
             ],
             [],
             "0" * 40,
-            [],
         )
         judged = result["properties"][0]
         self.assertEqual(judged["outcome"], "inconclusive")

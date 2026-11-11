@@ -339,10 +339,6 @@ def gate_confinement(sandbox, log_dir, checkout, *writable):
     return _confinement(sandbox, folders, folders["tmp"], (checkout, *writable))
 
 
-def gate_outputs(log_dir, confinement):
-    return log_dir if confinement is None else confinement["tmp"]
-
-
 def release_gate(folders):
     for key in ("tmp", "profile", "mark"):
         _remove_left(folders[key])

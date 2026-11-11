@@ -12,7 +12,6 @@ TERMS = (
     "check-author",
     "not-applicable",
     "covered-elsewhere",
-    "untraced",
 )
 
 

@@ -17,9 +17,8 @@ import os, signal, sys
 calc = os.path.join(os.getcwd(), "calc.py")
 present = os.path.exists(calc)
 text = open(calc).read() if present else None
-site, route = %r, %r
-during = (site == "mutant" and present and text != %r) or (site == "probe" and not present)
-if during:
+route = %r
+if present and text == %r:
     os.kill(os.getppid(), getattr(signal, route))
     sys.exit(1)
 exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "accept_real.py")).read())
@@ -27,7 +26,7 @@ exec(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "accept_real.
 
 FIRST_RUN_EXIT = {"SIGTERM": -signal.SIGTERM, "SIGKILL": -signal.SIGKILL}
 
-PAIRS = tuple((site, route) for site in ("mutant", "probe") for route in ("SIGTERM", "SIGKILL"))
+ROUTES = ("SIGTERM", "SIGKILL")
 
 
 class InterruptedGate(unittest.TestCase):
@@ -49,21 +48,17 @@ class InterruptedGate(unittest.TestCase):
         self.assertEqual(len(left), 1, "the interrupted gate left %r" % left)
         return left[0]
 
-    def _interrupted(self, scratch, site, route):
+    def _interrupted(self, scratch, route):
         items = scratch.items([teeth.add_step()])
         scratch.jobs(
             {"demo": {"step": "add", "writes": {"calc.py": WORK, "tests/test_calc.py": teeth.EXACT_TEST}}}
         )
         teeth.put(os.path.join(scratch.stubs, "accept_real.py"), teeth.ACCEPT)
-        teeth.put(os.path.join(scratch.stubs, "accept.py"), INTERRUPT % (site, route, WORK))
+        teeth.put(os.path.join(scratch.stubs, "accept.py"), INTERRUPT % (route, WORK))
         first = scratch.build(items, push=True)
         self.assertEqual(first.returncode, FIRST_RUN_EXIT[route], "first run exit" + teeth.tail(first))
-        left = os.path.join(self._left_checkout(scratch), "calc.py")
-        if site == "mutant":
-            with open(left, encoding="utf-8", newline="") as handle:
-                self.assertNotEqual(handle.read(), WORK, "the first run left no mutant in its checkout")
-        else:
-            self.assertFalse(os.path.lexists(left), "the first run left the work in its checkout")
+        self._left_checkout(scratch)
+        self.assertEqual(self._pushed_calc(scratch), None, "the interrupted run pushed its branch")
         with open(os.path.join(self._tree(scratch), "calc.py"), encoding="utf-8", newline="") as handle:
             self.assertEqual(handle.read(), WORK)
         self.assertEqual(self._in_tree(scratch, "status", "--porcelain"), "")
@@ -74,12 +69,12 @@ class InterruptedGate(unittest.TestCase):
         shown = scratch.git("--git-dir", scratch.remote, "show", "mitosis/demo:calc.py")
         return shown.stdout if shown.returncode == 0 else None
 
-    def an_interrupted_gate_never_ships_its_mutation(self):
-        for site, route in PAIRS:
-            with self.subTest(site=site, route=route):
+    def an_interrupted_gate_ships_the_work_on_resume_and_leaves_no_checkout(self):
+        for route in ROUTES:
+            with self.subTest(route=route):
                 scratch = teeth.Scratch()
                 try:
-                    items = self._interrupted(scratch, site, route)
+                    items = self._interrupted(scratch, route)
                     second = scratch.build(items, "--resume", push=True)
                     self.assertEqual(second.returncode, 0, "resume exit" + teeth.tail(second))
                     self.assertEqual(teeth.summary_of(second)["msps"][0]["state"], "shipped")
@@ -98,7 +93,7 @@ def load_tests(loader, standard, pattern):
     for case, names in (
         (
             InterruptedGate,
-            ("an_interrupted_gate_never_ships_its_mutation",),
+            ("an_interrupted_gate_ships_the_work_on_resume_and_leaves_no_checkout",),
         ),
     ):
         suite.addTests(case(name) for name in names)

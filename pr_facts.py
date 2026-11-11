@@ -41,8 +41,7 @@ INSTALL = "install pull-request 0.3.0 or later"
 NO_FIELDS_FLAG = 'unknown flag "--fields"'
 
 RESULTS = {
-    "pass": "passes with the work and fails without it",
-    "inert": "passes with and without the work",
+    "pass": "passes against the finished work",
     "inconclusive": "Not run: the acceptance command was inconclusive",
     "not-applicable": "Not run: the gate does not apply to it",
 }
@@ -50,11 +49,6 @@ RESULTS = {
 UNJUDGED = "Not run: the gate did not judge it"
 
 CLASSED = "Not run: the caller classed it %s, so no run judged it"
-
-GUARDED_FOLD = (
-    "%d of %d acceptance tests pass with the work and fail without it; "
-    "the other %d pass either way and guard behaviour that must stay the same"
-)
 
 NO_ACCEPTANCE = "Not run: the Step names no acceptance test"
 
@@ -135,47 +129,39 @@ def _impact(header):
     return impact if impact else [header.get("blast_radius")]
 
 
-def _folded(passed, guards, total):
-    if guards and passed + guards == total:
-        return GUARDED_FOLD % (passed, total, guards)
+def _folded(passed, total):
     if passed == total:
         return (
-            "1 acceptance test passes with the work and fails without it"
+            "1 acceptance test passes against the finished work"
             if total == 1
-            else "%d acceptance tests pass with the work and fail without it" % total
+            else "%d acceptance tests pass against the finished work" % total
         )
     return _partly_folded(passed, total)
 
 
 def _partly_folded(passed, total):
     return (
-        "%d of %d acceptance tests pass with the work and fail without it; the rest are not proven"
+        "%d of %d acceptance tests pass against the finished work; the rest are not proven"
         % (passed, total)
     )
 
 
-def _probe_folded(_, __, total):
+def _probe_folded(_, total):
     return _partly_folded(total, total)
 
 
 def _result(judged):
     if judged.get("class"):
         return CLASSED % judged["class"]
-    if core.is_guard(judged):
-        return core.GUARD_REASON
     return RESULTS.get(judged.get("outcome"), UNJUDGED)
 
 
 def _passed(judged):
-    return judged.get("outcome") == "pass" and not judged.get("class") and not core.is_guard(judged)
+    return judged.get("outcome") == "pass" and not judged.get("class")
 
 
 def _tally(fold, judged):
-    return fold(
-        sum(1 for entry in judged if _passed(entry)),
-        sum(1 for entry in judged if core.is_guard(entry)),
-        len(judged),
-    )
+    return fold(sum(1 for entry in judged if _passed(entry)), len(judged))
 
 
 def _check_label(label, stand_in):

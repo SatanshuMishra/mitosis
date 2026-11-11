@@ -1,6 +1,6 @@
 # The gate holds an MSP only on a test that fails against the work
 
-Status: accepted. Supersedes 0008.
+Status: accepted. Supersedes 0008. Amended by 0028.
 
 The gate used to stop an MSP for any test it could not certify: `weak` when no altered copy of the work failed it, `inert` when it passed without the work, `inconclusive` when a run could not judge it. Every measured stop came from those verdicts and none showed wrong code, so builds that the reference planner finished ended unshipped.
 
