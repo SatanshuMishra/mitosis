@@ -257,6 +257,18 @@ class Facts(unittest.TestCase):
             {"check": "tests/t.py::one", "result": "Not run: the gate does not apply to it"},
         )
 
+    def a_guard_or_inert_verdict_an_earlier_version_recorded_reads_as_passing_both_ways(self):
+        import pr_facts
+
+        recorded = {"step": "a", "file": "tests/t.py", "test": "one", "with_work": 0, "reverted": 0}
+        for outcome in ("not-applicable", "inert"):
+            gate = {"commit": GATED, "properties": [{**recorded, "outcome": outcome}]}
+            self.assertEqual(
+                pr_facts.facts(HEADER, first_plan(), 0, gate)["testing"][0],
+                {"check": "tests/t.py::one", "result": "passes with and without the work"},
+                outcome,
+            )
+
     def a_caller_classed_property_is_never_reported_proven(self):
         import pr_facts
 

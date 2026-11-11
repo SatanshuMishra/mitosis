@@ -34,17 +34,18 @@ benchmark changes and against every verdict saved from past runs.
   `mutation` or `coverage`, and the gate's `reverted` list is empty. A
   recorded gate that `--resume` reuses at an unchanged commit is judged again
   from its recorded exit codes.
-- A node_modules folder or a virtual environment that an acceptance run
-  installs in the clean checkout stays for the gate's later runs and is
+- A node_modules folder that an acceptance run installs in the clean
+  checkout, when the commit has none, stays for the gate's later runs and is
   never read as a referee write. Before, the gate deleted it before every
   run and held the MSP back with exit 9 for each file in it that matched a
   referee marker: benchmark change A, whose acceptance script installs
   node_modules, ended that way after 62 gate runs of about 37 seconds each.
   Replayed on that build, the gate takes 168 seconds with the folder kept
   where it took 546 without, and reports no referee write. Only a real
-  folder is kept: a symbolic link a run leaves under such a name is deleted
-  before the next run. A folder an acceptance run makes under a referee
-  name is still fatal.
+  folder under that name is kept: a symbolic link under it, and a folder a
+  run makes under any other name, is deleted before the next run, and a
+  referee path in it is still fatal. What a test writes into the kept
+  folder reaches the gate's later runs; `docs/adr/0029` holds the reasons.
 
 ## 0.19.1 - 2026-11-10
 

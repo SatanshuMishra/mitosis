@@ -19,8 +19,8 @@ Reach for mitosis when all three hold:
 1. Two or more changes are on the table, and at least two of them touch
    different files. Work that shares a file becomes one Lane and runs
    serially inside one branch; only disjoint write-sets buy parallelism.
-2. Each change can name a test that proves it. The gate runs that test with
-   the work present and again with the work reverted; a change with no such
+2. Each change can name a test that proves it. The gate runs that test
+   once, against the finished work; a change with no such
    test is still built, but the run proves nothing about it and says so.
 3. A human will review each part as its own pull request.
 
@@ -287,8 +287,8 @@ Every gate and acceptance run uses a clean checkout of the commit,
 not a git repository, reset to raw blobs before each run; files the commit
 lacks never reach it; `ignored` lists them.
 
-Dependencies are the root's node_modules and venvs, a node_modules or venv an
-acceptance run installs as a real folder, which stays for the gate's later runs, or `--gate-setup`, run
+Dependencies are the root's node_modules and venvs, a real node_modules folder an
+acceptance run installs, which stays for the gate's later runs, or `--gate-setup`, run
 once per gate with `{worktree}`; its output survives only at top-level names
 the commit lacks, such as the `.git` a git-running test needs. A top-level referee
 file or folder it makes, such as `conftest.py`, is fatal, exit 9. A Git LFS file stays

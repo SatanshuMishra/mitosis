@@ -270,8 +270,8 @@ later command that runs Worker-written code: the gate's `--gate-setup`
 and acceptance runs, and the lock stage's checks.
 Each may write only the clean checkout it runs in, `gate/msp-<n>/checkout-*`
 or `lock/msp-<n>/checkout-*` under the run directory, a private temp folder beside
-its log folder, `gate/msp-<n>.tmp` or `lock/msp-<n>.tmp`, passed as TMPDIR and
-holding the line traces and suite reports, and each `--worker-write` path; a
+its log folder, `gate/msp-<n>.tmp` or `lock/msp-<n>.tmp`, passed as TMPDIR,
+and each `--worker-write` path; a
 `--gate-setup` that writes anywhere else names that path with
 `--worker-write`. mitosis's own logs and state stay outside every write
 grant, and no sandboxed command may rename, remove or replace the clone,
@@ -484,16 +484,15 @@ that holds on pointer text is judged on pointer text.
 Dependency folders stay between a gate's runs. Without
 `--gate-setup`, the gate links in each node_modules folder and each
 virtual-environment folder, one holding `pyvenv.cfg`, that the repository
-root holds and the commit lacks. A node_modules folder or a
-virtual-environment folder that an acceptance run installs at the top level
-of the clean checkout, under a name the commit lacks, also stays for the
-gate's later runs, and mitosis never walks into it; what a test writes into
-such a folder reaches those later runs, as it does through a linked folder.
-Only a real folder stays: a symbolic link an acceptance run leaves under such
-a name is deleted before the next run.
-A folder an acceptance run makes under a referee name, such as
-`__snapshots__`, is deleted before the next run and is a referee write, fatal
-with exit 9, whatever it holds. With `--gate-setup`, the gate links nothing
+root holds and the commit lacks. A node_modules folder that an acceptance
+run installs at the top level of the clean checkout, when the commit has
+none, also stays for the gate's later runs, and mitosis never walks into it;
+what a test writes into it, the test runner included, reaches those later
+runs, as it does through a linked folder. Only a real folder under that
+name stays: a symbolic link under it, and a folder an acceptance run makes
+under any other name, whatever it holds, is deleted before the next run,
+and a referee path in it is a referee write, fatal with exit 9;
+`docs/adr/0029` holds the reasons. With `--gate-setup`, the gate links nothing
 and runs that command once per gate in the clean checkout, with `{worktree}`
 naming it; a project whose root folders point back
 into the root checkout, such as an editable install, uses it. A gate setup

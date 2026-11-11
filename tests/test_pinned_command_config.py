@@ -30,7 +30,6 @@ def command_scope_lines():
 
 
 class PinnedCommandConfig(unittest.TestCase):
-
     def inherited_parameters_reach_no_pinned_git_call(self):
         with mock.patch.dict(os.environ, PARAMETERS_SCOPE):
             self.assertEqual(command_scope_lines(), [])

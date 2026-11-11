@@ -1,6 +1,6 @@
 # mitosis
 
-mitosis splits a batch of changes or a document into parts built in parallel, proves each part's acceptance tests fail without the work, and opens one pull request per part. These terms name what it records about itself.
+mitosis splits a batch of changes or a document into parts built in parallel, runs each part's acceptance tests against the finished work, and opens one pull request per part. These terms name what it records about itself.
 
 ## Metrics
 
@@ -81,7 +81,7 @@ _Avoid_: test commit, base commit
 A path the charter locks, a test-configuration file or snapshot anywhere, or a baseline, allowlist or skip list inside a test location; a Step's own locked acceptance file is handed to its Worker read-only, any other in a Step's files refuses the plan, and a committed write to one is restored and holds its MSP back.
 
 **Gate folder**:
-The clean checkout the gate runs in: a folder outside the Worker's worktree, written from the MSP commit's tree objects with git's settings pinned, holding dependency folders from the repository root, the gate setup command or an acceptance run that installs them, and reset to its target tree before every acceptance run. It is not a git repository.
+The clean checkout the gate runs in: a folder outside the Worker's worktree, written from the MSP commit's tree objects with git's settings pinned, holding dependency folders from the repository root or the gate setup command, or a node_modules folder an acceptance run installs, and reset to its target tree before every acceptance run. It is not a git repository.
 _Avoid_: gate tree, normalized worktree
 
 **Ignored file**:

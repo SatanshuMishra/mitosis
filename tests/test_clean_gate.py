@@ -1,3 +1,4 @@
+import glob
 import json
 import os
 import re
@@ -176,6 +177,8 @@ for path, content in sorted(config["writes"].items()):
 for path, target in sorted(config.get("links", {}).items()):
     if not os.path.lexists(os.path.join(folder, path)):
         os.symlink(target, os.path.join(folder, path))
+for path in config.get("sealed", ()):
+    os.chmod(os.path.join(folder, path), 0)
 try:
     code = subprocess.run(
         [sys.executable, "-B", "-c", config["check"]], cwd=folder, capture_output=True, timeout=60
@@ -263,11 +266,17 @@ class CleanGate(unittest.TestCase):
         self._accepting()
         return self.scratch
 
-    def _accepting(self, read=(), writes=None, links=None):
+    def _accepting(self, read=(), writes=None, links=None, sealed=()):
         lock_fixtures.put(
             os.path.join(self.scratch.stubs, "accept.json"),
             json.dumps(
-                {"read": list(read), "writes": writes or {}, "links": links or {}, "check": CALC_CHECK}
+                {
+                    "read": list(read),
+                    "writes": writes or {},
+                    "links": links or {},
+                    "sealed": list(sealed),
+                    "check": CALC_CHECK,
+                }
             ),
         )
 
@@ -516,17 +525,42 @@ class CleanGate(unittest.TestCase):
             self.assertNotIn("node_modules", entry["listing"])
         self.assertEqual(read_text(os.path.join(outside, "dep", "index.js")), "outside\n")
 
-    def a_referee_folder_an_acceptance_run_dresses_as_a_dependency_folder_is_still_fatal(self):
-        planted = {"__snapshots__/pyvenv.cfg": "home = /usr\n", "__snapshots__/calc.snap": "planted\n"}
+    def a_folder_an_acceptance_run_dresses_as_a_virtual_environment_is_not_kept(self):
+        planted = {"helpers/pyvenv.cfg": "home = /usr\n", "helpers/conftest.py": "collect_ignore = []\n"}
         self._scratch()
         self._accepting(writes=planted)
         self._worker([["write", "calc.py", CALC]])
         completed = self._build(acceptance=TWO_RUNS)
         self.assertEqual(completed.returncode, 9, "mitosis exit code" + lock_fixtures.tail(completed))
         self.assertEqual(self._msp(completed)["state"], "referee-reverted")
-        self.assertEqual(self._recorded()["gate"]["referee"], sorted(planted))
+        self.assertEqual(self._recorded()["gate"]["referee"], ["helpers/conftest.py"])
         for entry in self._accept_log():
-            self.assertNotIn("__snapshots__/calc.snap", entry["listing"])
+            self.assertNotIn("helpers/pyvenv.cfg", entry["listing"])
+
+    def a_node_modules_folder_the_commit_tracks_is_reset_like_any_other_folder(self):
+        self._scratch(seeded={"node_modules/dep/index.js": "tracked\n"})
+        self._accepting(writes={"node_modules/dep/extra.js": "left\n"})
+        self._worker([["write", "calc.py", CALC]])
+        completed = self._build(acceptance=TWO_RUNS)
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
+        entries = self._accept_log()
+        self.assertEqual(len(entries), 2)
+        for entry in entries:
+            self.assertIn("node_modules/dep/index.js", entry["listing"])
+            self.assertNotIn("node_modules/dep/extra.js", entry["listing"])
+
+    def a_dependency_folder_a_run_seals_leaves_no_checkout_behind(self):
+        self._scratch(ignored=("node_modules/",))
+        self._accepting(
+            writes={"node_modules/sealed/dep.js": "sealed\n"}, sealed=("node_modules/sealed",)
+        )
+        self._worker([["write", "calc.py", CALC]])
+        completed = self._build()
+        left = glob.glob(os.path.join(self.scratch.run_dir, "gate", "*", "checkout-*"))
+        for folder in left:
+            os.chmod(os.path.join(folder, "node_modules", "sealed"), 0o700)
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
+        self.assertEqual(left, [])
 
     def a_gate_setup_slower_than_the_ignored_timeout_runs_to_its_end(self):
         self._scratch()
@@ -636,7 +670,9 @@ def load_tests(loader, standard, pattern):
                 "a_file_one_gate_run_leaves_never_reaches_the_next_run",
                 "a_dependency_folder_an_acceptance_run_installs_stays_for_the_next_run",
                 "a_link_an_acceptance_run_names_as_a_dependency_folder_is_deleted_before_the_next_run",
-                "a_referee_folder_an_acceptance_run_dresses_as_a_dependency_folder_is_still_fatal",
+                "a_folder_an_acceptance_run_dresses_as_a_virtual_environment_is_not_kept",
+                "a_node_modules_folder_the_commit_tracks_is_reset_like_any_other_folder",
+                "a_dependency_folder_a_run_seals_leaves_no_checkout_behind",
                 "a_gate_setup_slower_than_the_ignored_timeout_runs_to_its_end",
                 "a_conftest_committed_inside_a_base_submodule_fails_the_lane",
                 "a_committed_referee_write_never_lands_when_the_landing_commit_fails",

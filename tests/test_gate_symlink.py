@@ -81,7 +81,7 @@ class GateSymlink(unittest.TestCase):
         self.assertEqual(first["outcome"], "pass", teeth.tail(completed))
         self.assertIsNone(first["reason"])
 
-    def a_symlinked_implementation_is_never_written_through(self):
+    def a_symlinked_implementation_is_judged_through_the_link(self):
         completed, _ = self._linked_build(
             ("calc.py", "impl.py", "tests/test_calc.py"),
             {"impl.py": LIMIT, "tests/test_calc.py": LIMIT_TEST},
@@ -150,7 +150,7 @@ def load_tests(loader, standard, pattern):
         (
             GateSymlink,
             (
-                "a_symlinked_implementation_is_never_written_through",
+                "a_symlinked_implementation_is_judged_through_the_link",
                 "a_link_to_an_outside_file_is_judged_and_never_written",
                 "a_linked_tests_folder_keeps_its_outside_cache_through_a_build",
                 "clear_caches_beside_refuses_a_linked_parent",

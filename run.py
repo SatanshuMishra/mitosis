@@ -2118,6 +2118,13 @@ def _timed(call):
     return result, time.monotonic() - started
 
 
+def _remove_checkout(folder):
+    shutil.rmtree(folder, ignore_errors=True)
+    if os.path.lexists(folder):
+        _gate_listing(folder, ())
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def _remove_gate_folders(log_dir):
     with os.scandir(log_dir) as listing:
         left = sorted(
@@ -2247,7 +2254,7 @@ def gate(
             confinement,
         )
     finally:
-        shutil.rmtree(folder, ignore_errors=True)
+        _remove_checkout(folder)
         isolation.release_gate(isolation.gate_folders(log_dir))
     referee_written = sorted(set(written))
     return {
@@ -2308,7 +2315,7 @@ def _gate_runs(
             tree,
             folder,
             with_work_tree,
-            (*kept, *_installed_by_a_run(folder, top, locked)),
+            (*kept, *_installed_by_a_run(folder, top)),
             locked,
         )
 
@@ -2633,14 +2640,12 @@ def reset_gate_folder(tree, folder, target, kept, locked):
     return tuple(sorted(_referee_marked(set(removed) | set(stale), locked)))
 
 
-def _dependency_folders(repo, top, through_links=True):
+def _dependency_folders(repo, top):
     if repo is None:
         return ()
     root = os.path.abspath(repo)
     with os.scandir(root) as listing:
-        names = sorted(
-            entry.name for entry in listing if entry.is_dir(follow_symlinks=through_links)
-        )
+        names = sorted(entry.name for entry in listing if entry.is_dir())
     return tuple(
         name
         for name in names
@@ -2649,11 +2654,15 @@ def _dependency_folders(repo, top, through_links=True):
     )
 
 
-def _installed_by_a_run(folder, top, locked):
+def _real_folder(path):
+    return os.path.isdir(path) and not os.path.islink(path)
+
+
+def _installed_by_a_run(folder, top):
     return tuple(
         name
-        for name in _dependency_folders(folder, top, through_links=False)
-        if referee.top_level_reason(name, locked) is None
+        for name in sorted(INSTALLED_FOLDERS)
+        if name not in top and _real_folder(os.path.join(folder, name))
     )
 
 
@@ -3717,8 +3726,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
     )
     held_back = _held_back(gated, tree["branch"], refused) if judged_now else None
     unrunnable = judged_now and refused is None and bool(unrunnable_properties(gated["gate"]))
-    returned = judged_now and refused is None and bool(_failing_by_lane(plan, gated["gate"]))
-    if held_back is not None or unrunnable or returned:
+    if held_back is not None or unrunnable:
         owed = recorded_gate is None or prior.get("state") != MSP_GATE_FAILED
         repair = (
             _repair_lanes(plan, msp, tree, state, settings, gated)

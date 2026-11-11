@@ -40,8 +40,11 @@ INSTALL = "install pull-request 0.3.0 or later"
 
 NO_FIELDS_FLAG = 'unknown flag "--fields"'
 
+RECORDED_BOTH_WAYS = "passes with and without the work"
+
 RESULTS = {
     "pass": "passes against the finished work",
+    "inert": RECORDED_BOTH_WAYS,
     "inconclusive": "Not run: the acceptance command was inconclusive",
     "not-applicable": "Not run: the gate does not apply to it",
 }
@@ -150,9 +153,19 @@ def _probe_folded(_, total):
     return _partly_folded(total, total)
 
 
+def _recorded_guard(judged):
+    return (
+        judged.get("outcome") == "not-applicable"
+        and judged.get("with_work") == 0
+        and judged.get("reverted") == 0
+    )
+
+
 def _result(judged):
     if judged.get("class"):
         return CLASSED % judged["class"]
+    if _recorded_guard(judged):
+        return RECORDED_BOTH_WAYS
     return RESULTS.get(judged.get("outcome"), UNJUDGED)
 
 
