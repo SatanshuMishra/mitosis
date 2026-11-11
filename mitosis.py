@@ -1137,15 +1137,16 @@ def saved_plan_folds(path, items):
     return isinstance(loaded, dict) and loaded.get(FOLDED_KEY) == check_author_names(items)
 
 
-def folded_items(args, items):
+def folded_items(args, items, root, charter):
     if args.plan_file is not None and not saved_plan_folds(args.plan_file, items):
         return items, (), ()
-    kept, notices = own_tests.folded(items)
+    locked = core.charter_locks(charter, root)[0]
+    kept, notices = own_tests.folded(items, locked, planning_shared_files(args))
     return kept, notices, check_author_names(items)
 
 
-def items_input(args, run_dir):
-    items, notices, folded = folded_items(args, read_items(os.path.abspath(args.items)))
+def items_input(args, root, charter, run_dir):
+    items, notices, folded = folded_items(args, read_items(os.path.abspath(args.items)), root, charter)
     _print(tuple("mitosis: " + notice for notice in notices), sys.stderr)
     return staged(items, load_decomposed(run_dir), run_dir, None, notices, folded)
 
@@ -1178,7 +1179,7 @@ def default_input_run_dir(args, root):
 
 def resolve_input(args, root, repo, models, charter, graph, run_dir):
     if args.items:
-        return items_input(args, run_dir)
+        return items_input(args, root, charter, run_dir)
     if args.asks:
         return asks_input(args, root, repo, models, charter, run_dir)
     document = check_document(args, root)
