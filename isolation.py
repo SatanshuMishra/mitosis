@@ -289,7 +289,10 @@ def sandbox_profile(allowed, pinned=(), mark=None):
         if mark
         else ""
     )
-    return "(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write* %s)\n%s%s" % (
+    return (
+        "(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write* %s)\n"
+        "(deny signal)\n(allow signal (target same-sandbox))\n%s%s"
+    ) % (
         " ".join(rules),
         pins,
         marked,
@@ -342,6 +345,20 @@ def gate_confinement(sandbox, log_dir, checkout, *writable):
 def release_gate(folders):
     for key in ("tmp", "profile", "mark"):
         _remove_left(folders[key])
+
+
+GATE_SLOTS = ".slots"
+
+
+def gate_slot_roots(log_dir, count):
+    root = os.path.abspath(log_dir)
+    return (root,) + tuple(
+        os.path.join(root + GATE_SLOTS, str(number)) for number in range(1, count)
+    )
+
+
+def release_gate_slots(log_dir):
+    _remove_left(os.path.abspath(log_dir) + GATE_SLOTS)
 
 
 @functools.lru_cache(maxsize=None)

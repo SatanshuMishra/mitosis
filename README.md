@@ -201,7 +201,7 @@ property:
 | `--shared-files LIST` | comma-separated files that MSPs may each edit without being fused; an entry matches a path equal to it, a path ending in a slash and the entry, or a path it matches as a case-sensitive glob; an overlap only on such a file makes no MSP, Lane edge or scheduling conflict, is listed in the coupling review, and the plan records the order to integrate each file two MSPs edit; a Worker's write into a shared file another MSP declares is reported and is not fatal |
 | `--worktree-root PATH` | places each MSP's worktree in a folder named after its slug under PATH, read against the repository root, in place of the run directory's trees folder; a second live run on the same branch is refused with exit 5, and a small record in the repository's git folder lets a later run take the branch from a stopped tree; a PATH that cannot be created, or a `--worker-write` path that is, holds or lies inside it, refuses the run with exit 3 before any Worker starts |
 | `--no-run-dir` | keeps the plan, state, logs and clones in a private temp folder removed before mitosis exits, whether the run shipped, failed or was refused; `--run-dir` is ignored, `--resume` starts from nothing, each Worker's standard output is printed before the report, and the result line carries no run directory; the branches and worktrees stay, at `--worktree-root` or where a run of the same input keeps them |
-| `--worker-sandbox` | runs every Worker under sandbox-exec, refusing file writes outside its clone, a private temp folder, its session transcript folder, /dev/null, /dev/tty, /dev/fd and each `--worker-write` path; it also runs the gate's setup and acceptance runs and the lock stage's checks under sandbox-exec, refusing writes outside their clean checkout, a private temp folder and each `--worker-write` path, so a `--gate-setup` that needs another writable path names it with `--worker-write`; a host without sandbox-exec refuses the run with exit 3 before any Worker starts |
+| `--worker-sandbox` | runs every Worker under sandbox-exec, refusing file writes outside its clone, a private temp folder, its session transcript folder, /dev/null, /dev/tty, /dev/fd and each `--worker-write` path, and refusing a signal to any process outside its own sandbox; it also runs the gate's setup and acceptance runs and the lock stage's checks under sandbox-exec, refusing writes outside their clean checkout, a private temp folder and each `--worker-write` path, so a `--gate-setup` that needs another writable path names it with `--worker-write`; a host without sandbox-exec refuses the run with exit 3 before any Worker starts |
 | `--worker-write PATH` | one more path a sandboxed Worker, gate run or lock-stage check may write under; repeatable; a path that is, holds or lies inside the run directory, the repository or its git directory refuses the run with exit 3 |
 | `--suite-command TEMPLATE` | deprecated and ignored; the gate runs only the acceptance tests each Step names |
 | `--brief-command TEMPLATE` | deprecated and ignored; the split writes each Step's task, so no brief call runs |
@@ -271,7 +271,9 @@ and acceptance runs, and the lock stage's checks.
 Each may write only the clean checkout it runs in, `gate/msp-<n>/checkout-*`
 or `lock/msp-<n>/checkout-*` under the run directory, a private temp folder beside
 its log folder, `gate/msp-<n>.tmp` or `lock/msp-<n>.tmp`, passed as TMPDIR,
-and each `--worker-write` path; a
+and each `--worker-write` path. Each clean checkout a gate makes after its
+first has a temp folder of its own, `gate/msp-<n>.slots/<k>.tmp`, and the
+gate removes `gate/msp-<n>.slots` when it ends. A
 `--gate-setup` that writes anywhere else names that path with
 `--worker-write`. mitosis's own logs and state stay outside every write
 grant, and no sandboxed command may rename, remove or replace the clone,
@@ -282,7 +284,9 @@ repository's working tree, its git directory as `git rev-parse
 --git-common-dir` reports it (the main checkout's, for a linked worktree), or
 a folder mitosis places MSP worktrees in, compared by resolved real path,
 refuses the run with exit 3 before any Worker or model call, naming the one it
-overlaps. When a Worker, gate or lock-stage command exits, mitosis ends
+overlaps. No sandboxed process may signal a process outside its own
+sandbox, so a Worker, an acceptance test or a check cannot end another
+run's processes or mitosis's own. When a Worker, gate or lock-stage command exits, mitosis ends
 its process group and, under `--worker-sandbox`, every process left in that
 run's sandbox before reading anything the run could change, and keeps ending
 them until none is left. Every git call mitosis makes
@@ -447,6 +451,23 @@ not run ships the same way, with a `Not run` row. The gate never runs a
 property without the work and never alters the work to see whether a test
 notices, so `pass` says that the test passes, and not that it would fail
 without the work; `docs/adr/0028` holds the measurements behind that.
+
+The gate runs an MSP's properties several at a time, each in a clean checkout
+of its own: up to as many at once as `--concurrency` allows, and never more
+checkouts than its properties after the first. The first property runs
+alone, and a node_modules folder it installs is cloned into every other
+checkout before the rest start; on a filesystem without clones each checkout
+installs for itself. A property that does not pass beside others runs again
+alone before it is judged, in one more checkout the gate makes only then,
+which no other property has written in, and the log of its first run is
+kept as `<n>-with-work.beside.log` until the MSP's next gate. The run alone
+decides only when it exits 0 or 1; otherwise the run beside others stands.
+A gate with `--gate-setup`, a gate of two
+properties and a build under a `--concurrency` of one keep one checkout and
+run the properties one after another. MSPs finish one after another, so a
+property run again alone is alone in the build. Two properties can now meet
+through anything outside their checkouts, such as a port or a database;
+`docs/adr/0031` holds the measurements and that cost.
 
 `--gate-classes PATH` excuses a property without editing the Steps: each
 `{test, class, reason}` entry names a property as `<file>::<name>` and

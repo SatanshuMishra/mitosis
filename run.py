@@ -2,6 +2,7 @@ import fcntl
 import hashlib
 import json
 import os
+import queue
 import re
 import shlex
 import shutil
@@ -9,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timezone
@@ -2218,6 +2220,7 @@ def gate(
     classes=None,
     recorded_gate=None,
     sandbox=None,
+    width=1,
 ):
     commit = commit_before_gate(plan, msp, tree) if head is None else head
     properties = _reused(
@@ -2234,9 +2237,22 @@ def gate(
         return {**_gate_result(properties, implementation, commit), "referee": []}
     os.makedirs(log_dir, exist_ok=True)
     _remove_gate_folders(log_dir)
-    folder = tempfile.mkdtemp(prefix=GATE_FOLDER_PREFIX, dir=log_dir)
+    _remove_beside_logs(log_dir)
+    unjudged = sum(1 for entry in properties if entry["outcome"] is None)
+    beside = 1 if setup is not None else max(1, min(int(width), unjudged - 1))
+    roots = isolation.gate_slot_roots(log_dir, beside + 1 if beside > 1 else 1)
+    folders = tuple(tempfile.mkdtemp(prefix=GATE_FOLDER_PREFIX, dir=log_dir) for _ in range(beside))
+    alone = os.path.join(log_dir, ALONE_FOLDER)
+
+    def alone_slot():
+        os.mkdir(alone, 0o700)
+        return alone, isolation.gate_confinement(sandbox, roots[-1], alone)
+
     try:
-        confinement = isolation.gate_confinement(sandbox, log_dir, folder)
+        slots = tuple(
+            (folder, isolation.gate_confinement(sandbox, root, folder))
+            for folder, root in zip(folders, roots)
+        )
         result, written = _gate_runs(
             plan,
             msp,
@@ -2247,15 +2263,18 @@ def gate(
             env,
             commit,
             properties,
-            folder,
+            slots,
+            alone_slot,
             repo,
             setup,
             replayed or {},
-            confinement,
         )
     finally:
-        _remove_checkout(folder)
-        isolation.release_gate(isolation.gate_folders(log_dir))
+        try:
+            _at_once(_remove_checkout, (*folders, alone))
+        finally:
+            isolation.release_gate(isolation.gate_folders(log_dir))
+            isolation.release_gate_slots(log_dir)
     referee_written = sorted(set(written))
     return {
         **result,
@@ -2274,6 +2293,61 @@ def _setup_unrun(properties, written):
     )
 
 
+ALONE_FOLDER = GATE_FOLDER_PREFIX + "alone"
+
+BESIDE_SUFFIX = ".beside.log"
+
+BESIDE_LOG = "%d-with-work" + BESIDE_SUFFIX
+
+
+def _remove_beside_logs(log_dir):
+    for name in os.listdir(log_dir):
+        if name.endswith((BESIDE_SUFFIX, BESIDE_SUFFIX + ".err")):
+            os.remove(os.path.join(log_dir, name))
+
+
+def _at_once(function, items):
+    if len(items) < 2:
+        return tuple(function(item) for item in items)
+    with ThreadPoolExecutor(max_workers=len(items)) as pool:
+        return tuple(pool.map(function, items))
+
+
+def _beside_others(slots, indexes, accepted):
+    free = queue.SimpleQueue()
+    for slot in slots:
+        free.put(slot)
+    errored = threading.Event()
+
+    def in_a_free_slot(index):
+        if errored.is_set():
+            return None
+        slot = free.get()
+        try:
+            return accepted(slot, index)
+        except BaseException:
+            errored.set()
+            raise
+        finally:
+            free.put(slot)
+
+    with ThreadPoolExecutor(max_workers=len(slots)) as pool:
+        return dict(zip(indexes, pool.map(in_a_free_slot, indexes)))
+
+
+def _share_installed(first, others, top):
+    for name in _installed_by_a_run(first, top):
+        for folder in others:
+            try:
+                isolation.copy_on_write(os.path.join(first, name), os.path.join(folder, name))
+            except OSError:
+                pass
+
+
+def _judging_run(beside, alone):
+    return alone if alone[1][0] in (0, ACCEPTANCE_FAILURE_EXIT) else beside
+
+
 def _gate_runs(
     plan,
     msp,
@@ -2284,61 +2358,96 @@ def _gate_runs(
     env,
     commit,
     properties,
-    folder,
+    slots,
+    alone_slot,
     repo,
     setup,
     replayed,
-    sandbox=None,
 ):
     locked = tuple(plan.get("locked") or ())
     implementation = implementation_paths(plan, msp)
     runnable = [index for index, entry in enumerate(properties) if entry["outcome"] is None]
     with_work_tree = isolation.held_tree(_expanded(tree, commit, base), replayed)
-    reset_gate_folder(tree, folder, with_work_tree, (), locked)
     top = frozenset(_parts(path)[0] for path in with_work_tree)
-    kept = (
-        _link_dependencies(repo, folder, top)
-        if setup is None
-        else _gate_setup(setup, folder, top, log_dir, env, sandbox)
-    )
+    folders = tuple(folder for folder, _ in slots)
+
+    def prepared(slot):
+        folder, sandbox = slot
+        reset_gate_folder(tree, folder, with_work_tree, (), locked)
+        return (
+            _link_dependencies(repo, folder, top)
+            if setup is None
+            else _gate_setup(setup, folder, top, log_dir, env, sandbox)
+        )
+
+    kept = dict(zip(folders, _at_once(prepared, slots)))
     setup_written = (
         ()
         if setup is None
-        else tuple(name for name in kept if referee.top_level_reason(name, locked) is not None)
+        else tuple(
+            name
+            for names in kept.values()
+            for name in names
+            if referee.top_level_reason(name, locked) is not None
+        )
     )
     if setup_written:
         unrun = _setup_unrun(properties, setup_written)
         return _gate_result(unrun, implementation, commit), setup_written
 
-    def reset():
+    def reset(folder):
         return reset_gate_folder(
             tree,
             folder,
             with_work_tree,
-            (*kept, *_installed_by_a_run(folder, top)),
+            (*kept[folder], *_installed_by_a_run(folder, top)),
             locked,
         )
 
-    def accepted(index):
-        written = reset()
+    def log_of(index):
+        return os.path.join(log_dir, "%d-with-work.log" % index)
+
+    def accepted(slot, index):
+        folder, sandbox = slot
+        written = reset(folder)
         return written, _timed(
-            lambda: run_acceptance(
-                command,
-                folder,
-                properties[index],
-                os.path.join(log_dir, "%d-with-work.log" % index),
-                env,
-                sandbox,
-            )
+            lambda: run_acceptance(command, folder, properties[index], log_of(index), env, sandbox)
         )
 
-    runs = {index: accepted(index) for index in runnable}
+    wide = len(slots) > 1
+    opening = {index: accepted(slots[0], index) for index in runnable[:1]}
+    rest = runnable[1:]
+    if wide:
+        _share_installed(folders[0], folders[1:], top)
+    beside = (
+        _beside_others(slots, rest, accepted)
+        if wide
+        else {index: accepted(slots[0], index) for index in rest}
+    )
+    failed = [index for index in rest if wide and beside[index][1][0] != 0]
+    lone = (alone_slot(),) if failed else ()
+    kept = {**kept, **{slot[0]: prepared(slot) for slot in lone}}
+
+    def alone(index):
+        for suffix in ("", ".err"):
+            os.replace(log_of(index) + suffix, os.path.join(log_dir, BESIDE_LOG % index) + suffix)
+        return accepted(lone[0], index)
+
+    again = {index: alone(index) for index in failed}
+    judging = {index: _judging_run(beside[index], again[index]) for index in failed}
+    runs = {**opening, **beside, **judging}
     judged = tuple(
         _run_verdict(entry, *runs[index][1]) if index in runs else entry
         for index, entry in enumerate(properties)
     )
-    written = tuple(path for left, _ in runs.values() for path in left) + reset()
-    return _gate_result(judged, implementation, commit), written
+    before_runs = tuple(
+        path
+        for left, _ in (*opening.values(), *beside.values(), *again.values())
+        for path in left
+    )
+    used = (*folders, *(slot[0] for slot in lone))
+    after_runs = tuple(path for left in _at_once(reset, used) for path in left)
+    return _gate_result(judged, implementation, commit), before_runs + after_runs
 
 
 def changed_files(tree, head, base, exclude=()):
@@ -3100,6 +3209,7 @@ def _gate_stage(plan, msp, tree, settings, head, replayed, recorded_gate=None):
             settings.get("gate_classes"),
             recorded_gate,
             settings.get("sandbox"),
+            settings["at_once"],
         )
     except (OSError, GitError, GateSetupError, subprocess.SubprocessError) as error:
         return {"gate": None, "gate_error": str(error)}
@@ -4541,6 +4651,7 @@ def execute(
         "gate_setup": gate_setup,
         "gate_classes": tuple(gate_classes or ()),
         "sandbox": sandbox,
+        "at_once": max(1, int(concurrency)),
         "seeds": seeds,
         "reask_command": reask_command,
         "plan_id": plan["plan_id"],
