@@ -3,6 +3,16 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.19.1 - 2026-11-10
+
+- A file an `--items` file's check-author Step writes that no Step's
+  acceptance names, such as a helper its tests import, goes to every Step
+  that takes one of that check-author's test files, unless a Step already
+  writes it. 0.19.0 dropped it, so a test that reads the helper failed at the
+  gate against work that was right: 8 of the 9 failing acceptance tests of a
+  43-test build were this. The file is dropped only when no Step takes one of
+  the check-author's test files, and each case prints a notice.
+
 ## 0.19.0 - 2026-11-10
 
 Runs that the recorded history shows stopping for verdicts about tests,

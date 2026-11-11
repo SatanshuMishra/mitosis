@@ -51,6 +51,11 @@ FOLDED_LINE = (
 
 DROPPED_LINE = "%s, written by the check-author Step %s, is named by no Step's acceptance and is dropped"
 
+SHARED_LINE = (
+    "%s, written by the check-author Step %s, is named by no Step's acceptance, "
+    "so every Step that takes one of that Step's test files writes it too"
+)
+
 
 def _with_authored_tests(item, authored):
     files = list(item.get("files") or [])
@@ -65,14 +70,27 @@ def _with_authored_tests(item, authored):
     return {**item, "files": files + list(added)} if added else item
 
 
-def _dropped(authors, kept):
-    named = _normalised(path for item in kept for path in core._acceptance_files(item))
+def _takes(item, author):
+    authored = _written((author,))
+    return any(referee.normalised(path) in authored for path in core._acceptance_files(item))
+
+
+def _helpers(author, kept):
+    spoken_for = _normalised(path for item in kept for path in core._acceptance_files(item)) | _written(kept)
     return tuple(
-        DROPPED_LINE % (path, author.get("name"))
-        for author in authors
-        for path in dict.fromkeys(core._files(author))
-        if referee.normalised(path) not in named
+        path for path in dict.fromkeys(core._files(author)) if referee.normalised(path) not in spoken_for
     )
+
+
+def _with_helpers(item, helpers):
+    files = list(item.get("files") or [])
+    held = _normalised(files)
+    added = [path for path in dict.fromkeys(helpers) if referee.normalised(path) not in held]
+    return {**item, "files": files + added} if added else item
+
+
+def _takers(author, kept):
+    return frozenset(index for index, item in enumerate(kept) if _takes(item, author))
 
 
 def folded(items):
@@ -80,6 +98,16 @@ def folded(items):
     if not authors:
         return list(items), ()
     authored = _written(authors)
-    kept = [_with_authored_tests(item, authored) for item in core.without_check_author(items)]
-    notices = tuple(FOLDED_LINE % author.get("name") for author in authors)
-    return kept, notices + _dropped(authors, kept)
+    taking = [_with_authored_tests(item, authored) for item in core.without_check_author(items)]
+    shares = [(author, _helpers(author, taking), _takers(author, taking)) for author in authors]
+    kept = [
+        _with_helpers(item, [path for _, helpers, takers in shares if index in takers for path in helpers])
+        for index, item in enumerate(taking)
+    ]
+    folds = tuple(FOLDED_LINE % author.get("name") for author in authors)
+    helper_lines = tuple(
+        (SHARED_LINE if takers else DROPPED_LINE) % (path, author.get("name"))
+        for author, helpers, takers in shares
+        for path in helpers
+    )
+    return kept, folds + helper_lines
