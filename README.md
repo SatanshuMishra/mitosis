@@ -316,7 +316,10 @@ id_ed25519, `.npmrc`, `.netrc`, `.pgpass`, `.envrc`, `.git-credentials`,
 that leaves the clone are refused, and so is any path inside a virtual
 environment. A listed folder that holds a secret-looking name or a virtual
 environment anywhere inside is copied without it, its other contents one by
-one. A path that cannot be copied leaves the
+one. A listed folder the repository ignores only through a pattern on its
+contents, such as `objs/` under the rule `objs/*.o`, is copied as the
+ignored paths inside it, and a file in it the repository does not ignore
+stays out. A path that cannot be copied leaves the
 Lane cold, as without the file; it never stops the Lane. Seeded paths never
 land and never reach the gate's clean checkout. Each Lane record and the lock
 record list `seeded`, seed_skipped and seed_seconds. With no

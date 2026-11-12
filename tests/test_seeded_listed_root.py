@@ -138,6 +138,30 @@ class SeededListedRoot(unittest.TestCase):
         self.assertEqual(seeding["seeded"], [])
         self.assertEqual([entry["path"] for entry in seeding["skipped"]], ["cache/key.pem"])
 
+    def test_a_worker_file_beside_a_file_seeded_from_a_folder_ignored_by_pattern_is_seen(self):
+        top = os.path.join(self.tmp, "ignored-by-pattern")
+        repo, tree, clone = (os.path.join(top, part) for part in ("repo", "tree", "clone"))
+        os.makedirs(repo)
+        self.git(repo, "init", "-q", "-b", "main", repo)
+        put(os.path.join(repo, "README"), "readme\n")
+        put(os.path.join(repo, ".gitignore"), "objs/*.o\n")
+        self.git(repo, "add", "-A")
+        self.git(repo, "commit", "-q", "-m", "seed")
+        put(os.path.join(repo, ".worktreeinclude"), "objs/\n")
+        put(os.path.join(repo, "objs/a.o"), "warm\n")
+        self.git(top, "clone", "-q", repo, tree)
+        start = self.git(tree, "rev-parse", "HEAD")
+        self.git(top, "clone", "-q", repo, clone)
+        seeding = self.isolation.seed_clone(repo, self.isolation.seed_plan(repo), clone)
+        put(os.path.join(clone, "objs", WORKER_FILE), "a Worker's new file\n")
+        outside = self.isolation.outside_writes(
+            clone, tree, self.run._committed_entries(tree, start), (), seeding["seeded"]
+        )
+        under = lambda paths: sorted(path for path in paths if path.startswith("objs/"))
+        self.assertEqual(seeding["seeded"], ["objs/a.o"])
+        self.assertEqual(under(outside["writes"]), ["objs/" + WORKER_FILE])
+        self.assertEqual(under(outside["ignored"]), [])
+
     def test_a_plan_without_roots_records_each_copy_as_its_own_root(self):
         repo = os.path.join(self.tmp, "plain")
         put(os.path.join(repo, "cache/sub/a.txt"), "warm\n")

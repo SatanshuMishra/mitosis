@@ -3,6 +3,20 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.21.1 - 2026-11-12
+
+- A folder listed in `.worktreeinclude` that the repository ignores only
+  through a pattern on its contents, such as `objs/` under the rule
+  `objs/*.o`, is seeded: each ignored path inside it is copied, and a file
+  in it the repository does not ignore stays out. Before, mitosis planned
+  nothing for such a folder and recorded no reason, so its Lanes ran cold
+  with nothing in the record to say why. git reports a wholly untracked
+  folder only by its collapsed name, which the ignore rules do not match,
+  so mitosis now asks git which paths inside it they do match.
+- A secret-looking name and a virtual environment among those paths are
+  refused as anywhere else, and a file a Worker writes beside a seeded
+  file in such a folder is still seen as the Worker's.
+
 ## 0.21.0 - 2026-11-11
 
 The gate runs an MSP's acceptance tests several at a time, as
