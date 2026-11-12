@@ -51,7 +51,7 @@ quotes or newlines lands as one argument and is never reinterpreted by a shell.
 | `--pr-type` `--pr-scope` `--pr-subject` `--pr-why` `--pr-impact` `--pr-blast-radius` | nothing; they are facts handed to render | none |
 | `--decompose-command` | the structure pass that turns a document into Steps, each with its task | prompt, model, document, session_id, schema |
 | `--reask-command` | the same session once more, for a reply failing its owned schema; required to call a model | prompt, session_id, schema, model |
-| `--worker-sandbox` | each Worker, gate and lock-stage run under sandbox-exec, writing only its clone or checkout, temp, transcript and `--worker-write` paths; exit 3 without it | none |
+| `--worker-sandbox` | each Worker, gate and lock-stage run under sandbox-exec, writing only its clone or checkout, temp, transcript and `--worker-write` paths and signalling only its own sandbox; exit 3 without it | none |
 | `--worker-write` | nothing; one more sandbox-writable path; repeatable; exit 3 if it overlaps the run directory, repository or its git directory | none |
 | `--gate-classes` | nothing; a JSON `{test, class, reason}` list classing properties | none |
 
@@ -226,7 +226,8 @@ locks them.
 
 Each session builds in its own clone of the MSP branch under the run
 directory's `clones` folder, never in the MSP worktree.
-`--concurrency` Workers, four by default, run at once. mitosis reads a
+`--concurrency` Workers, four by default, run at once; the same number caps
+the tests a gate runs at once. mitosis reads a
 finished Lane's write-set from the clone's files, never running git there,
 and lands only those paths as one commit. A finished Lane is `held` until no
 Worker runs in its MSP, and a resume lands it without paying again. A write
@@ -285,10 +286,15 @@ a `- Locked:` line that is empty, absolute or contains `..`.
 
 Every gate and acceptance run uses a clean checkout of the commit,
 not a git repository, reset to raw blobs before each run; files the commit
-lacks never reach it; `ignored` lists them.
+lacks never reach it; `ignored` lists them. A gate runs its tests several at
+a time, each in its own checkout, the first alone; one that does not pass
+beside others runs again alone, in a checkout made for it, and that run
+judges it when it exits 0 or 1, its first log kept as
+`<n>-with-work.beside.log`. `--gate-setup` keeps one checkout.
 
 Dependencies are the root's node_modules and venvs, a real node_modules folder an
-acceptance run installs, which stays for the gate's later runs, or `--gate-setup`, run
+acceptance run installs, which stays for the gate's later runs and is cloned into
+its other checkouts, or `--gate-setup`, run
 once per gate with `{worktree}`; its output survives only at top-level names
 the commit lacks, such as the `.git` a git-running test needs. A top-level referee
 file or folder it makes, such as `conftest.py`, is fatal, exit 9. A Git LFS file stays

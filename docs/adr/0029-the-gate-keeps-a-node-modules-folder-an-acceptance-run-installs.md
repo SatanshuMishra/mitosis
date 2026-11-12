@@ -1,6 +1,6 @@
 # The gate keeps a node_modules folder an acceptance run installs
 
-Status: accepted.
+Status: accepted. Amended by 0031.
 
 The gate's clean checkout is reset to the commit's tree before every acceptance run, and whatever a run leaves is deleted; a referee path among the leftovers holds the MSP back with exit 9. The gate kept only the dependency folders it linked from the repository root or that the gate setup command made. A repository whose acceptance script installs node_modules itself, with none at its root, therefore had that folder deleted and installed again for every run, and each file in it that matched a referee marker was read as a referee write. Benchmark change A ended that way on 0.19.1: exit 9 with every gated MSP held back after 62 gate runs of about 37 seconds each, where the reference planner built the same change in 807 seconds. No earlier run had recorded a gate referee write.
 

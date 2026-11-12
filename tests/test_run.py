@@ -218,6 +218,8 @@ HEADER = {
 
 PR_STUB = object()
 
+RELEASE_LIMIT = 30
+
 SPAWN_UNSET = ("CLAUDE_CODE_SESSION_ID", "PLUGIN_METRICS_PARENT", "SHIP")
 
 
@@ -1412,6 +1414,58 @@ class Gate(RepoCase):
             [{"check": "tests/t_impl.txt::property", "result": "Not run: the acceptance command was inconclusive"}],
         )
 
+    def an_error_in_one_run_starts_no_queued_test(self):
+        names = ["p%d" % number for number in range(5)]
+        acceptance = [{"file": "tests/t_impl.txt", "test": name} for name in names]
+        plan = core.plan([step("impl", ["impl.txt", "tests/t_impl.txt"], acceptance=acceptance)])
+        trees = self.build(plan)
+        started = []
+        beside = threading.Event()
+
+        def acceptance_run(command, tree, entry, log_path, env=None, sandbox=None):
+            started.append(entry["test"])
+            if entry["test"] == "p1":
+                beside.wait(RELEASE_LIMIT)
+            if entry["test"] == "p2":
+                beside.set()
+                raise OSError(errno.ENOSPC, "the run could not start")
+            return 0
+
+        with mock.patch.object(run, "run_acceptance", side_effect=acceptance_run):
+            with self.assertRaises(OSError):
+                run.gate(
+                    plan,
+                    0,
+                    trees[0]["path"],
+                    "main",
+                    self.acceptance_command("real"),
+                    os.path.join(self.run_dir, "gate"),
+                    width=2,
+                )
+        self.assertEqual(sorted(started), ["p0", "p1", "p2"])
+        self.assertEqual(self.gate_checkouts(), [])
+
+    def a_wider_earlier_gates_sandbox_folders_are_removed(self):
+        plan = core.plan([gated_step()])
+        trees = self.build(plan)
+        left = os.path.join(self.run_dir, "gate") + isolation.GATE_SLOTS
+        write(os.path.join(left, "3.tmp", "scratch.txt"), "left by a gate that was killed\n")
+        write(os.path.join(left, "3.sb"), "(version 1)\n")
+        write(os.path.join(left, "3.mark"), "")
+        result = self.gate(plan, trees, accept="real")
+        self.assertEqual(result["outcome"], "pass")
+        self.assertFalse(os.path.lexists(left))
+
+    def a_log_of_an_earlier_run_beside_others_does_not_outlive_the_next_gate(self):
+        plan = core.plan([gated_step()])
+        trees = self.build(plan)
+        log_dir = os.path.join(self.run_dir, "gate")
+        for suffix in ("", ".err"):
+            write(os.path.join(log_dir, run.BESIDE_LOG % 0) + suffix, "left by an earlier gate\n")
+        result = self.gate(plan, trees, accept="real")
+        self.assertEqual(result["outcome"], "pass")
+        self.assertEqual([name for name in os.listdir(log_dir) if ".beside." in name], [])
+
 
 class GateReuse(RepoCase):
     def _held_run(self, accept="real"):
@@ -2299,6 +2353,8 @@ class Clones(RepoCase):
                 "(deny file-write*)",
                 '(allow file-write* (subpath "/runs/a \\"b\\"\\\\c") (literal "/dev/null") '
                 '(literal "/dev/tty") (regex #"^/dev/fd/"))',
+                "(deny signal)",
+                "(allow signal (target same-sandbox))",
             ],
         )
         with self.assertRaises(run.ConfigError) as refused:

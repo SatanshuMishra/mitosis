@@ -3,6 +3,49 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.21.0 - 2026-11-11
+
+The gate runs an MSP's acceptance tests several at a time, as
+`docs/adr/0031` settles. It was measured before it was written, by gate
+replays on the eight built benchmark changes, and again as written.
+
+- The gate runs up to the `--concurrency` number of an MSP's acceptance
+  tests at once, each in a clean checkout of its own. Replayed with four at
+  a time, the gates of seven built changes take 103.0 seconds where one
+  test at a time took 261.8, and change A's takes 152.4 where it took
+  173.2, with every verdict equal.
+- The first test runs alone. A node_modules folder it installs is then
+  cloned into every other checkout, and on a filesystem without clones each
+  checkout installs for itself. With every checkout installing for itself,
+  A's gate was slower than one test at a time, 188.9 seconds against 171.9.
+- A test that does not pass beside others is run again alone before it is
+  judged, in one more checkout the gate makes only then, which no other test
+  has written in. The run alone decides only when it exits 0 or 1;
+  otherwise the run beside others stands, so a failing test that cannot
+  start in the new checkout still holds its MSP. The log of its first run
+  is kept as `<n>-with-work.beside.log` until the MSP's next gate. Two
+  tests can now meet through anything outside their checkouts, such as a
+  port or a database, and a test that fails for a real reason now runs
+  twice.
+- A gate with `--gate-setup`, a gate of two tests and a build under a
+  `--concurrency` of one keep one checkout and run the tests one after
+  another, as before.
+- Under `--worker-sandbox` each checkout has its own profile, temp folder
+  and mark; those of the checkouts after the first sit under
+  `gate/msp-<n>.slots`, which the gate removes when it ends.
+- Under `--worker-sandbox` a Worker, an acceptance run and a lock-stage
+  check may signal only processes inside their own sandbox. Before, each
+  could end any process of the caller's account, another test's and
+  mitosis's own included.
+- When one acceptance run raises an error, the gate starts no test still
+  queued.
+- MSPs still finish one after another. Finishing at once those that do not
+  wait on one another built change A in 702 seconds against 900 and is not
+  adopted: its reviews showed tests of two MSPs meeting with no run that is
+  alone in the build.
+- The JSON result and the run's saved record keep their shape. A test run
+  again alone leaves no record but its kept log.
+
 ## 0.20.0 - 2026-11-11
 
 The gate runs each acceptance test once, against the finished work, as

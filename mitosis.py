@@ -406,7 +406,8 @@ FLAG_SPECS = {
         "metavar": "N",
         "type": int,
         "default": DEFAULT_CONCURRENCY,
-        "help": "Workers running at once, for the asks stage and the build "
+        "help": "Workers running at once, for the asks stage and the build, "
+        "and the most tests a gate runs at once "
         "(default: %d)" % DEFAULT_CONCURRENCY,
     },
     "--context-hops": {
