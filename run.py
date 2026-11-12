@@ -2906,13 +2906,6 @@ def shared_overlaps(plan, msp, undeclared):
     )
 
 
-def _stacked_with(plan, msp):
-    merges = core.msp_merges(plan)
-    return frozenset(merges.get(msp, ())) | frozenset(
-        other for other, merged in merges.items() if msp in merged
-    )
-
-
 def repaired_after_gate(tree, head, base, gated, producer_heads=()):
     if gated is None:
         return ()
@@ -2922,10 +2915,12 @@ def repaired_after_gate(tree, head, base, gated, producer_heads=()):
     )
 
 
-def stacked_repair_overlaps(plan, msp, repaired):
+def stacked_repair_overlaps(plan, msp, repaired, carried=False):
     if not repaired:
         return ()
-    stacked = _stacked_with(plan, msp)
+    reached = frozenset(core.msp_merges(plan).get(msp, ())) | (
+        frozenset(core.msp_mergers(plan).get(msp, ())) if carried else frozenset()
+    )
     return _overlap_entries(
         plan,
         msp,
@@ -2933,7 +2928,7 @@ def stacked_repair_overlaps(plan, msp, repaired):
             (path, others)
             for path in repaired
             for others in (_declaring_msps(plan, path, msp),)
-            if others and all(other in stacked for other in others)
+            if others and all(other in reached for other in others)
         ),
     )
 
@@ -2954,12 +2949,15 @@ def _overlap_entries(plan, msp, found):
     )
 
 
-def reconcile(plan, msp, tree, head, base, producer_heads=(), held=None, gated=None):
+def reconcile(plan, msp, tree, head, base, producer_heads=(), held=None, repair=None):
     changed = changed_files(tree, head, base, producer_heads)
     declared = sorted({_norm(f) for f in plan["msps"][msp].get("files") or ()})
     outside = [path for path in changed if _norm(path) not in declared]
     declared_shared = shared_overlaps(plan, msp, outside)
-    repaired = frozenset(repaired_after_gate(tree, head, base, gated, producer_heads))
+    proved = repair or {}
+    repaired = frozenset(
+        repaired_after_gate(tree, head, base, proved.get("gated"), producer_heads)
+    )
     overlaps = declared_shared + stacked_repair_overlaps(
         plan,
         msp,
@@ -2968,6 +2966,7 @@ def reconcile(plan, msp, tree, head, base, producer_heads=(), held=None, gated=N
             for path in outside
             if path in repaired and path not in {entry["path"] for entry in declared_shared}
         ),
+        bool(proved.get("carried")),
     )
     overlapping = frozenset(entry["path"] for entry in overlaps)
     undeclared = [path for path in outside if path not in overlapping]
@@ -3476,6 +3475,37 @@ def _proven_head(prior, head, proven):
     return head if head.startswith(proven) else None
 
 
+def _finished_states(settings):
+    return PUBLISHED_STATES if settings["push"] else core.DELIVERED_STATES
+
+
+def _run_proven(settings, msp):
+    return settings["proven_heads"].get(msp) if settings["push"] else None
+
+
+def _stack_unsettled(plan, msp, state, settings):
+    producers = core.msp_producers(plan)
+    return not any(
+        _settled(
+            state,
+            other,
+            producers[other],
+            _finished_states(settings),
+            _run_proven(settings, other),
+        )
+        for other in core.msp_mergers(plan).get(msp, ())
+    )
+
+
+def _proved_repair(plan, msp, prior, state, settings, proven_head):
+    if proven_head is None:
+        return None
+    return {
+        "gated": prior["gate"].get("commit"),
+        "carried": _stack_unsettled(plan, msp, state, settings),
+    }
+
+
 def _judged_head(tree, head):
     return head if head is not None else branch_commit(tree["path"], tree["branch"], required=True)
 
@@ -3513,7 +3543,7 @@ def _with_unreplayed(plan, findings, unreplayed):
 
 
 def _reconcile_stage(
-    plan, msp, tree, producers, trees, settings, head=None, unreplayed=(), gated=None
+    plan, msp, tree, producers, trees, settings, head=None, unreplayed=(), repair=None
 ):
     try:
         findings = reconcile(
@@ -3524,7 +3554,7 @@ def _reconcile_stage(
             settings["base_commit"],
             _producer_heads(tree, producers, trees),
             reached_referee_held(tree["path"], _judged_head(tree, head), settings),
-            gated,
+            repair,
         )
     except GitError as error:
         return {
@@ -3570,10 +3600,10 @@ def _referee_stage(
     uncommitted=None,
     head=None,
     unreplayed=(),
-    gated=None,
+    repair=None,
 ):
     reconciled = (
-        _reconcile_stage(plan, msp, tree, producers, trees, settings, head, unreplayed, gated)
+        _reconcile_stage(plan, msp, tree, producers, trees, settings, head, unreplayed, repair)
         if uncommitted is None
         else _committed_reconcile(plan, tree, settings, uncommitted, head, unreplayed)
     )
@@ -3805,9 +3835,9 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
         state = write_state(run_dir, _msp_record(state, msp, ignored=sorted(ignored)))
     uncommitted = _uncommitted_reason(block, commit_error)
     proven_head = _proven_head(prior, head, settings["proven_heads"].get(msp))
-    gated_commit = None if proven_head is None else prior["gate"].get("commit")
+    repair = _proved_repair(plan, msp, prior, state, settings, proven_head)
     held = _referee_stage(
-        plan, msp, tree, producers, trees, settings, uncommitted, head, unreplayed, gated_commit
+        plan, msp, tree, producers, trees, settings, uncommitted, head, unreplayed, repair
     )
     if held is not None:
         notify(
@@ -3863,9 +3893,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
         )
     tampered = _gate_referee_writes(gated) if judged_now else []
     reconciled = _with_gate_referee(
-        _reconcile_stage(
-            plan, msp, tree, producers, trees, settings, head, unreplayed, gated_commit
-        ),
+        _reconcile_stage(plan, msp, tree, producers, trees, settings, head, unreplayed, repair),
         tampered,
     )
     notify(
@@ -4823,14 +4851,13 @@ def execute(
         {"lanes": {str(lane): record for lane, record in records.items() if lane not in already}},
     )
     producers = core.msp_producers(plan)
-    finished = core.DELIVERED_STATES if no_push else PUBLISHED_STATES
+    finished = _finished_states(settings)
     for msp in msp_order(plan):
         if msp in stops:
             state = write_state(run_dir, _lock_stopped_record(state, msp, stops[msp]))
             notify(observer, "msp-finished", {"msp": msp, "record": state["msps"][str(msp)]})
             continue
-        proven = settings["proven_heads"].get(msp) if settings["push"] else None
-        if _settled(state, msp, producers[msp], finished, proven):
+        if _settled(state, msp, producers[msp], finished, _run_proven(settings, msp)):
             continue
         state = _finish_msp(
             plan, msp, trees, producers[msp], state, msp_settings(plan, state, settings, msp)

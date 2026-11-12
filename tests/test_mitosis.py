@@ -1429,6 +1429,11 @@ reply = {"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"
 print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": reply}))
 '''
 
+DELTA_FAILING_WORKER = HOLDING_WORKER.replace(
+    "for path in paths:",
+    'if "delta.py" in paths:\n    sys.exit(3)\nfor path in paths:',
+)
+
 
 class StackedRepair(unittest.TestCase):
     def setUp(self):
@@ -1444,7 +1449,7 @@ class StackedRepair(unittest.TestCase):
             env={**os.environ, **ISOLATED_GIT_ENV},
         )
         git_out(self.root, "remote", "add", "origin", remote)
-        for name in ("shared_check.py", "apart_check.py"):
+        for name in ("shared_check.py", "apart_check.py", "deep_check.py"):
             write(self.root, name, "one\ntwo\nthree\nfour\nfive\n")
             git_out(self.root, "add", "--", name)
         git_out(self.root, "commit", "-q", "-m", "checks")
@@ -1453,6 +1458,7 @@ class StackedRepair(unittest.TestCase):
             briefed("alpha"),
             briefed("beta", files=["beta.py", "shared_check.py"], after=["alpha"]),
             briefed("gamma", files=["gamma.py", "apart_check.py"]),
+            briefed("delta", files=["delta.py", "deep_check.py"], after=["beta"]),
         ]
         write(self.root, "items.json", items_document(self.root, steps))
 
@@ -1562,6 +1568,30 @@ class StackedRepair(unittest.TestCase):
         code, found, said = self._resumed("alpha", head)
         self.assertEqual(code, mitosis.EXIT_CROSSING, said)
         self.assertEqual(found["alpha"]["crossing"], ["shared_check.py"], said)
+
+    def _pushed(self, worker=HOLDING_WORKER):
+        code, out, err = self._invoke(worker=worker)
+        found = {entry["msp"]: entry for entry in json.loads(out.splitlines()[-1])["msps"]}
+        return code, found, out + err
+
+    def test_a_repair_that_reaches_a_file_of_a_pushed_msp_stacked_on_it_still_crosses(self):
+        code, found, said = self._pushed()
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, said)
+        self.assertEqual(found["beta"]["state"], "pushed", said)
+        head = self._repaired("alpha", "shared_check.py")
+        code, found, said = self._resumed("alpha", head)
+        self.assertEqual(code, mitosis.EXIT_CROSSING, said)
+        self.assertEqual(found["alpha"]["crossing"], ["shared_check.py"], said)
+        self.assertNotIn("shared_overlaps", found["alpha"]["reconcile"], said)
+
+    def test_a_repair_that_reaches_past_a_pushed_msp_to_one_stacked_below_it_still_crosses(self):
+        code, found, said = self._pushed(DELTA_FAILING_WORKER)
+        self.assertEqual((found["beta"]["state"], found["delta"]["state"]), ("pushed", "blocked"), said)
+        head = self._repaired("alpha", "deep_check.py")
+        code, found, said = self._resumed("alpha", head)
+        self.assertEqual(code, mitosis.EXIT_CROSSING, said)
+        self.assertEqual(found["alpha"]["crossing"], ["deep_check.py"], said)
+        self.assertNotIn("shared_overlaps", found["alpha"]["reconcile"], said)
 
 
 class RenderPreflight(unittest.TestCase):
@@ -2514,6 +2544,7 @@ def load_tests(loader, tests, pattern):
         PullRequestFlags,
         PushOnly,
         ProvenHead,
+        StackedRepair,
         RenderPreflight,
         LaneReport,
         GateClassRefusals,
