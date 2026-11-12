@@ -1,3 +1,4 @@
+import glob
 import json
 import os
 import re
@@ -21,6 +22,7 @@ TAMPERED_LOCKED = "import unittest\nraise SystemExit(0)\n"
 GATE_RUN_LOCKED = "raise SystemExit(0)\n"
 CALC_CHECK = "import calc; assert calc.add(2, 3) == 5"
 ACCEPTANCE = [{"file": "tests/test_calc.py", "test": "Calc.adds"}]
+TWO_RUNS = ACCEPTANCE + [{"file": "tests/test_calc.py", "test": "Calc.adds_again"}]
 FILE_PROTOCOL = ("-c", "protocol.file.allow=always")
 
 CALC_TEST = """import unittest
@@ -172,6 +174,11 @@ for path, content in sorted(config["writes"].items()):
         os.makedirs(os.path.dirname(target), exist_ok=True)
     with open(target, "w", encoding="utf-8", newline="") as handle:
         handle.write(content)
+for path, target in sorted(config.get("links", {}).items()):
+    if not os.path.lexists(os.path.join(folder, path)):
+        os.symlink(target, os.path.join(folder, path))
+for path in config.get("sealed", ()):
+    os.chmod(os.path.join(folder, path), 0)
 try:
     code = subprocess.run(
         [sys.executable, "-B", "-c", config["check"]], cwd=folder, capture_output=True, timeout=60
@@ -259,10 +266,18 @@ class CleanGate(unittest.TestCase):
         self._accepting()
         return self.scratch
 
-    def _accepting(self, read=(), writes=None):
+    def _accepting(self, read=(), writes=None, links=None, sealed=()):
         lock_fixtures.put(
             os.path.join(self.scratch.stubs, "accept.json"),
-            json.dumps({"read": list(read), "writes": writes or {}, "check": CALC_CHECK}),
+            json.dumps(
+                {
+                    "read": list(read),
+                    "writes": writes or {},
+                    "links": links or {},
+                    "sealed": list(sealed),
+                    "check": CALC_CHECK,
+                }
+            ),
         )
 
     def _worker(self, actions, declared=("calc.py",)):
@@ -458,22 +473,6 @@ class CleanGate(unittest.TestCase):
         self.assertIn("gate-setup", self._recorded().get("gate_error") or "")
         self.assertFalse(os.path.exists(os.path.join(self.scratch.tmp, "accept.log")))
 
-    def a_no_diff_attribute_never_hides_the_added_lines_from_the_mutants(self):
-        self._scratch(seeded={"tests/test_calc.py": CALLABLE_TEST})
-        self._worker(
-            [
-                ["write", "calc.py", SUBTRACTING_CALC],
-                ["append-git-path", "info/attributes", "calc.py -diff"],
-            ]
-        )
-        completed = self._build(
-            accept=self.scratch.stub("accept_unittest.py", "{worktree}", "{file}", "{test}")
-        )
-        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
-        msp = self._msp(completed)
-        self.assertEqual(msp["gate"]["properties"][0]["outcome"], "weak")
-        self.assertEqual(msp["state"], "committed")
-
     def a_locked_path_a_gate_run_writes_is_fatal(self):
         self._scratch(seeded={lock_fixtures.LOCKED: lock_fixtures.LOCKED_TEXT})
         self._accepting(writes={lock_fixtures.LOCKED: GATE_RUN_LOCKED})
@@ -491,12 +490,77 @@ class CleanGate(unittest.TestCase):
         self._scratch()
         self._accepting(writes={"leftover.txt": "left\n"})
         self._worker([["write", "calc.py", CALC]])
-        completed = self._build()
+        completed = self._build(acceptance=TWO_RUNS)
         self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
         entries = self._accept_log()
-        self.assertGreaterEqual(len(entries), 2)
+        self.assertEqual(len(entries), 2)
         for entry in entries:
             self.assertNotIn("leftover.txt", entry["listing"])
+
+    def a_dependency_folder_an_acceptance_run_installs_stays_for_the_next_run(self):
+        installed = "node_modules/dep/src/__tests__/__snapshots__/dep.ts.snap"
+        self._scratch(ignored=("node_modules/",))
+        self._accepting(writes={installed: "installed\n"})
+        self._worker([["write", "calc.py", CALC]])
+        completed = self._build(acceptance=TWO_RUNS)
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
+        self.assertEqual(self._msp(completed)["state"], "committed")
+        self.assertEqual(self._recorded()["gate"]["referee"], [])
+        entries = self._accept_log()
+        self.assertEqual(len(entries), 2)
+        self.assertNotIn(installed, entries[0]["listing"])
+        self.assertIn(installed, entries[1]["listing"])
+
+    def a_link_an_acceptance_run_names_as_a_dependency_folder_is_deleted_before_the_next_run(self):
+        self._scratch(ignored=("node_modules/",))
+        outside = os.path.join(self.scratch.tmp, "outside")
+        lock_fixtures.put(os.path.join(outside, "dep", "index.js"), "outside\n")
+        self._accepting(links={"node_modules": outside})
+        self._worker([["write", "calc.py", CALC]])
+        completed = self._build(acceptance=TWO_RUNS)
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
+        entries = self._accept_log()
+        self.assertEqual(len(entries), 2)
+        for entry in entries:
+            self.assertNotIn("node_modules", entry["listing"])
+        self.assertEqual(read_text(os.path.join(outside, "dep", "index.js")), "outside\n")
+
+    def a_folder_an_acceptance_run_dresses_as_a_virtual_environment_is_not_kept(self):
+        planted = {"helpers/pyvenv.cfg": "home = /usr\n", "helpers/conftest.py": "collect_ignore = []\n"}
+        self._scratch()
+        self._accepting(writes=planted)
+        self._worker([["write", "calc.py", CALC]])
+        completed = self._build(acceptance=TWO_RUNS)
+        self.assertEqual(completed.returncode, 9, "mitosis exit code" + lock_fixtures.tail(completed))
+        self.assertEqual(self._msp(completed)["state"], "referee-reverted")
+        self.assertEqual(self._recorded()["gate"]["referee"], ["helpers/conftest.py"])
+        for entry in self._accept_log():
+            self.assertNotIn("helpers/pyvenv.cfg", entry["listing"])
+
+    def a_node_modules_folder_the_commit_tracks_is_reset_like_any_other_folder(self):
+        self._scratch(seeded={"node_modules/dep/index.js": "tracked\n"})
+        self._accepting(writes={"node_modules/dep/extra.js": "left\n"})
+        self._worker([["write", "calc.py", CALC]])
+        completed = self._build(acceptance=TWO_RUNS)
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
+        entries = self._accept_log()
+        self.assertEqual(len(entries), 2)
+        for entry in entries:
+            self.assertIn("node_modules/dep/index.js", entry["listing"])
+            self.assertNotIn("node_modules/dep/extra.js", entry["listing"])
+
+    def a_dependency_folder_a_run_seals_leaves_no_checkout_behind(self):
+        self._scratch(ignored=("node_modules/",))
+        self._accepting(
+            writes={"node_modules/sealed/dep.js": "sealed\n"}, sealed=("node_modules/sealed",)
+        )
+        self._worker([["write", "calc.py", CALC]])
+        completed = self._build()
+        left = glob.glob(os.path.join(self.scratch.run_dir, "gate", "*", "checkout-*"))
+        for folder in left:
+            os.chmod(os.path.join(folder, "node_modules", "sealed"), 0o700)
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
+        self.assertEqual(left, [])
 
     def a_gate_setup_slower_than_the_ignored_timeout_runs_to_its_end(self):
         self._scratch()
@@ -505,7 +569,7 @@ class CleanGate(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
         self.assertEqual(self._msp(completed)["state"], "committed", lock_fixtures.tail(completed))
         self.assertIsNone(self._recorded().get("gate_error"), lock_fixtures.tail(completed))
-        self.assertGreaterEqual(len(self._accept_log()), 2, lock_fixtures.tail(completed))
+        self.assertEqual(len(self._accept_log()), 1, lock_fixtures.tail(completed))
 
     def a_conftest_committed_inside_a_base_submodule_fails_the_lane(self):
         self._scratch()
@@ -602,9 +666,13 @@ def load_tests(loader, standard, pattern):
                 "dependency_folders_come_from_the_repository_root",
                 "gate_setup_runs_in_the_clean_checkout_first",
                 "a_failing_gate_setup_is_recorded_and_never_holds_the_msp",
-                "a_no_diff_attribute_never_hides_the_added_lines_from_the_mutants",
                 "a_locked_path_a_gate_run_writes_is_fatal",
                 "a_file_one_gate_run_leaves_never_reaches_the_next_run",
+                "a_dependency_folder_an_acceptance_run_installs_stays_for_the_next_run",
+                "a_link_an_acceptance_run_names_as_a_dependency_folder_is_deleted_before_the_next_run",
+                "a_folder_an_acceptance_run_dresses_as_a_virtual_environment_is_not_kept",
+                "a_node_modules_folder_the_commit_tracks_is_reset_like_any_other_folder",
+                "a_dependency_folder_a_run_seals_leaves_no_checkout_behind",
                 "a_gate_setup_slower_than_the_ignored_timeout_runs_to_its_end",
                 "a_conftest_committed_inside_a_base_submodule_fails_the_lane",
                 "a_committed_referee_write_never_lands_when_the_landing_commit_fails",

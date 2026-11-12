@@ -13,7 +13,7 @@ sys.path.insert(0, HERE)
 
 import isolation
 import run
-from test_mutant_coverage import (
+from isolation_scratch import (
     ADDS,
     CORRECT_ADD,
     REASK_COMMAND,
@@ -645,7 +645,6 @@ class Outlived(unittest.TestCase):
                 self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
                 gate = summary_of(completed)["msps"][0]["gate"]
                 self.assertEqual(gate["properties"][0]["outcome"], "pass", tail(completed))
-                self.assertEqual(gate["properties"][0].get("mutation"), "killed", tail(completed))
                 self.assertEqual(self._landed("calc.py"), CORRECT_ADD, tail(completed))
 
     def a_process_mitosis_cannot_end_holds_the_run_until_it_ends(self):

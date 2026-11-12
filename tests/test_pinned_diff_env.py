@@ -140,25 +140,6 @@ except subprocess.TimeoutExpired:
 sys.exit(code if code in (0, 1) else 2)
 '''
 
-TEST_FILE = "tests/test_calc.py"
-AREAS = {"file": TEST_FILE, "test": "Calc.areas"}
-AREA_BEFORE = (
-    "def area(width, height):\n"
-    "    size = width * height\n"
-    "    label = 1 / 0\n"
-    "    return size\n"
-)
-AREA_AFTER = AREA_BEFORE.replace("    label = 1 / 0\n", "    label = 4\n")
-AREA_TEST = (
-    "import unittest\n"
-    "\n"
-    "import calc\n"
-    "\n"
-    "\n"
-    "class Calc(unittest.TestCase):\n"
-    "    def areas(self):\n"
-    "        self.assertEqual(calc.area(2, 3), 6)\n"
-)
 CORRECT_ADD = "def add(a, b):\n    return a + b\n"
 SHAPING = (
     "GIT_DIFF_OPTS",
@@ -402,16 +383,6 @@ class PinnedDiffEnv(unittest.TestCase):
             "GIT_ATTR_SOURCE": "HEAD",
         }
 
-    def an_inherited_unified_context_still_finds_the_weak_check(self):
-        scratch = self._scratch({"calc.py": AREA_BEFORE})
-        items = scratch.items([step("label", ["calc.py", TEST_FILE], "demo", acceptance=[AREAS])])
-        scratch.jobs({"label": {"writes": {"calc.py": AREA_AFTER, TEST_FILE: AREA_TEST}}})
-        completed = scratch.build(items, env={"GIT_DIFF_OPTS": "--unified=5"})
-        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
-        first = self._first_property(summary_of(completed))
-        self.assertEqual(first["outcome"], "weak")
-        self.assertRegex(first["reason"] or "", r"calc\.py:3\b")
-
     def every_git_call_runs_without_the_shaping_variables(self):
         scratch = self._scratch()
         real_git = shutil.which("git", path=os.environ.get("PATH"))
@@ -450,7 +421,6 @@ def load_tests(loader, standard, pattern):
         (
             PinnedDiffEnv,
             (
-                "an_inherited_unified_context_still_finds_the_weak_check",
                 "every_git_call_runs_without_the_shaping_variables",
             ),
         ),

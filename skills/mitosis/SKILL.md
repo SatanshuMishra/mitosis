@@ -1,6 +1,6 @@
 ---
 name: mitosis
-description: Use when one repository holds two or more changes that touch different files, or a document whose sections each become code, and the work should ship as separately reviewable pull requests built in parallel. Splits the work, builds each part on its own branch, checks that each Step has a named acceptance test that fails without the work, opens one pull request per part, and never merges.
+description: Use when one repository holds two or more changes that touch different files, or a document whose sections each become code, and the work should ship as separately reviewable pull requests built in parallel. Splits the work, builds each part on its own branch, checks that each Step's named acceptance tests pass against the finished work, opens one pull request per part, and never merges.
 ---
 
 # mitosis
@@ -19,8 +19,8 @@ Reach for mitosis when all three hold:
 1. Two or more changes are on the table, and at least two of them touch
    different files. Work that shares a file becomes one Lane and runs
    serially inside one branch; only disjoint write-sets buy parallelism.
-2. Each change can name a test that proves it. The gate runs that test with
-   the work present and again with the work reverted; a change with no such
+2. Each change can name a test that proves it. The gate runs that test
+   once, against the finished work; a change with no such
    test is still built, but the run proves nothing about it and says so.
 3. A human will review each part as its own pull request.
 
@@ -51,7 +51,7 @@ quotes or newlines lands as one argument and is never reinterpreted by a shell.
 | `--pr-type` `--pr-scope` `--pr-subject` `--pr-why` `--pr-impact` `--pr-blast-radius` | nothing; they are facts handed to render | none |
 | `--decompose-command` | the structure pass that turns a document into Steps, each with its task | prompt, model, document, session_id, schema |
 | `--reask-command` | the same session once more, for a reply failing its owned schema; required to call a model | prompt, session_id, schema, model |
-| `--worker-sandbox` | each Worker, gate and lock-stage run under sandbox-exec, writing only its clone or checkout, temp, transcript and `--worker-write` paths; exit 3 without it | none |
+| `--worker-sandbox` | each Worker, gate and lock-stage run under sandbox-exec, writing only its clone or checkout, temp, transcript and `--worker-write` paths and signalling only its own sandbox; exit 3 without it | none |
 | `--worker-write` | nothing; one more sandbox-writable path; repeatable; exit 3 if it overlaps the run directory, repository or its git directory | none |
 | `--gate-classes` | nothing; a JSON `{test, class, reason}` list classing properties | none |
 
@@ -226,7 +226,8 @@ locks them.
 
 Each session builds in its own clone of the MSP branch under the run
 directory's `clones` folder, never in the MSP worktree.
-`--concurrency` Workers, four by default, run at once. mitosis reads a
+`--concurrency` Workers, four by default, run at once; the same number caps
+the tests a gate runs at once. mitosis reads a
 finished Lane's write-set from the clone's files, never running git there,
 and lands only those paths as one commit. A finished Lane is `held` until no
 Worker runs in its MSP, and a resume lands it without paying again. A write
@@ -245,11 +246,10 @@ runs in parallel and is named in `attention`; add an `after` edge if needed.
 mitosis refuses with exit 3 when git has no commit identity. A failed Lane is
 retried once with the reason; a refused commit fails that Lane alone.
 
-The gate runs each acceptance property twice, with the work present and with
-the implementation reverted. `pass`: it failed without the work.
-`inert`: it passed without it, proving nothing. `inconclusive`: the
-acceptance command could not judge it. `not-applicable`: the Step declared none, or it passed both
-ways beside a `pass` of its Step, a guard with no mutants. Implementation is derived: the MSP's
+The gate runs each acceptance property once, against the finished work.
+`pass`: it exited 0 there. `inconclusive`: the
+acceptance command could not judge it. `not-applicable`: the Step declared none or
+changed no implementation. Implementation is derived: the MSP's
 write-set minus the files its acceptance properties name.
 
 A property exiting 1 with the work present gets its Lane one repair; still
@@ -257,16 +257,10 @@ failing, it holds its MSP `gate-failed`, exit 21: committed, never pushed. Every
 other verdict, and a gate that could not run, ships and is named in the pull
 request's Testing table.
 
-Each passing property then runs against up to 12 mutants of its Step's added
-lines outside test locations, such as a flipped comparison, or dropped added
-lines when no operator fits. `weak` means no mutant failed it, and holds
-nothing. `--trajectory` also gets one outcome entry per acceptance test after
+`--trajectory` gets one outcome entry per acceptance test after
 every gate.
 
-Mutants come only from added lines the with-work run executed. Each
-property's mutation is killed, `weak`, `not-applicable` (the test loads none
-of the Step's files) or covered-elsewhere (classed so); `coverage` is
-`untraced` unless its mutants came from the trace. `--gate-classes` classes a property `<file>::<name>`
+`--gate-classes` classes a property `<file>::<name>`
 `not-applicable`, covered-elsewhere or `removed` with a reason, judged
 without a run and kept out of the plan id, so `--resume` rebuilds nothing; an
 entry naming no property is refused.
@@ -290,11 +284,17 @@ result's `referee` object names the locked paths, their receipt lock and
 commit. A real run exits 3 on a `- Locked:` path the feature branch lacks, or
 a `- Locked:` line that is empty, absolute or contains `..`.
 
-Every gate, mutant and acceptance run uses a clean checkout of the commit,
+Every gate and acceptance run uses a clean checkout of the commit,
 not a git repository, reset to raw blobs before each run; files the commit
-lacks never reach it; `ignored` lists them.
+lacks never reach it; `ignored` lists them. A gate runs its tests several at
+a time, each in its own checkout, the first alone; one that does not pass
+beside others runs again alone, in a checkout made for it, and that run
+judges it when it exits 0 or 1, its first log kept as
+`<n>-with-work.beside.log`. `--gate-setup` keeps one checkout.
 
-Dependencies are the root's node_modules and venvs, or `--gate-setup`, run
+Dependencies are the root's node_modules and venvs, a real node_modules folder an
+acceptance run installs, which stays for the gate's later runs and is cloned into
+its other checkouts, or `--gate-setup`, run
 once per gate with `{worktree}`; its output survives only at top-level names
 the commit lacks, such as the `.git` a git-running test needs. A top-level referee
 file or folder it makes, such as `conftest.py`, is fatal, exit 9. A Git LFS file stays

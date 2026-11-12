@@ -11,8 +11,6 @@ PRODUCER = "mitosis"
 CHECK_ID = re.compile(r"^C[0-9]+\.[0-9]+$")
 CHECK_STATUS = {
     "pass": "pass",
-    "weak": "fail",
-    "inert": "fail",
     "inconclusive": "could-not-run",
     "not-applicable": "could-not-run",
 }

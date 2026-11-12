@@ -37,7 +37,7 @@ EXIT_REFEREE = 9
 
 TIMEOUT_NOTICE = "mitosis: --timeout is deprecated and ignored; mitosis has no wall-clock limit"
 
-SUITE_NOTICE = "mitosis: --suite-command is deprecated and ignored; a surviving mutant is reported and holds nothing"
+SUITE_NOTICE = "mitosis: --suite-command is deprecated and ignored; the gate runs only the acceptance tests each Step names"
 
 BRIEF_NOTICE = "mitosis: --brief-command is deprecated and ignored; the split writes each Step's task, so no brief call runs"
 
@@ -314,8 +314,8 @@ FLAG_SPECS = {
     },
     "--suite-command": {
         "metavar": "TEMPLATE",
-        "help": "deprecated and ignored: a test no mutant fails is reported and holds nothing, "
-        "so nothing needs the suite run against each survivor",
+        "help": "deprecated and ignored: the gate runs only the acceptance tests each Step names, "
+        "so nothing runs the suite",
     },
     "--gate-classes": {
         "metavar": "PATH",
@@ -406,7 +406,8 @@ FLAG_SPECS = {
         "metavar": "N",
         "type": int,
         "default": DEFAULT_CONCURRENCY,
-        "help": "Workers running at once, for the asks stage and the build "
+        "help": "Workers running at once, for the asks stage and the build, "
+        "and the most tests a gate runs at once "
         "(default: %d)" % DEFAULT_CONCURRENCY,
     },
     "--context-hops": {
@@ -524,7 +525,7 @@ FLAG_SPECS = {
         "help": "run every Worker under sandbox-exec with a profile that refuses file writes "
         "outside its clone, a private temp folder passed as TMPDIR, its Claude Code transcript "
         "folder, /dev/null, /dev/tty, /dev/fd and each --worker-write path, and run the gate's "
-        "setup, acceptance and mutant runs and the lock stage's checks under sandbox-exec "
+        "setup and acceptance runs and the lock stage's checks under sandbox-exec "
         "too, writing only their checkout, a private temp folder and each --worker-write path; "
         "a host without sandbox-exec refuses the run before any Worker starts",
     },
@@ -1721,26 +1722,10 @@ def _label(plan, index):
 
 
 def _tally(counts):
-    return ", ".join("%d %s" % (counts.get(key, 0), key) for key in core.GATE_OUTCOMES)
-
-
-def _mutant_line(record, mutation=None):
-    if not isinstance(record, dict):
-        return None
-    killed = record.get("killed")
-    tried = _n(record.get("tried") or 0, "mutant") + " tried"
-    if mutation == "not-applicable" and not record.get("tried"):
-        return "no mutant tried: the test loaded none of the Step's Python files"
-    if mutation == "not-applicable":
-        return tried + ", none killed it; the Step added no code, so mutation does not apply"
-    if mutation == "covered-elsewhere":
-        return tried + ", none killed it; the caller classed it as covered elsewhere"
-    if not isinstance(killed, dict):
-        return tried + ", none killed it"
-    return tried + ", killed by %s:%s changed by %s" % (
-        killed.get("file"),
-        killed.get("line"),
-        killed.get("op"),
+    return ", ".join(
+        "%d %s" % (counts.get(key, 0), key)
+        for key in core.GATE_OUTCOMES
+        if key not in core.RETIRED_OUTCOMES or counts.get(key)
     )
 
 
@@ -1764,14 +1749,12 @@ def gate_lines(plan, state):
         totals = {key: totals[key] + counts.get(key, 0) for key in totals}
         lines = lines + ("MSP %s: %s (%s)" % (_label(plan, index), gate.get("outcome"), _tally(counts)),)
         for entry in gate.get("properties") or []:
-            tried = _mutant_line(entry.get("mutants"), entry.get("mutation"))
-            if entry.get("outcome") == "pass" and tried is None:
+            if entry.get("outcome") == "pass":
                 continue
             where = "%s::%s" % (entry.get("file"), entry.get("test")) if entry.get("file") else entry.get("step")
-            detail = "; ".join(
-                part for part in (_one_line(entry.get("reason")), tried) if part
+            lines = lines + (
+                "  %s: %s (%s)" % (where, entry.get("outcome"), _one_line(entry.get("reason")) or ""),
             )
-            lines = lines + ("  %s: %s (%s)" % (where, entry.get("outcome"), detail),)
     return ("%s across %s" % (_tally(totals), _n(gated, "gated MSP")),) + lines
 
 
@@ -2119,15 +2102,8 @@ def _msp_summary(plan, state):
                     "commit": gate.get("commit"),
                     "properties": [
                         {
-                            **{
-                                key: entry.get(key)
-                                for key in ("file", "test", "step", "outcome", "reason", "mutants")
-                            },
-                            **{
-                                key: entry[key]
-                                for key in ("mutation", "coverage")
-                                if key in entry
-                            },
+                            key: entry.get(key)
+                            for key in ("file", "test", "step", "outcome", "reason", "mutants")
                         }
                         for entry in gate.get("properties") or []
                     ],
@@ -2224,22 +2200,6 @@ def _attention(plan, lanes, msps):
             )
         if msp["gate"]["error"]:
             lines.append("MSP %s could not be gated: %s" % (msp["msp"], msp["gate"]["error"]))
-        lines.extend(
-            "MSP %s: %s::%s passed on red and green alone; its Step added no line to mutate"
-            % (msp["msp"], entry["file"], entry["test"])
-            for entry in msp["gate"]["properties"]
-            if entry["outcome"] == "pass"
-            and (entry["mutants"] or {}).get("tried") == 0
-            and entry.get("mutation") != "not-applicable"
-        )
-        lines.extend(
-            "MSP %s: %s::%s passed without a mutant; its test loaded none of the Step's Python "
-            "files" % (msp["msp"], entry["file"], entry["test"])
-            for entry in msp["gate"]["properties"]
-            if entry["outcome"] == "pass"
-            and (entry["mutants"] or {}).get("tried") == 0
-            and entry.get("mutation") == "not-applicable"
-        )
         if msp["crossing"]:
             lines.append(
                 "MSP %s wrote files another MSP owns: %s" % (msp["msp"], ", ".join(msp["crossing"]))

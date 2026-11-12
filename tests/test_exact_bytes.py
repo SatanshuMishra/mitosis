@@ -8,7 +8,6 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
-import mutants
 import test_gate_teeth as gate_fixtures
 import test_referee_lock as lock_fixtures
 
@@ -84,13 +83,6 @@ class ExactBytes(unittest.TestCase):
             len(self.scratch.checked("ls-remote", "origin", "mitosis/demo").splitlines()), 1
         )
 
-    def drop_added_lines_splits_only_at_line_feeds(self):
-        found = mutants.fallback({"limits.txt": [2]}, lambda path: "a\x0cb\nc\n")
-        self.assertEqual(
-            found,
-            [{"file": "limits.txt", "line": 2, "op": mutants.DROP_ADDED, "text": "a\x0cb\n"}],
-        )
-
 
 def load_tests(loader, standard, pattern):
     suite = unittest.TestSuite()
@@ -100,7 +92,6 @@ def load_tests(loader, standard, pattern):
             (
                 "a_non_utf8_locked_file_is_hashed_by_its_exact_bytes",
                 "a_non_utf8_line_in_the_diff_does_not_stop_the_gate",
-                "drop_added_lines_splits_only_at_line_feeds",
             ),
         ),
     ):

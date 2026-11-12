@@ -1,6 +1,6 @@
 # mitosis
 
-mitosis splits a batch of changes or a document into parts built in parallel, proves each part's acceptance tests fail without the work, and opens one pull request per part. These terms name what it records about itself.
+mitosis splits a batch of changes or a document into parts built in parallel, runs each part's acceptance tests against the finished work, and opens one pull request per part. These terms name what it records about itself.
 
 ## Metrics
 
@@ -66,7 +66,7 @@ An acceptance test a check author writes before the build, locked only when it f
 _Avoid_: frozen test, pinned test
 
 **Guard**:
-An acceptance test that passes with and without the work while another test of its Step fails without it, so it proves the work left that behaviour alone and not that the work exists. The lock accepts it, the gate records it as not-applicable and gives it no mutants, and it still must pass with the work.
+An acceptance test that passes with and without the work while another test of its Step fails without it, so it proves the work left that behaviour alone and not that the work exists. The lock accepts it, and at the gate it must pass against the finished work like any other test.
 _Avoid_: regression test, no-op test
 
 **Probe files**:
@@ -74,26 +74,19 @@ The files a check author's probe may write for an MSP: the files of that MSP's S
 _Avoid_: scratch implementation, stub files
 
 **Lock commit**:
-The commit holding an MSP's locked checks on top of the feature base: the first commit of that MSP's branch and the tree its gate reverts the work to.
+The commit holding an MSP's locked checks on top of the feature base: the first commit of that MSP's branch.
 _Avoid_: test commit, base commit
 
 **Referee path**:
 A path the charter locks, a test-configuration file or snapshot anywhere, or a baseline, allowlist or skip list inside a test location; a Step's own locked acceptance file is handed to its Worker read-only, any other in a Step's files refuses the plan, and a committed write to one is restored and holds its MSP back.
 
 **Gate folder**:
-The clean checkout the gate runs in: a folder outside the Worker's worktree, written from the MSP commit's tree objects with git's settings pinned, holding dependency folders from the repository root or the gate setup command, and reset to its target tree before every acceptance and mutant run. It is not a git repository.
+A clean checkout the gate runs an acceptance test in: a folder outside the Worker's worktree, written from the MSP commit's tree objects with git's settings pinned, holding dependency folders from the repository root or the gate setup command, or a node_modules folder an acceptance run installs, and reset to its target tree before every acceptance run. A gate makes up to as many as the build runs at once, never more than its tests after the first, and one more when a test is run again alone; one test runs in each at a time. It is not a git repository.
 _Avoid_: gate tree, normalized worktree
 
 **Ignored file**:
 A file in the Worker's worktree that the MSP's commit does not carry; it never reaches the gate, is listed in the MSP's `ignored` list and is never restored.
 _Avoid_: stray, uncommitted write
-
-**Mutant**:
-A copy of the work with one added line changed on purpose by one operator of receipts' G14 table, which a passing property must fail against.
-
-**Weak property**:
-An acceptance property that fails without the work and passes with it, yet passes against every mutant tried, so it may not tell working code from broken code; reported to reviewers and holding nothing.
-_Avoid_: shallow test
 
 **Held-back MSP**:
 An MSP with an acceptance test still failing against the finished work after one repair, or whose whole change a repository hook refused, committed on its branch in the state gate-failed and never pushed.

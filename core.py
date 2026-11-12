@@ -9,7 +9,7 @@ import uuid
 
 import referee
 
-__version__ = "0.19.2"
+__version__ = "0.21.1"
 
 PLAN_KEYS = (
     "plan_id",
@@ -95,17 +95,7 @@ DELIVERED_STATES = ("shipped", "pushed", "unchanged", "committed")
 
 GATE_OUTCOMES = ("pass", "weak", "inert", "inconclusive", "not-applicable")
 
-GUARD_REASON = "passes with and without the work, so it guards behaviour that must stay the same"
-
-GUARD_KILLED_REASON = (
-    "passes with and without the work and fails when %s:%d changes by %s, so it guards "
-    "behaviour the work must keep"
-)
-
-
-def is_guard(judged):
-    proven_by_mutation = judged.get("outcome") == "pass" and judged.get("mutation") == "killed"
-    return judged.get("reverted") == 0 and (judged.get("outcome") == "not-applicable" or proven_by_mutation)
+RETIRED_OUTCOMES = ("weak", "inert")
 
 STEP_TYPES = ("fix", "feature", "port", "design", "sweep", "contract")
 

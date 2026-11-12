@@ -1,7 +1,7 @@
 {
   "format": 1,
   "plugin": "mitosis",
-  "purpose": "mitosis splits a batch of changes or a document into parts built in parallel, gates each acceptance test on failing without the work, and opens one pull request per part.",
+  "purpose": "mitosis splits a batch of changes or a document into parts built in parallel, gates each acceptance test on passing against the finished work, and opens one pull request per part.",
   "objectives": [
     {
       "id": "split",
@@ -33,7 +33,7 @@
     },
     {
       "id": "gate",
-      "text": "Gate every acceptance test on actually failing without the work.",
+      "text": "Gate every acceptance test on passing against the finished work.",
       "measured_by": [
         "gate.outcome",
         "gate.reused",
@@ -637,7 +637,7 @@
         "pipeline"
       ],
       "questions": [
-        "Did every acceptance test fail without the work?"
+        "Did every acceptance test pass against the finished work?"
       ],
       "fields": {
         "msp": {
@@ -657,16 +657,16 @@
         "outcome": {
           "type": "enum",
           "description": "The MSP's gate outcome.",
-          "measured_from": "The gate's worst property outcome: weak, then inert, then inconclusive, then pass.",
+          "measured_from": "The gate's worst property outcome: inconclusive, then pass. No version from 0.20.0 gives weak or inert.",
           "unit": "none",
           "includes": "The outcome only.",
           "excludes": "Each property's reason, which the store never holds.",
-          "reading": "pass means every acceptance test failed without the work and against a mutant of it; weak means one passed against every mutant of the work tried; inert means one passed without it; inconclusive means one could not be judged; not-applicable means none could run; null means the gate could not run.",
+          "reading": "pass means every acceptance test passed against the finished work; inconclusive means one could not be judged; not-applicable means none could run; null means the gate could not run. Versions before 0.20.0 also gave weak, when a test passed against every altered copy of the work tried, and inert, when one passed without the work.",
           "readers": [
             "owner",
             "pipeline"
           ],
-          "question": "Were the acceptance tests proven to fail without the work?",
+          "question": "Did the acceptance tests pass against the finished work?",
           "values": [
             "pass",
             "weak",
@@ -1373,7 +1373,7 @@
           "owner",
           "pipeline"
         ],
-        "question": "Were the acceptance tests proven to fail without the work?",
+        "question": "Did the acceptance tests pass against the finished work?",
         "fields": {
           "pass": {
             "type": "integer",
@@ -1387,7 +1387,7 @@
               "owner",
               "pipeline"
             ],
-            "question": "Were the acceptance tests proven to fail without the work?"
+            "question": "Did the acceptance tests pass against the finished work?"
           },
           "weak": {
             "type": "integer",
@@ -1401,7 +1401,7 @@
               "owner",
               "pipeline"
             ],
-            "question": "Were the acceptance tests proven to fail without the work?"
+            "question": "Did the acceptance tests pass against the finished work?"
           },
           "inert": {
             "type": "integer",
@@ -1415,7 +1415,7 @@
               "owner",
               "pipeline"
             ],
-            "question": "Were the acceptance tests proven to fail without the work?"
+            "question": "Did the acceptance tests pass against the finished work?"
           },
           "inconclusive": {
             "type": "integer",
@@ -1429,7 +1429,7 @@
               "owner",
               "pipeline"
             ],
-            "question": "Were the acceptance tests proven to fail without the work?"
+            "question": "Did the acceptance tests pass against the finished work?"
           },
           "not_applicable": {
             "type": "integer",
@@ -1443,7 +1443,7 @@
               "owner",
               "pipeline"
             ],
-            "question": "Were the acceptance tests proven to fail without the work?"
+            "question": "Did the acceptance tests pass against the finished work?"
           }
         }
       },
@@ -1832,16 +1832,16 @@
             "gate": {
               "type": "enum",
               "description": "The MSP's gate outcome.",
-              "measured_from": "The gate's worst property outcome: weak, then inert, then inconclusive, then pass.",
+              "measured_from": "The gate's worst property outcome: inconclusive, then pass. No version from 0.20.0 gives weak or inert.",
               "unit": "none",
               "includes": "The outcome only.",
               "excludes": "Each property's reason, which the store never holds.",
-              "reading": "pass means every acceptance test failed without the work and against a mutant of it; weak means one passed against every mutant of the work tried; inert means one passed without it; inconclusive means one could not be judged; not-applicable means none could run; null means the gate could not run.",
+              "reading": "pass means every acceptance test passed against the finished work; inconclusive means one could not be judged; not-applicable means none could run; null means the gate could not run. Versions before 0.20.0 also gave weak, when a test passed against every altered copy of the work tried, and inert, when one passed without the work.",
               "readers": [
                 "owner",
                 "pipeline"
               ],
-              "question": "Were the acceptance tests proven to fail without the work?",
+              "question": "Did the acceptance tests pass against the finished work?",
               "values": [
                 "pass",
                 "weak",

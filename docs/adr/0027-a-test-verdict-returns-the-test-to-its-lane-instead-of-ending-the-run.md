@@ -1,6 +1,6 @@
 # A test verdict returns the test to its Lane instead of ending the run
 
-Status: accepted. Refines 0024 and 0025.
+Status: accepted. Refines 0024 and 0025. Amended by 0028.
 
 The recorded runs stopped far more often on verdicts about tests than on wrong code. The lock refused 83 Lanes whose locked tests passed at the base and blocked 67 more behind them; 18 runs ended with exit 24 on weak tests that nobody sent back to their Worker; 6 ended with exit 20 on Steps whose tests all guard behaviour that must stay the same; and 41 ended with exit 6 on a write outside the declaration, 28 of them otherwise ready to ship. The reference planner, which has no lock and treats an undeclared write inside an MSP as noise, finished the same items.
 

@@ -977,7 +977,7 @@ class WarmClones(unittest.TestCase):
         self._warm_record("left", completed)
         self.assertEqual(self._only_lane_record().get("seeded"), ["cache/"])
         runs = scratch.gate_runs()
-        self.assertGreaterEqual(len(runs), 2, "acceptance runs: %r" % (runs,))
+        self.assertEqual(len(runs), 1, "acceptance runs: %r" % (runs,))
         self.assertEqual([entry for entry in runs if entry.get("cache") is not False], [])
 
     def a_resumed_lane_gets_a_fresh_seeded_copy(self):

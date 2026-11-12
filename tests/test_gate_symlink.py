@@ -24,7 +24,6 @@ LINK_WORKER = teeth.WORKER.replace(
 )
 
 LIMIT = "LIMIT = 3\n"
-CAP = '{"cap": 3}\n'
 KEEP = b"cached bytes\n"
 LOCKED = "tests/test_calc.py"
 LOCKED_TEXT = "import unittest\n"
@@ -40,9 +39,6 @@ LIMIT_TEST = (
     "    def adds(self):\n"
     "        self.assertEqual(calc.LIMIT, 3)\n"
 )
-
-def link_reason(path):
-    return "the Step changed %s, a symbolic link the gate cannot mutate without writing through it" % path
 
 
 def read_bytes(path):
@@ -77,24 +73,24 @@ class GateSymlink(unittest.TestCase):
         extra = ("--charter", self.scratch.file("charter.md", charter)) if charter else ()
         return self.scratch.build(items, *extra, push=True), placed
 
-    def _inconclusive_link(self, completed, path):
+    def _judged_through_the_link(self, completed):
         self.assertEqual(completed.returncode, 0, "mitosis exit code" + teeth.tail(completed))
         msp = teeth.summary_of(completed)["msps"][0]
         self.assertEqual(msp["state"], "shipped")
         first = msp["gate"]["properties"][0]
-        self.assertEqual(first["outcome"], "inconclusive")
-        self.assertEqual(first["reason"], link_reason(path))
+        self.assertEqual(first["outcome"], "pass", teeth.tail(completed))
+        self.assertIsNone(first["reason"])
 
-    def a_symlinked_implementation_is_never_written_through(self):
+    def a_symlinked_implementation_is_judged_through_the_link(self):
         completed, _ = self._linked_build(
             ("calc.py", "impl.py", "tests/test_calc.py"),
             {"impl.py": LIMIT, "tests/test_calc.py": LIMIT_TEST},
             {"calc.py": "impl.py"},
         )
         self.assertEqual(self.scratch.checked("show", "mitosis/demo:impl.py"), LIMIT)
-        self._inconclusive_link(completed, "calc.py")
+        self._judged_through_the_link(completed)
 
-    def a_link_to_an_outside_file_is_never_mutated(self):
+    def a_link_to_an_outside_file_is_judged_and_never_written(self):
         completed, placed = self._linked_build(
             ("calc.py", "tests/test_calc.py"),
             {"tests/test_calc.py": LIMIT_TEST},
@@ -102,17 +98,7 @@ class GateSymlink(unittest.TestCase):
             outside={"victim.py": LIMIT},
         )
         self.assertEqual(read_bytes(placed["victim.py"]), LIMIT.encode("utf-8"))
-        self._inconclusive_link(completed, "calc.py")
-
-    def a_link_to_an_outside_data_file_is_never_dropped(self):
-        completed, placed = self._linked_build(
-            ("limits.json", "tests/test_calc.py"),
-            {"tests/test_calc.py": teeth.LIMITS_TEST},
-            {"limits.json": "@TMP@/victim.json"},
-            outside={"victim.json": CAP},
-        )
-        self.assertEqual(read_bytes(placed["victim.json"]), CAP.encode("utf-8"))
-        self._inconclusive_link(completed, "limits.json")
+        self._judged_through_the_link(completed)
 
     def a_linked_tests_folder_keeps_its_outside_cache_through_a_build(self):
         completed, placed = self._linked_build(
@@ -157,37 +143,6 @@ class GateSymlink(unittest.TestCase):
             "would reach outside the worktree",
         )
 
-    def _linked_file(self):
-        tree = os.path.join(self.tmp, "tree")
-        os.makedirs(tree)
-        target = teeth.put(os.path.join(self.tmp, "victim.py"), LIMIT)
-        os.symlink(target, os.path.join(tree, "calc.py"))
-        return tree, target
-
-    def write_text_refuses_a_link(self):
-        tree, target = self._linked_file()
-        refusal = None
-        try:
-            run._write_text(tree, "calc.py", "x")
-        except OSError as error:
-            refusal = error
-        self.assertEqual(read_bytes(target), LIMIT.encode("utf-8"))
-        self.assertEqual(
-            str(refusal),
-            "mitosis refused to act on calc.py: calc.py is a symbolic link, so the action would "
-            "reach outside the worktree",
-        )
-
-    def read_text_refuses_a_link(self):
-        tree, target = self._linked_file()
-        with self.assertRaises(OSError) as refused:
-            run._read_text(tree, "calc.py")
-        self.assertEqual(
-            str(refused.exception),
-            "mitosis refused to act on calc.py: calc.py is a symbolic link, so the action would "
-            "reach outside the worktree",
-        )
-
 
 def load_tests(loader, standard, pattern):
     suite = unittest.TestSuite()
@@ -195,13 +150,10 @@ def load_tests(loader, standard, pattern):
         (
             GateSymlink,
             (
-                "a_symlinked_implementation_is_never_written_through",
-                "a_link_to_an_outside_file_is_never_mutated",
-                "a_link_to_an_outside_data_file_is_never_dropped",
+                "a_symlinked_implementation_is_judged_through_the_link",
+                "a_link_to_an_outside_file_is_judged_and_never_written",
                 "a_linked_tests_folder_keeps_its_outside_cache_through_a_build",
                 "clear_caches_beside_refuses_a_linked_parent",
-                "write_text_refuses_a_link",
-                "read_text_refuses_a_link",
             ),
         ),
     ):

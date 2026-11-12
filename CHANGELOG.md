@@ -3,7 +3,7 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
-## 0.19.2 - 2026-11-12
+## 0.21.1 - 2026-11-12
 
 - A folder listed in `.worktreeinclude` that the repository ignores only
   through a pattern on its contents, such as `objs/` under the rule
@@ -16,6 +16,98 @@ only when the version changes, so every release changes it.
 - A secret-looking name and a virtual environment among those paths are
   refused as anywhere else, and a file a Worker writes beside a seeded
   file in such a folder is still seen as the Worker's.
+
+## 0.21.0 - 2026-11-11
+
+The gate runs an MSP's acceptance tests several at a time, as
+`docs/adr/0031` settles. It was measured before it was written, by gate
+replays on the eight built benchmark changes, and again as written.
+
+- The gate runs up to the `--concurrency` number of an MSP's acceptance
+  tests at once, each in a clean checkout of its own. Replayed with four at
+  a time, the gates of seven built changes take 103.0 seconds where one
+  test at a time took 261.8, and change A's takes 152.4 where it took
+  173.2, with every verdict equal.
+- The first test runs alone. A node_modules folder it installs is then
+  cloned into every other checkout, and on a filesystem without clones each
+  checkout installs for itself. With every checkout installing for itself,
+  A's gate was slower than one test at a time, 188.9 seconds against 171.9.
+- A test that does not pass beside others is run again alone before it is
+  judged, in one more checkout the gate makes only then, which no other test
+  has written in. The run alone decides only when it exits 0 or 1;
+  otherwise the run beside others stands, so a failing test that cannot
+  start in the new checkout still holds its MSP. The log of its first run
+  is kept as `<n>-with-work.beside.log` until the MSP's next gate. Two
+  tests can now meet through anything outside their checkouts, such as a
+  port or a database, and a test that fails for a real reason now runs
+  twice.
+- A gate with `--gate-setup`, a gate of two tests and a build under a
+  `--concurrency` of one keep one checkout and run the tests one after
+  another, as before.
+- Under `--worker-sandbox` each checkout has its own profile, temp folder
+  and mark; those of the checkouts after the first sit under
+  `gate/msp-<n>.slots`, which the gate removes when it ends.
+- Under `--worker-sandbox` a Worker, an acceptance run and a lock-stage
+  check may signal only processes inside their own sandbox. Before, each
+  could end any process of the caller's account, another test's and
+  mitosis's own included.
+- When one acceptance run raises an error, the gate starts no test still
+  queued.
+- MSPs still finish one after another. Finishing at once those that do not
+  wait on one another built change A in 702 seconds against 900 and is not
+  adopted: its reviews showed tests of two MSPs meeting with no run that is
+  alone in the build.
+- The JSON result and the run's saved record keep their shape. A test run
+  again alone leaves no record but its kept log.
+
+## 0.20.0 - 2026-11-11
+
+The gate runs each acceptance test once, against the finished work, as
+`docs/adr/0028` settles. Three stages are gone, each measured on seven built
+benchmark changes and against every verdict saved from past runs.
+
+- Mutation testing is removed, with `mutants.py`, the line tracer and the
+  `weak` verdict. It gave two weak verdicts in the seven builds, on a change
+  whose merged tests scored 600 of 613 before and after its Lane answered
+  them; none of the 37 weak verdicts on record named a defect in a test, and
+  mutant runs took 3 to 334 seconds of a gate.
+- The run of each test with the implementation reverted is removed, and with
+  it the `inert` verdict and the guard reading at the gate. It took 4 to 43
+  seconds of a gate, and the 17 verdicts it alone raised in past runs were on
+  Steps that only add tests, on a refactor that keeps behaviour and on one
+  Step with no traceable cause.
+- A test no longer returns to its Lane for passing. A test that fails against
+  the work, or that the acceptance command cannot run, still gets its one
+  repair.
+- Replayed on the seven built changes, the gates take 258 seconds in all
+  where the 0.19.1 gates took 798, and every test passes both ways.
+- The pull request's Testing table says a test passes against the finished
+  work. The gate no longer shows that a test fails without the work, so a
+  skipped test, or one that asserts only that a function exists, passes. A
+  plan with a lock stage still requires each locked test to fail at the
+  feature base.
+- The JSON result and the run state keep their fields: the `weak` and `inert`
+  counts read zero, each property's `mutants` is null and carries no
+  `mutation` or `coverage`, and the gate's `reverted` list is empty. A
+  recorded gate that `--resume` reuses at an unchanged commit is judged again
+  from its recorded exit codes.
+- A node_modules folder that an acceptance run installs in the clean
+  checkout, when the commit has none, stays for the gate's later runs and is
+  never read as a referee write. Before, the gate deleted it before every
+  run and held the MSP back with exit 9 for each file in it that matched a
+  referee marker: benchmark change A, whose acceptance script installs
+  node_modules, ended that way after 62 gate runs of about 37 seconds each.
+  Replayed on that build, the gate takes 168 seconds with the folder kept
+  where it took 546 without, and reports no referee write. Only a real
+  folder under that name is kept: a symbolic link under it, and a folder a
+  run makes under any other name, is deleted before the next run, and a
+  referee path in it is still fatal. What a test writes into the kept
+  folder reaches the gate's later runs; `docs/adr/0029` holds the reasons.
+- The gate adds no defence against an acceptance run that forges or
+  prevents its own verdict. Work that ends the run with status 0, and a
+  test that leaves a file the gate cannot delete, ship on 0.19.1 and on
+  0.20.0 alike, and no past run recorded a gate error; `docs/adr/0030`
+  holds the measurements.
 
 ## 0.19.1 - 2026-11-10
 

@@ -3,6 +3,10 @@
 Status: pre-registered. Written 2026-09-19, before any trial in this protocol
 has been run.
 
+The gate this protocol describes is the one before 0.20.0, which also ran
+each property with the implementation reverted; `docs/adr/0028` records why
+that run was removed.
+
 This document is written first on purpose. Every hypothesis, metric, threshold
 and kill criterion below is fixed before a single document is decomposed, so
 that the analysis cannot be fitted to the results afterwards. Any change made
