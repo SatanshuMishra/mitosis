@@ -729,6 +729,39 @@ class WarmClones(unittest.TestCase):
         self.assertEqual(plan.get("paths"), ["cache/", "mixed/obj.o"])
         self.assertEqual(plan.get("skipped"), [])
 
+    def seed_plan_keeps_the_ignored_contents_of_a_folder_ignored_only_by_pattern(self):
+        folder = self._folder()
+        repo = folder.repository(
+            {".gitignore": "objs/*.o\nbuild/*.o\nbuild/cache/\nconf/*.pem\nconf/*.json\ndeep/**/*.o\n"},
+            {
+                "objs/a.o": "obj\n",
+                "build/x.o": "obj\n",
+                "build/notes.txt": "notes\n",
+                "build/cache/big.bin": WARM,
+                "conf/server.pem": "secret\n",
+                "conf/settings.json": "{}\n",
+                "deep/a/b/x.o": "obj\n",
+                "deep/a/keep.txt": "keep\n",
+                ".worktreeinclude": "objs/\nbuild/\nconf/\ndeep/\n",
+            },
+        )
+        plan = load("isolation").seed_plan(repo)
+        self.assertEqual(
+            plan.get("paths"),
+            ["build/cache/", "build/x.o", "conf/settings.json", "deep/a/b/x.o", "objs/a.o"],
+        )
+        self.assertEqual(self._skipped_paths(plan.get("skipped") or []), ["conf/server.pem"])
+
+    def seed_plan_reads_a_listed_folder_name_that_starts_with_a_colon_as_that_name(self):
+        folder = self._folder()
+        repo = folder.repository(
+            {".gitignore": "*.o\n"},
+            {":warm/x.o": "obj\n", ".worktreeinclude": ":warm/\n"},
+        )
+        plan = load("isolation").seed_plan(repo)
+        self.assertEqual(plan.get("paths"), [":warm/x.o"])
+        self.assertEqual(plan.get("skipped"), [])
+
     def seed_plan_refuses_a_virtual_environment(self):
         folder = self._folder()
         repo = folder.repository(
@@ -1046,6 +1079,8 @@ def load_tests(loader, standard, pattern):
                 "no_worktreeinclude_seeds_nothing",
                 "an_empty_worktreeinclude_seeds_nothing",
                 "seed_plan_keeps_only_ignored_untracked_matches",
+                "seed_plan_keeps_the_ignored_contents_of_a_folder_ignored_only_by_pattern",
+                "seed_plan_reads_a_listed_folder_name_that_starts_with_a_colon_as_that_name",
                 "seed_plan_refuses_a_virtual_environment",
                 "seed_plan_refuses_secret_looking_names",
                 "copy_on_write_refuses_a_platform_without_it",

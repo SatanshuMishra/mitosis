@@ -746,6 +746,13 @@ def _seed_failure(reason):
     return {"paths": [], "skipped": [{"path": SEED_FILE, "reason": reason}]}
 
 
+def _ignored_inside(repo, folders):
+    if not folders:
+        return []
+    args = ["--literal-pathspecs", "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory", "--"]
+    return run.git_paths(args + folders, repo)
+
+
 def seed_plan(repo):
     listing = os.path.abspath(os.path.join(repo, SEED_FILE))
     try:
@@ -761,9 +768,11 @@ def seed_plan(repo):
     try:
         listed = run.git_paths(args, repo)
         ignored = _ignored(repo, listed)
+        folders = [path for path in listed if path.endswith("/") and path not in ignored]
+        ignored_inside = _ignored(repo, _ignored_inside(repo, folders))
     except (run.GitError, OSError) as error:
         return _seed_failure(str(error))
-    matched = sorted(path for path in set(listed) if path in ignored)
+    matched = sorted({path for path in listed if path in ignored} | ignored_inside)
     outermost = [
         path
         for path in matched
