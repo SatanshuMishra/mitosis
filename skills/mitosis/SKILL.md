@@ -312,7 +312,8 @@ declared. A write outside the declaration is a finding; a declared path never
 written is one only when the MSP changed nothing. A write into a file another MSP owns is the serious one: merging
 both pull requests as they stand overwrites one with the other. The pull
 request that made the write names it under Trade-offs and open problems, and
-it sets the exit code.
+it sets the exit code. A repair on a caller-proved head that reaches a file
+of an MSP stacked with this one is reported with the merge order instead.
 
 ## Reading the result
 

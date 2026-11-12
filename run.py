@@ -2893,13 +2893,52 @@ def _plan_msp_rank(plan):
 
 def shared_overlaps(plan, msp, undeclared):
     shared = core.shared_matcher(plan.get("shared_files") or ())
-    found = tuple(
-        (path, others)
-        for path in undeclared
-        if shared(_norm(path))
-        for others in (_declaring_msps(plan, path, msp),)
-        if others
+    return _overlap_entries(
+        plan,
+        msp,
+        tuple(
+            (path, others)
+            for path in undeclared
+            if shared(_norm(path))
+            for others in (_declaring_msps(plan, path, msp),)
+            if others
+        ),
     )
+
+
+def _stacked_with(plan, msp):
+    merges = core.msp_merges(plan)
+    return frozenset(merges.get(msp, ())) | frozenset(
+        other for other, merged in merges.items() if msp in merged
+    )
+
+
+def repaired_after_gate(tree, head, base, gated, producer_heads=()):
+    if gated is None:
+        return ()
+    built = frozenset(changed_files(tree, gated, base, producer_heads))
+    return tuple(
+        path for path in changed_files(tree, head, gated, producer_heads) if path not in built
+    )
+
+
+def stacked_repair_overlaps(plan, msp, repaired):
+    if not repaired:
+        return ()
+    stacked = _stacked_with(plan, msp)
+    return _overlap_entries(
+        plan,
+        msp,
+        tuple(
+            (path, others)
+            for path in repaired
+            for others in (_declaring_msps(plan, path, msp),)
+            if others and all(other in stacked for other in others)
+        ),
+    )
+
+
+def _overlap_entries(plan, msp, found):
     if not found:
         return ()
     rank = _plan_msp_rank(plan)
@@ -2915,11 +2954,21 @@ def shared_overlaps(plan, msp, undeclared):
     )
 
 
-def reconcile(plan, msp, tree, head, base, producer_heads=(), held=None):
+def reconcile(plan, msp, tree, head, base, producer_heads=(), held=None, gated=None):
     changed = changed_files(tree, head, base, producer_heads)
     declared = sorted({_norm(f) for f in plan["msps"][msp].get("files") or ()})
     outside = [path for path in changed if _norm(path) not in declared]
-    overlaps = shared_overlaps(plan, msp, outside)
+    declared_shared = shared_overlaps(plan, msp, outside)
+    repaired = frozenset(repaired_after_gate(tree, head, base, gated, producer_heads))
+    overlaps = declared_shared + stacked_repair_overlaps(
+        plan,
+        msp,
+        tuple(
+            path
+            for path in outside
+            if path in repaired and path not in {entry["path"] for entry in declared_shared}
+        ),
+    )
     overlapping = frozenset(entry["path"] for entry in overlaps)
     undeclared = [path for path in outside if path not in overlapping]
     missing = [path for path in declared if path not in {_norm(c) for c in changed}]
@@ -3463,7 +3512,9 @@ def _with_unreplayed(plan, findings, unreplayed):
     }
 
 
-def _reconcile_stage(plan, msp, tree, producers, trees, settings, head=None, unreplayed=()):
+def _reconcile_stage(
+    plan, msp, tree, producers, trees, settings, head=None, unreplayed=(), gated=None
+):
     try:
         findings = reconcile(
             plan,
@@ -3473,6 +3524,7 @@ def _reconcile_stage(plan, msp, tree, producers, trees, settings, head=None, unr
             settings["base_commit"],
             _producer_heads(tree, producers, trees),
             reached_referee_held(tree["path"], _judged_head(tree, head), settings),
+            gated,
         )
     except GitError as error:
         return {
@@ -3509,10 +3561,19 @@ def _committed_reconcile(plan, tree, settings, uncommitted, head=None, unreplaye
 
 
 def _referee_stage(
-    plan, msp, tree, producers, trees, settings, uncommitted=None, head=None, unreplayed=()
+    plan,
+    msp,
+    tree,
+    producers,
+    trees,
+    settings,
+    uncommitted=None,
+    head=None,
+    unreplayed=(),
+    gated=None,
 ):
     reconciled = (
-        _reconcile_stage(plan, msp, tree, producers, trees, settings, head, unreplayed)
+        _reconcile_stage(plan, msp, tree, producers, trees, settings, head, unreplayed, gated)
         if uncommitted is None
         else _committed_reconcile(plan, tree, settings, uncommitted, head, unreplayed)
     )
@@ -3743,8 +3804,10 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
         )
         state = write_state(run_dir, _msp_record(state, msp, ignored=sorted(ignored)))
     uncommitted = _uncommitted_reason(block, commit_error)
+    proven_head = _proven_head(prior, head, settings["proven_heads"].get(msp))
+    gated_commit = None if proven_head is None else prior["gate"].get("commit")
     held = _referee_stage(
-        plan, msp, tree, producers, trees, settings, uncommitted, head, unreplayed
+        plan, msp, tree, producers, trees, settings, uncommitted, head, unreplayed, gated_commit
     )
     if held is not None:
         notify(
@@ -3756,7 +3819,6 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
         return write_state(run_dir, _msp_record(state, msp, **_blocked_record(block, held)))
     if held is not None:
         return write_state(run_dir, _msp_record(state, msp, **held))
-    proven_head = _proven_head(prior, head, settings["proven_heads"].get(msp))
     inputs = gate_inputs(settings, replayed)
     proven_gate = prior.get("gate") if proven_head is not None else None
     recorded_gate = None if proven_head is not None else _reusable_gate(prior, head, inputs)
@@ -3801,7 +3863,10 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
         )
     tampered = _gate_referee_writes(gated) if judged_now else []
     reconciled = _with_gate_referee(
-        _reconcile_stage(plan, msp, tree, producers, trees, settings, head, unreplayed), tampered
+        _reconcile_stage(
+            plan, msp, tree, producers, trees, settings, head, unreplayed, gated_commit
+        ),
+        tampered,
     )
     notify(
         settings.get("observer"),

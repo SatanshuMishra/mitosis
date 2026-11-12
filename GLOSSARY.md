@@ -167,7 +167,7 @@ A file a caller declares as edited by many MSPs in separate regions; an overlap 
 _Avoid_: hub file, common file
 
 **Integration order**:
-The order to merge the MSPs that edit one shared file: producers first, then the longest remaining chain, then input order.
+The order to merge the MSPs that edit one shared file, or one file a proved repair changes in an MSP stacked with its own: producers first, then the longest remaining chain, then input order.
 _Avoid_: merge queue, shared order
 
 **Output tail**:

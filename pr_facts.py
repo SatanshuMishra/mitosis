@@ -300,8 +300,8 @@ def _overlap_lead(entry):
     others = list(entry.get("also_in") or ())
     order = list(entry.get("integration_order") or ())
     if not others or not all(_nameable(label) for label in others + order):
-        return "A shared file this branch writes is also changed by another MSP"
-    return "A shared file this branch writes is also changed by MSP %s, so merge in the order %s" % (
+        return "A file this branch writes is also changed by another MSP"
+    return "A file this branch writes is also changed by MSP %s, so merge in the order %s" % (
         ", ".join(others),
         " then ".join(order),
     )
