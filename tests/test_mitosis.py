@@ -1412,6 +1412,188 @@ class ProvenHead(unittest.TestCase):
         self.assertEqual(self._calls(), 0)
 
 
+CROSSING_WORKER = r'''
+import json
+import sys
+
+SESSION = sys.argv[2] if len(sys.argv) > 2 else ""
+
+lines = sys.argv[1].splitlines()
+opened = lines.index("{")
+spec = json.loads("\n".join(lines[opened : lines.index("}", opened) + 1]))
+paths = list(dict.fromkeys(path for leaf in spec["leaves"] for path in leaf["edit"]))
+for path in paths + (["shared_check.py"] if "alpha.py" in paths else []):
+    with open(path, "a") as handle:
+        handle.write("work\n")
+reply = {"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"}
+print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": reply}))
+'''
+
+DELTA_FAILING_WORKER = HOLDING_WORKER.replace(
+    "for path in paths:",
+    'if "delta.py" in paths:\n    sys.exit(3)\nfor path in paths:',
+)
+
+
+class StackedRepair(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.elsewhere = tempfile.mkdtemp()
+        self.run_dir = os.path.join(self.elsewhere, "run")
+        git_repo(self.root)
+        remote = os.path.join(self.elsewhere, "remote.git")
+        subprocess.run(
+            ["git", "init", "-q", "--bare", remote],
+            check=True,
+            capture_output=True,
+            env={**os.environ, **ISOLATED_GIT_ENV},
+        )
+        git_out(self.root, "remote", "add", "origin", remote)
+        for name in ("shared_check.py", "apart_check.py", "deep_check.py"):
+            write(self.root, name, "one\ntwo\nthree\nfour\nfive\n")
+            git_out(self.root, "add", "--", name)
+        git_out(self.root, "commit", "-q", "-m", "checks")
+        git_out(self.root, "branch", "-f", "feature")
+        steps = [
+            briefed("alpha"),
+            briefed("beta", files=["beta.py", "shared_check.py"], after=["alpha"]),
+            briefed("gamma", files=["gamma.py", "apart_check.py"]),
+            briefed("delta", files=["delta.py", "deep_check.py"], after=["beta"]),
+        ]
+        write(self.root, "items.json", items_document(self.root, steps))
+
+    def tearDown(self):
+        subprocess.run(["rm", "-rf", self.root, self.elsewhere], check=True)
+
+    def _invoke(self, *extra, worker=HOLDING_WORKER):
+        with unittest.mock.patch.dict(os.environ, ISOLATED_GIT_ENV):
+            return invoke(
+                self.root,
+                [
+                    "--items",
+                    "items.json",
+                    "--run-dir",
+                    self.run_dir,
+                    "--feature-branch",
+                    "feature",
+                    "--dispatch-command",
+                    command(self.elsewhere, "worker.py", worker, "{task}", "{session_id}", "{schema}"),
+                    "--reask-command",
+                    REASK_COMMAND,
+                    "--acceptance-command",
+                    "probe {file} {test}",
+                    *PR_FLAGS,
+                    "--render-command",
+                    executable(self.elsewhere, "pull-request", ACCEPTING_RENDER),
+                    *extra,
+                ],
+            )
+
+    def _tree(self, label):
+        trees = read_json(os.path.join(self.run_dir, run.STATE_FILE))["worktrees"]
+        return next(tree["path"] for tree in trees if tree["branch"] == "mitosis/" + label)
+
+    def _built(self, worker=HOLDING_WORKER, expected=mitosis.EXIT_SHIPPED):
+        code, out, err = self._invoke("--no-push", worker=worker)
+        self.assertEqual(code, expected, out + err)
+        return {entry["msp"]: entry for entry in json.loads(out.splitlines()[-1])["msps"]}
+
+    def _repaired(self, label, path):
+        tree = self._tree(label)
+        with open(os.path.join(tree, path), encoding="utf-8") as handle:
+            kept = handle.read().splitlines()[1:]
+        write(tree, path, "\n".join(["repaired", *kept]) + "\n")
+        git_out(tree, "commit", "-q", "-a", "-m", "repair after review")
+        return git_out(tree, "rev-parse", "HEAD")
+
+    def _resumed(self, label, head):
+        code, out, err = self._invoke("--resume", "--proven-head", label + "=" + head)
+        found = {entry["msp"]: entry for entry in json.loads(out.splitlines()[-1])["msps"]}
+        return code, found, out + err
+
+    def _carried_down(self, head, label):
+        done = subprocess.run(
+            ["git", "-C", self.root, "merge-base", "--is-ancestor", head, "origin/mitosis/" + label],
+            capture_output=True,
+            env={**os.environ, **ISOLATED_GIT_ENV},
+        )
+        return done.returncode == 0
+
+    def test_a_repair_that_reaches_a_file_of_the_msp_stacked_on_it_ships_in_order(self):
+        self._built()
+        head = self._repaired("alpha", "shared_check.py")
+        code, found, said = self._resumed("alpha", head)
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, said)
+        self.assertEqual(found["alpha"]["crossing"], [], said)
+        self.assertEqual(
+            found["alpha"]["reconcile"].get("shared_overlaps"),
+            [{"path": "shared_check.py", "also_in": ["beta"], "integration_order": ["alpha", "beta"]}],
+            said,
+        )
+        git_out(self.root, "fetch", "-q", "origin")
+        self.assertTrue(self._carried_down(head, "beta"), said)
+
+    def test_a_repair_that_reaches_a_file_of_the_msp_it_is_stacked_on_ships_in_order(self):
+        self._built()
+        head = self._repaired("beta", "alpha.py")
+        code, found, said = self._resumed("beta", head)
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, said)
+        self.assertEqual(found["beta"]["crossing"], [], said)
+        self.assertEqual(
+            found["beta"]["reconcile"].get("shared_overlaps"),
+            [{"path": "alpha.py", "also_in": ["alpha"], "integration_order": ["alpha", "beta"]}],
+            said,
+        )
+
+    def test_a_repair_that_reaches_a_file_of_an_msp_apart_from_it_still_crosses(self):
+        self._built()
+        head = self._repaired("alpha", "apart_check.py")
+        code, found, said = self._resumed("alpha", head)
+        self.assertEqual(code, mitosis.EXIT_CROSSING, said)
+        self.assertEqual(found["alpha"]["crossing"], ["apart_check.py"], said)
+        self.assertNotIn("shared_overlaps", found["alpha"]["reconcile"], said)
+
+    def test_a_repair_no_caller_proved_still_crosses(self):
+        self._built()
+        self._repaired("alpha", "shared_check.py")
+        code, out, err = self._invoke("--resume")
+        found = {entry["msp"]: entry for entry in json.loads(out.splitlines()[-1])["msps"]}
+        self.assertEqual(code, mitosis.EXIT_CROSSING, out + err)
+        self.assertEqual(found["alpha"]["crossing"], ["shared_check.py"], out + err)
+
+    def test_a_worker_that_writes_a_file_of_the_msp_stacked_on_it_still_crosses(self):
+        found = self._built(CROSSING_WORKER, mitosis.EXIT_CROSSING)
+        self.assertEqual(found["alpha"]["crossing"], ["shared_check.py"])
+        head = self._repaired("alpha", "shared_check.py")
+        code, found, said = self._resumed("alpha", head)
+        self.assertEqual(code, mitosis.EXIT_CROSSING, said)
+        self.assertEqual(found["alpha"]["crossing"], ["shared_check.py"], said)
+
+    def _pushed(self, worker=HOLDING_WORKER):
+        code, out, err = self._invoke(worker=worker)
+        found = {entry["msp"]: entry for entry in json.loads(out.splitlines()[-1])["msps"]}
+        return code, found, out + err
+
+    def test_a_repair_that_reaches_a_file_of_a_pushed_msp_stacked_on_it_still_crosses(self):
+        code, found, said = self._pushed()
+        self.assertEqual(code, mitosis.EXIT_SHIPPED, said)
+        self.assertEqual(found["beta"]["state"], "pushed", said)
+        head = self._repaired("alpha", "shared_check.py")
+        code, found, said = self._resumed("alpha", head)
+        self.assertEqual(code, mitosis.EXIT_CROSSING, said)
+        self.assertEqual(found["alpha"]["crossing"], ["shared_check.py"], said)
+        self.assertNotIn("shared_overlaps", found["alpha"]["reconcile"], said)
+
+    def test_a_repair_that_reaches_past_a_pushed_msp_to_one_stacked_below_it_still_crosses(self):
+        code, found, said = self._pushed(DELTA_FAILING_WORKER)
+        self.assertEqual((found["beta"]["state"], found["delta"]["state"]), ("pushed", "blocked"), said)
+        head = self._repaired("alpha", "deep_check.py")
+        code, found, said = self._resumed("alpha", head)
+        self.assertEqual(code, mitosis.EXIT_CROSSING, said)
+        self.assertEqual(found["alpha"]["crossing"], ["deep_check.py"], said)
+        self.assertNotIn("shared_overlaps", found["alpha"]["reconcile"], said)
+
+
 class RenderPreflight(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp()
@@ -2362,6 +2544,7 @@ def load_tests(loader, tests, pattern):
         PullRequestFlags,
         PushOnly,
         ProvenHead,
+        StackedRepair,
         RenderPreflight,
         LaneReport,
         GateClassRefusals,

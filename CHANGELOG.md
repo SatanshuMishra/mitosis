@@ -3,6 +3,26 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.21.2 - 2026-11-12
+
+- A repair made after the gate, on a head the caller proved, that changes
+  a file only an MSP stacked with this one declares no longer ends the run
+  with exit 7. Reconcile reports the file as an overlap with the order to
+  merge the two MSPs, and the run ships both. Before, a review fix on one
+  MSP that had to change a test the next MSP in the stack also edits
+  stopped a two-MSP run at its ship, although mitosis had already merged
+  the repair into the stacked branch without a conflict.
+- A repair that reaches a file of an MSP built on this one is reported
+  that way only while every MSP built on this one is still to be finished
+  in the run, because each then merges the repair before it is pushed and
+  a repair that will not merge blocks it. Once one of them is settled as
+  pushed, the repair is judged as before and exits 7.
+- A Worker's write into another MSP's file, a repair on a head no caller
+  proved, and a repair that reaches a file of an MSP this one is not
+  stacked with are judged as before and exit 7.
+- The pull request sentence for an overlap now reads as a file this branch
+  writes, since the file need not be a declared shared file.
+
 ## 0.21.1 - 2026-11-12
 
 - A folder listed in `.worktreeinclude` that the repository ignores only

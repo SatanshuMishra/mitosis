@@ -403,6 +403,19 @@ differs, or an MSP with no recorded gate result, is gated as before; a
 malformed value or a label the plan does not hold exits 2 before anything is
 built.
 
+A proved head may hold repairs made after the gate. Where such a repair
+changes a file that only an MSP stacked with this one declares, one this
+MSP builds on or one built on it, reconcile reports the file as an overlap
+with the order to merge the two, in place of a write into another MSP's
+file, so the run ships both and the pull request names the order. For a
+file of an MSP built on this one, that holds only while every MSP built on
+this one is still to be finished in the run: each then merges the repair
+before it is pushed, and a repair that will not merge blocks it. Once one
+of them is settled as pushed, the repair is a write into another MSP's
+file as before. A Worker's write into another MSP's file, a repair on a
+head no caller proved, and a repair that reaches an MSP this one is not
+stacked with are judged as before and exit 7.
+
 An MSP already `pushed` or `shipped` stays as it is on a resume, unless a
 resume that pushes names a `--proven-head` other than the commit mitosis
 pushed. Then mitosis ships that MSP again: it pushes the branch to the new
