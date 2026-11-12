@@ -13,8 +13,6 @@ DOCS = ("README.md", os.path.join("skills", "mitosis", "SKILL.md"))
 TERMS = (
     "- Locked:",
     "referee",
-    "weak",
-    "mutant",
     "gate-failed",
     "parked-limit",
     "findings",

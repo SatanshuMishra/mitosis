@@ -91,10 +91,10 @@ claude plugin marketplace add SatanshuMishra/mitosis
 claude plugin install mitosis@mitosis
 ```
 
-The plugin carries the skill and the eighteen modules it runs — `core.py`,
+The plugin carries the skill and the seventeen modules it runs — `core.py`,
 `shape.py`, `decompose.py`, `run.py`, `isolation.py`, `pr_facts.py`,
 `mitosis.py`, `metrics.py`, `spend.py`, `metrics_writer.py`, `referee.py`,
-`mutants.py`, `outcomes.py`, `handoff.py`, `recon_text.py`, `step_names.py`,
+`outcomes.py`, `handoff.py`, `recon_text.py`, `step_names.py`,
 `asks.py`, `own_tests.py` — the two data files they read,
 `prices.json` and `catalogue.json`, the `contracts/` folder beside the
 modules, which holds byte-identical copies of the program's
@@ -201,9 +201,9 @@ property:
 | `--shared-files LIST` | comma-separated files that MSPs may each edit without being fused; an entry matches a path equal to it, a path ending in a slash and the entry, or a path it matches as a case-sensitive glob; an overlap only on such a file makes no MSP, Lane edge or scheduling conflict, is listed in the coupling review, and the plan records the order to integrate each file two MSPs edit; a Worker's write into a shared file another MSP declares is reported and is not fatal |
 | `--worktree-root PATH` | places each MSP's worktree in a folder named after its slug under PATH, read against the repository root, in place of the run directory's trees folder; a second live run on the same branch is refused with exit 5, and a small record in the repository's git folder lets a later run take the branch from a stopped tree; a PATH that cannot be created, or a `--worker-write` path that is, holds or lies inside it, refuses the run with exit 3 before any Worker starts |
 | `--no-run-dir` | keeps the plan, state, logs and clones in a private temp folder removed before mitosis exits, whether the run shipped, failed or was refused; `--run-dir` is ignored, `--resume` starts from nothing, each Worker's standard output is printed before the report, and the result line carries no run directory; the branches and worktrees stay, at `--worktree-root` or where a run of the same input keeps them |
-| `--worker-sandbox` | runs every Worker under sandbox-exec, refusing file writes outside its clone, a private temp folder, its session transcript folder, /dev/null, /dev/tty, /dev/fd and each `--worker-write` path; it also runs the gate's setup, acceptance, mutant and suite runs and the lock stage's checks under sandbox-exec, refusing writes outside their clean checkout, a private temp folder and each `--worker-write` path, so a `--gate-setup` that needs another writable path names it with `--worker-write`; a host without sandbox-exec refuses the run with exit 3 before any Worker starts |
+| `--worker-sandbox` | runs every Worker under sandbox-exec, refusing file writes outside its clone, a private temp folder, its session transcript folder, /dev/null, /dev/tty, /dev/fd and each `--worker-write` path; it also runs the gate's setup and acceptance runs and the lock stage's checks under sandbox-exec, refusing writes outside their clean checkout, a private temp folder and each `--worker-write` path, so a `--gate-setup` that needs another writable path names it with `--worker-write`; a host without sandbox-exec refuses the run with exit 3 before any Worker starts |
 | `--worker-write PATH` | one more path a sandboxed Worker, gate run or lock-stage check may write under; repeatable; a path that is, holds or lies inside the run directory, the repository or its git directory refuses the run with exit 3 |
-| `--suite-command TEMPLATE` | deprecated and ignored; a surviving mutant is reported and holds nothing |
+| `--suite-command TEMPLATE` | deprecated and ignored; the gate runs only the acceptance tests each Step names |
 | `--brief-command TEMPLATE` | deprecated and ignored; the split writes each Step's task, so no brief call runs |
 | `--gate-classes PATH` | a JSON list of `{test, class, reason}` objects classing a property `not-applicable`, covered-elsewhere or `removed`, judged without a run and kept out of the plan id |
 
@@ -266,12 +266,12 @@ does not see a sibling's uncommitted writes.
 Without `--worker-sandbox` the clone keeps git state apart, but a Worker can
 still write any path the caller's account can; with it, the JSON result's
 `sandbox` reads sandbox-exec instead of `off`. The sandbox also wraps every
-later command that runs Worker-written code: the gate's `--gate-setup`,
-acceptance and mutant runs, and the lock stage's checks.
+later command that runs Worker-written code: the gate's `--gate-setup`
+and acceptance runs, and the lock stage's checks.
 Each may write only the clean checkout it runs in, `gate/msp-<n>/checkout-*`
 or `lock/msp-<n>/checkout-*` under the run directory, a private temp folder beside
-its log folder, `gate/msp-<n>.tmp` or `lock/msp-<n>.tmp`, passed as TMPDIR and
-holding the line traces and suite reports, and each `--worker-write` path; a
+its log folder, `gate/msp-<n>.tmp` or `lock/msp-<n>.tmp`, passed as TMPDIR,
+and each `--worker-write` path; a
 `--gate-setup` that writes anywhere else names that path with
 `--worker-write`. mitosis's own logs and state stay outside every write
 grant, and no sandboxed command may rename, remove or replace the clone,
@@ -431,9 +431,8 @@ commit they were read at. A real run refuses, with exit 3, a charter whose
 `- Locked:` path the feature branch does not hold, and a `- Locked:` line that
 is empty, absolute or contains `..`.
 
-The gate runs each acceptance property with the work present and with the
-implementation reverted, and a property that exits 1 with the work present is
-the one verdict that holds its MSP. mitosis first gives the Lane that owns the
+The gate runs each acceptance property once, against the finished work, and a
+property that exits 1 there is the one verdict that holds its MSP. mitosis first gives the Lane that owns the
 failing Step one repair, with the test's name and output, and judges again. A
 test still failing after that ends the MSP `gate-failed`, with exit 21: its work
 is committed on its branch and never pushed. A property the acceptance command
@@ -442,41 +441,12 @@ one repair, told that the command is given the test file and the test's name
 separately; when it still cannot run, its MSP ships with it `inconclusive`.
 
 Every other verdict ships and is named in the pull request's Testing table.
-`pass` is a property that failed without the work, `inert` one that passed
-without it, and `inconclusive` one the acceptance command could not judge. A
-gate that could not run ships the same way, with a `Not run` row.
-
-A passing property then runs against up to 12 mutants of its Step's added
-lines, each one a small change to an added line, such as a flipped comparison,
-a swapped operator, a flipped true or false, a number shifted by one or a
-replaced return value. Files in a test location are never mutated. Strings and
-comments are left alone, and when no operator applies to any added line the
-gate drops the added lines of each file instead. For a Python Step the gate
-also tries negating each `if` that holds added code inside a function and
-emptying each function the Step added. A property no mutant fails is judged
-`weak`: reviewers see it in the Testing table and it holds nothing. An
-`inert` property runs against the mutants too, and one a mutant fails passes,
-because it guards behaviour the work must keep; the Testing table reports it
-as a guard, and its Step's other properties that pass either way are guards
-beside it. A `weak` or `inert` property
-that its Lane wrote and no lock holds goes back to that Lane once, told the
-surviving mutant or that the test passes without the work, and the MSP is
-gated again; after that it ships as before.
-
-The with-work run of each property records, through a standard-library
-tracer first on `PYTHONPATH`, the lines it executed, and the gate samples its
-mutants only from added lines executed inside a function and added
-assignments an executed function reads. Each property in the JSON result
-carries two fields. mutation is killed when a mutant failed it, `weak`
-when none did, `not-applicable` when the test loads none of the Step's
-Python files or the Step added no code file for a mutant to change, and
-covered-elsewhere when a `--gate-classes` entry classed it so.
-`coverage` is `traced` only when the sampled lines came from
-the trace, and `untraced` whenever they did not: when the run wrote no trace,
-when only JavaScript, TypeScript or shell lines were sampled, or when the gate
-fell back to every added line. A test that
-loads the Step's files but executes no candidate line also falls back to
-every added line, so an import-only test cannot pass unseen.
+`pass` is a property that exits 0 against the finished work, and
+`inconclusive` one the acceptance command could not judge. A gate that could
+not run ships the same way, with a `Not run` row. The gate never runs a
+property without the work and never alters the work to see whether a test
+notices, so `pass` says that the test passes, and not that it would fail
+without the work; `docs/adr/0028` holds the measurements behind that.
 
 `--gate-classes PATH` excuses a property without editing the Steps: each
 `{test, class, reason}` entry names a property as `<file>::<name>` and
@@ -487,7 +457,7 @@ their SHA-256, so `--resume` keeps every built Lane and each unclassed
 property reuses the verdict recorded at the MSP's unchanged commit. An entry
 naming no property of the plan is refused.
 
-The gate, every mutant run and every acceptance run execute in a clean
+Every acceptance run of the gate executes in a clean
 checkout of the MSP's committed tree, a folder outside the MSP's worktree
 written from git's tree objects and passed as `{worktree}`. The folder is
 reset to its target tree before every run and removed after the gate. It is
@@ -496,7 +466,7 @@ does not carry never reach the gate: each MSP's `ignored` list in the JSON
 result names them, and mitosis never restores, removes or judges them.
 
 The folder is reset to the commit's raw blob bytes before every acceptance
-and mutant run, while `--gate-setup` runs once per gate, so what setup writes
+run, while `--gate-setup` runs once per gate, so what setup writes
 survives that reset only at top-level names the commit lacks, such as the
 `.git` folder a setup's `git init` makes or a new top-level build folder. An
 acceptance command or test that runs git needs `--gate-setup`, which can make
@@ -511,10 +481,18 @@ real content fails, and holds the MSP back as `gate-failed`, with exit 21, when
 the acceptance command exits 1. The gate cannot tell pointer text from real content, so a property
 that holds on pointer text is judged on pointer text.
 
-Dependency folders come from outside the Worker's control. Without
+Dependency folders stay between a gate's runs. Without
 `--gate-setup`, the gate links in each node_modules folder and each
 virtual-environment folder, one holding `pyvenv.cfg`, that the repository
-root holds and the commit lacks. With `--gate-setup`, the gate links nothing
+root holds and the commit lacks. A node_modules folder that an acceptance
+run installs at the top level of the clean checkout, when the commit has
+none, also stays for the gate's later runs, and mitosis never walks into it;
+what a test writes into it, the test runner included, reaches those later
+runs, as it does through a linked folder. Only a real folder under that
+name stays: a symbolic link under it, and a folder an acceptance run makes
+under any other name, whatever it holds, is deleted before the next run,
+and a referee path in it is a referee write, fatal with exit 9;
+`docs/adr/0029` holds the reasons. With `--gate-setup`, the gate links nothing
 and runs that command once per gate in the clean checkout, with `{worktree}`
 naming it; a project whose root folders point back
 into the root checkout, such as an editable install, uses it. A gate setup

@@ -66,6 +66,12 @@ PROPERTY_TEXT = (
     "import unittest\n\nimport a\n\n\nclass A(unittest.TestCase):\n"
     "    def works(self):\n        self.assertEqual(a.value(), 2)\n"
 )
+SIBLING_TEST_FILE = "tests/test_b.py"
+SIBLING_PROPERTY = {"file": SIBLING_TEST_FILE, "test": "B.works"}
+SIBLING_TEXT = (
+    "import unittest\n\nimport b\n\n\nclass B(unittest.TestCase):\n"
+    "    def works(self):\n        self.assertEqual(b.value(), 2)\n"
+)
 RIGHT = "def value():\n    return 2\n"
 WRONG = "def value():\n    return 3\n"
 REFUSED_LOCK = (
@@ -246,6 +252,27 @@ class FinishesTheWork(unittest.TestCase):
         self.assertEqual(record["state"], "shipped")
         self.assertEqual(record["gate"]["outcome"], "pass")
 
+    def a_lane_whose_tests_pass_is_not_sent_back_when_a_sibling_lanes_test_fails(self):
+        scratch = self._scratch()
+        completed, summary = scratch.built(
+            [
+                built_step(),
+                built_step("second", ("b.py", SIBLING_TEST_FILE), "first", (SIBLING_PROPERTY,)),
+            ],
+            {
+                "first": [
+                    {"writes": {"a.py": WRONG, TEST_FILE: PROPERTY_TEXT}},
+                    {"writes": {"a.py": RIGHT, TEST_FILE: PROPERTY_TEXT}},
+                ],
+                "second": [{"writes": {"b.py": RIGHT, SIBLING_TEST_FILE: SIBLING_TEXT}}],
+            },
+            push=True,
+        )
+        self._exit(completed, 0)
+        self.assertEqual(len(scratch.attempts("first")), 2)
+        self.assertEqual(len(scratch.attempts("second")), 1)
+        self.assertEqual(msp_of(summary, "first")["state"], "shipped")
+
     def a_test_still_failing_after_the_repair_holds_its_msp_and_names_the_test(self):
         scratch = self._scratch()
         completed, summary = scratch.built(
@@ -277,34 +304,6 @@ class FinishesTheWork(unittest.TestCase):
         self.assertIn("could not run tests/test_a.py::A.works", tasks[1])
         self.assertEqual(msp_of(summary, "first")["state"], "shipped")
         self.assertEqual(msp_of(summary, "first")["gate"]["outcome"], "inconclusive")
-
-    def a_mutant_is_never_taken_from_a_test_file(self):
-        scratch = self._scratch()
-        other = "tests/test_docs.py"
-        files = ("z.py", other, "tests/test_z.py")
-        check = {"file": "tests/test_z.py", "test": "Z.works"}
-        text = (
-            "import unittest\n\nimport z\n\n\nclass Z(unittest.TestCase):\n"
-            "    def works(self):\n        self.assertEqual(z.value(), 2)\n"
-        )
-        completed, summary = scratch.built(
-            [built_step(files=files, acceptance=(check,))],
-            {
-                "first": [
-                    {
-                        "writes": {
-                            "z.py": RIGHT,
-                            "tests/test_z.py": text,
-                            other: "VERSION = 1 + 1\n",
-                        }
-                    }
-                ]
-            },
-        )
-        self._exit(completed, 0)
-        judged = msp_of(summary, "first")["gate"]["properties"][0]
-        self.assertEqual(judged["mutants"]["killed"]["file"], "z.py")
-        self.assertEqual(judged["mutants"]["tried"], 1)
 
     def a_gitignored_path_in_a_write_set_never_fails_its_lane(self):
         scratch = self._scratch({".gitignore": "__pycache__/\nbuild/\n"})
@@ -771,9 +770,9 @@ def load_tests(loader, standard, pattern):
             "a_producers_repair_that_conflicts_blocks_the_consumer_and_says_why",
             "a_lane_failing_twice_ships_nothing_for_its_msp_and_its_sibling_still_ships",
             "a_test_failing_against_the_work_is_repaired_once_and_ships",
+            "a_lane_whose_tests_pass_is_not_sent_back_when_a_sibling_lanes_test_fails",
             "a_test_still_failing_after_the_repair_holds_its_msp_and_names_the_test",
             "an_acceptance_command_that_cannot_judge_gets_one_repair_and_never_holds_the_msp",
-            "a_mutant_is_never_taken_from_a_test_file",
             "a_gitignored_path_in_a_write_set_never_fails_its_lane",
             "a_hook_sees_the_whole_msp_once_and_never_a_partial_lane",
             "a_hook_refusing_the_whole_change_holds_the_msp_and_says_why",

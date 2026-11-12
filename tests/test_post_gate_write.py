@@ -36,22 +36,6 @@ HIDING_ADD = (
     "    return a + b\n"
 )
 
-FIRST_RUN_TEST = (
-    "import os\n"
-    "import unittest\n"
-    "\n"
-    "import calc\n"
-    "\n"
-    "FLAG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'ran.flag')\n"
-    "\n"
-    "\n"
-    "class Calc(unittest.TestCase):\n"
-    "    def adds(self):\n"
-    "        first = not os.path.exists(FLAG)\n"
-    "        open(FLAG, 'w').close()\n"
-    "        self.assertTrue(first and callable(calc.add))\n"
-)
-
 
 class PostGateWrite(unittest.TestCase):
     def setUp(self):
@@ -122,19 +106,6 @@ class PostGateWrite(unittest.TestCase):
         self.assertNotEqual(self.scratch.git("cat-file", "-e", pushed + ":stray.txt").returncode, 0)
         self.assertFalse(os.path.lexists(self._tree("stray.txt")), "stray.txt is still on disk")
 
-    def a_file_one_gate_run_leaves_never_judges_a_later_run(self):
-        self.scratch = teeth.Scratch()
-        items = self.scratch.items([teeth.add_step()])
-        self.scratch.jobs(
-            {"demo": {"step": "add", "writes": {"calc.py": teeth.BROKEN_ADD, CALC_TEST: FIRST_RUN_TEST}}}
-        )
-        completed = self.scratch.build(items, push=True)
-        self.assertEqual(completed.returncode, 0, "mitosis exit code" + teeth.tail(completed))
-        msp = teeth.summary_of(completed)["msps"][0]
-        self.assertEqual(msp["state"], "shipped")
-        self.assertEqual(msp["gate"]["properties"][0]["outcome"], "weak")
-        self.assertFalse(os.path.lexists(self._tree("ran.flag")), "ran.flag is still on disk")
-
 
 def load_tests(loader, standard, pattern):
     suite = unittest.TestSuite()
@@ -145,7 +116,6 @@ def load_tests(loader, standard, pattern):
                 "a_locked_path_written_during_the_gate_is_restored_and_fatal",
                 "an_ignored_referee_file_a_test_run_writes_is_reported_and_removed",
                 "a_file_a_test_run_leaves_never_ships",
-                "a_file_one_gate_run_leaves_never_judges_a_later_run",
             ),
         ),
     ):

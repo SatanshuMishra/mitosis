@@ -1,13 +1,11 @@
 import hashlib
 import json
 import os
-import re
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
-import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -142,85 +140,8 @@ sys.exit(code if code in (0, 1) else 2)
 
 TEST_FILE = "tests/test_calc.py"
 ADDS = {"file": TEST_FILE, "test": "Calc.adds"}
-DECLARES = {"file": "tests/test_hooks.py", "test": "Hooks.declares"}
+
 CORRECT_ADD = "def add(a, b):\n    return a + b\n"
-CONSTANTS_CALC = "".join("LIMIT_%d = %d\n" % (number, number) for number in range(1, 13)) + CORRECT_ADD
-RETURN_LINE = 14
-ADD_TEST = (
-    "import unittest\n"
-    "\n"
-    "from calc import add\n"
-    "\n"
-    "\n"
-    "class Calc(unittest.TestCase):\n"
-    "    def adds(self):\n"
-    "        self.assertEqual(add(2, 3), 5)\n"
-)
-CALL_ONLY_TEST = (
-    "import unittest\n"
-    "\n"
-    "import calc\n"
-    "\n"
-    "\n"
-    "class Calc(unittest.TestCase):\n"
-    "    def adds(self):\n"
-    "        calc.add(2, 3)\n"
-)
-OTHER_TEST = (
-    "import unittest\n"
-    "\n"
-    "import calc\n"
-    "\n"
-    "\n"
-    "class Other(unittest.TestCase):\n"
-    "    def test_adds(self):\n"
-    "        self.assertEqual(calc.add(2, 3), 5)\n"
-)
-HOOK = "def hook(event):\n    return event.upper()\n"
-HOOKS_JSON = '{"hooks": {"stop": "hook.py"}}\n'
-HOOKS_TEST = (
-    "import json\n"
-    "import os\n"
-    "import unittest\n"
-    "\n"
-    "ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n"
-    "\n"
-    "\n"
-    "class Hooks(unittest.TestCase):\n"
-    "    def declares(self):\n"
-    "        with open(os.path.join(ROOT, \"hooks.json\"), encoding=\"utf-8\") as handle:\n"
-    "            self.assertEqual(json.load(handle)[\"hooks\"][\"stop\"], \"hook.py\")\n"
-)
-PUSH_CALC = (
-    "LIMIT = 3\n"
-    "CALLS = []\n"
-    "def push(terms):\n"
-    "    if not terms:\n"
-    "        return\n"
-    "    CALLS.append(terms)\n"
-)
-IMPORT_GUARD_CALC = (
-    "import sys\n"
-    "\n"
-    "\n"
-    "def add(a, b):\n"
-    "    return a + b\n"
-    "\n"
-    "\n"
-    'if __name__ == "__main__":\n'
-    "    sys.exit(add(1, 2))\n"
-)
-PUSH_TEST = (
-    "import unittest\n"
-    "\n"
-    "import calc\n"
-    "\n"
-    "\n"
-    "class Calc(unittest.TestCase):\n"
-    "    def adds(self):\n"
-    "        calc.push(())\n"
-    "        self.assertEqual(calc.CALLS, [])\n"
-)
 
 
 def put(path, content):
@@ -229,11 +150,6 @@ def put(path, content):
     with open(path, "wb") as handle:
         handle.write(content.encode("utf-8"))
     return path
-
-
-def read_bytes(path):
-    with open(path, "rb") as handle:
-        return handle.read()
 
 
 SPEC_SECTION = "1.1"
@@ -268,14 +184,6 @@ def summary_of(completed):
     except ValueError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
-
-
-def names(detail, path):
-    return re.search(r"(?<![\w/.-])%s(?![\w.-])" % re.escape(path), detail or "") is not None
-
-
-def inside(path, folder):
-    return path.startswith(os.path.join(folder, ""))
 
 
 class Scratch:
@@ -395,100 +303,3 @@ class Scratch:
         with open(path, encoding="utf-8") as handle:
             return handle.read().splitlines()
 
-
-class MutantCoverage(unittest.TestCase):
-    def setUp(self):
-        self.scratch = None
-
-    def tearDown(self):
-        if self.scratch is not None:
-            self.scratch.close()
-
-    def _scratch(self, seeded=None):
-        self.scratch = Scratch(seeded)
-        return self.scratch
-
-    def _first_property(self, completed, label="demo"):
-        summary = summary_of(completed)
-        found = [msp for msp in summary.get("msps") or [] if msp.get("msp") == label]
-        self.assertEqual(len(found), 1, "the JSON summary lists no MSP %s" % label + tail(completed))
-        gate = found[0].get("gate") or {}
-        self.assertTrue(gate.get("properties"), "the MSP's gate object carries no properties")
-        return gate["properties"][0]
-
-    def _constants_run(self, acceptance):
-        scratch = self._scratch({TEST_FILE: ADD_TEST})
-        items = scratch.items([step("add", ["calc.py"], "demo", acceptance=[ADDS])])
-        scratch.jobs({"add": {"writes": {"calc.py": CONSTANTS_CALC}}})
-        return scratch.build(items, acceptance=acceptance)
-
-    def module_constants_no_test_reads_leave_the_strong_mutant_in_reach(self):
-        completed = self._constants_run("keep")
-        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
-        first = self._first_property(completed)
-        self.assertEqual(first["outcome"], "pass")
-        self.assertEqual(first.get("mutation"), "killed")
-        killed = (first.get("mutants") or {}).get("killed") or {}
-        self.assertEqual((killed.get("file"), killed.get("line")), ("calc.py", RETURN_LINE))
-
-    def a_test_reading_only_hooks_json_is_not_applicable(self):
-        scratch = self._scratch({"tests/test_hooks.py": HOOKS_TEST})
-        items = scratch.items(
-            [step("hooks", ["hook.py", "hooks.json"], "demo", acceptance=[DECLARES])]
-        )
-        scratch.jobs({"hooks": {"writes": {"hook.py": HOOK, "hooks.json": HOOKS_JSON}}})
-        completed = scratch.build(items, acceptance="keep")
-        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
-        first = self._first_property(completed)
-        self.assertEqual(first["outcome"], "pass")
-        self.assertEqual(first.get("mutation"), "not-applicable")
-        self.assertEqual((first.get("mutants") or {}).get("tried"), 0)
-
-    def an_untraced_test_that_needs_an_added_function_is_not_weak(self):
-        completed = self._constants_run("unittest")
-        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
-        first = self._first_property(completed)
-        self.assertEqual(first["outcome"], "pass")
-        self.assertEqual(first.get("mutation"), "killed")
-        self.assertEqual(first.get("coverage"), "untraced")
-        self.assertEqual((first["mutants"]["killed"])["op"], "drop function")
-
-    def an_import_guard_never_passes_a_test_with_no_teeth(self):
-        scratch = self._scratch({TEST_FILE: CALL_ONLY_TEST})
-        items = scratch.items([step("add", ["calc.py"], "demo", acceptance=[ADDS])])
-        scratch.jobs({"add": {"writes": {"calc.py": IMPORT_GUARD_CALC}}})
-        completed = scratch.build(items, acceptance="keep")
-        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
-        self.assertEqual(self._first_property(completed)["outcome"], "weak")
-
-    def a_negative_path_test_is_killed_by_negating_its_branch(self):
-        scratch = self._scratch({TEST_FILE: PUSH_TEST})
-        items = scratch.items([step("push", ["calc.py"], "demo", acceptance=[ADDS])])
-        scratch.jobs({"push": {"writes": {"calc.py": PUSH_CALC}}})
-        completed = scratch.build(items, acceptance="unittest")
-        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
-        first = self._first_property(completed)
-        self.assertEqual(first["outcome"], "pass")
-        self.assertEqual(first.get("mutation"), "killed")
-        self.assertEqual((first["mutants"]["killed"])["op"], "negate branch")
-
-def load_tests(loader, standard, pattern):
-    suite = unittest.TestSuite()
-    for case, names_ in (
-        (
-            MutantCoverage,
-            (
-                "module_constants_no_test_reads_leave_the_strong_mutant_in_reach",
-                "a_test_reading_only_hooks_json_is_not_applicable",
-                "an_untraced_test_that_needs_an_added_function_is_not_weak",
-                "an_import_guard_never_passes_a_test_with_no_teeth",
-                "a_negative_path_test_is_killed_by_negating_its_branch",
-            ),
-        ),
-    ):
-        suite.addTests(case(name) for name in names_)
-    return suite
-
-
-if __name__ == "__main__":
-    unittest.main()

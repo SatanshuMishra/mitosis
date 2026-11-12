@@ -15,12 +15,10 @@ sys.path.insert(0, HERE)
 
 import isolation
 import run
-from test_mutant_coverage import (
+from isolation_scratch import (
     ADDS,
     GIT_IDENTITY,
-    CALL_ONLY_TEST,
     CORRECT_ADD,
-    OTHER_TEST,
     TEST_FILE,
     Scratch,
     put,
@@ -39,37 +37,6 @@ EXACT_TEST = (
     "class Calc(unittest.TestCase):\n"
     "    def adds(self):\n"
     "        self.assertEqual(calc.add(2, 3), 5)\n"
-)
-
-
-HELPER = "def helper(value):\n    return value * 2\n"
-HOOK_TEST = (
-    "import os\n"
-    "import unittest\n"
-    "\n"
-    "ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n"
-    "\n"
-    "\n"
-    "class Hooks(unittest.TestCase):\n"
-    "    def reads(self):\n"
-    "        with open(os.path.join(ROOT, %r), encoding=\"utf-8\") as handle:\n"
-    "            self.assertIn(%r, handle.read())\n"
-)
-READS = {"file": "tests/test_hook.py", "test": "Hooks.reads"}
-MIXED_HOOKS = (
-    (
-        "hook.js",
-        "module.exports = function hook(event) {\n  return event.length > 3;\n};\n",
-        "length > 3",
-        "> -> >=",
-    ),
-    (
-        "hook.ts",
-        "export function hook(event: string): boolean {\n  return event.length > 3;\n}\n",
-        "length > 3",
-        "> -> >=",
-    ),
-    ("hook.sh", "#!/bin/sh\n[ \"$#\" -gt 3 ]\n", "-gt 3 ]", "number +1"),
 )
 
 FOLDED_GIT = (".GIT", ".Git", ".gIT", ".g\u200cit", "\ufeff.GIT")
@@ -252,26 +219,6 @@ class Receipts(unittest.TestCase):
         self.assertEqual(msp_lock(summary_of(completed), "demo").get("state"), "ok")
         self._assert_confined(completed)
 
-    def a_hook_beside_an_unloaded_python_file_is_still_sampled(self):
-        for hook, text, needle, op in MIXED_HOOKS:
-            with self.subTest(hook=hook):
-                scratch = self._scratch({READS["file"]: HOOK_TEST % (hook, needle)})
-                items = scratch.items(
-                    [step("hooks", [hook, "helper.py"], "demo", acceptance=[READS])]
-                )
-                scratch.jobs({"hooks": {"writes": {hook: text, "helper.py": HELPER}}})
-                completed = scratch.build(items, acceptance="keep")
-                self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
-                first = self._first_property(completed)
-                self.assertEqual(first["outcome"], "pass")
-                self.assertEqual(first.get("mutation"), "killed")
-                self.assertEqual(
-                    first.get("mutants"),
-                    {"tried": 1, "killed": {"file": hook, "line": 2, "op": op}},
-                )
-                scratch.close()
-                self.scratch = None
-
     def _folded_clone(self):
         folder = os.path.realpath(tempfile.mkdtemp(prefix="mitosis-folded-"))
         self.addCleanup(shutil.rmtree, folder, True)
@@ -334,32 +281,6 @@ class Receipts(unittest.TestCase):
         self.assertFalse(os.path.lexists(os.path.join(scratch.run_dir, "trees", "demo", "sub")))
         self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
 
-    def a_step_with_no_traced_python_is_marked_untraced(self):
-        hook, text, needle, op = MIXED_HOOKS[0]
-        for files in ((hook,), (hook, "helper.py")):
-            with self.subTest(files=files):
-                scratch = self._scratch({READS["file"]: HOOK_TEST % (hook, needle)})
-                items = scratch.items([step("hooks", list(files), "demo", acceptance=[READS])])
-                writes = {hook: text, "helper.py": HELPER}
-                scratch.jobs({"hooks": {"writes": {path: writes[path] for path in files}}})
-                completed = scratch.build(items, acceptance="keep")
-                self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
-                first = self._first_property(completed)
-                self.assertEqual(first.get("mutation"), "killed")
-                self.assertEqual(first.get("coverage"), "untraced")
-                scratch.close()
-                self.scratch = None
-
-    def a_step_whose_python_ran_is_marked_traced(self):
-        scratch = self._scratch({TEST_FILE: EXACT_TEST})
-        items = scratch.items([step("add", ["calc.py"], "demo", acceptance=[ADDS])])
-        scratch.jobs({"add": {"writes": {"calc.py": CORRECT_ADD}}})
-        completed = scratch.build(items, acceptance="keep")
-        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
-        first = self._first_property(completed)
-        self.assertEqual(first.get("mutation"), "killed")
-        self.assertEqual(first.get("coverage"), "traced")
-
 
 def load_tests(loader, standard, pattern):
     suite = unittest.TestSuite()
@@ -373,12 +294,9 @@ def load_tests(loader, standard, pattern):
                 "sandboxed_repository_hook_cannot_write_the_repositorys_git_folder",
                 "sandboxed_repository_hook_can_still_stage_in_its_checkout",
                 "sandboxed_check_author_code_cannot_write_outside_at_the_lock_stage",
-                "a_hook_beside_an_unloaded_python_file_is_still_sampled",
                 "a_case_folded_nested_git_folder_is_never_replayed",
                 "a_case_folded_top_level_git_folder_is_never_replayed",
                 "a_worker_written_nested_git_folder_is_reported_undeclared",
-                "a_step_with_no_traced_python_is_marked_untraced",
-                "a_step_whose_python_ran_is_marked_traced",
             ),
         ),
     ):

@@ -1,5 +1,4 @@
 import hashlib
-import importlib
 import json
 import os
 import shlex
@@ -14,9 +13,6 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 sys.path.insert(0, HERE)
 
-import core
-
-G14_CASES = os.path.join(HERE, "fixtures", "g14-cases.json")
 MITOSIS = os.path.join(ROOT, "mitosis.py")
 CALL_LIMIT = 60
 RUN_LIMIT = 400
@@ -278,30 +274,6 @@ def summary_of(completed):
 
 CORRECT_ADD = "def add(a, b):\n    return a + b\n"
 BROKEN_ADD = "def add(a, b):\n    return a - b\n"
-SWAPPED_ADD = "def add(a, b):\n    return b + a\n"
-
-EXISTENCE_TEST = (
-    "import unittest\n"
-    "\n"
-    "import calc\n"
-    "\n"
-    "\n"
-    "class Calc(unittest.TestCase):\n"
-    "    def adds(self):\n"
-    "        self.assertTrue(callable(calc.add))\n"
-)
-
-SKIPPED_TEST = (
-    "import unittest\n"
-    "\n"
-    "import calc\n"
-    "\n"
-    "\n"
-    "class Calc(unittest.TestCase):\n"
-    "    @unittest.skip(\"later\")\n"
-    "    def adds(self):\n"
-    "        self.assertTrue(calc.add(2, 3) == 5)\n"
-)
 
 EXACT_TEST = (
     "import unittest\n"
@@ -346,14 +318,6 @@ class GateTeeth(unittest.TestCase):
         if self.scratch is not None:
             self.scratch.close()
 
-    def _module(self, name):
-        try:
-            return importlib.import_module(name)
-        except ModuleNotFoundError as missing:
-            if missing.name != name:
-                raise
-            self.fail("mitosis has no %s module: %s" % (name, missing))
-
     def _gated(
         self, writes, seeded=None, acceptance="unittest", files=("calc.py", "tests/test_calc.py"), checks=(ADDS,)
     ):
@@ -391,44 +355,7 @@ class GateTeeth(unittest.TestCase):
         self.assertEqual(self.scratch.checked("ls-remote", "origin", "mitosis/demo"), "")
         self.assertFalse(os.path.exists(self.scratch.pr_log), "pr.log exists")
 
-    def mutants_match_receipts_g14(self):
-        mutants = self._module("mutants")
-        with open(G14_CASES, encoding="utf-8") as handle:
-            cases = json.load(handle)
-        self.assertGreater(len(cases), 0)
-        for case in cases:
-            with self.subTest(line=case["line"], ext=case["ext"]):
-                self.assertEqual(
-                    [(m["op"], m["after"]) for m in mutants.mutants_for_line(case["line"], case["ext"])],
-                    [(m["op"], m["after"]) for m in case["mutants"]],
-                )
-
-    def an_existence_only_test_of_a_broken_add_is_weak(self):
-        completed = self._gated({"calc.py": BROKEN_ADD, "tests/test_calc.py": EXISTENCE_TEST})
-        self._shipped(completed, "weak")
-
-    def a_skipped_test_is_called_weak_and_ships(self):
-        completed = self._gated({"calc.py": CORRECT_ADD, "tests/test_calc.py": SKIPPED_TEST})
-        self._shipped(completed, "weak")
-
-    def a_guard_beside_a_proven_test_ships(self):
-        completed = self._gated(
-            {"calc.py": CORRECT_ADD + DOUBLES_LINES, "tests/test_calc.py": GUARD_AND_PROOF_TEST},
-            seeded={"calc.py": CORRECT_ADD},
-            checks=(ADDS, DOUBLES),
-        )
-        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
-        msp = self._msp(completed)
-        self.assertEqual(msp["state"], "shipped")
-        guard, proven = msp["gate"]["properties"]
-        self.assertEqual(guard["test"], "Calc.adds")
-        self.assertEqual(guard["outcome"], "not-applicable")
-        self.assertIn("guards behaviour that must stay the same", guard["reason"])
-        self.assertIsNone(guard["mutants"])
-        self.assertEqual(proven["outcome"], "pass")
-        self.assertEqual(msp["gate"]["outcome"], "pass")
-
-    def a_guard_the_work_breaks_holds_the_msp_back(self):
+    def a_kept_test_the_work_breaks_holds_the_msp_back(self):
         completed = self._gated(
             {"calc.py": BROKEN_ADD + DOUBLES_LINES, "tests/test_calc.py": GUARD_AND_PROOF_TEST},
             seeded={"calc.py": CORRECT_ADD},
@@ -436,55 +363,11 @@ class GateTeeth(unittest.TestCase):
         )
         self._held_back(completed, 21, "inconclusive")
 
-    def an_inert_test_a_mutant_fails_ships_as_a_guard(self):
-        completed = self._gated(
-            {"calc.py": SWAPPED_ADD, "tests/test_calc.py": EXACT_TEST},
-            seeded={"calc.py": CORRECT_ADD},
-        )
-        self._shipped(completed, "pass")
-        judged = self._first_property(self._msp(completed))
-        self.assertEqual(judged["mutation"], "killed", tail(completed))
-        place = judged["mutants"]["killed"]
-        self.assertEqual(place["file"], "calc.py")
-        self.assertEqual(judged["reason"], core.GUARD_KILLED_REASON % (place["file"], place["line"], place["op"]))
-
     def an_inconclusive_property_is_reported_and_ships(self):
         completed = self._gated(
             {"calc.py": CORRECT_ADD, "tests/test_calc.py": EXACT_TEST}, acceptance="exit-2"
         )
         self._shipped(completed, "inconclusive")
-
-    def a_test_that_kills_a_mutant_passes_and_ships(self):
-        completed = self._gated({"calc.py": CORRECT_ADD, "tests/test_calc.py": EXACT_TEST})
-        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
-        msp = self._msp(completed)
-        first = self._first_property(msp)
-        self.assertEqual(first["outcome"], "pass")
-        self.assertIn("mutants", first, "the gate's property carries no mutants record")
-        self.assertEqual(
-            (first["mutants"] or {}).get("killed"),
-            {"file": "calc.py", "line": 2, "op": "return -> None"},
-        )
-        self.assertEqual(msp["state"], "shipped")
-        self.assertEqual(
-            len(self.scratch.checked("ls-remote", "origin", "mitosis/demo").splitlines()), 1
-        )
-        with open(self.scratch.pr_log, encoding="utf-8") as handle:
-            self.assertEqual(len(handle.read().splitlines()), 1)
-
-    def a_data_file_is_judged_by_the_drop_added_lines_mutant(self):
-        completed = self._gated(
-            {"limits.json": "{\"cap\": 3}\n", "tests/test_calc.py": LIMITS_TEST},
-            files=("limits.json", "tests/test_calc.py"),
-        )
-        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
-        first = self._first_property(self._msp(completed))
-        self.assertEqual(first["outcome"], "pass")
-        self.assertIn("mutants", first, "the gate's property carries no mutants record")
-        self.assertEqual(
-            (first["mutants"] or {}).get("killed"),
-            {"file": "limits.json", "line": 1, "op": "drop added lines"},
-        )
 
 
 def load_tests(loader, standard, pattern):
@@ -493,15 +376,8 @@ def load_tests(loader, standard, pattern):
         (
             GateTeeth,
             (
-                "mutants_match_receipts_g14",
-                "an_existence_only_test_of_a_broken_add_is_weak",
-                "a_skipped_test_is_called_weak_and_ships",
-                "a_guard_beside_a_proven_test_ships",
-                "a_guard_the_work_breaks_holds_the_msp_back",
-                "an_inert_test_a_mutant_fails_ships_as_a_guard",
+                "a_kept_test_the_work_breaks_holds_the_msp_back",
                 "an_inconclusive_property_is_reported_and_ships",
-                "a_test_that_kills_a_mutant_passes_and_ships",
-                "a_data_file_is_judged_by_the_drop_added_lines_mutant",
             ),
         ),
     ):

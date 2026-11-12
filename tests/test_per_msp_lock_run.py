@@ -591,12 +591,6 @@ def msp_summary(test, summary, label, completed):
     return found[0]
 
 
-def msp_index(test, summary, label, completed):
-    labels = [msp.get("msp") for msp in summary.get("msps") or []]
-    test.assertIn(label, labels, "the JSON result lists no MSP %s" % label + tail(completed))
-    return labels.index(label)
-
-
 def lock_of(test, summary, label, completed):
     lock = msp_summary(test, summary, label, completed).get("lock")
     test.assertIsInstance(lock, dict, "MSP %s carries no lock record" % label + tail(completed))
@@ -672,27 +666,6 @@ class PerMspLockRun(unittest.TestCase):
         self.assertNotIn(TEST_A, scratch.tree("feature"))
         self.assertNotIn(TEST_B, scratch.tree("feature"))
         self.assertEqual(scratch.remote_refs(), [])
-
-    def test_the_gate_reverts_to_the_msp_lock_commit(self):
-        scratch, before, completed, summary = self._run()
-        found = self._gate_passed(summary, "alpha", completed)
-        properties = [
-            entry
-            for entry in (found.get("gate") or {}).get("properties") or []
-            if entry.get("file") == TEST_A
-        ]
-        self.assertEqual([entry.get("outcome") for entry in properties], ["pass"])
-        index = msp_index(self, summary, "alpha", completed)
-        record = (scratch.state().get("msps") or {}).get(str(index)) or {}
-        recorded = [
-            entry
-            for entry in (record.get("gate") or {}).get("properties") or []
-            if entry.get("file") == TEST_A
-        ]
-        self.assertEqual([(entry.get("with_work"), entry.get("reverted")) for entry in recorded], [(0, 1)])
-        lock = lock_of(self, summary, "alpha", completed)
-        self.assertEqual(lock.get("commit"), scratch.first_after(before, "mitosis/alpha"))
-        self._lock_commit_only(scratch, before, "mitosis/alpha", TEST_A, completed)
 
     def test_a_consumer_holds_its_producers_tests_through_the_merge(self):
         scratch, before, completed, summary = self._run(labelled(b_after_a=True))

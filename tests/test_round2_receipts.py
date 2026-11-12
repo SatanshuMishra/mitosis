@@ -13,7 +13,7 @@ sys.path.insert(0, HERE)
 
 import isolation
 import run
-from test_mutant_coverage import (
+from isolation_scratch import (
     ADDS,
     CORRECT_ADD,
     GIT_IDENTITY,
