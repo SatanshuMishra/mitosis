@@ -380,10 +380,11 @@ def build_waves(items, shared_files=()):
     looped = frozenset(name for group in cycles(list(first.values())) for name in group)
     names = tuple(name for name in first if name not in looped)
     known = frozenset(names)
+    joint = joint_tests(list(first.values()))
     steps = [
         {
             "name": name,
-            "files": list(_files(first[name])),
+            "files": [path for path in _files(first[name]) if path not in joint],
             "after": [producer for producer in _after(first[name]) if producer in known and producer != name],
             "contract_group": first[name].get("contract_group"),
         }
@@ -480,10 +481,22 @@ def _interface_pairs(items):
     )
 
 
+def _own_tests(item):
+    named = frozenset(_norm(path) for path in _acceptance_files(item))
+    return frozenset(path for path in _files(item) if path in named)
+
+
+def joint_tests(items):
+    writers = collections.Counter(path for item in items for path in _own_tests(item))
+    worked = frozenset(path for item in items for path in frozenset(_files(item)) - _own_tests(item))
+    return frozenset(path for path, count in writers.items() if count > 1 and path not in worked)
+
+
 def _lane_file_pairs(items, owner, shared_files):
     shared = shared_matcher(shared_files)
+    joint = joint_tests(items)
     keys = tuple(
-        tuple((path, owner[index]) if shared(path) else path for path in _files(item))
+        tuple((path, owner[index]) if shared(path) else path for path in _files(item) if path not in joint)
         for index, item in enumerate(items)
     )
     return _shared(tuple(range(len(items))), lambda index: keys[index])
@@ -1111,8 +1124,8 @@ def _file_coupling(graph):
     }
 
 
-def _coupling_side(item, adj_keys, history):
-    files = frozenset(_files(item))
+def _coupling_side(item, adj_keys, history, joint=frozenset()):
+    files = frozenset(_files(item)) - joint
     return {
         "item": item,
         "files": files,
@@ -1158,7 +1171,8 @@ def coupling_review(items, lanes, graph, risk_markers=(), history=(), shared_fil
     by_name = _by_name(items)
     adjacency = _file_coupling(graph)
     adj_keys = list(adjacency)
-    sides = [_coupling_side(item, adj_keys, history or ()) for item in items]
+    joint = joint_tests(items)
+    sides = [_coupling_side(item, adj_keys, history or (), joint) for item in items]
     review = []
     for a in range(len(items)):
         for b in range(a + 1, len(items)):
@@ -1404,6 +1418,13 @@ def probe_line(paths):
     return PROBE_LINE % ", ".join(paths)
 
 
+JOINT_LINE = (
+    "Other Lanes of this branch add their own tests to %s too, and mitosis joins what each Lane "
+    "adds when it lands. Add your tests there, and leave every line that is already in the file "
+    "exactly as it is."
+)
+
+
 EDIT_RULE = "Edit ONLY the files listed under `edit`."
 
 
@@ -1427,6 +1448,8 @@ def brief_text(brief):
         )
     body = [_task_line(brief["steps"]), "", brief["spec"], "", EDIT_RULE]
     footer = [CLONE_LINE, TEST_SCOPE_LINE] + (
+        [JOINT_LINE % ", ".join(brief["joint"])] if brief.get("joint") else []
+    ) + (
         [probe_line(brief["probe_files"])] if brief.get("probe_files") is not None else []
     ) + (
         [referee_line(brief.get("locked") or ())]
@@ -1446,6 +1469,7 @@ def _brief(
     charter,
     source,
     locked=(),
+    joint=(),
 ):
     write_set = tuple(dict.fromkeys(path for i in lane for path in _files(items[i])))
     read_set, read_overflow = _lane_read_set(items, lane, packs, write_set)
@@ -1463,8 +1487,26 @@ def _brief(
         "document": source.get("path") if isinstance(source, dict) else None,
         "return_contract": RETURN_CONTRACT,
         "locked": list(locked),
+        **({"joint": [path for path in write_set if path in joint]} if joint else {}),
     }
     return {**partial, "text": brief_text(partial)}
+
+
+def lane_joint_tests(items, lanes, owners):
+    joint = joint_tests(items)
+    written = tuple(frozenset(path for i in lane for path in _files(items[i]) if path in joint) for lane in lanes)
+    return tuple(
+        frozenset(
+            path
+            for path in mine
+            if any(
+                path in theirs
+                for other, theirs in enumerate(written)
+                if other != index and owners[other] == owners[index]
+            )
+        )
+        for index, mine in enumerate(written)
+    )
 
 
 def _check_author_brief(parts, msp, label, probe, packs, charter, source, locked):
@@ -1758,6 +1800,7 @@ def plan(
         "top" if any(tiers[items[i]["name"]] == "top" for i in lane) else "cheap" for lane in lanes
     )
     owners = lane_msps(items, lanes, shared)
+    joint = lane_joint_tests(items, lanes, owners)
     edges = lane_after(items, lanes)
     msp_entries = [
         {
@@ -1811,6 +1854,7 @@ def plan(
                 charter,
                 source,
                 locked,
+                joint[index],
             )
             for index, lane in enumerate(lanes)
         ],

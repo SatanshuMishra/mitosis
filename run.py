@@ -19,6 +19,7 @@ from functools import lru_cache
 import core
 import handoff
 import isolation
+import joint
 import outcomes
 import pr_facts
 import referee
@@ -1118,17 +1119,113 @@ def _seed_fields(seeding):
     }
 
 
-def _land(plan, lane, tree, record, run_dir, header):
+JOIN_STEM = "join"
+
+JOIN_NOTE = (
+    "mitosis could not land your work as it stands. While you built, another Lane landed its own "
+    "tests in %(paths)s, and you and that Lane changed the same lines there. Your clone now holds "
+    "%(paths)s as it stands on the branch with your changes joined in, and marks where the two "
+    "meet: the lines from `%(ours)s` to `%(split)s` are the other Lane's, and the lines from "
+    "`%(split)s` to `%(theirs)s` are yours. Edit %(paths)s so that the other Lane's tests and "
+    "yours both stay, remove every mark, and change no other file. The other Lane's work is not "
+    "in your clone, so its tests cannot pass here: run only your own tests, each by name. Then "
+    "reply again in the same form."
+)
+
+JOIN_UNASKED = (
+    "its tests in %s meet those another Lane landed there, and mitosis has no session of the "
+    "Lane's to ask to join them"
+)
+
+JOIN_FAILED = "its tests in %s meet those another Lane landed there, and its Worker did not join them: %s"
+
+JOIN_MARKED = "its Worker left a mark in %s after it was asked to join its tests with another Lane's"
+
+JOIN_MOVED = "%s changed on the branch while its Worker joined its tests with another Lane's"
+
+JOIN_REPLACED = (
+    "it removed or replaced %s, a test file other Lanes add their tests to, after another Lane "
+    "landed there"
+)
+
+JOINABLE_MODES = (REGULAR_MODE, EXECUTABLE_MODE)
+
+
+class JointMeeting(Exception):
+    def __init__(self, marked):
+        super().__init__(", ".join(sorted(marked)))
+        self.marked = dict(marked)
+
+
+class JointRefusal(Exception):
+    pass
+
+
+def _joint_sides(tree, start, path):
+    base = _committed_entries(tree, start).get(path)
+    landed = _committed_entries(tree, "HEAD").get(path)
+    blobs = _blobs(tree, [entry[1] for entry in (base, landed) if entry is not None])
+    return (
+        None if base is None else (base[0], blobs[base[1]]),
+        None if landed is None else (landed[0], blobs[landed[1]]),
+        None if landed is None else landed[1],
+    )
+
+
+def _joint_entry(tree, start, path, theirs, settled):
+    base, ours, landed = _joint_sides(tree, start, path)
+    if ours == base or theirs == ours:
+        return {path: theirs}, {}
+    if path in settled:
+        if settled[path] != landed:
+            raise JointRefusal(JOIN_MOVED % path)
+        if theirs is None or joint.marked(theirs[1]):
+            raise JointRefusal(JOIN_MARKED % path)
+        return {path: theirs}, {}
+    if theirs == base:
+        return {}, {}
+    sides = tuple(side for side in (base, ours, theirs) if side is not None)
+    if theirs is None or ours is None or any(mode not in JOINABLE_MODES for mode, _ in sides):
+        raise JointRefusal(JOIN_REPLACED % path)
+    found = joint.joined(None if base is None else base[1], ours[1], theirs[1])
+    if found.conflicts:
+        return {}, {path: (theirs[0], found.text, landed)}
+    return {path: (theirs[0], found.text)}, {}
+
+
+def _joined_entries(tree, start, entries, joint_paths, settled):
+    placed, marked = {}, {}
+    for path, theirs in sorted(entries.items()):
+        kept, met = _joint_entry(tree, start, path, theirs, settled) if path in joint_paths else ({path: theirs}, {})
+        placed, marked = {**placed, **kept}, {**marked, **met}
+    if marked:
+        raise JointMeeting(marked)
+    return placed
+
+
+def _land(plan, lane, tree, record, run_dir, header, settled=None):
     write_set = plan["briefs"][lane]["write_set"]
+    joint_paths = frozenset(plan["briefs"][lane].get("joint") or ())
     clone = isolation.lane_folders(run_dir, lane)["clone"]
     try:
         landing = isolation.read_lane(
             clone, tree["path"], record["start"], write_set, record.get("seeded") or ()
         )
+        entries = _joined_entries(
+            tree["path"], record["start"], landing["entries"], joint_paths, settled or {}
+        )
+    except JointRefusal as refusal:
+        return None, str(refusal), None
     except (GitError, OSError) as error:
         return None, "mitosis could not land the Lane from its clone %s: %s" % (clone, error), None
+    joined = sorted(path for path, entry in entries.items() if entry != landing["entries"][path])
+    if joined:
+        sys.stderr.write(
+            "mitosis: Lane %d's tests in %s were joined with those another Lane landed\n"
+            % (lane, ", ".join(joined))
+        )
     try:
-        isolation.place_entries(tree["path"], landing["entries"])
+        isolation.place_entries(tree["path"], entries)
         commit = commit_paths(
             tree["path"], write_set, _landing_message(plan, lane, header), tree["branch"]
         )
@@ -1252,8 +1349,24 @@ def _suspects(batch, held, path):
     return claimants or list(batch)
 
 
-def _landed(plan, lane, tree, record, run_dir, header):
-    commit, reason, outside = _land(plan, lane, tree, record, run_dir, header)
+def _joined_by_its_worker(lane, record, join, meeting):
+    paths = ", ".join(sorted(meeting.marked))
+    if join is None or record.get("session_id") is None:
+        return "failed", JOIN_UNASKED % paths
+    state, why = join(lane, record, meeting.marked)
+    return (None, None) if state == "ok" else (state, JOIN_FAILED % (paths, why))
+
+
+def _landed(plan, lane, tree, record, run_dir, header, join=None):
+    settled = None
+    try:
+        commit, reason, outside = _land(plan, lane, tree, record, run_dir, header)
+    except JointMeeting as meeting:
+        state, why = _joined_by_its_worker(lane, record, join, meeting)
+        if state is not None:
+            return {**record, "state": state, "reason": why}
+        settled = {path: landed for path, (_, _, landed) in meeting.marked.items()}
+        commit, reason, outside = _land(plan, lane, tree, record, run_dir, header, settled)
     if reason is not None:
         return {**record, "state": "failed", "reason": reason}
     return {**record, **outside, "commit": commit}
@@ -1263,11 +1376,11 @@ def _open_to_the_gate(record):
     return {**record, "replayed": {}}
 
 
-def _land_batch(plan, msp, tree, batch, held, records, run_dir, settle, header):
+def _land_batch(plan, msp, tree, batch, held, records, run_dir, settle, header, join=None):
     lanes = plan["lanes"]
     landed = {}
     for lane in sorted(batch):
-        done = _landed(plan, lane, tree, held[lane], run_dir, header)
+        done = _landed(plan, lane, tree, held[lane], run_dir, header, join)
         if done["state"] == "ok":
             claimed = plan["briefs"][lane]["write_set"]
             landed = {key: isolation.released(value, claimed) for key, value in landed.items()}
@@ -1335,13 +1448,42 @@ def dispatch(
             on_lane(lane, record)
         return {**known, lane: record}
 
+    def join(lane, record, marked):
+        tree = tree_of[lanes[lane]["msp"]]
+        folders = isolation.lane_folders(run_dir, lane)
+        values = _worker_values(
+            plan, lane, {**tree, "path": folders["clone"]}, models, run_dir, record["session_id"], prompt_template
+        )
+        for path, (mode, text, _) in sorted(marked.items()):
+            _place(folders["clone"], path, mode, text)
+        note = JOIN_NOTE % {
+            "paths": ", ".join(sorted(marked)),
+            "ours": joint.OURS_MARK,
+            "split": joint.SPLIT_MARK,
+            "theirs": joint.THEIRS_MARK,
+        }
+        sys.stderr.write(
+            "mitosis: Lane %d was asked to join its tests in %s with another Lane's\n"
+            % (lane, ", ".join(sorted(marked)))
+        )
+        return _lane_outcome(
+            worker_call(
+                build_argv(reask, {**reask_values(values), "prompt": note}),
+                {"template": reask, "values": reask_values(values)},
+                folders["clone"],
+                call_files(lane_dir, "%d.%s" % (lane, JOIN_STEM)),
+                _lane_environ(plan, lane, tree["branch"], env),
+                isolation.worker_confinement(folders, sandbox, env),
+            )
+        )
+
     with ThreadPoolExecutor(max_workers=cap) as pool:
         while pending or running or held:
             progressed = False
             for msp in sorted({lanes[lane]["msp"] for lane in held}):
                 batch = [lane for lane in held if lanes[lane]["msp"] == msp]
                 landed, records = _land_batch(
-                    plan, msp, tree_of[msp], batch, held, records, run_dir, settle, header
+                    plan, msp, tree_of[msp], batch, held, records, run_dir, settle, header, join
                 )
                 foreign = _foreign_writes(plan, msp, tree_of[msp], batch, records)
                 for lane in batch:

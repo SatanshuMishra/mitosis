@@ -1053,14 +1053,17 @@ def planning_shared_files(args):
     return tuple(loaded.get("shared_files") or ()) if isinstance(loaded, dict) else ()
 
 
-def owned_items(args, items, root, charter, run_dir):
+def owned_items(args, items, root, charter, run_dir, repo):
     path = os.path.join(run_dir, ITEMS_FILE)
     if args.resume and os.path.isfile(path):
-        return run.read_json(path)
-    owned = own_tests.owned(items, core.charter_locks(charter, root)[0])
+        return run.read_json(path), ()
+    owned, created = own_tests.created_once(
+        own_tests.owned(items, core.charter_locks(charter, root)[0]), base_holds(args, repo)
+    )
     run.write_json(path, owned)
     emit_items(args.emit_items, owned)
-    return owned
+    _print(tuple("mitosis: " + line for line in created), sys.stderr)
+    return owned, created
 
 
 def load_notices(run_dir):
@@ -1125,8 +1128,8 @@ def asks_input(args, root, repo, models, charter, run_dir):
     else:
         refuse_held_run(run_dir)
         items, notices = planned_asks(args, root, models, run_dir)
-    owned = owned_items(args, items, root, charter, run_dir)
-    return staged(owned, load_decomposed(run_dir), run_dir, None, notices)
+    owned, created = owned_items(args, items, root, charter, run_dir, repo)
+    return staged(owned, load_decomposed(run_dir), run_dir, None, tuple(notices) + created)
 
 
 def check_author_names(items):
@@ -1138,16 +1141,21 @@ def saved_plan_folds(path, items):
     return isinstance(loaded, dict) and loaded.get(FOLDED_KEY) == check_author_names(items)
 
 
-def folded_items(args, items, root, charter):
+def folded_items(args, items, root, charter, repo):
     if args.plan_file is not None and not saved_plan_folds(args.plan_file, items):
         return items, (), ()
     locked = core.charter_locks(charter, root)[0]
     kept, notices = own_tests.folded(items, locked, planning_shared_files(args))
-    return kept, notices, check_author_names(items)
+    if args.plan_file is not None:
+        return kept, notices, check_author_names(items)
+    ordered, created = own_tests.created_once(kept, base_holds(args, repo))
+    return ordered, tuple(notices) + created, check_author_names(items)
 
 
-def items_input(args, root, charter, run_dir):
-    items, notices, folded = folded_items(args, read_items(os.path.abspath(args.items)), root, charter)
+def items_input(args, root, charter, run_dir, repo):
+    items, notices, folded = folded_items(
+        args, read_items(os.path.abspath(args.items)), root, charter, repo
+    )
     _print(tuple("mitosis: " + notice for notice in notices), sys.stderr)
     return staged(items, load_decomposed(run_dir), run_dir, None, notices, folded)
 
@@ -1180,7 +1188,7 @@ def default_input_run_dir(args, root):
 
 def resolve_input(args, root, repo, models, charter, graph, run_dir):
     if args.items:
-        return items_input(args, root, charter, run_dir)
+        return items_input(args, root, charter, run_dir, repo)
     if args.asks:
         return asks_input(args, root, repo, models, charter, run_dir)
     document = check_document(args, root)
@@ -1198,8 +1206,8 @@ def resolve_input(args, root, repo, models, charter, graph, run_dir):
         items, decomposed = structure_document(
             args, root, run_dir, models, charter, graph, decisions, prior
         )
-    owned = owned_items(args, items, root, charter, run_dir)
-    return staged(owned, decomposed, run_dir, decisions)
+    owned, created = owned_items(args, items, root, charter, run_dir, repo)
+    return staged(owned, decomposed, run_dir, decisions, created)
 
 
 def marker_list(text):

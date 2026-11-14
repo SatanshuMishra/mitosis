@@ -134,7 +134,7 @@ class ItemsFold(unittest.TestCase):
         self.assertEqual(by_name(plan, "second")["files"], ["b.py", finishes.TEST_FILE])
         self.assertEqual([item["name"] for item in plan["items"]], ["first", "second"])
         self.assertTrue(all(AUTHOR not in (item.get("after") or ()) for item in plan["items"]))
-        self.assertTrue(all("after" not in item for item in plan["items"]), plan["items"])
+        self.assertEqual([item.get("after") for item in plan["items"]], [None, ["first"]])
         self.assertIn(FOLDED, completed.stderr.splitlines())
         self.assertIn(FOLDED[len("mitosis: "):], fixtures.summary_of(completed)["attention"])
 

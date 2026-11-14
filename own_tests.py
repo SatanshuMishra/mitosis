@@ -30,6 +30,39 @@ def owned(items, locked=()):
     return [_with_own_tests(item, held) for item in items]
 
 
+CREATED_LINE = (
+    "%s is not on the base, so Step %s creates it; these Steps wait for that Step before they add "
+    "their own tests: %s"
+)
+
+
+def _first_writers(items, path, by_name):
+    writers = tuple(index for index, item in enumerate(items) if path in core._own_tests(item))
+    return tuple(
+        index
+        for index in writers
+        if not any(core._waits_on(items, index, other, by_name) for other in writers if other != index)
+    )
+
+
+def _waiting_on(item, name):
+    return {**item, "after": list(dict.fromkeys((*core._after(item), name)))}
+
+
+def created_once(items, held):
+    ordered, lines = list(items), ()
+    for path in sorted(core.joint_tests(items)):
+        if held(path):
+            continue
+        unordered = _first_writers(ordered, path, core._by_name(ordered))
+        if len(unordered) < 2:
+            continue
+        creator, rest = ordered[unordered[0]]["name"], unordered[1:]
+        ordered = [_waiting_on(item, creator) if index in rest else item for index, item in enumerate(ordered)]
+        lines = lines + (CREATED_LINE % (path, creator, ", ".join(ordered[index]["name"] for index in rest)),)
+    return ordered, lines
+
+
 def unwritten(plan, held):
     items = plan.get("items") or ()
     excluded = (

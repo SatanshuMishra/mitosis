@@ -1390,8 +1390,19 @@ class SchedulingGuidance(unittest.TestCase):
         text = " ".join(decompose.SCHEDULING_LINES)
         self.assertIn("same file in their write-sets", text)
         self.assertIn("public surface, not a formality", text)
-        self.assertIn("EMPTY acceptance list", text)
         self.assertIn("FAIL against the current code", text)
+
+    def a_test_that_already_passes_is_described_as_the_gate_treats_it(self):
+        text = " ".join(decompose.SCHEDULING_LINES)
+        self.assertIn("run once, against the Step's finished work", text)
+        self.assertIn("guards that behaviour", text)
+        self.assertNotIn("stops the run", text)
+        self.assertNotIn("EMPTY acceptance list", text)
+
+    def a_shared_test_file_is_described_as_built_apart(self):
+        text = " ".join(decompose.SCHEDULING_LINES)
+        self.assertIn("built by separate agents", text)
+        self.assertIn("the first of them creates it", text)
 
 
 class SpawnReplies(unittest.TestCase):
