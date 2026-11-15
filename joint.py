@@ -155,6 +155,10 @@ def keeps(text, held):
     return all(line in remaining for line in held)
 
 
+def splits(text):
+    return sum(1 for line in text.splitlines(True) if _marker(line) == SPLIT_MARK.encode())
+
+
 def marked(text):
     marks = (OURS_MARK.encode(), THEIRS_MARK.encode())
     return any(_marker(line) in marks for line in text.splitlines(True))

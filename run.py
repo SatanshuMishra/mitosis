@@ -1183,7 +1183,7 @@ class JointRefusal(Exception):
     pass
 
 
-Met = collections.namedtuple("Met", ("mode", "marked", "landed", "held", "own"))
+Met = collections.namedtuple("Met", ("mode", "marked", "landed", "held", "own", "splits"))
 
 
 def _joint_sides(tree, start, path):
@@ -1202,33 +1202,45 @@ def _joint_entry(tree, start, path, theirs, settled):
     if theirs is not None and joint.marked(theirs[1]):
         raise JointRefusal(JOIN_MARKED % path)
     if ours == base or theirs == ours:
-        return {path: theirs}, {}
+        return {path: theirs}, {}, ()
     if path in settled:
-        asked_at, held = settled[path]
+        asked_at, held, splits = settled[path]
         if asked_at != landed:
             raise JointRefusal(JOIN_MOVED % path)
+        if theirs is not None and joint.splits(theirs[1]) > splits:
+            raise JointRefusal(JOIN_MARKED % path)
         if theirs is None or not joint.keeps(theirs[1], held):
             raise JointRefusal(JOIN_LOST % path)
-        return {path: theirs}, {}
+        return {path: theirs}, {}, ()
     if theirs == base:
-        return {}, {}
+        return {path: ours}, {}, ()
     sides = tuple(side for side in (base, ours, theirs) if side is not None)
     if theirs is None or ours is None or any(mode not in JOINABLE_MODES for mode, _ in sides):
         raise JointRefusal(JOIN_REPLACED % path)
     found = joint.joined(None if base is None else base[1], ours[1], theirs[1])
     if found.conflicts:
-        return {}, {path: Met(theirs[0], found.text, landed, found.held, theirs[1])}
-    return {path: (theirs[0], found.text)}, {}
+        splits = joint.splits(found.text) - found.conflicts
+        return {}, {path: Met(theirs[0], found.text, landed, found.held, theirs[1], splits)}, ()
+    return {path: (theirs[0], found.text)}, {}, (path,)
 
 
 def _joined_entries(tree, start, entries, joint_paths, settled):
-    placed, marked = {}, {}
+    placed, marked, joined = {}, {}, ()
     for path, theirs in sorted(entries.items()):
-        kept, met = _joint_entry(tree, start, path, theirs, settled) if path in joint_paths else ({path: theirs}, {})
-        placed, marked = {**placed, **kept}, {**marked, **met}
+        kept, met, mixed = (
+            _joint_entry(tree, start, path, theirs, settled) if path in joint_paths else ({path: theirs}, {}, ())
+        )
+        placed, marked, joined = {**placed, **kept}, {**marked, **met}, joined + mixed
     if marked:
         raise JointMeeting(marked)
-    return placed
+    return placed, joined
+
+
+def _as_on_the_branch(tree, start, entries, joint_paths):
+    return {
+        path: _joint_sides(tree, start, path)[1] if path in joint_paths else entry
+        for path, entry in entries.items()
+    }
 
 
 def _landed_before(tree, start, message):
@@ -1246,20 +1258,19 @@ def _land(plan, lane, tree, record, run_dir, header, settled=None):
             clone, tree["path"], record["start"], write_set, record.get("seeded") or ()
         )
         if joint_paths and _landed_before(tree["path"], record["start"], message):
-            entries = {path: entry for path, entry in landing["entries"].items() if path not in joint_paths}
+            entries, joined = _as_on_the_branch(tree["path"], record["start"], landing["entries"], joint_paths), ()
         else:
-            entries = _joined_entries(
+            entries, joined = _joined_entries(
                 tree["path"], record["start"], landing["entries"], joint_paths, settled or {}
             )
     except JointRefusal as refusal:
         return None, str(refusal), None
     except (GitError, OSError) as error:
         return None, "mitosis could not land the Lane from its clone %s: %s" % (clone, error), None
-    joined = sorted(path for path, entry in entries.items() if entry != landing["entries"][path])
     if joined:
         sys.stderr.write(
             "mitosis: Lane %d's tests in %s were joined with those another Lane landed\n"
-            % (lane, ", ".join(joined))
+            % (lane, ", ".join(sorted(joined)))
         )
     try:
         isolation.place_entries(tree["path"], entries)
@@ -1408,7 +1419,7 @@ def _own_tests_back(folders):
 
 
 def _land_as_joined(plan, lane, tree, record, run_dir, header, meeting):
-    settled = {path: (met.landed, met.held) for path, met in meeting.marked.items()}
+    settled = {path: (met.landed, met.held, met.splits) for path, met in meeting.marked.items()}
     try:
         return _land(plan, lane, tree, record, run_dir, header, settled)
     except JointMeeting as again:

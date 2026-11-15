@@ -498,6 +498,61 @@ class Landing(test_run.RepoCase):
         self.assertIn(joint.SPLIT_MARK + "\nclass Retitled(unittest.TestCase):\n", self._asked()[0]["seen"])
 
 
+    def a_split_mark_left_behind_fails_the_lane_and_never_lands(self):
+        prior = {
+            0: self._held(0, {"a.py": RIGHT, TESTS: RENAMED}),
+            1: self._held(1, {"b.py": RIGHT, TESTS: RETITLED + SECOND_BLOCK}, session="session-of-second"),
+        }
+        left = RENAMED + joint.SPLIT_MARK + "\n" + SECOND_BLOCK
+        records = self.dispatch(self.plan, self.built, prior=prior, reask=self._resolver(left))
+        self.assertEqual([records[lane]["state"] for lane in (0, 1)], ["ok", "failed"])
+        self.assertIn(TESTS, records[1]["reason"])
+        self.assertEqual(self._on_branch(TESTS), RENAMED.strip())
+
+    def a_line_of_equals_signs_the_lane_wrote_itself_is_no_mark(self):
+        ruled = SECOND_BLOCK + '\n\nRULE = """\n' + joint.SPLIT_MARK + '\n"""\n'
+        prior = {
+            0: self._held(0, {"a.py": RIGHT, TESTS: RENAMED}),
+            1: self._held(1, {"b.py": RIGHT, TESTS: RETITLED + ruled}, session="session-of-second"),
+        }
+        records = self.dispatch(self.plan, self.built, prior=prior, reask=self._resolver(RENAMED + ruled))
+        self.assertEqual([records[lane]["state"] for lane in (0, 1)], ["ok", "ok"])
+        self.assertEqual(self._on_branch(TESTS), (RENAMED + ruled).strip())
+
+
+class LandingThreeLanes(Landing):
+    STRAY = BASE.replace("import unittest\n", "import unittest\nimport c\n")
+
+    def _steps(self):
+        first, second = two_writers()
+        return in_msp([first, test_run.step("outsider", ["c.py"]), second], "one")
+
+    def _all_held(self):
+        return {
+            0: self._held(0, {"a.py": RIGHT, TESTS: BASE + FIRST_BLOCK}),
+            1: self._held(1, {"c.py": RIGHT, TESTS: self.STRAY}),
+            2: self._held(2, {"b.py": RIGHT}),
+        }
+
+    def a_stray_write_to_the_file_never_lands_under_a_lane_that_left_it_alone(self):
+        self.assertEqual([lane["steps"] for lane in self.plan["lanes"]], [["first"], ["outsider"], ["second"]])
+        records = self.dispatch(self.plan, self.built, prior=self._all_held())
+        self.assertEqual([records[lane]["state"] for lane in (0, 1, 2)], ["ok", "ok", "ok"])
+        self.assertEqual(self._on_branch(TESTS), (BASE + FIRST_BLOCK).strip())
+
+    def a_stray_write_never_lands_under_a_lane_landed_again_after_a_stop(self):
+        prior = self._all_held()
+
+        def stopped_before_any_record(lane, record):
+            raise Stopped()
+
+        with self.assertRaises(Stopped):
+            self.dispatch(self.plan, self.built, prior=prior, on_lane=stopped_before_any_record)
+        records = self.dispatch(self.plan, self.built, prior=prior)
+        self.assertEqual([records[lane]["state"] for lane in (0, 1, 2)], ["ok", "ok", "ok"])
+        self.assertEqual(self._on_branch(TESTS), (BASE + FIRST_BLOCK).strip())
+
+
 class LandingTwoFiles(Landing):
     SEEDED = (TESTS, MORE_TESTS)
 
@@ -590,6 +645,8 @@ def load_tests(loader, standard, pattern):
             )
 
     suite = unittest.TestSuite()
-    for case in (Lanes, CreationOrder, Joined, ResumedBase, Confinement, Landing, LandingTwoFiles, Build):
+    for case in (
+        Lanes, CreationOrder, Joined, ResumedBase, Confinement, Landing, LandingThreeLanes, LandingTwoFiles, Build
+    ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
