@@ -1,4 +1,5 @@
 import collections
+import difflib
 import os
 import shutil
 import tempfile
@@ -17,7 +18,7 @@ DIVIDER = b"=" * MARK_SIZE
 CLOSING = b">" * MARK_SIZE + b" " + THEIRS_LABEL.encode()
 BINARY_SIGN = b"\0"
 
-Joined = collections.namedtuple("Joined", ("text", "conflicts"))
+Joined = collections.namedtuple("Joined", ("text", "conflicts", "held"))
 
 Meeting = collections.namedtuple("Meeting", ("ours", "base", "theirs"))
 
@@ -117,15 +118,41 @@ def _three_way(base, ours, theirs):
     return done.stdout
 
 
+def _lines(text):
+    return tuple(text.splitlines())
+
+
+def _without_the_lanes_side(part):
+    if not isinstance(part, Meeting):
+        return part
+    return _ended(part.ours) if part.base else _both(part)
+
+
+def _in_both(left, right):
+    matcher = difflib.SequenceMatcher(None, left, right, autojunk=False)
+    return tuple(line for start, _, size in matcher.get_matching_blocks() for line in left[start : start + size])
+
+
+def _held(ours, parts):
+    return _in_both(_lines(ours), _lines(b"".join(_without_the_lanes_side(part) for part in parts)))
+
+
 def _whole(ours, theirs):
-    return Joined(_shown(Meeting(ours, b"", theirs)), 1)
+    return Joined(_shown(Meeting(ours, b"", theirs)), 1, _lines(ours))
 
 
 def joined(base, ours, theirs):
     if base is None or not _is_text(base, ours, theirs) or _collides(base, ours, theirs):
         return _whole(ours, theirs)
-    settled = tuple(_settled(part) for part in _parts(_three_way(base, ours, theirs)))
-    return Joined(b"".join(text for text, _ in settled), sum(count for _, count in settled))
+    parts = _parts(_three_way(base, ours, theirs))
+    settled = tuple(_settled(part) for part in parts)
+    conflicts = sum(count for _, count in settled)
+    return Joined(b"".join(text for text, _ in settled), conflicts, _held(ours, parts) if conflicts else ())
+
+
+def keeps(text, held):
+    remaining = iter(_lines(text))
+    return all(line in remaining for line in held)
 
 
 def marked(text):

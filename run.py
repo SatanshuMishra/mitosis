@@ -1,3 +1,5 @@
+import base64
+import collections
 import fcntl
 import hashlib
 import json
@@ -1123,13 +1125,15 @@ JOIN_STEM = "join"
 
 JOIN_NOTE = (
     "mitosis could not land your work as it stands. While you built, another Lane landed its own "
-    "tests in %(paths)s, and you and that Lane changed the same lines there. Your clone now holds "
-    "%(paths)s as it stands on the branch with your changes joined in, and marks where the two "
-    "meet: the lines from `%(ours)s` to `%(split)s` are the other Lane's, and the lines from "
+    "tests in %(paths)s, and mitosis could not join yours with them line by line. Your clone now "
+    "holds %(paths)s as it stands on the branch with your changes joined in, and marks where the "
+    "two meet: the lines from `%(ours)s` to `%(split)s` are the other Lane's, and the lines from "
     "`%(split)s` to `%(theirs)s` are yours. Edit %(paths)s so that the other Lane's tests and "
-    "yours both stay, remove every mark, and change no other file. The other Lane's work is not "
-    "in your clone, so its tests cannot pass here: run only your own tests, each by name. Then "
-    "reply again in the same form."
+    "yours both stay, and remove every mark. Keep every line that is not your own exactly as it "
+    "is and in its order, adding yours beside it: mitosis refuses the file when a line the branch "
+    "holds is changed or gone. Change no other file. The other Lane's work is not in your clone, "
+    "so its tests cannot pass here: run only your own tests, each by name. Then reply again in "
+    "the same form."
 )
 
 JOIN_UNASKED = (
@@ -1139,13 +1143,31 @@ JOIN_UNASKED = (
 
 JOIN_FAILED = "its tests in %s meet those another Lane landed there, and its Worker did not join them: %s"
 
-JOIN_MARKED = "its Worker left a mark in %s after it was asked to join its tests with another Lane's"
+JOIN_MARKED = (
+    "%s still holds a mark that mitosis writes where two Lanes' tests meet, and a test file never "
+    "lands with one"
+)
 
 JOIN_MOVED = "%s changed on the branch while its Worker joined its tests with another Lane's"
+
+JOIN_LOST = (
+    "its Worker changed or removed lines of %s that another Lane had landed, after it was asked "
+    "to join its tests with that Lane's"
+)
 
 JOIN_REPLACED = (
     "it removed or replaced %s, a test file other Lanes add their tests to, after another Lane "
     "landed there"
+)
+
+JOIN_AGAIN = (
+    "its Worker changed %s while it was asked to join its tests with another Lane's, and what it "
+    "left there meets what another Lane landed"
+)
+
+JOIN_UNRESTORED = (
+    "mitosis could not put back the Lane's own tests, kept in %s when its Worker was first asked "
+    "to join them with another Lane's: %s"
 )
 
 JOINABLE_MODES = (REGULAR_MODE, EXECUTABLE_MODE)
@@ -1161,6 +1183,9 @@ class JointRefusal(Exception):
     pass
 
 
+Met = collections.namedtuple("Met", ("mode", "marked", "landed", "held", "own"))
+
+
 def _joint_sides(tree, start, path):
     base = _committed_entries(tree, start).get(path)
     landed = _committed_entries(tree, "HEAD").get(path)
@@ -1174,13 +1199,16 @@ def _joint_sides(tree, start, path):
 
 def _joint_entry(tree, start, path, theirs, settled):
     base, ours, landed = _joint_sides(tree, start, path)
+    if theirs is not None and joint.marked(theirs[1]):
+        raise JointRefusal(JOIN_MARKED % path)
     if ours == base or theirs == ours:
         return {path: theirs}, {}
     if path in settled:
-        if settled[path] != landed:
+        asked_at, held = settled[path]
+        if asked_at != landed:
             raise JointRefusal(JOIN_MOVED % path)
-        if theirs is None or joint.marked(theirs[1]):
-            raise JointRefusal(JOIN_MARKED % path)
+        if theirs is None or not joint.keeps(theirs[1], held):
+            raise JointRefusal(JOIN_LOST % path)
         return {path: theirs}, {}
     if theirs == base:
         return {}, {}
@@ -1189,7 +1217,7 @@ def _joint_entry(tree, start, path, theirs, settled):
         raise JointRefusal(JOIN_REPLACED % path)
     found = joint.joined(None if base is None else base[1], ours[1], theirs[1])
     if found.conflicts:
-        return {}, {path: (theirs[0], found.text, landed)}
+        return {}, {path: Met(theirs[0], found.text, landed, found.held, theirs[1])}
     return {path: (theirs[0], found.text)}, {}
 
 
@@ -1203,17 +1231,26 @@ def _joined_entries(tree, start, entries, joint_paths, settled):
     return placed
 
 
+def _landed_before(tree, start, message):
+    subject = message.split("\n", 1)[0]
+    return subject in git(["log", "--format=%s", "%s..HEAD" % start], tree).splitlines()
+
+
 def _land(plan, lane, tree, record, run_dir, header, settled=None):
     write_set = plan["briefs"][lane]["write_set"]
     joint_paths = frozenset(plan["briefs"][lane].get("joint") or ())
     clone = isolation.lane_folders(run_dir, lane)["clone"]
+    message = _landing_message(plan, lane, header)
     try:
         landing = isolation.read_lane(
             clone, tree["path"], record["start"], write_set, record.get("seeded") or ()
         )
-        entries = _joined_entries(
-            tree["path"], record["start"], landing["entries"], joint_paths, settled or {}
-        )
+        if joint_paths and _landed_before(tree["path"], record["start"], message):
+            entries = {path: entry for path, entry in landing["entries"].items() if path not in joint_paths}
+        else:
+            entries = _joined_entries(
+                tree["path"], record["start"], landing["entries"], joint_paths, settled or {}
+            )
     except JointRefusal as refusal:
         return None, str(refusal), None
     except (GitError, OSError) as error:
@@ -1226,9 +1263,7 @@ def _land(plan, lane, tree, record, run_dir, header, settled=None):
         )
     try:
         isolation.place_entries(tree["path"], entries)
-        commit = commit_paths(
-            tree["path"], write_set, _landing_message(plan, lane, header), tree["branch"]
-        )
+        commit = commit_paths(tree["path"], write_set, message, tree["branch"])
     except GitError as error:
         if write_set:
             git_run(["reset", "-q", "--", *write_set], tree["path"])
@@ -1353,20 +1388,46 @@ def _joined_by_its_worker(lane, record, join, meeting):
     paths = ", ".join(sorted(meeting.marked))
     if join is None or record.get("session_id") is None:
         return "failed", JOIN_UNASKED % paths
-    state, why = join(lane, record, meeting.marked)
+    try:
+        state, why = join(lane, record, meeting.marked)
+    except (GitError, OSError) as error:
+        return "failed", JOIN_FAILED % (paths, error)
     return (None, None) if state == "ok" else (state, JOIN_FAILED % (paths, why))
 
 
+def _kept_own_tests(marked):
+    return {
+        path: [met.mode, base64.b64encode(met.own).decode("ascii")] for path, met in sorted(marked.items())
+    }
+
+
+def _own_tests_back(folders):
+    if os.path.isfile(folders["kept"]):
+        for path, (mode, text) in sorted(read_json(folders["kept"]).items()):
+            _place(folders["clone"], path, mode, base64.b64decode(text))
+
+
+def _land_as_joined(plan, lane, tree, record, run_dir, header, meeting):
+    settled = {path: (met.landed, met.held) for path, met in meeting.marked.items()}
+    try:
+        return _land(plan, lane, tree, record, run_dir, header, settled)
+    except JointMeeting as again:
+        return None, JOIN_AGAIN % ", ".join(sorted(again.marked)), None
+
+
 def _landed(plan, lane, tree, record, run_dir, header, join=None):
-    settled = None
+    folders = isolation.lane_folders(run_dir, lane)
+    try:
+        _own_tests_back(folders)
+    except (GitError, OSError, ValueError) as error:
+        return {**record, "state": "failed", "reason": JOIN_UNRESTORED % (folders["kept"], error)}
     try:
         commit, reason, outside = _land(plan, lane, tree, record, run_dir, header)
     except JointMeeting as meeting:
         state, why = _joined_by_its_worker(lane, record, join, meeting)
         if state is not None:
             return {**record, "state": state, "reason": why}
-        settled = {path: landed for path, (_, _, landed) in meeting.marked.items()}
-        commit, reason, outside = _land(plan, lane, tree, record, run_dir, header, settled)
+        commit, reason, outside = _land_as_joined(plan, lane, tree, record, run_dir, header, meeting)
     if reason is not None:
         return {**record, "state": "failed", "reason": reason}
     return {**record, **outside, "commit": commit}
@@ -1454,8 +1515,9 @@ def dispatch(
         values = _worker_values(
             plan, lane, {**tree, "path": folders["clone"]}, models, run_dir, record["session_id"], prompt_template
         )
-        for path, (mode, text, _) in sorted(marked.items()):
-            _place(folders["clone"], path, mode, text)
+        write_json(folders["kept"], _kept_own_tests(marked))
+        for path, met in sorted(marked.items()):
+            _place(folders["clone"], path, met.mode, met.marked)
         note = JOIN_NOTE % {
             "paths": ", ".join(sorted(marked)),
             "ours": joint.OURS_MARK,

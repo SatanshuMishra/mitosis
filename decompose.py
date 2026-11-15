@@ -84,16 +84,17 @@ SCHEDULING_LINES = (
     "How a plan is built from what you return, so you can avoid returning one that cannot run:",
     "  Two Steps that list the same file in their write-sets are built by ONE agent, in one"
     " sitting, one after the other. That agent cannot pause in the middle.",
-    "  A test file is the exception. Steps whose acceptance names the same test file each add"
-    " their own tests to it and are still built by separate agents, at the same time, unless"
-    " one of them also changes that file as work its acceptance does not name. When the file"
-    " does not exist yet, the first of them creates it and the others wait for that Step.",
     "  It follows that no Step outside such a pair may sit between them in the after order."
     " If X and Z share a file, do not write X -> Y -> Z with Y owning different files: X and Z"
     " must both wait for Y while Y waits for X, nothing can start, and the plan is refused.",
     "  When two Steps must run at different times, give them different files. When two Steps"
     " genuinely edit the same file, put every Step between them in that same write-set, or"
     " drop the ordering that forces one between them.",
+    "  A test file is the exception to all of this. Steps whose acceptance names the same test"
+    " file each add their own tests to it, and that file alone never puts them with one agent:"
+    " they may be built by separate agents, at the same time, unless one of them also changes"
+    " that file as work its acceptance does not name. When the file does not exist yet, the"
+    " first of them creates it and the others wait for that Step.",
     "  A file that declares what a package exports - __init__.py, index.ts, mod.rs - is the"
     " package's public surface, not a formality. Give it to a Step whose job IS that surface,"
     " and give that Step an after edge reaching every Step whose modules it exports, directly"

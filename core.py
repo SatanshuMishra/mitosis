@@ -486,15 +486,18 @@ def _own_tests(item):
     return frozenset(path for path in _files(item) if path in named)
 
 
-def joint_tests(items):
+def joint_tests(items, shared_files=()):
+    shared = shared_matcher(shared_files)
     writers = collections.Counter(path for item in items for path in _own_tests(item))
     worked = frozenset(path for item in items for path in frozenset(_files(item)) - _own_tests(item))
-    return frozenset(path for path, count in writers.items() if count > 1 and path not in worked)
+    return frozenset(
+        path for path, count in writers.items() if count > 1 and path not in worked and not shared(path)
+    )
 
 
 def _lane_file_pairs(items, owner, shared_files):
     shared = shared_matcher(shared_files)
-    joint = joint_tests(items)
+    joint = joint_tests(items, shared_files)
     keys = tuple(
         tuple((path, owner[index]) if shared(path) else path for path in _files(item) if path not in joint)
         for index, item in enumerate(items)
@@ -1171,7 +1174,7 @@ def coupling_review(items, lanes, graph, risk_markers=(), history=(), shared_fil
     by_name = _by_name(items)
     adjacency = _file_coupling(graph)
     adj_keys = list(adjacency)
-    joint = joint_tests(items)
+    joint = joint_tests(items, shared_files)
     sides = [_coupling_side(item, adj_keys, history or (), joint) for item in items]
     review = []
     for a in range(len(items)):

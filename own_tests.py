@@ -31,8 +31,8 @@ def owned(items, locked=()):
 
 
 CREATED_LINE = (
-    "%s is not on the base, so Step %s creates it; these Steps wait for that Step before they add "
-    "their own tests: %s"
+    "%s is not on the base, so Step %s creates it; these Steps wait for that Step's Lane before "
+    "they add their own tests: %s"
 )
 
 
@@ -49,17 +49,39 @@ def _waiting_on(item, name):
     return {**item, "after": list(dict.fromkeys((*core._after(item), name)))}
 
 
-def created_once(items, held):
+def _awaited(items, by_name):
+    return frozenset(by_name[name] for item in items for name in core._after(item) if name in by_name)
+
+
+def _lane_end(items, creator, waiter, by_name, shared_files):
+    lane = next(lane for lane in core.lane_items(items, shared_files) if creator in lane)
+    awaited = _awaited(items, by_name)
+    free = tuple(
+        index
+        for index in lane
+        if index != waiter and index not in awaited and not core._waits_on(items, index, waiter, by_name)
+    )
+    return free[-1] if free else creator
+
+
+def created_once(items, held, shared_files=()):
     ordered, lines = list(items), ()
-    for path in sorted(core.joint_tests(items)):
+    for path in sorted(core.joint_tests(items, shared_files)):
         if held(path):
             continue
-        unordered = _first_writers(ordered, path, core._by_name(ordered))
+        by_name = core._by_name(ordered)
+        unordered = _first_writers(ordered, path, by_name)
         if len(unordered) < 2:
             continue
-        creator, rest = ordered[unordered[0]]["name"], unordered[1:]
-        ordered = [_waiting_on(item, creator) if index in rest else item for index, item in enumerate(ordered)]
-        lines = lines + (CREATED_LINE % (path, creator, ", ".join(ordered[index]["name"] for index in rest)),)
+        creator, rest = unordered[0], unordered[1:]
+        awaited = _lane_end(ordered, creator, rest[0], by_name, shared_files) if len(rest) == 1 else creator
+        lines = lines + (
+            CREATED_LINE % (path, ordered[creator]["name"], ", ".join(ordered[index]["name"] for index in rest)),
+        )
+        ordered = [
+            _waiting_on(item, ordered[awaited]["name"]) if index in rest else item
+            for index, item in enumerate(ordered)
+        ]
     return ordered, lines
 
 

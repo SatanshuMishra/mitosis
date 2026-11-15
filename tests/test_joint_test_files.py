@@ -1,8 +1,12 @@
+import argparse
 import json
 import os
 import shlex
+import shutil
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -12,6 +16,7 @@ sys.path.insert(0, HERE)
 import core
 import isolation
 import joint
+import mitosis
 import own_tests
 import run
 import test_every_finding as fixtures
@@ -19,6 +24,7 @@ import test_finishes_the_work as finishes
 import test_run
 
 TESTS = "tests/test_all.py"
+MORE_TESTS = "tests/test_more.py"
 BASE = (
     "import unittest\n\n\nclass Seed(unittest.TestCase):\n"
     "    def holds(self):\n        self.assertTrue(True)\n"
@@ -55,6 +61,23 @@ print(json.dumps({"type": "result", "session_id": session, "result": "done", "st
 ''' % {"path": TESTS}
 
 
+REWRITER = r'''
+import json
+import sys
+
+writes, session = json.loads(sys.argv[1]), sys.argv[3]
+for path, text in writes.items():
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text)
+reply = {"item": "second", "status": "ok", "files_changed": sorted(writes), "notes": "joined"}
+print(json.dumps({"type": "result", "session_id": session, "result": "done", "structured_output": reply}))
+'''
+
+
+class Stopped(Exception):
+    pass
+
+
 def writer(name, work, test, after=()):
     step = test_run.step(name, [work, TESTS], acceptance=[test])
     return {**step, "after": list(after)} if after else step
@@ -62,6 +85,21 @@ def writer(name, work, test, after=()):
 
 def two_writers():
     return [writer("first", "a.py", FIRST_TEST), writer("second", "b.py", SECOND_TEST)]
+
+
+def writer_of_two_files(name, work):
+    return test_run.step(
+        name,
+        [work, TESTS, MORE_TESTS],
+        acceptance=[
+            {"file": TESTS, "test": name.title() + ".works"},
+            {"file": MORE_TESTS, "test": name.title() + ".more"},
+        ],
+    )
+
+
+def in_msp(items, label):
+    return [{**item, "msp": label} for item in items]
 
 
 def lanes_of(items):
@@ -106,6 +144,23 @@ class Lanes(unittest.TestCase):
         for brief in plan["briefs"]:
             self.assertIn(core.JOINT_LINE % TESTS, brief["text"])
 
+    def a_test_file_declared_shared_is_never_joint(self):
+        first, second = two_writers()
+        items = [{**first, "msp": "one"}, {**second, "msp": "two"}]
+        self.assertEqual(core.joint_tests(items, (TESTS,)), frozenset())
+        self.assertEqual(own_tests.created_once(items, never, (TESTS,)), (items, ()))
+
+    def a_declared_shared_test_file_is_still_a_coupling_signal(self):
+        first, second = two_writers()
+        items = [{**first, "msp": "one"}, {**second, "msp": "two"}]
+        review = core.coupling_review(items, core.lane_items(items, (TESTS,)), {}, shared_files=(TESTS,))
+        self.assertEqual([entry["signals"] for entry in review], [["shared-file:" + TESTS]])
+
+    def steps_of_one_msp_that_share_a_declared_shared_test_file_stay_in_one_lane(self):
+        plan = core.plan(in_msp(two_writers(), "one"), shared_files=(TESTS,))
+        self.assertEqual([lane["steps"] for lane in plan["lanes"]], [["first", "second"]])
+        self.assertTrue(all("joint" not in brief for brief in plan["briefs"]))
+
     def a_plan_with_no_such_file_keeps_its_briefs_as_they_were(self):
         plan = core.plan([test_run.step("first", ["a.py"]), test_run.step("second", ["b.py"])])
         self.assertTrue(all("joint" not in brief for brief in plan["briefs"]))
@@ -129,6 +184,36 @@ class CreationOrder(unittest.TestCase):
         ordered, lines = own_tests.created_once(items, never)
         self.assertEqual(ordered, items)
         self.assertEqual(lines, ())
+
+    def a_lone_waiting_step_joins_the_end_of_the_creators_lane(self):
+        helper = {**test_run.step("helper", ["a.py"]), "after": ["first"]}
+        items = [writer("first", "a.py", FIRST_TEST), helper, writer("second", "b.py", SECOND_TEST)]
+        ordered, lines = own_tests.created_once(items, never)
+        self.assertEqual(ordered[2]["after"], ["helper"])
+        self.assertEqual(lanes_of(ordered), [["first", "helper", "second"]])
+        self.assertEqual(lines, (own_tests.CREATED_LINE % (TESTS, "first", "second"),))
+
+    def two_waiting_steps_wait_for_the_creator_and_build_apart(self):
+        helper = {**test_run.step("helper", ["a.py"]), "after": ["first"]}
+        third = writer("third", "c.py", {"file": TESTS, "test": "Third.works"})
+        items = [writer("first", "a.py", FIRST_TEST), helper, writer("second", "b.py", SECOND_TEST), third]
+        ordered, _ = own_tests.created_once(items, never)
+        self.assertEqual([item.get("after") for item in ordered[2:]], [["first"], ["first"]])
+        self.assertEqual(lanes_of(ordered), [["first", "helper"], ["second"], ["third"]])
+
+    def a_lone_waiting_step_never_waits_on_a_step_that_waits_on_it(self):
+        helper = {**test_run.step("helper", ["a.py"]), "after": ["first", "second"]}
+        items = [writer("first", "a.py", FIRST_TEST), helper, writer("second", "b.py", SECOND_TEST)]
+        ordered, _ = own_tests.created_once(items, never)
+        self.assertEqual(ordered[2]["after"], ["first"])
+        self.assertEqual(core.cycles(ordered), ())
+
+    def a_lone_waiting_step_already_in_the_creators_lane_waits_for_the_creator(self):
+        first = test_run.step("first", ["a.py", "shared.py", TESTS], acceptance=[FIRST_TEST])
+        second = test_run.step("second", ["b.py", "shared.py", TESTS], acceptance=[SECOND_TEST])
+        ordered, _ = own_tests.created_once([first, second], never)
+        self.assertEqual(ordered[1]["after"], ["first"])
+        self.assertEqual(core.cycles(ordered), ())
 
     def writers_that_wait_on_each_other_are_left_for_the_cycle_refusal(self):
         items = [
@@ -176,16 +261,73 @@ class Joined(unittest.TestCase):
         self.assertEqual(found.conflicts, 1)
         self.assertTrue(joint.marked(found.text))
 
+    def a_join_that_changes_a_line_the_branch_held_is_told_apart_from_one_that_keeps_it(self):
+        found = joint.joined(BASE.encode(), (RENAMED + FIRST_BLOCK).encode(), (RETITLED + SECOND_BLOCK).encode())
+        self.assertTrue(joint.keeps((RENAMED + FIRST_BLOCK + SECOND_BLOCK).encode(), found.held))
+        self.assertFalse(joint.keeps((RETITLED + FIRST_BLOCK + SECOND_BLOCK).encode(), found.held))
+
+    def a_lane_may_still_change_the_lines_it_added_itself(self):
+        found = joint.joined(BASE.encode(), (RENAMED + FIRST_BLOCK).encode(), (RETITLED + SECOND_BLOCK).encode())
+        reworked = SECOND_BLOCK.replace("class Second", "class Other")
+        self.assertTrue(joint.keeps((RENAMED + FIRST_BLOCK + reworked).encode(), found.held))
+
+    def every_line_of_a_file_another_lane_made_is_held(self):
+        found = joint.joined(None, (BASE + FIRST_BLOCK).encode(), (BASE + SECOND_BLOCK).encode())
+        self.assertTrue(joint.keeps((BASE + FIRST_BLOCK + SECOND_BLOCK).encode(), found.held))
+        self.assertFalse(joint.keeps((BASE + SECOND_BLOCK).encode(), found.held))
+
     def a_joined_file_holds_no_mark(self):
         found = joint.joined(BASE.encode(), (BASE + FIRST_BLOCK).encode(), (BASE + SECOND_BLOCK).encode())
         self.assertFalse(joint.marked(found.text))
 
 
+class ResumedBase(test_run.RepoCase):
+    def a_resumed_run_orders_a_new_test_file_by_the_base_it_was_pinned_to(self):
+        pinned = test_run.sh(["git", "rev-parse", "main"], self.repo).strip()
+        fresh = argparse.Namespace(feature_branch="main", resume=False, plan_file=None, shared_files=None)
+        first_run, _, _ = mitosis.folded_items(fresh, two_writers(), self.repo, None, self.repo, self.run_dir)
+        run.write_json(os.path.join(self.run_dir, run.STATE_FILE), {"base_commit": pinned})
+        self.seed_existing(TESTS, BASE)
+        resumed = argparse.Namespace(**{**vars(fresh), "resume": True})
+        again, _, _ = mitosis.folded_items(resumed, two_writers(), self.repo, None, self.repo, self.run_dir)
+        self.assertEqual([item.get("after") for item in first_run], [None, ["first"]])
+        self.assertEqual(again, first_run)
+
+    def a_new_run_reads_the_branch_as_it_stands(self):
+        pinned = test_run.sh(["git", "rev-parse", "main"], self.repo).strip()
+        run.write_json(os.path.join(self.run_dir, run.STATE_FILE), {"base_commit": pinned})
+        self.seed_existing(TESTS, BASE)
+        fresh = argparse.Namespace(feature_branch="main", resume=False, plan_file=None, shared_files=None)
+        ordered, _, _ = mitosis.folded_items(fresh, two_writers(), self.repo, None, self.repo, self.run_dir)
+        self.assertEqual(ordered, two_writers())
+
+
+class Confinement(unittest.TestCase):
+    def a_lanes_confinement_is_made_afresh_for_a_second_turn_in_its_clone(self):
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        folders = isolation.lane_folders(folder, 0)
+        os.makedirs(folders["clone"])
+        sandbox = {"program": "sandbox", "writes": ()}
+        env = {**os.environ, "HOME": os.path.join(folder, "home")}
+        first = isolation.worker_confinement(folders, sandbox, env)
+        test_run.write(os.path.join(folders["tmp"], "left-by-the-first-turn"), "x")
+        again = isolation.worker_confinement(folders, sandbox, env)
+        self.assertEqual(again, first)
+        self.assertEqual(os.listdir(folders["tmp"]), [])
+
+
 class Landing(test_run.RepoCase):
+    SEEDED = (TESTS,)
+
+    def _steps(self):
+        return two_writers()
+
     def setUp(self):
         super().setUp()
-        self.seed_existing(TESTS, BASE)
-        self.plan = core.plan(two_writers())
+        for path in self.SEEDED:
+            self.seed_existing(path, BASE)
+        self.plan = core.plan(self._steps())
         self.built = run.prepare_worktrees(self.plan["msps"], "main", self.trees, self.repo)
         self.tree = self.built[0]
 
@@ -203,6 +345,16 @@ class Landing(test_run.RepoCase):
         return "%s %s %s %s {prompt} {session_id} {schema}" % (
             shlex.quote(sys.executable), shlex.quote(script), shlex.quote(self.resolved_log), shlex.quote(resolved),
         )
+
+    def _rewriter(self, writes):
+        script = os.path.join(self.tmp, "rewriter.py")
+        test_run.write(script, REWRITER)
+        return "%s %s %s {prompt} {session_id} {schema}" % (
+            shlex.quote(sys.executable), shlex.quote(script), shlex.quote(json.dumps(writes)),
+        )
+
+    def _tracked(self):
+        return test_run.sh(["git", "ls-tree", "-r", "--name-only", self.tree["branch"]], self.repo).split()
 
     def _asked(self):
         with open(self.resolved_log, encoding="utf-8") as handle:
@@ -255,6 +407,19 @@ class Landing(test_run.RepoCase):
         self.assertEqual(self._on_branch(TESTS), RENAMED.strip())
         self.assertNotIn("b.py", test_run.sh(["git", "ls-tree", "-r", "--name-only", self.tree["branch"]], self.repo))
 
+    def a_lane_whose_join_drops_a_line_the_branch_held_fails_and_lands_nothing(self):
+        prior = {
+            0: self._held(0, {"a.py": RIGHT, TESTS: RENAMED}),
+            1: self._held(1, {"b.py": RIGHT, TESTS: RETITLED + SECOND_BLOCK}, session="session-of-second"),
+        }
+        records = self.dispatch(
+            self.plan, self.built, prior=prior, reask=self._resolver(RETITLED + SECOND_BLOCK)
+        )
+        self.assertEqual([records[lane]["state"] for lane in (0, 1)], ["ok", "failed"])
+        self.assertIn(TESTS, records[1]["reason"])
+        self.assertEqual(self._on_branch(TESTS), RENAMED.strip())
+        self.assertNotIn("b.py", test_run.sh(["git", "ls-tree", "-r", "--name-only", self.tree["branch"]], self.repo))
+
     def a_lane_with_no_session_to_ask_fails_and_names_the_file(self):
         prior = {
             0: self._held(0, {"a.py": RIGHT, TESTS: RENAMED}),
@@ -264,6 +429,112 @@ class Landing(test_run.RepoCase):
         self.assertEqual([records[lane]["state"] for lane in (0, 1)], ["ok", "failed"])
         self.assertIn(TESTS, records[1]["reason"])
         self.assertEqual(self.reask_calls(), [])
+
+    def a_join_that_cannot_be_started_fails_the_lane_and_not_the_run(self):
+        prior = {
+            0: self._held(0, {"a.py": RIGHT, TESTS: RENAMED}),
+            1: self._held(1, {"b.py": RIGHT, TESTS: RETITLED}, session="session-of-second"),
+        }
+        absent = os.path.join(self.tmp, "no-such-program")
+        records = self.dispatch(
+            self.plan, self.built, prior=prior, reask=shlex.quote(absent) + " {prompt} {session_id} {schema}"
+        )
+        self.assertEqual([records[lane]["state"] for lane in (0, 1)], ["ok", "failed"])
+        self.assertIn(TESTS, records[1]["reason"])
+        self.assertNotIn("b.py", self._tracked())
+
+    def lanes_that_landed_before_a_stop_land_their_tests_once_when_landed_again(self):
+        prior = {
+            0: self._held(0, {"a.py": RIGHT, TESTS: BASE + FIRST_BLOCK}),
+            1: self._held(1, {"b.py": RIGHT, TESTS: BASE + SECOND_BLOCK}),
+        }
+
+        def stopped_before_any_record(lane, record):
+            raise Stopped()
+
+        with self.assertRaises(Stopped):
+            self.dispatch(self.plan, self.built, prior=prior, on_lane=stopped_before_any_record)
+        self.assertEqual(self._on_branch(TESTS), (BASE + FIRST_BLOCK + SECOND_BLOCK).strip())
+        records = self.dispatch(self.plan, self.built, prior=prior)
+        self.assertEqual([records[lane]["state"] for lane in (0, 1)], ["ok", "ok"])
+        self.assertEqual(self._on_branch(TESTS), (BASE + FIRST_BLOCK + SECOND_BLOCK).strip())
+
+    def a_lane_whose_kept_tests_cannot_be_read_fails_and_lands_nothing(self):
+        prior = {
+            0: self._held(0, {"a.py": RIGHT, TESTS: BASE + FIRST_BLOCK}),
+            1: self._held(1, {"b.py": RIGHT, TESTS: BASE + SECOND_BLOCK}),
+        }
+        kept = isolation.lane_folders(self.run_dir, 1)["kept"]
+        test_run.write(kept, "not json")
+        records = self.dispatch(self.plan, self.built, prior=prior)
+        self.assertEqual([records[lane]["state"] for lane in (0, 1)], ["ok", "failed"])
+        self.assertIn(kept, records[1]["reason"])
+        self.assertNotIn("b.py", self._tracked())
+
+    def a_clone_cut_again_forgets_the_tests_kept_for_an_earlier_join(self):
+        self._held(1, {"b.py": RIGHT})
+        folders = isolation.lane_folders(self.run_dir, 1)
+        test_run.write(folders["kept"], "{}")
+        isolation.cut_clone(self.tree, folders)
+        self.assertFalse(os.path.exists(folders["kept"]))
+
+    def a_join_that_was_cut_short_is_asked_again_from_the_lanes_own_file(self):
+        prior = {
+            0: self._held(0, {"a.py": RIGHT, TESTS: RENAMED + FIRST_BLOCK}),
+            1: self._held(1, {"b.py": RIGHT, TESTS: RETITLED + SECOND_BLOCK}, session="session-of-second"),
+        }
+        joined = RENAMED + FIRST_BLOCK + SECOND_BLOCK
+        clone = isolation.lane_folders(self.run_dir, 1)["clone"]
+
+        def cut_short_after_the_edit(argv, reask, cwd, files, env=None, sandbox=None):
+            test_run.write(os.path.join(clone, TESTS), joined)
+            raise Stopped()
+
+        with mock.patch.object(run, "worker_call", cut_short_after_the_edit), self.assertRaises(Stopped):
+            self.dispatch(self.plan, self.built, prior=prior)
+        records = self.dispatch(self.plan, self.built, prior=prior, reask=self._resolver(joined))
+        self.assertEqual([records[lane]["state"] for lane in (0, 1)], ["ok", "ok"])
+        self.assertEqual(self._on_branch(TESTS), joined.strip())
+        self.assertIn(joint.SPLIT_MARK + "\nclass Retitled(unittest.TestCase):\n", self._asked()[0]["seen"])
+
+
+class LandingTwoFiles(Landing):
+    SEEDED = (TESTS, MORE_TESTS)
+
+    def _steps(self):
+        return [writer_of_two_files("first", "a.py"), writer_of_two_files("second", "b.py")]
+
+    def a_join_turn_that_leaves_the_other_file_meeting_fails_the_lane_and_not_the_run(self):
+        prior = {
+            0: self._held(0, {"a.py": RIGHT, TESTS: RENAMED, MORE_TESTS: RENAMED}),
+            1: self._held(1, {"b.py": RIGHT, TESTS: RETITLED}, session="session-of-second"),
+        }
+        records = self.dispatch(
+            self.plan,
+            self.built,
+            prior=prior,
+            reask=self._rewriter({TESTS: RENAMED + SECOND_BLOCK, MORE_TESTS: RETITLED}),
+        )
+        self.assertEqual([records[lane]["state"] for lane in (0, 1)], ["ok", "failed"])
+        self.assertIn(MORE_TESTS, records[1]["reason"])
+        self.assertEqual(self._on_branch(MORE_TESTS), RENAMED.strip())
+        self.assertNotIn("b.py", self._tracked())
+
+    def a_mark_left_in_the_other_file_during_a_join_never_reaches_the_branch(self):
+        prior = {
+            0: self._held(0, {"a.py": RIGHT, TESTS: RENAMED, MORE_TESTS: BASE + FIRST_BLOCK}),
+            1: self._held(1, {"b.py": RIGHT, TESTS: RETITLED}, session="session-of-second"),
+        }
+        records = self.dispatch(
+            self.plan,
+            self.built,
+            prior=prior,
+            reask=self._rewriter({TESTS: RENAMED + SECOND_BLOCK, MORE_TESTS: joint.OURS_MARK + "\n" + BASE}),
+        )
+        self.assertEqual([records[lane]["state"] for lane in (0, 1)], ["ok", "failed"])
+        self.assertIn(MORE_TESTS, records[1]["reason"])
+        self.assertEqual(self._on_branch(MORE_TESTS), (BASE + FIRST_BLOCK).strip())
+        self.assertNotIn("b.py", self._tracked())
 
 
 JOBS = {
@@ -319,6 +590,6 @@ def load_tests(loader, standard, pattern):
             )
 
     suite = unittest.TestSuite()
-    for case in (Lanes, CreationOrder, Joined, Landing, Build):
+    for case in (Lanes, CreationOrder, Joined, ResumedBase, Confinement, Landing, LandingTwoFiles, Build):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
