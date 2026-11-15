@@ -3,6 +3,36 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.23.0 - 2026-11-15
+
+- A built run can relock a locked check that a fix repaired. `--relock
+  <MSP label>`, with one `--repairable <path>` for each locked check that may
+  have changed, is added to the run's own invocation. It reads the built run
+  from the run directory, plans nothing, dispatches no Worker, pushes nothing
+  and moves no branch. Before, a defect that review confirmed inside a locked
+  check had no route to a fix: mitosis restored a changed charter-locked or
+  lock-stage check at ship and held its MSP back with exit 9.
+- A changed locked check must be named, must not be removed, must hold no
+  acceptance test of another MSP's Steps, must fail on the MSP's base
+  without the work wherever the locked check failed there, must not pass
+  there where the locked check did not, and must leave every acceptance test
+  of the MSP passing at its head. A relock that holds prints the paths it
+  relocked and exits 0; a refusal prints its reason as one sentence, writes
+  nothing and exits 1; flags, an items file or a run directory that cannot
+  be used, and a proof that could not be run, exit 2.
+- A relock that holds is recorded as the MSP's lock record at that head, in
+  the format the record already has, and in a relock journal in the run
+  directory. The gate and the ship then keep the repaired check, restore a
+  later change to the repair, and let a repair taken back to what was locked
+  stand. An MSP stacked on another keeps the checks that MSP relocked.
+- For a plan made from folded items, the files of the folded check-author
+  Steps are the MSP's locked checks for a relock, compared with what the
+  MSP's Lanes landed. They are read from `--items`, which must fold into
+  the Steps the plan holds. mitosis still holds those files at no other
+  time.
+- Decision record 0032 now states the one recorded build of Steps side by
+  side on a shared test file, in place of saying none was on record.
+
 ## 0.22.0 - 2026-11-14
 
 - Steps that add their own tests to one test file build in separate Lanes.

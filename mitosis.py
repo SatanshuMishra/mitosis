@@ -23,6 +23,7 @@ import run
 import shape
 
 EXIT_SHIPPED = 0
+EXIT_RELOCK_REFUSED = 1
 EXIT_USAGE = 2
 EXIT_REFUSED = 3
 EXIT_INCOMPLETE = 4
@@ -154,6 +155,8 @@ STAGE_FLAG_NAMES = (
     "--pick",
     "--revise",
     "--proven-head",
+    "--relock",
+    "--repairable",
     "--worker-sandbox",
     "--worker-write",
     "--worktree-root",
@@ -179,6 +182,12 @@ GATE_CLASS_KEYS = ("class", "reason", "test")
 GATE_CLASS_REASON_LIMIT = 500
 
 PROVEN_HEAD = re.compile(r"^(.+)=([0-9a-f]{7,40})$")
+
+REPAIRABLE = re.compile(r"^(?!/)(?!(.*/)?\.\.(/|$)).+$")
+
+RELOCK_UNUSABLE = "the relock could not use its flags or the run dir, and changed nothing"
+
+RELOCK_UNJUDGED = "the relock stopped before it judged the repair: %s: %s"
 
 RUN_FLAGS = (
     ("--feature-branch", "feature_branch"),
@@ -246,6 +255,22 @@ FLAG_SPECS = {
         "help": "ship the MSP named LABEL without re-gating when its HEAD equals COMMIT and a "
         "gate result that did not block is recorded for it; otherwise it is gated as without "
         "this flag; repeatable",
+    },
+    "--relock": {
+        "metavar": "LABEL",
+        "help": "prove the locked checks a fix changed on the MSP named LABEL of the built run "
+        "in --run-dir, and record them: each changed check must be named by --repairable, fail "
+        "on the base without the work wherever the locked check failed there, and leave every "
+        "acceptance test of the MSP passing at its HEAD; prints one JSON line, relocked and "
+        "refused, and exits 0, or 1 when it refused and changed nothing, or 2 when the flags "
+        "or the run dir cannot be used; dispatches no Worker, pushes nothing and moves no branch",
+    },
+    "--repairable": {
+        "metavar": "PATH",
+        "action": "append",
+        "default": [],
+        "help": "with --relock, a locked check that may have changed, as a path from the "
+        "repository root; repeatable",
     },
     "--plan-only": {
         "action": "store_true",
@@ -2587,6 +2612,92 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     return _summarised(plan, state, shown, code, locked, notices)
 
 
+def relock_excludes(args):
+    return (
+        ("--resume", args.resume),
+        ("--proven-head", args.proven_head),
+        ("--plan-only", args.plan_only),
+        ("--dry-run", args.dry_run),
+        ("--revise", args.revise),
+        ("--no-run-dir", args.no_run_dir),
+    )
+
+
+def _step_files(items):
+    return {
+        item.get("name"): frozenset(referee.normalised(path) for path in core._files(item))
+        for item in items
+    }
+
+
+def folds_as_planned(args, plan, items, root):
+    locked = core.charter_locks(check_charter(args.charter), root)[0]
+    folded = own_tests.folded(items, locked, planning_shared_files(args))[0]
+    return _step_files(folded) == _step_files(plan.get("items") or ())
+
+
+def folded_check_files(args, plan, root):
+    folded = list(plan.get(FOLDED_KEY) or ())
+    if not folded:
+        return ()
+    items = read_items(os.path.abspath(args.items)) if args.items else []
+    if check_author_names(items) != folded or not folds_as_planned(args, plan, items, root):
+        raise run.RelockUnusable(
+            "--items does not fold into the Steps plan %s holds, so the files of its check-author "
+            "Steps %s cannot be read from it" % (plan.get("plan_id"), ", ".join(folded))
+        )
+    return tuple(path for author in core.check_author_steps(items) for path in core._files(author))
+
+
+def relocked(args, repo, root, run_dir):
+    if repo is None:
+        raise run.RelockUnusable("--relock runs inside the repository of the built run")
+    plan, state = run.built_run(run_dir)
+    return run.relock(
+        plan,
+        state,
+        repo,
+        run_dir,
+        args.relock,
+        args.repairable,
+        args.acceptance_command,
+        authored=folded_check_files(args, plan, root),
+        concurrency=args.concurrency,
+        gate_setup=args.gate_setup,
+        gate_classes=gate_classes(args.gate_classes, plan)[0],
+        worker_sandbox=args.worker_sandbox,
+        worker_writes=tuple(args.worker_write),
+        trees_root=trees_root_of(args, root),
+    )
+
+
+RELOCK_FAILURES = (
+    run.RelockUnusable,
+    run.ResumeError,
+    run.ConfigError,
+    run.GitError,
+    handoff.HandoffError,
+    OSError,
+)
+
+
+def relock_run(args):
+    cwd = os.getcwd()
+    repo = repository_root(cwd)
+    root = cwd if repo is None else repo
+    try:
+        outcome = relocked(args, repo, root, input_run_dir(args, root))
+    except (Refusal, *RELOCK_FAILURES) as error:
+        _print(("mitosis: %s" % error, "exit %d: %s" % (EXIT_USAGE, RELOCK_UNUSABLE)), sys.stderr)
+        return EXIT_USAGE
+    except Exception as error:
+        unjudged = RELOCK_UNJUDGED % (type(error).__name__, error)
+        _print(("mitosis: %s" % unjudged, "exit %d: %s" % (EXIT_USAGE, RELOCK_UNUSABLE)), sys.stderr)
+        return EXIT_USAGE
+    _print((json.dumps({"relocked": list(outcome.paths), "refused": outcome.refused}),))
+    return EXIT_SHIPPED if outcome.refused is None else EXIT_RELOCK_REFUSED
+
+
 def refuse_unwritten(plan, held):
     lines = own_tests.unwritten(plan, held)
     if lines:
@@ -2639,6 +2750,21 @@ def main(argv=None):
             "--proven-head %r is not LABEL=COMMIT with a commit of 7 to 40 lowercase "
             "hexadecimal digits" % malformed
         )
+    if args.repairable and args.relock is None:
+        parser.error(
+            "--repairable names a locked check a relock may accept as changed; pass it with --relock"
+        )
+    if args.relock is not None:
+        beside = next((flag for flag, given in relock_excludes(parsed) if given), None)
+        if beside is not None:
+            parser.error(
+                "--relock proves the locked checks of a built run and builds, plans and ships "
+                "nothing; pass it without %s" % beside
+            )
+        outside = next((path for path in args.repairable if REPAIRABLE.fullmatch(path) is None), None)
+        if outside is not None:
+            parser.error("--repairable %r is not a path from the repository root" % outside)
+        return relock_run(args)
     try:
         return run_pipeline(args)
     except UnknownProvenHead as unknown:
