@@ -497,12 +497,16 @@ The locked checks of an MSP are the paths the charter locks, the checks its
 lock stage wrote and, for a plan made from folded items, the files of the
 folded check-author Steps. One has changed when its content at the head of the
 MSP's branch is neither what its lock holds, nor what the MSP's Lanes landed
-for a folded check, nor what an earlier relock of the MSP proved. A changed
-check that was not named is refused, and so is one the fix removed. mitosis
-then proves again what a lock proves: every acceptance test of the MSP's Steps
-that lives in a locked check must fail on the MSP's base without the work,
-unless it did not fail there before the repair either, and every acceptance
-test of the MSP must pass at the head.
+for a folded check, nor what an earlier relock of the MSP, or of an MSP it
+merges, proved. A changed check that was not named is refused, and so is one
+the fix removed, one that holds an acceptance test of another MSP's Steps,
+and any change when no acceptance test of the MSP that the gate runs lives in
+a locked check. mitosis then proves again what a lock proves: every
+acceptance test of the MSP's Steps that lives in a locked check must fail on
+the MSP's base without the work, and every acceptance test of the MSP must
+pass at the head. A test that passes on the base is accepted only when it
+passed there before the repair too, and one that cannot run there only when
+the check before the repair did not run and fail there.
 
 The last line of standard output is one JSON object, the paths relocked and
 the reason for a refusal:
@@ -513,14 +517,16 @@ the reason for a refusal:
 
 The list is empty when no locked check changed. A relock exits 0 when it held
 or had nothing to do, 1 when it refused, with the reason as one sentence and
-nothing written, and 2 when its flags or the run directory cannot be used,
-with nothing on standard output.
+nothing written, and 2 when its flags, its `--items` or the run directory
+cannot be used or the proof could not be run, with nothing on standard
+output. Exit 1 is only ever a verdict on the repair.
 
 A relock that holds is recorded as the MSP's lock record at that head, and
 from then on the gate and the ship keep the repaired check where they would
 have restored the locked one. A check changed again after its relock is
 restored to the repair, and a repair taken back to what was locked before
-stands. mitosis holds a folded check neither before nor after a relock, so
+stands. An MSP stacked on another keeps the checks that MSP relocked.
+mitosis holds a folded check neither before nor after a relock, so
 there the relock is the proof and the record. `docs/adr/0033` holds the
 reasons and what the proof cannot show.
 

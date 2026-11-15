@@ -78,11 +78,11 @@ The commit holding an MSP's locked checks on top of the feature base: the first 
 _Avoid_: test commit, base commit
 
 **Relock**:
-The proof a built run makes, on a caller's `--relock`, for a locked check a fix changed after the build: the changed check must be named, must fail on the MSP's base without the work wherever the locked check failed there, and must leave every acceptance test of the MSP passing at its head. A relock that holds becomes the MSP's lock record at that head; one that is refused changes nothing. For a plan made from folded items, the files of the folded check-author Steps are the MSP's locked checks for a relock, although mitosis holds them at no other time.
+The proof a built run makes, on a caller's `--relock`, for a locked check a fix changed after the build: the changed check must be named, must hold no acceptance test of another MSP, must still fail on the MSP's base without the work wherever the locked check failed there, must not pass there where the locked check did not, and must leave every acceptance test of the MSP passing at its head. A relock that holds becomes the MSP's lock record at that head; one that is refused changes nothing. For a plan made from folded items, the files of the folded check-author Steps are the MSP's locked checks for a relock, although mitosis holds them at no other time.
 _Avoid_: unlock, second lock stage
 
 **Relock journal**:
-The file in the run dir, one per MSP, listing the commits at which a relock held. A commit the MSP's branch no longer descends from counts for nothing.
+The file in the run dir, one per MSP, listing the commits at which a relock held. A commit the MSP's branch no longer descends from counts for nothing, and an MSP that merges another reads that MSP's journal beside its own.
 
 **Referee path**:
 A path the charter locks, a test-configuration file or snapshot anywhere, or a baseline, allowlist or skip list inside a test location; a Step's own locked acceptance file is handed to its Worker read-only, any other in a Step's files refuses the plan, and a committed write to one is restored and holds its MSP back.

@@ -2623,15 +2623,28 @@ def relock_excludes(args):
     )
 
 
-def folded_check_files(args, plan):
+def _step_files(items):
+    return {
+        item.get("name"): frozenset(referee.normalised(path) for path in core._files(item))
+        for item in items
+    }
+
+
+def folds_as_planned(args, plan, items, root):
+    locked = core.charter_locks(check_charter(args.charter), root)[0]
+    folded = own_tests.folded(items, locked, planning_shared_files(args))[0]
+    return _step_files(folded) == _step_files(plan.get("items") or ())
+
+
+def folded_check_files(args, plan, root):
     folded = list(plan.get(FOLDED_KEY) or ())
     if not folded:
         return ()
     items = read_items(os.path.abspath(args.items)) if args.items else []
-    if check_author_names(items) != folded:
+    if check_author_names(items) != folded or not folds_as_planned(args, plan, items, root):
         raise run.RelockUnusable(
-            "--items does not hold the check-author Steps plan %s folded, %s, so their files "
-            "cannot be read" % (plan.get("plan_id"), ", ".join(folded))
+            "--items does not fold into the Steps plan %s holds, so the files of its check-author "
+            "Steps %s cannot be read from it" % (plan.get("plan_id"), ", ".join(folded))
         )
     return tuple(path for author in core.check_author_steps(items) for path in core._files(author))
 
@@ -2648,7 +2661,7 @@ def relocked(args, repo, root, run_dir):
         args.relock,
         args.repairable,
         args.acceptance_command,
-        authored=folded_check_files(args, plan),
+        authored=folded_check_files(args, plan, root),
         concurrency=args.concurrency,
         gate_setup=args.gate_setup,
         gate_classes=gate_classes(args.gate_classes, plan)[0],

@@ -39,6 +39,10 @@ CHECK_HEAD = (
 LOCKED_CHECK = CHECK_HEAD + "        self.assertEqual(add(2, 3), 5)\n"
 REPAIRED_CHECK = LOCKED_CHECK + "        self.assertEqual(add(-2, 2), 0)\n"
 FAILING_CHECK = CHECK_HEAD + "        self.assertEqual(add(2, 3), 6)\n"
+LAZY_CHECK = (
+    "import unittest\n\n\nclass Calc(unittest.TestCase):\n    def adds(self):\n"
+    "        from calc import add\n\n        self.assertEqual(add(2, 3), 5)\n"
+)
 WEAKENED_CHECK = (
     "import unittest\n\n\nclass Calc(unittest.TestCase):\n    def adds(self):\n        self.assertTrue(True)\n"
 )
@@ -47,7 +51,40 @@ OTHER_CHECK = (
     "class Total(unittest.TestCase):\n    def sums(self):\n        self.assertEqual(total([1, 2]), 3)\n"
 )
 OTHER_REPAIRED = OTHER_CHECK + "        self.assertEqual(total([]), 0)\n"
-CHARTER = "# Charter\n\n- Python 3.9 or later.\n- Locked: %s\n- Locked: %s\n" % (CHECK, OTHER)
+CHARTER_LOCKED = {CHECK: LOCKED_CHECK, OTHER: OTHER_CHECK}
+HELPER = "tests/support.py"
+HELPER_TEXT = "from calc import add\n"
+REPAIRED_HELPER = HELPER_TEXT + "\nSUPPORTED = True\n"
+WEAKENED_HELPER = "def add(a, b):\n    return a + b\n"
+HELPED = {
+    CHECK: LOCKED_CHECK.replace("from calc import add", "from support import add"),
+    OTHER: OTHER_CHECK,
+    HELPER: HELPER_TEXT,
+}
+COLLECTING_ACCEPT = r'''
+import os
+import subprocess
+import sys
+
+mode, file, test = sys.argv[1], sys.argv[2], sys.argv[3]
+folder, name = os.path.split(file)
+module = os.path.splitext(name)[0]
+env = dict(os.environ, PYTHONPATH=os.pathsep.join([os.path.abspath(folder), os.getcwd()]))
+collected = subprocess.run(
+    [sys.executable, "-c", "import importlib, sys; importlib.import_module(sys.argv[1])", module],
+    env=env,
+    capture_output=True,
+    timeout=120,
+).returncode
+if collected != 0:
+    sys.exit(2)
+code = subprocess.run([sys.executable, "-m", "unittest", module + "." + test], env=env, timeout=120).returncode
+sys.exit(code if code in (0, 1) else 2)
+'''
+FAILING_SETUP = "import sys\n\nsys.stderr.write('setup could not reach its package index\\n')\nsys.exit(3)\n"
+SETUP_FAILING_ON_THE_WORK = (
+    "import os\nimport sys\n\nsys.exit(3 if os.path.exists(os.path.join(sys.argv[1], 'calc.py')) else 0)\n"
+)
 STAMP = "2001-01-01T00:00:00+00:00"
 STAMPING_CHECK = (
     "import json\nimport unittest\n\nfrom calc import add\n\n\n"
@@ -70,25 +107,45 @@ def read_bytes(path):
         return handle.read()
 
 
+def held_bytes(path):
+    return read_bytes(path) if os.path.exists(path) else None
+
+
+def charter_locking(paths):
+    return "# Charter\n\n- Python 3.9 or later.\n" + "".join("- Locked: %s\n" % path for path in paths)
+
+
 class Built:
-    def __init__(self, case, charter_locked=False, guarded=False, sandboxed=False):
+    def __init__(
+        self,
+        case,
+        charter_locked=False,
+        guarded=False,
+        sandboxed=False,
+        locked=None,
+        own=None,
+        properties=(PROPERTY, OTHER_PROPERTY),
+        accept=None,
+    ):
+        seeded = locked or (CHARTER_LOCKED if charter_locked else None)
+        own = own or {}
         self.case = case
-        self.scratch = lock_fixtures.Scratch(
-            {CHECK: LOCKED_CHECK, OTHER: OTHER_CHECK} if charter_locked else None
-        )
+        self.scratch = lock_fixtures.Scratch(seeded)
         case.addCleanup(self.scratch.close)
+        if accept is not None:
+            lock_fixtures.put(os.path.join(self.scratch.stubs, "accept.py"), accept)
         self.tree = os.path.join(self.scratch.run_dir, "trees", LABEL)
         self.state = os.path.join(self.scratch.run_dir, "state.json")
         self.journal = os.path.join(self.scratch.run_dir, "relock", "msp-0.json")
         guard = ((GUARD, GUARD_CHECK),) if guarded else ()
         builder = step(
-            "build", ["calc.py"], LABEL, [PROPERTY, OTHER_PROPERTY, *((GUARD_PROPERTY,) if guarded else ())]
+            "build", ["calc.py", *own], LABEL, [*properties, *((GUARD_PROPERTY,) if guarded else ())]
         )
         confined = ("--worker-sandbox", "--worker-write", self.scratch.stubs) if sandboxed else ()
-        if charter_locked:
-            self.flags = ("--charter", self.scratch.file("charter.md", CHARTER), *confined)
+        if seeded:
+            self.flags = ("--charter", self.scratch.file("charter.md", charter_locking(seeded)), *confined)
             self.items = self.scratch.items([builder])
-            written = {"calc.py": CALC}
+            written = {"calc.py": CALC, **own}
         else:
             self.flags = confined
             author = {
@@ -143,8 +200,11 @@ class Built:
         return self.scratch.checked("--git-dir", self.scratch.remote, "show", "%s:%s" % (BRANCH, path))
 
     def lock_record(self):
-        journal = read_bytes(self.journal) if os.path.exists(self.journal) else None
-        return read_bytes(self.state), journal
+        return read_bytes(self.state), held_bytes(self.journal)
+
+    def setup(self, script):
+        lock_fixtures.put(os.path.join(self.scratch.stubs, "setup.py"), script)
+        return ("--gate-setup", self.scratch.stub("setup.py", "{worktree}"))
 
     def referee(self):
         with open(self.state, encoding="utf-8") as handle:
@@ -169,6 +229,75 @@ class Built:
     def dispatched(self):
         with open(os.path.join(self.scratch.stubs, "dispatch.log"), encoding="utf-8") as handle:
             return handle.read()
+
+
+class Stacked:
+    def __init__(self, case):
+        self.case = case
+        self.scratch = lock_fixtures.Scratch(CHARTER_LOCKED)
+        case.addCleanup(self.scratch.close)
+        self.state = os.path.join(self.scratch.run_dir, "state.json")
+        self.items = self.scratch.items(
+            [
+                step("build", ["calc.py"], "a", [PROPERTY]),
+                step("use", ["extra.py"], "b", [OTHER_PROPERTY], after=["build"]),
+            ]
+        )
+        self.scratch.jobs(
+            {
+                "a": {"step": "build", "writes": {"calc.py": CALC}},
+                "b": {"step": "use", "writes": {"extra.py": "USED = True\n"}},
+            }
+        )
+        self.flags = ("--charter", self.scratch.file("charter.md", charter_locking(CHARTER_LOCKED)))
+        completed = self.scratch.build(self.items, *self.flags)
+        case.assertEqual(completed.returncode, 0, "the build" + tail(completed))
+
+    def tree_git(self, label, *args):
+        completed = subprocess.run(
+            ["git", "-C", os.path.join(self.scratch.run_dir, "trees", label), *args],
+            env=self.scratch.env,
+            capture_output=True,
+            text=True,
+            timeout=lock_fixtures.CALL_LIMIT,
+        )
+        self.case.assertEqual(completed.returncode, 0, completed.stderr)
+        return completed.stdout.strip()
+
+    def commit(self, label, files):
+        for path, content in files.items():
+            lock_fixtures.put(os.path.join(self.scratch.run_dir, "trees", label, path), content)
+        self.tree_git(label, "add", "-A")
+        self.tree_git(label, "commit", "-q", "-m", "fix: repair a locked check")
+        return self.tree_git(label, "rev-parse", "HEAD")
+
+    def relock(self, label, *repairable):
+        named = tuple(flag for path in repairable for flag in ("--repairable", path))
+        return self.scratch.build(self.items, *self.flags, "--relock", label, *named)
+
+    def ship(self, **proven):
+        heads = tuple(
+            flag for label, head in proven.items() for flag in ("--proven-head", "%s=%s" % (label, head))
+        )
+        return self.scratch.build(self.items, *self.flags, "--resume", *heads, push=True)
+
+    def journal(self, msp):
+        with open(
+            os.path.join(self.scratch.run_dir, "relock", "msp-%d.json" % msp), encoding="utf-8"
+        ) as handle:
+            return json.load(handle)
+
+    def shipped(self, label, path):
+        return self.scratch.checked(
+            "--git-dir", self.scratch.remote, "show", "mitosis/%s:%s" % (label, path)
+        )
+
+    def lock_record(self):
+        journals = tuple(
+            held_bytes(os.path.join(self.scratch.run_dir, "relock", "msp-%d.json" % msp))
+            for msp in (0, 1)
+        )
+        return read_bytes(self.state), journals
 
 
 class RelockCase(unittest.TestCase):
@@ -236,7 +365,9 @@ class RelockFoldedChecks(RelockCase):
         built = Built(self)
         before = built.lock_record()
         built.commit({CHECK: WEAKENED_CHECK})
-        self._refused(built, built.relock(CHECK), before, "tests/test_calc.py::Calc.adds", "passes")
+        self._refused(
+            built, built.relock(CHECK), before, "tests/test_calc.py::Calc.adds", "passes", "check failed"
+        )
 
     def a_changed_locked_check_that_was_not_named_is_refused(self):
         built = Built(self)
@@ -309,6 +440,19 @@ class RelockFoldedChecks(RelockCase):
         built.commit({OTHER: OTHER_REPAIRED})
         self._relocked(built, built.relock(OTHER), (OTHER,))
 
+    def a_check_weakened_where_the_locked_check_could_not_run_at_the_base_is_refused(self):
+        built = Built(self, accept=COLLECTING_ACCEPT)
+        before = built.lock_record()
+        built.commit({CHECK: WEAKENED_CHECK})
+        self._refused(
+            built, built.relock(CHECK), before, "tests/test_calc.py::Calc.adds", "passes", "could not run"
+        )
+
+    def a_repair_where_neither_content_can_run_at_the_base_relocks(self):
+        built = Built(self, accept=COLLECTING_ACCEPT)
+        built.commit({CHECK: REPAIRED_CHECK})
+        self._relocked(built, built.relock(CHECK))
+
 
 class RelockCharterLockedChecks(RelockCase):
     def a_repaired_charter_locked_check_ships_as_repaired(self):
@@ -347,6 +491,80 @@ class RelockCharterLockedChecks(RelockCase):
         self.assertEqual(shipped.returncode, 0, "the ship" + tail(shipped))
         self.assertEqual(built.shipped(CHECK), LOCKED_CHECK)
 
+    def a_charter_check_weakened_where_the_locked_check_could_not_run_at_the_base_is_refused(self):
+        built = Built(self, charter_locked=True, accept=COLLECTING_ACCEPT)
+        before = built.lock_record()
+        built.commit({CHECK: WEAKENED_CHECK})
+        self._refused(
+            built, built.relock(CHECK), before, "tests/test_calc.py::Calc.adds", "passes", "could not run"
+        )
+
+    def a_repaired_check_that_can_no_longer_run_at_the_base_is_refused(self):
+        built = Built(self, locked={CHECK: LAZY_CHECK, OTHER: OTHER_CHECK}, accept=COLLECTING_ACCEPT)
+        before = built.lock_record()
+        built.commit({CHECK: LOCKED_CHECK})
+        self._refused(
+            built, built.relock(CHECK), before, "tests/test_calc.py::Calc.adds", "can no longer run"
+        )
+
+    def a_locked_helper_that_lets_an_unchanged_check_pass_at_the_base_is_refused(self):
+        built = Built(self, locked=HELPED)
+        before = built.lock_record()
+        built.commit({HELPER: WEAKENED_HELPER})
+        self._refused(built, built.relock(HELPER), before, "tests/test_calc.py::Calc.adds", "passes")
+
+    def a_repaired_locked_helper_relocks_on_the_checks_that_use_it(self):
+        built = Built(self, locked=HELPED)
+        built.commit({HELPER: REPAIRED_HELPER})
+        self._relocked(built, built.relock(HELPER), (HELPER,))
+
+    def a_locked_file_changed_where_no_acceptance_test_can_prove_it_is_refused(self):
+        built = Built(self, locked={HELPER: HELPER_TEXT}, own={CHECK: LOCKED_CHECK}, properties=(PROPERTY,))
+        before = built.lock_record()
+        built.commit({HELPER: REPAIRED_HELPER})
+        self._refused(built, built.relock(HELPER), before, HELPER, "nothing proves")
+
+
+class RelockStackedMsps(RelockCase):
+    def a_consumer_ships_the_check_its_producer_relocked(self):
+        built = Stacked(self)
+        built.commit("a", {CHECK: REPAIRED_CHECK})
+        self._relocked(built, built.relock("a", CHECK))
+        shipped = built.ship()
+        self.assertEqual(shipped.returncode, 0, "the ship" + tail(shipped))
+        self.assertEqual(built.shipped("a", CHECK), REPAIRED_CHECK)
+        self.assertEqual(built.shipped("b", CHECK), REPAIRED_CHECK)
+
+    def a_consumer_holding_the_check_its_producer_relocked_relocks_nothing(self):
+        built = Stacked(self)
+        built.commit("a", {CHECK: REPAIRED_CHECK})
+        self._relocked(built, built.relock("a", CHECK))
+        shipped = built.ship()
+        self.assertEqual(shipped.returncode, 0, "the ship" + tail(shipped))
+        before = built.lock_record()
+        self._relocked(built, built.relock("b"), ())
+        self.assertEqual(built.lock_record(), before)
+
+    def a_consumer_relock_records_its_own_head_beside_its_producers_relock(self):
+        built = Stacked(self)
+        built.commit("a", {CHECK: REPAIRED_CHECK})
+        self._relocked(built, built.relock("a", CHECK))
+        shipped = built.ship()
+        self.assertEqual(shipped.returncode, 0, "the ship" + tail(shipped))
+        head = built.commit("b", {OTHER: OTHER_REPAIRED})
+        self._relocked(built, built.relock("b", OTHER), (OTHER,))
+        self.assertEqual(built.journal(1), {"relocked": [head]})
+        shipped = built.ship(b=head)
+        self.assertEqual(shipped.returncode, 0, "the ship" + tail(shipped))
+        self.assertEqual(built.shipped("b", CHECK), REPAIRED_CHECK)
+        self.assertEqual(built.shipped("b", OTHER), OTHER_REPAIRED)
+
+    def a_check_holding_the_acceptance_tests_of_another_msp_is_refused(self):
+        built = Stacked(self)
+        before = built.lock_record()
+        built.commit("b", {CHECK: WEAKENED_CHECK})
+        self._refused(built, built.relock("b", CHECK), before, CHECK, "MSP a")
+
 
 class Staged:
     def __init__(self, case):
@@ -376,8 +594,7 @@ class Staged:
         return self.scratch.pushing(self.items, *self.flags, "--resume", "--proven-head", "alpha=" + head)
 
     def lock_record(self):
-        journal = read_bytes(self.journal) if os.path.exists(self.journal) else None
-        return read_bytes(self.state), journal
+        return read_bytes(self.state), held_bytes(self.journal)
 
 
 STAGE_REPAIRED = stage.checking(stage.TEST_A) + "        self.assertNotEqual(a.value(), 1)\n"
@@ -509,12 +726,49 @@ class RelockUsage(RelockCase):
         built = Built(self)
         built.commit({CHECK: REPAIRED_CHECK})
         before = built.lock_record()
-        builder = step("build", ["calc.py"], LABEL, [PROPERTY, OTHER_PROPERTY])
+        builder = step("build", ["calc.py", CHECK, OTHER], LABEL, [PROPERTY, OTHER_PROPERTY])
         completed = built.scratch.build(
             built.scratch.items([builder], "other-items.json"), "--relock", LABEL, "--repairable", CHECK
         )
         self._usage_error(completed)
         self.assertIn("check-author", completed.stderr)
+        self.assertEqual(built.lock_record(), before)
+
+    def items_whose_folded_check_author_lost_a_file_are_unusable(self):
+        built = Built(self)
+        built.commit({CHECK: WEAKENED_CHECK})
+        before = built.lock_record()
+        with open(built.items, encoding="utf-8") as handle:
+            items = json.load(handle)
+        thinned = [
+            {**item, "files": [path for path in item["files"] if path != CHECK]}
+            if item.get("role") == "check-author"
+            else item
+            for item in items
+        ]
+        completed = built.scratch.build(
+            built.scratch.file("thinned-items.json", json.dumps(thinned)), "--relock", LABEL
+        )
+        self._usage_error(completed)
+        self.assertIn("--items", completed.stderr)
+        self.assertEqual(built.lock_record(), before)
+
+    def a_gate_setup_that_fails_on_the_base_is_unusable_and_never_reads_as_a_refusal(self):
+        built = Built(self)
+        built.commit({CHECK: REPAIRED_CHECK})
+        before = built.lock_record()
+        completed = built.relock(CHECK, extra=built.setup(FAILING_SETUP))
+        self._usage_error(completed)
+        self.assertIn("could not run the repaired checks", completed.stderr)
+        self.assertEqual(built.lock_record(), before)
+
+    def a_gate_setup_that_fails_on_the_work_is_unusable_and_never_reads_as_a_refusal(self):
+        built = Built(self)
+        built.commit({CHECK: REPAIRED_CHECK})
+        before = built.lock_record()
+        completed = built.relock(CHECK, extra=built.setup(SETUP_FAILING_ON_THE_WORK))
+        self._usage_error(completed)
+        self.assertIn("could not run the repaired checks", completed.stderr)
         self.assertEqual(built.lock_record(), before)
 
     def relock_outside_the_repository_is_unusable(self):
@@ -584,6 +838,8 @@ def load_tests(loader, standard, pattern):
                 "a_state_change_made_during_the_proof_survives_the_relock",
                 "a_second_relock_of_a_proved_repair_relocks_nothing",
                 "a_repair_reverted_after_its_relock_counts_as_unchanged",
+                "a_check_weakened_where_the_locked_check_could_not_run_at_the_base_is_refused",
+                "a_repair_where_neither_content_can_run_at_the_base_relocks",
             ),
         ),
         (
@@ -593,6 +849,20 @@ def load_tests(loader, standard, pattern):
                 "a_charter_locked_check_changed_after_its_relock_is_restored_to_the_repair",
                 "a_charter_locked_check_changed_after_its_relock_was_dropped_is_restored_to_the_charter",
                 "a_charter_repair_reverted_after_its_relock_ships_as_the_charter_locked_it",
+                "a_charter_check_weakened_where_the_locked_check_could_not_run_at_the_base_is_refused",
+                "a_repaired_check_that_can_no_longer_run_at_the_base_is_refused",
+                "a_locked_helper_that_lets_an_unchanged_check_pass_at_the_base_is_refused",
+                "a_repaired_locked_helper_relocks_on_the_checks_that_use_it",
+                "a_locked_file_changed_where_no_acceptance_test_can_prove_it_is_refused",
+            ),
+        ),
+        (
+            RelockStackedMsps,
+            (
+                "a_consumer_ships_the_check_its_producer_relocked",
+                "a_consumer_holding_the_check_its_producer_relocked_relocks_nothing",
+                "a_consumer_relock_records_its_own_head_beside_its_producers_relock",
+                "a_check_holding_the_acceptance_tests_of_another_msp_is_refused",
             ),
         ),
         (
@@ -616,6 +886,9 @@ def load_tests(loader, standard, pattern):
                 "a_plan_mitosis_did_not_write_is_unusable_and_never_reads_as_a_refusal",
                 "a_relock_journal_mitosis_did_not_write_is_unusable",
                 "items_that_lost_the_folded_check_author_are_unusable",
+                "items_whose_folded_check_author_lost_a_file_are_unusable",
+                "a_gate_setup_that_fails_on_the_base_is_unusable_and_never_reads_as_a_refusal",
+                "a_gate_setup_that_fails_on_the_work_is_unusable_and_never_reads_as_a_refusal",
                 "relock_outside_the_repository_is_unusable",
                 "a_branch_reset_behind_the_commit_its_lanes_landed_is_unusable",
                 "relock_in_a_run_dir_that_holds_no_built_run_is_unusable",

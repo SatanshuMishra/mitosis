@@ -5111,7 +5111,7 @@ def unlocked_classes(plan, state, msp):
 
 
 def msp_settings(plan, state, settings, msp):
-    relocked = read_relock_journal(settings["run_dir"], msp)
+    relocked = relocks_held(plan, settings["run_dir"], msp)
     if not plan.get("check_authors") and not relocked:
         return settings
     holders = referee_holders(plan, state, msp, settings["base_commit"])
@@ -5156,9 +5156,23 @@ PASSES_AT_BASE = (
     "check cannot tell the work from its absence"
 )
 
+PASSES_WHERE_UNRUN = (
+    "%s now passes on the base without the work, where the locked check could not run, so the "
+    "repaired check cannot tell the work from its absence"
+)
+
 UNRUNNABLE_AT_BASE = (
     "%s can no longer run on the base without the work, where the locked check ran and failed: "
     "exit %d"
+)
+
+FOREIGN_CHECK = (
+    "the locked check %s holds acceptance tests of MSP %s, which a relock of MSP %s cannot prove"
+)
+
+UNPROVED_CHANGE = (
+    "no acceptance test of MSP %s that the gate runs lives in a locked check, so nothing proves "
+    "the change to %s"
 )
 
 FAILS_AT_HEAD = "%s fails against the work at %s"
@@ -5207,6 +5221,14 @@ def read_relock_journal(run_dir, msp):
     if _journal_fault(held):
         raise ResumeError("%s is not the relock journal mitosis wrote" % path)
     return tuple(held["relocked"])
+
+
+def relocks_held(plan, run_dir, msp):
+    return tuple(
+        commit
+        for holder in (*core.msp_merges(plan).get(msp, ()), msp)
+        for commit in read_relock_journal(run_dir, holder)
+    )
 
 
 def relocked_referee(state, run_dir, msp):
@@ -5326,16 +5348,42 @@ def _relock_checks(plan, msp, locked, classes):
     )
 
 
+def _test_holders(plan, path):
+    steps = _steps_by_name(plan)
+    return tuple(
+        index
+        for index, held in enumerate(plan.get("msps") or ())
+        if any(
+            _norm(entry["file"]) == path
+            for name in held["steps"]
+            for entry in steps[name].get("acceptance") or ()
+        )
+    )
+
+
+def _unprovable(plan, msp, changed, checks):
+    for path in changed:
+        foreign = tuple(_label(plan, other) for other in _test_holders(plan, path) if other != msp)
+        if foreign:
+            return FOREIGN_CHECK % (path, ", ".join(foreign), _label(plan, msp))
+    if not checks:
+        return UNPROVED_CHANGE % (_label(plan, msp), ", ".join(changed))
+    return None
+
+
 def _over_base(base_tree, entries):
     return {**base_tree, **{path: (mode, oid, None) for path, (mode, oid) in entries.items()}}
 
 
-def _base_fault(plan, msp, base, settings, repaired, held):
-    checks = _relock_checks(
-        plan, msp, frozenset(repaired) | frozenset(held), settings.get("gate_classes")
-    )
-    if not checks:
-        return None
+def _base_verdict(named, repaired, held):
+    if repaired == 0 and held != 0:
+        return (PASSES_AT_BASE if held == ACCEPTANCE_FAILURE_EXIT else PASSES_WHERE_UNRUN) % named
+    if repaired != 0 and held == ACCEPTANCE_FAILURE_EXIT:
+        return UNRUNNABLE_AT_BASE % (named, repaired)
+    return None
+
+
+def _base_fault(plan, msp, base, settings, repaired, held, checks):
     repo = settings["repo"]
     locked = tuple(plan.get("locked") or ())
     env = settings["env"]
@@ -5371,11 +5419,11 @@ def _base_fault(plan, msp, base, settings, repaired, held):
             code = accepted(position, check, with_repair, "repaired")
             if code == ACCEPTANCE_FAILURE_EXIT:
                 continue
-            if accepted(position, check, with_held, "held") != ACCEPTANCE_FAILURE_EXIT:
-                continue
-            if code == 0:
-                return PASSES_AT_BASE % _named_check(check)
-            return UNRUNNABLE_AT_BASE % (_named_check(check), code)
+            fault = _base_verdict(
+                _named_check(check), code, accepted(position, check, with_held, "held")
+            )
+            if fault is not None:
+                return fault
         return None
     finally:
         shutil.rmtree(folder, ignore_errors=True)
@@ -5420,14 +5468,14 @@ def _sentence(text):
     return " ".join(str(text).split())
 
 
-def _unproved(plan, state, msp, tree, head, base, settings, repaired, held):
+def _unproved(plan, state, msp, tree, head, base, settings, repaired, held, checks):
     try:
-        fault = _base_fault(plan, msp, base, settings, repaired, held)
+        fault = _base_fault(plan, msp, base, settings, repaired, held, checks)
         if fault is not None:
             return fault
         return _work_fault(plan, state, msp, tree, head, base, settings)
     except (OSError, GitError, GateSetupError, subprocess.SubprocessError) as error:
-        return RELOCK_UNRUN % _sentence(error)
+        raise RelockUnusable(RELOCK_UNRUN % _sentence(error))
 
 
 def _state_as_held_now(run_dir, judged):
@@ -5454,7 +5502,8 @@ def _relocked(plan, state, settings, label, repairable, authored):
     if not locked:
         return Relocked((), None)
     built = _built_commit(plan, state, msp, tree, head) if folded else None
-    live = _live_relocks(tree["path"], head, read_relock_journal(run_dir, msp))
+    own = _live_relocks(tree["path"], head, read_relock_journal(run_dir, msp))
+    live = _live_relocks(tree["path"], head, relocks_held(plan, run_dir, msp))
     listed = {
         commit: _committed_entries(tree["path"], commit)
         for commit in frozenset((head, *live, *holders.values(), *((built,) if built else ())))
@@ -5469,20 +5518,26 @@ def _relocked(plan, state, settings, label, repairable, authored):
     if not changed:
         return Relocked((), None)
     named = frozenset(_norm(path) for path in repairable)
-    refusal = _unrepairable(changed, current, named, tree["branch"]) or _unproved(
-        plan,
-        state,
-        msp,
-        tree,
-        head,
-        base,
-        settings,
-        {path: current[path] for path in locked if path in current},
-        {
-            path: _last_proved(proved[path])
-            for path in locked
-            if _last_proved(proved[path]) is not None
-        },
+    checks = _relock_checks(plan, msp, frozenset(locked), settings.get("gate_classes"))
+    refusal = (
+        _unrepairable(changed, current, named, tree["branch"])
+        or _unprovable(plan, msp, changed, checks)
+        or _unproved(
+            plan,
+            state,
+            msp,
+            tree,
+            head,
+            base,
+            settings,
+            {path: current[path] for path in locked if path in current},
+            {
+                path: _last_proved(proved[path])
+                for path in locked
+                if _last_proved(proved[path]) is not None
+            },
+            checks,
+        )
     )
     if refusal is not None:
         return Relocked((), refusal)
@@ -5490,7 +5545,7 @@ def _relocked(plan, state, settings, label, repairable, authored):
         settings["repo"], tree["branch"], head, [path for path in locked if path in current]
     )
     write_state(run_dir, _msp_record(_state_as_held_now(run_dir, state), msp, referee=record))
-    write_json(relock_journal(run_dir, msp), {"relocked": [*live, head]})
+    write_json(relock_journal(run_dir, msp), {"relocked": [*own, head]})
     return Relocked(changed, None)
 
 
