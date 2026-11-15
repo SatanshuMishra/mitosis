@@ -368,7 +368,8 @@ benchmark change, a session of its own that could start only once the
 creator's Lane ended cost more and took longer than building it there. A
 resumed run reads the base commit the run was pinned to, so its plan does not
 change once the file reaches the branch. A saved plan given by `--plan-file`
-is built as written and gains no such order.
+is built as written and gains no such order. `docs/adr/0032` holds the
+measurements and what a joined file is not checked for.
 
 ## Check-author Steps an items file declares
 
