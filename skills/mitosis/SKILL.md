@@ -10,7 +10,7 @@ several agents run at once, and produces pull requests a human can merge
 without discovering that the parallelism broke something. A model may produce
 anything; a model may judge nothing. Every gate in mitosis is a program.
 
-This file says when to reach for it; --help describes every flag.
+--help describes every flag.
 
 ## When to reach for it
 
@@ -89,8 +89,6 @@ At the lock stage the new modules do not exist yet, so the wrapper exits 1
 when an import fails on a missing module; any other load error stays
 inconclusive.
 
-A new file outside the write-set is kept only when the Worker's reply names it.
-
 Two more things every run needs: `--feature-branch`, which must exist and is
 what every MSP branches from, and the repository root as the working
 directory, since every path is relative to it, or mitosis refuses to run.
@@ -107,8 +105,7 @@ without `--pr-command` each MSP branch is pushed and ends `pushed`.
 
 ## The two inputs
 
-Both converge on one list of Steps and one pipeline; nothing downstream can
-tell them apart. Pass one, never both.
+Both converge on one list of Steps and one pipeline. Pass one, never both.
 
 ### Items: hand-written Steps
 
@@ -232,7 +229,8 @@ finished Lane's write-set from the clone's files, never running git there,
 and lands only those paths as one commit. A finished Lane is `held` until no
 Worker runs in its MSP, and a resume lands it without paying again. A write
 outside the write-set is judged by reconcile only, exit 6, or reverted as a
-referee write, exit 9; the gate never sees it. JSON `sandbox` is
+referee write, exit 9; the gate never sees it. A new file there that no
+reply names is left out. JSON `sandbox` is
 sandbox-exec or `off`. Each git call
 drops the diff, pathspec, repository and object variables. Producer merges and Lane commits run no hooks; a git command meeting
 another process's lock is retried. A later change to a file whose Lane already

@@ -135,15 +135,23 @@ def read_reply(stdout, schema):
     return reply, ()
 
 
-def errors_at(schema, pointer, value):
+def part_at(schema, pointer):
     name = file_name(schema)
     if not isinstance(pointer, str) or not pointer.startswith("#"):
         raise HandoffError("%r is not a JSON pointer inside %s" % (pointer, name))
     scope = validator.Scope(folder(name), load(name))
     try:
-        part_scope, part = validator.resolve(scope, pointer)
+        return validator.resolve(scope, pointer)
     except (KeyError, IndexError, ValueError, TypeError) as error:
         raise HandoffError("%s holds nothing at %s (%s)" % (name, pointer, error)) from error
+
+
+def referred(scope, reference):
+    return validator.resolve(scope, reference)
+
+
+def errors_at(schema, pointer, value):
+    part_scope, part = part_at(schema, pointer)
     validator.supported(part)
     return tuple(validator.check(part, value, "", part_scope))
 

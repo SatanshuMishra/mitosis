@@ -1445,6 +1445,12 @@ def refuse_unrenderable(args, plan, run_dir, repo=None):
             "a run that opens pull requests needs --pr-impact, what callers or users notice, "
             "or --pr-blast-radius for render's impact"
         )
+    refused = pr_facts.refused_subject(header)
+    if refused is not None:
+        raise Refusal(
+            "--pr-subject holds %s, which no pull request title can carry; reword the subject"
+            % json.dumps(refused)
+        )
     env = run.process_environ(recorder_of(args).env, repo)
     for index in range(len(plan.get("msps") or [])):
         try:
@@ -1816,6 +1822,7 @@ def reconcile_lines(plan, state):
             ),
         )
         lines = lines + tuple("  undeclared: " + path for path in undeclared)
+        lines = lines + tuple("  left out: " + path for path in found.get("left_out") or ())
         lines = lines + tuple("  unwritten: " + path for path in unwritten)
         lines = lines + tuple("  untouched: " + path for path in untouched)
         lines = lines + tuple(
@@ -2140,6 +2147,7 @@ def _msp_summary(plan, state):
                         key: list(findings.get(key) or ())
                         for key in ("undeclared", "unwritten", "untouched")
                     },
+                    **({"left_out": list(findings["left_out"])} if findings.get("left_out") else {}),
                     **_referee_verdict(record.get("reconcile")),
                     **(
                         {"shared_overlaps": list(findings["shared_overlaps"])}

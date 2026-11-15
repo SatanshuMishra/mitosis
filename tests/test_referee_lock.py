@@ -472,7 +472,7 @@ class RefereeLock(unittest.TestCase):
                         "calc.py": "def add(a, b):\n    return a + b\n",
                         "tests/conftest.py": 'collect_ignore = ["test_calc.py"]\n',
                     },
-                    "declared": ["calc.py"],
+                    "declared": ["calc.py", "tests/conftest.py"],
                 }
             }
         )
@@ -534,7 +534,8 @@ class RefereeLock(unittest.TestCase):
         reconcile = self._reconcile(msp)
         self.assertEqual(reconcile["referee"], [])
         self.assertIs(reconcile["fatal"], False)
-        self.assertEqual(reconcile.get("undeclared"), ["notes.txt"])
+        self.assertEqual(reconcile.get("undeclared"), [])
+        self.assertEqual(reconcile.get("left_out"), ["notes.txt"])
         self.assertNotEqual(
             scratch.git("cat-file", "-e", "mitosis/demo:notes.txt").returncode,
             0,
@@ -543,7 +544,8 @@ class RefereeLock(unittest.TestCase):
         self.assertEqual(scratch.git("cat-file", "-e", "mitosis/demo:calc.py").returncode, 0)
         with open(os.path.join(scratch.run_dir, "state.json"), encoding="utf-8") as handle:
             lane = json.load(handle)["lanes"]["0"]
-        self.assertEqual(lane["unreplayed"], ["notes.txt"])
+        self.assertEqual(lane["left_out"], ["notes.txt"])
+        self.assertEqual(lane["unreplayed"], [])
         self.assertEqual(lane["replayed"], {})
 
 

@@ -776,9 +776,10 @@ class OwnClone(unittest.TestCase):
         plan = core.plan([step("a", ["a.py"]), step("b", ["b.py"], msp="m")])
         for brief in plan["briefs"]:
             self.assertIn(
-                "A new file outside your write-set is kept only when your reply names it in files_changed.",
+                "your write-set. If a file outside it blocks the work",
                 brief["text"],
             )
+            self.assertIn("A new file outside it is kept only when files_changed names it.", brief["text"])
 
 
 class GraphInput(unittest.TestCase):
@@ -1038,7 +1039,7 @@ class CheckAuthor(unittest.TestCase):
         )
         self.assertIn(core.AUTHOR_EDIT_RULE + "\n", text)
         self.assertNotIn("an earlier attempt failed", text)
-        self.assertNotIn("kept only when your reply names it", text)
+        self.assertNotIn("kept only when files_changed names it", text)
         self.assertNotIn("Write-set for this Lane", text)
         self.assertIn("Probe files, the only files your probe may write: calc.py (and no others).", text)
         self.assertIn("leave the probe in place in the clone and never commit it", text)

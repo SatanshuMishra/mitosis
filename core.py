@@ -1311,9 +1311,8 @@ def _lane_read_set(items, lane, packs, owned=()):
 CLONE_LINE = (
     "You build in a clone of your own that no other Worker shares. When you return, mitosis "
     "copies your write-set from the clone's working tree and commits it, and it never reads the "
-    "clone's commits, branches or other refs, so do not rely on them. Run no command that "
-    "changes the repository's index or history: no add, commit, stash, reset, checkout, restore, "
-    "clean, merge or rebase."
+    "clone's commits, branches or other refs. Run no command that changes the repository's index "
+    "or history: no add, commit, stash, reset, checkout, restore, clean, merge or rebase."
 )
 
 
@@ -1361,9 +1360,8 @@ AUTHOR_EDIT_RULE = "Change only the files listed under `edit`, your write-set."
 
 EDIT_RULE = (
     AUTHOR_EDIT_RULE + " If a file outside it blocks the work, name it in your notes and report "
-    "failed; only if this brief says an earlier attempt failed, change it too instead, and "
-    "mitosis keeps that write. A new file outside your write-set is kept only when your reply "
-    "names it in files_changed."
+    "failed; only if this brief says an earlier attempt failed, change it too instead. A new "
+    "file outside it is kept only when files_changed names it."
 )
 
 

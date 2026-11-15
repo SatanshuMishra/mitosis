@@ -759,10 +759,11 @@ class WorkerIsolation(unittest.TestCase):
         completed = scratch.build(items, "--concurrency", "1")
         self._ran_in_a_clone("second")
         summary = summary_of(completed)
-        self.assertTrue(
+        self.assertFalse(
             self._finding(summary, "undeclared", "stray.txt"),
-            "no undeclared finding names stray.txt" + tail(completed),
+            "stray.txt is called an undeclared write though the branch does not hold it",
         )
+        self.assertEqual(self._msp(summary)["reconcile"].get("left_out"), ["stray.txt"])
         self.assertTrue(
             self._finding(summary, "foreign", "a.py"),
             "no foreign finding names a.py" + tail(completed),
@@ -774,7 +775,7 @@ class WorkerIsolation(unittest.TestCase):
         )
         self.assertEqual(scratch.checked("show", "mitosis/demo:b.py"), "B = 2\n")
         self.assertFalse(os.path.exists(os.path.join(scratch.repo, "stray.txt")))
-        self.assertEqual(self._lane_record(summary, "second")["unreplayed"], ["stray.txt"])
+        self.assertEqual(self._lane_record(summary, "second")["left_out"], ["stray.txt"])
         self.assertIs((self._msp(summary).get("reconcile") or {}).get("fatal"), False)
         self.assertEqual(completed.returncode, 8, "mitosis exit code" + tail(completed))
 
@@ -814,17 +815,18 @@ class WorkerIsolation(unittest.TestCase):
         )
         completed = scratch.build(items)
         summary = summary_of(completed)
-        self.assertTrue(
+        self.assertFalse(
             self._finding(summary, "undeclared", "shim.py"),
-            "no undeclared finding names shim.py" + tail(completed),
+            "shim.py is called an undeclared write though the branch does not hold it",
         )
+        self.assertEqual(self._msp(summary)["reconcile"].get("left_out"), ["shim.py"])
         self.assertNotEqual(
             scratch.git("cat-file", "-e", "mitosis/demo:shim.py").returncode,
             0,
             "shim.py is on the MSP branch though no reply named it",
         )
         self.assertEqual(scratch.checked("show", "mitosis/demo:calc.py"), SHIM_CALC)
-        self.assertEqual(self._lane_record(summary, "add")["unreplayed"], ["shim.py"])
+        self.assertEqual(self._lane_record(summary, "add")["left_out"], ["shim.py"])
         msp = self._msp(summary)
         self.assertIs((msp.get("reconcile") or {}).get("fatal"), False)
         first = self._first_property(msp)

@@ -388,6 +388,29 @@ class Facts(unittest.TestCase):
             ],
         )
 
+    def a_file_left_out_is_worded_as_left_out_of_this_branch(self):
+        import pr_facts
+
+        result = pr_facts.facts(
+            HEADER,
+            first_plan(),
+            0,
+            first_gate(),
+            findings={
+                "undeclared": ["kept.py"],
+                "left_out": ["tool/graph.json", "notes.md"],
+                "unwritten": [],
+                "crossing": [],
+            },
+        )
+        self.assertEqual(
+            result["tradeoffs"],
+            [
+                "Reconcile found 1 undeclared write: kept.py.",
+                "This branch leaves out 2 new files no reply named: tool/graph.json and notes.md.",
+            ],
+        )
+
     def open_problems_become_tradeoffs(self):
         import pr_facts
 

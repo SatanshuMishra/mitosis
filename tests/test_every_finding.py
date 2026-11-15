@@ -281,7 +281,7 @@ JOBS = {
     "second": {
         "step": "second",
         "writes": {"b.py": "b = 1\n", "stray.txt": "stray\n"},
-        "declared": ["b.py"],
+        "declared": ["b.py", "stray.txt"],
     },
 }
 

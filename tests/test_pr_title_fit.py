@@ -15,6 +15,7 @@ import test_finishes_the_work as finishes
 
 LONG_SUBJECT = "hand pull request facts to render with step names and tests"
 SHORTENED_SUBJECT = "hand pull request facts to render with step names"
+LONG_TAIL = "keep %s and every other secret variable out of the shared log lines"
 TWO_MSPS = {
     "msps": [{"label": "m", "steps": ["a"]}, {"label": "n", "steps": ["b"]}],
     "items": [],
@@ -69,6 +70,50 @@ class TitleFit(unittest.TestCase):
             pr_facts._title(header("hand facts to render"), plan, 1),
             "feat(ship): hand facts to render (part 2 of 2)",
         )
+
+
+    def a_subject_holding_a_refused_character_is_never_cut_to_fit(self):
+        for subject in (
+            "keep the owner's files safe",
+            "fix it -e mode",
+            "pass a & b",
+            "keep files sa\u200bfe",
+            LONG_TAIL % "$HOME",
+            LONG_TAIL % "~",
+            LONG_TAIL % "caf\u00e9 tables",
+            LONG_TAIL % "https://example.org",
+        ):
+            with self.subTest(subject=subject):
+                self.assertEqual(
+                    pr_facts._title(header(subject), TWO_MSPS, 0), "feat(ship): %s" % subject
+                )
+
+    def a_title_that_fits_is_never_shortened_past_a_word_the_format_refuses(self):
+        subject = "fix the parse of -e"
+        self.assertIsNone(pr_facts.refused_subject(header(subject)))
+        self.assertEqual(
+            pr_facts._title(header(subject), TWO_MSPS, 0), "feat(ship): %s (m)" % subject
+        )
+
+    def a_refused_subject_is_named_by_the_text_the_format_refuses(self):
+        named = {
+            "keep the owner's files safe": "'",
+            "fix it -e mode": "-e",
+            "pass a & b": "&",
+            "keep files sa\u200bfe": "\u200b",
+            LONG_TAIL % "$HOME": "$",
+            LONG_TAIL % "~": "~",
+            LONG_TAIL % "caf\u00e9 tables": "\u00e9",
+            LONG_TAIL % "https://example.org": "://",
+            "hand facts to render": None,
+            LONG_SUBJECT + " and more words": None,
+        }
+        for subject, refused in named.items():
+            with self.subTest(subject=subject):
+                self.assertEqual(pr_facts.refused_subject(header(subject)), refused)
+
+    def a_subject_is_not_blamed_for_a_scope_the_format_refuses(self):
+        self.assertIsNone(pr_facts.refused_subject(header("keep files safe", "Ship")))
 
 
 class ThroughTheCommandLine(unittest.TestCase):

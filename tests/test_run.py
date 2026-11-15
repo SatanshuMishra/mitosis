@@ -1625,7 +1625,8 @@ class Reconcile(RepoCase):
         plan = core.plan([step("a", ["a.txt"])])
         trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
         records = self.dispatch(plan, trees, mode="undeclared-unnamed")
-        self.assertEqual(records[0]["unreplayed"], ["stray.txt"])
+        self.assertEqual(records[0]["left_out"], ["stray.txt"])
+        self.assertEqual(records[0]["unreplayed"], [])
         self.assertEqual(records[0]["replayed"], {})
         run.commit_all(trees[0]["path"], "everything")
         findings = run.reconcile(plan, 0, trees[0]["path"], trees[0]["branch"], "main")
@@ -1705,12 +1706,17 @@ class Reconcile(RepoCase):
         state = self.execute(plan, mode="cross-unnamed", pr=self.pr_command())
         record = state["msps"]["0"]
         lane = state["lanes"][str(lane_named(plan, "a"))]
-        self.assertEqual(lane["unreplayed"], ["b.txt"])
+        self.assertEqual(lane["left_out"], ["b.txt"])
         self.assertEqual(lane["replayed"], {})
         self.assertEqual(record["reconcile"]["crossing"], [], "b.txt crossed though no reply named it")
         self.assertFalse(record["reconcile"]["fatal"])
-        self.assertEqual(record["reconcile"]["undeclared"], ["b.txt"])
+        self.assertEqual(record["reconcile"]["undeclared"], [])
+        self.assertEqual(record["reconcile"]["left_out"], ["b.txt"])
         self.assertEqual(record["state"], "shipped")
+        self.assertEqual(
+            self.fields(0)["tradeoffs"],
+            ["This branch leaves out 1 new file no reply named: b.txt."],
+        )
         self.assertFalse(
             run.git_ok(["cat-file", "-e", "%s:b.txt" % state["worktrees"][0]["branch"]], self.repo)
         )
@@ -1807,25 +1813,25 @@ class Reconcile(RepoCase):
         self.assertEqual(again["reconcile"]["referee"], [])
         self.assertFalse(again["reconcile"]["fatal"])
 
-    def a_new_referee_file_the_reply_does_not_name_is_left_out_and_still_holds_the_msp_back(self):
+    def a_new_referee_file_the_reply_does_not_name_is_left_out_and_never_holds_the_msp_back(self):
         plan = core.plan([step("a", ["a.txt"])])
         state = self.execute(plan, mode="referee-unnamed", no_push=True)
         record = state["msps"]["0"]
-        self.assertEqual(state["lanes"]["0"]["unreplayed"], ["tests/conftest.py"])
+        self.assertEqual(state["lanes"]["0"]["left_out"], ["tests/conftest.py"])
+        self.assertEqual(state["lanes"]["0"]["unreplayed"], [])
         self.assertEqual(state["lanes"]["0"]["replayed"], {})
-        self.assertEqual(record["state"], "referee-reverted")
-        self.assertEqual(record["reconcile"]["referee"], ["tests/conftest.py"])
-        self.assertTrue(record["reconcile"]["fatal"])
-        self.assertEqual(self.gate_runs(), [])
+        self.assertEqual(record["state"], run.MSP_COMMITTED, record.get("reason"))
+        self.assertEqual(record["reconcile"]["referee"], [])
+        self.assertFalse(record["reconcile"]["fatal"])
+        self.assertEqual(record["reconcile"]["left_out"], ["tests/conftest.py"])
         branch = state["worktrees"][0]["branch"]
-        self.assertEqual(
-            sh(["git", "log", "--format=%s", "main..%s" % branch], self.repo).count("revert("),
-            0,
-            "a restore was committed for a file that never reached the branch",
-        )
         self.assertFalse(
             run.git_ok(["cat-file", "-e", "%s:tests/conftest.py" % branch], self.repo)
         )
+        resumed = self.execute(plan, mode="referee-unnamed", no_push=True, resume=True)
+        again = resumed["msps"]["0"]
+        self.assertEqual(again["state"], run.MSP_COMMITTED, again.get("reason"))
+        self.assertFalse(again["reconcile"]["fatal"])
 
 
 class Ship(RepoCase):
@@ -2330,7 +2336,12 @@ class Clones(RepoCase):
         write(os.path.join(clone, "sub", ".git", "config"), "[core]\n")
         os.symlink(outside, os.path.join(clone, "out"))
         found = isolation.outside_writes(
-            clone, tree["path"], run._committed_entries(tree["path"], start), ["a.txt"], (), ["new.txt"]
+            clone,
+            tree["path"],
+            run._committed_entries(tree["path"], start),
+            ["a.txt"],
+            (),
+            ["new.txt", "link.txt", "sub/.git/config", "out"],
         )
         self.assertEqual(
             found["writes"],
@@ -2338,6 +2349,7 @@ class Clones(RepoCase):
         )
         self.assertEqual(found["deletes"], ("gone.txt",))
         self.assertEqual(found["unreplayed"], ["link.txt", "out", "sub/.git"])
+        self.assertEqual(found["left_out"], [])
         self.assertEqual(found["ignored"], ["debug.log"])
 
     def a_new_file_outside_the_write_set_is_replayed_only_when_the_reply_names_it(self):
@@ -2358,7 +2370,8 @@ class Clones(RepoCase):
             ["a.txt", "./named.txt"],
         )
         self.assertEqual(found["writes"], {"named.txt": (run.REGULAR_MODE, b"named\n")})
-        self.assertEqual(found["unreplayed"], ["tool/graph.json"])
+        self.assertEqual(found["left_out"], ["tool/graph.json"])
+        self.assertEqual(found["unreplayed"], [])
         self.assertEqual(found["deletes"], ())
         self.assertEqual(found["ignored"], [])
 

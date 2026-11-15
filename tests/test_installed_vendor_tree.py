@@ -41,7 +41,8 @@ class InstalledVendorTree(clean_gate.CleanGate):
                 ["write", "calc.py", CALC],
                 ["write", VENDOR_FILE, PHPUNIT],
                 ["append-git-path", "info/exclude", VENDOR_FOLDER],
-            ]
+            ],
+            declared=("calc.py", VENDOR_FILE),
         )
         completed = self._build(flags=self._charter(lock_fixtures.PLAIN_CHARTER))
         self.assertEqual(completed.returncode, 9, "mitosis exit code" + lock_fixtures.tail(completed))

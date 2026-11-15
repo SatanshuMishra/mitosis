@@ -258,10 +258,10 @@ mitosis's checkout as an uncommitted change and judged by reconcile alone:
 an undeclared write is kept and reported and does not set the run's exit code, and a
 referee write is reverted and exits 9. A file that is new and outside the
 write-set is replayed only when the Worker's reply names it in
-files_changed: one the reply does not name is left out of the branch,
-still reported as an undeclared write and listed under `unreplayed` in the
-Lane's record in the run state, and a repair of that Lane is told which
-were left out. So a folder a tool drops into a Worker's clone never reaches
+files_changed: one the reply does not name is left out of the branch and
+listed under left_out in the Lane's record, the MSP's reconcile record
+and the pull request's trade-offs. It is no finding and never holds an MSP
+back, and a repair of that Lane is told which were left out. So a folder a tool drops into a Worker's clone never reaches
 a pull request. The gate and every acceptance run see such a path as it stood when
 the Lane started, so an uncommitted helper never makes a test pass. A Lane
 does not see a sibling's uncommitted writes.

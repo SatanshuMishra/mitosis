@@ -375,7 +375,8 @@ class CleanGate(unittest.TestCase):
                 ["write", "calc.py", CALC],
                 ["write", "tests/conftest.py", HIDDEN_CONFTEST],
                 ["append-git-path", "info/exclude", "tests/conftest.py"],
-            ]
+            ],
+            declared=("calc.py", "tests/conftest.py"),
         )
         completed = self._build(flags=self._charter(lock_fixtures.PLAIN_CHARTER))
         self.assertEqual(completed.returncode, 9, "mitosis exit code" + lock_fixtures.tail(completed))
@@ -384,6 +385,30 @@ class CleanGate(unittest.TestCase):
         self.assertEqual(msp["state"], "referee-reverted")
         self.assertEqual(msp["reconcile"]["referee"], ["tests/conftest.py"])
         self.assertIs(msp["reconcile"]["fatal"], True)
+        self.assertNotEqual(
+            self.scratch.git("cat-file", "-e", "mitosis/demo:tests/conftest.py").returncode, 0
+        )
+
+    def a_hidden_referee_file_the_reply_does_not_name_is_left_out_and_never_reaches_the_gate(self):
+        self._scratch()
+        self._worker(
+            [
+                ["write", "calc.py", CALC],
+                ["write", "tests/conftest.py", HIDDEN_CONFTEST],
+                ["append-git-path", "info/exclude", "tests/conftest.py"],
+            ]
+        )
+        completed = self._build(flags=self._charter(lock_fixtures.PLAIN_CHARTER))
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
+        entries = self._accept_log()
+        self._gate_folders(entries)
+        for entry in entries:
+            self.assertNotIn("tests/conftest.py", entry["listing"])
+        msp = self._msp(completed)
+        self.assertEqual(msp["reconcile"]["referee"], [])
+        self.assertIs(msp["reconcile"]["fatal"], False)
+        self.assertEqual(msp["reconcile"]["left_out"], ["tests/conftest.py"])
+        self.assertEqual(self._ignored(msp), [])
         self.assertNotEqual(
             self.scratch.git("cat-file", "-e", "mitosis/demo:tests/conftest.py").returncode, 0
         )
@@ -668,6 +693,7 @@ def load_tests(loader, standard, pattern):
             (
                 "the_gate_runs_in_a_clean_checkout_of_the_commit",
                 "a_referee_file_hidden_by_the_clone_exclude_is_reverted_before_the_gate",
+                "a_hidden_referee_file_the_reply_does_not_name_is_left_out_and_never_reaches_the_gate",
                 "worker_written_git_settings_never_shape_the_gate_bytes",
                 "a_locked_edit_hidden_by_a_replace_ref_is_reverted_and_fatal",
                 "dependency_folders_come_from_the_repository_root",

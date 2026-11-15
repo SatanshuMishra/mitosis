@@ -236,8 +236,13 @@ class Receipts(unittest.TestCase):
 
     def _outside(self, checkout, clone):
         head = run.branch_commit(checkout, "main", required=True)
+        every_file = [
+            os.path.relpath(os.path.join(folder, name), clone).replace(os.sep, "/")
+            for folder, _, names in os.walk(clone)
+            for name in names
+        ]
         return isolation.outside_writes(
-            clone, checkout, run._committed_entries(checkout, head), ("a.py",), (), ()
+            clone, checkout, run._committed_entries(checkout, head), ("a.py",), (), every_file
         )
 
     def a_case_folded_nested_git_folder_is_never_replayed(self):
@@ -265,7 +270,7 @@ class Receipts(unittest.TestCase):
             {
                 "first": {
                     "writes": {"a.py": "A = 1\n", "sub/.GIT/HEAD": "ref: refs/heads/main\n"},
-                    "declared": ["a.py"],
+                    "declared": ["a.py", "sub/.GIT/HEAD"],
                 }
             }
         )

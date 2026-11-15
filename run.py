@@ -1296,6 +1296,7 @@ def _land(plan, lane, tree, record, run_dir, header, settled=None):
     return commit, None, {
         "replayed": replayed,
         "unreplayed": landing["unreplayed"],
+        "left_out": landing["left_out"],
         "ignored": landing["ignored"],
     }
 
@@ -3565,14 +3566,13 @@ UNRUNNABLE_NOTE = (
 )
 
 REPAIR_WAY_OUT = (
-    "\n\nIf a test is itself wrong, or the failure comes from the environment and no change open "
-    "to you can fix it, say why in your notes and report failed."
+    "\n\nIf a test is itself wrong, or the environment fails and no change of yours can fix it, "
+    "say why in your notes and report failed."
 )
 
 LEFT_OUT_NOTE = (
-    "\n\nmitosis left these out of the branch: %s. A new file outside your write-set is kept only "
-    "when your reply names it in files_changed, and only a regular file is kept. If the work needs "
-    "one of them, write it again and name it."
+    "\n\nNo reply named these new files, so mitosis left them out of the branch: %s. To keep one, "
+    "write it again and name each file, not a folder, in files_changed."
 )
 
 REPAIR_OUTPUT = "\n\nOutput of the run of %s:\n%s"
@@ -3620,7 +3620,7 @@ def _left_out_root(tree_path, path):
 
 def _left_out_note(tree, record):
     left_out = sorted(
-        {_left_out_root(tree["path"], path) for path in (record or {}).get("unreplayed") or ()}
+        {_left_out_root(tree["path"], path) for path in (record or {}).get("left_out") or ()}
     )
     return LEFT_OUT_NOTE % ", ".join(left_out) if left_out else ""
 
@@ -3674,17 +3674,21 @@ def _repaired_lane(plan, lane, tree, settings, note):
     return landed
 
 
-OUTSIDE_PATH_KEYS = ("unreplayed", "ignored")
+OUTSIDE_PATH_KEYS = ("unreplayed", "left_out", "ignored")
 
 NO_REPAIR = {"state": None, "landed": False, "parked": None, "failed": ()}
 
 
 def _keeping_outside_writes(earlier, repaired):
+    landed = repaired.get("replayed") or {}
     return {
         **repaired,
-        "replayed": {**(repaired.get("replayed") or {}), **(earlier.get("replayed") or {})},
+        "replayed": {**landed, **(earlier.get("replayed") or {})},
         **{
-            key: sorted(set(earlier.get(key) or ()) | set(repaired.get(key) or ()))
+            key: sorted(
+                {path for path in earlier.get(key) or () if path not in landed}
+                | set(repaired.get(key) or ())
+            )
             for key in OUTSIDE_PATH_KEYS
         },
     }
@@ -3845,9 +3849,10 @@ def _producer_heads(tree, producers, trees):
     return tuple(commit for commit in found if commit is not None)
 
 
-def _with_unreplayed(plan, findings, unreplayed):
+def _with_unreplayed(plan, findings, unreplayed, left_out):
+    noted = {**findings, "left_out": sorted(left_out)} if left_out else findings
     if not unreplayed:
-        return findings
+        return noted
     marked = _referee_marked(unreplayed, tuple(plan.get("locked") or ()))
     reported = (
         {"undeclared": sorted(set(findings["undeclared"]) | set(unreplayed))}
@@ -3855,7 +3860,7 @@ def _with_unreplayed(plan, findings, unreplayed):
         else {}
     )
     return {
-        **findings,
+        **noted,
         **reported,
         "referee": sorted(set(findings["referee"]) | marked),
         "fatal": bool(findings["fatal"] or marked),
@@ -3863,7 +3868,7 @@ def _with_unreplayed(plan, findings, unreplayed):
 
 
 def _reconcile_stage(
-    plan, msp, tree, producers, trees, settings, head=None, unreplayed=(), repair=None
+    plan, msp, tree, producers, trees, settings, head=None, unreplayed=(), repair=None, left_out=()
 ):
     try:
         findings = reconcile(
@@ -3883,10 +3888,10 @@ def _reconcile_stage(
             "reason": "mitosis could not judge the referee paths in the commits of %s, so the gate "
             "did not run and the MSP is held back: %s" % (tree["branch"], error),
         }
-    return {"reconcile": _with_unreplayed(plan, findings, unreplayed)}
+    return {"reconcile": _with_unreplayed(plan, findings, unreplayed, left_out)}
 
 
-def _committed_reconcile(plan, tree, settings, uncommitted, head=None, unreplayed=()):
+def _committed_reconcile(plan, tree, settings, uncommitted, head=None, unreplayed=(), left_out=()):
     try:
         written = referee_writes(
             plan,
@@ -3905,7 +3910,7 @@ def _committed_reconcile(plan, tree, settings, uncommitted, head=None, unreplaye
         }
     return {
         "reconcile": _with_unreplayed(
-            plan, {"referee": written, "fatal": bool(written)}, unreplayed
+            plan, {"referee": written, "fatal": bool(written)}, unreplayed, left_out
         )
     }
 
@@ -3921,11 +3926,14 @@ def _referee_stage(
     head=None,
     unreplayed=(),
     repair=None,
+    left_out=(),
 ):
     reconciled = (
-        _reconcile_stage(plan, msp, tree, producers, trees, settings, head, unreplayed, repair)
+        _reconcile_stage(
+            plan, msp, tree, producers, trees, settings, head, unreplayed, repair, left_out
+        )
         if uncommitted is None
-        else _committed_reconcile(plan, tree, settings, uncommitted, head, unreplayed)
+        else _committed_reconcile(plan, tree, settings, uncommitted, head, unreplayed, left_out)
     )
     if reconciled.get("state") == MSP_GATE_FAILED:
         return {**reconciled, "gate": None, "gate_error": reconciled["reason"]}
@@ -4174,6 +4182,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
     block = _lane_block(plan, msp, state) or _producer_block(plan, msp, state, producers)
     replayed = isolation.msp_replayed(plan, msp, state["lanes"])
     unreplayed = isolation.msp_unreplayed(plan, msp, state["lanes"])
+    left_out = isolation.msp_left_out(plan, msp, state["lanes"])
     state = write_state(run_dir, _msp_record(state, msp, replayed=replayed))
     head, commit_error, conflict = (
         (None, None, None)
@@ -4190,7 +4199,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
     proven_head = _proven_head(prior, head, settings["proven_heads"].get(msp))
     repair = _proved_repair(plan, msp, prior, state, settings, proven_head)
     held = _referee_stage(
-        plan, msp, tree, producers, trees, settings, uncommitted, head, unreplayed, repair
+        plan, msp, tree, producers, trees, settings, uncommitted, head, unreplayed, repair, left_out
     )
     if held is not None:
         notify(
@@ -4246,7 +4255,9 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
         )
     tampered = _gate_referee_writes(gated) if judged_now else []
     reconciled = _with_gate_referee(
-        _reconcile_stage(plan, msp, tree, producers, trees, settings, head, unreplayed, repair),
+        _reconcile_stage(
+            plan, msp, tree, producers, trees, settings, head, unreplayed, repair, left_out
+        ),
         tampered,
     )
     notify(
@@ -4727,7 +4738,10 @@ def _landed_lock(plan, entry, settings, record, base):
         **record,
         "probes": sorted(writes),
         "undeclared": sorted(
-            set(outside["writes"]) | set(outside["deletes"]) | set(outside["unreplayed"])
+            set(outside["writes"])
+            | set(outside["deletes"])
+            | set(outside["unreplayed"])
+            | set(outside["left_out"])
         ),
         "ignored": list(outside["ignored"]),
     }

@@ -779,6 +779,19 @@ class ReconcileReporting(unittest.TestCase):
              "referee": ["tests/conftest.py"], "fatal": True},
         )
 
+    def a_file_left_out_is_listed_and_carried_in_the_summary_and_is_no_finding(self):
+        found = {"undeclared": [], "unwritten": [], "untouched": [], "crossing": [],
+                 "referee": [], "fatal": False, "left_out": ["tool/graph.json"]}
+        state = self._state(found)
+        lines = mitosis.reconcile_lines(self.PLAN, state)
+        self.assertIn("0 findings from the git log", lines[0])
+        self.assertIn("  left out: tool/graph.json", lines)
+        summarised = mitosis._msp_summary(self.PLAN, state)[0]["reconcile"]
+        self.assertEqual(summarised["left_out"], ["tool/graph.json"])
+        self.assertEqual(summarised["undeclared"], [])
+        self.assertNotIn("left_out", mitosis._msp_summary(self.PLAN, self._state({**found, "left_out": []}))[0]["reconcile"])
+
+
 
 class ItemsEntryPointRefusals(unittest.TestCase):
     CYCLIC = [
@@ -1786,6 +1799,41 @@ class RenderPreflight(unittest.TestCase):
         with open(os.path.join(self.elsewhere, "calls"), encoding="utf-8") as handle:
             self.assertEqual(len(handle.read().splitlines()), 1)
         self.assertTrue(os.path.isfile(os.path.join(self.run_dir, "probe-0.json")))
+
+    def a_subject_holding_a_refused_character_is_refused_by_name_before_the_probe(self):
+        plan = core.plan([briefed("alpha"), briefed("beta")])
+        self.assertEqual(len(plan["msps"]), 2)
+        subjects = {
+            "keep the owner's files safe": "\"'\"",
+            "keep $HOME and every other secret variable out of the shared log lines": '"$"',
+        }
+        for subject, named in subjects.items():
+            with self.subTest(subject=subject):
+                args = mitosis.build_parser().parse_args(
+                    [
+                        "--items",
+                        "items.json",
+                        "--plan-only",
+                        "--pr-type",
+                        "feat",
+                        "--pr-subject",
+                        subject,
+                        "--pr-why",
+                        "Bodies are composed twice.",
+                        "--pr-impact",
+                        "Every new body changes shape.",
+                        "--render-command",
+                        fake_render(self.elsewhere),
+                    ]
+                )
+                with self.assertRaises(mitosis.Refusal) as caught:
+                    mitosis.refuse_unrenderable(args, plan, self.run_dir)
+                self.assertEqual(
+                    str(caught.exception),
+                    "--pr-subject holds %s, which no pull request title can carry; reword the subject"
+                    % named,
+                )
+        self.assertFalse(os.path.exists(os.path.join(self.elsewhere, "calls")))
 
     def a_typed_run_without_a_subject_lands_typed_commits(self):
         code, out, err = self._invoke(

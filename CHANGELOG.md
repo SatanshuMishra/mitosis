@@ -20,15 +20,23 @@ only when the version changes, so every release changes it.
   test that could not run. The lock record in the result gains `notes`.
 - A new file outside a Lane's write-set is the Lane's work only when the
   Worker's reply names it in files_changed. One the reply does not name is
-  left out of the MSP branch, still reported as an undeclared write and
-  listed under `unreplayed` in the Lane's record, and it never sets the exit
-  code. A repair of that Lane is told which were left out and why, and
-  every Worker brief states the rule. A change to a file that already
+  left out of the MSP branch and listed under left_out in the Lane's
+  record, the MSP's reconcile record in the state and the JSON result, the
+  printed report and the pull request's trade-offs. It is no finding, never
+  sets the exit code and never holds an MSP back, whatever its path. A
+  repair of that Lane is told which were left out and to name each file,
+  not a folder, and a file the repair then names leaves the list. Every
+  Worker brief states the rule. A change to a file that already
   exists and a delete are replayed as before. Before, every such file was
   kept, so a folder a tool dropped into a Worker's clone reached the pull
-  request. Two outcomes follow: a new file at another MSP's path that no
-  reply names is left out, so it is no longer a fatal crossing, and one at
-  a referee path still holds the MSP back, with nothing to restore.
+  request. Two outcomes follow: a new file at another MSP's path or at a
+  referee path that no reply names is left out, so it is no longer a fatal
+  crossing or a referee write.
+- A `--pr-subject` holding a character or flag word no pull request title
+  can carry is refused before any Worker runs, naming it, for a plan of
+  several parts as for one. Before, the title of each part was cut at that
+  character, so "keep the owner's files safe" shipped as "keep". A subject
+  is now shortened only when the tagged title is too long.
 - `--proven-head` ships a head only over a recorded gate that did not block,
   for an MSP that was not held back. Before, any recorded gate was enough, so
   a held MSP shipped with no run.
