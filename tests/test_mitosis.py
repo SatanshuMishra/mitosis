@@ -913,7 +913,7 @@ paths = list(dict.fromkeys(path for leaf in spec["leaves"] for path in leaf["edi
 for path in paths:
     with open(path, "a") as handle:
         handle.write("work\n")
-reply = {"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"}
+reply = {"status": "ok", "files_changed": paths, "notes": "done"}
 print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": reply}))
 '''
 
@@ -1425,7 +1425,7 @@ paths = list(dict.fromkeys(path for leaf in spec["leaves"] for path in leaf["edi
 for path in paths + (["shared_check.py"] if "alpha.py" in paths else []):
     with open(path, "a") as handle:
         handle.write("work\n")
-reply = {"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"}
+reply = {"status": "ok", "files_changed": paths, "notes": "done"}
 print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": reply}))
 '''
 
@@ -2092,13 +2092,13 @@ class CouplingReport(unittest.TestCase):
                      "--run-dir", os.path.join(root, "run")],
                 )
 
-    def a_strong_signal_awaits_a_verdict_and_an_import_link_is_named_before_the_build(self):
+    def every_coupled_pair_is_named_before_the_build_with_what_couples_it(self):
         code, out, err = self._plan_only()
         self.assertEqual(code, mitosis.EXIT_SHIPPED, err + out)
         body = section(out, "Coupling")
         self.assertIn(
-            "seven and eight (Lanes 0, 1) run in parallel awaiting the orchestrator's verdict on "
-            "same-migration-app:db, default serialize; add an after edge to serialize them",
+            "seven and eight (Lanes 0, 1) run in parallel with only same-migration-app:db between "
+            "them; add an after edge if one needs the other's output",
             body,
         )
         self.assertIn(
@@ -2107,7 +2107,7 @@ class CouplingReport(unittest.TestCase):
             body,
         )
         found = json.loads(out.splitlines()[-1])
-        self.assertEqual(found["coupling"]["ordered"], [])
+        self.assertNotIn("ordered", found["coupling"])
         self.assertEqual(
             found["coupling"]["parallel"],
             [
@@ -2120,42 +2120,20 @@ class CouplingReport(unittest.TestCase):
             [
                 "1 pair of Steps run in parallel with only import-adjacent between them: plain-a+plain-b; "
                 "add an after edge where one needs the other's output",
-                "1 pair of Steps await the orchestrator's verdict on same-migration-app:db, default "
-                "serialize: seven+eight; add an after edge to serialize them",
+                "1 pair of Steps run in parallel with only same-migration-app:db between them: "
+                "seven+eight; add an after edge where one needs the other's output",
             ],
         )
 
     def many_parallel_pairs_are_named_in_one_line_with_the_rest_counted(self):
         review = [
-            {"steps": ["a%d" % n, "b%d" % n], "signals": ["import-adjacent"], "default": "parallel"}
+            {"steps": ["a%d" % n, "b%d" % n], "signals": ["import-adjacent"]}
             for n in range(10)
         ]
         lines = mitosis._coupling_attention(review)
         self.assertEqual(len(lines), 1)
         self.assertIn("10 pairs of Steps run in parallel with only import-adjacent", lines[0])
         self.assertIn("and 2 more", lines[0])
-
-    def serialize_pairs_await_a_verdict_in_their_own_line(self):
-        review = [
-            {"steps": ["a", "b"], "signals": ["shared-risk-marker:auth"], "default": "serialize"},
-            {"steps": ["a", "c"], "signals": ["shared-risk-marker:auth"], "default": "serialize"},
-            {"steps": ["d", "e"], "signals": ["shared-risk-marker:auth"], "default": "parallel"},
-        ]
-        self.assertEqual(
-            mitosis._coupling_attention(review),
-            [
-                "1 pair of Steps run in parallel with only shared-risk-marker:auth between them: d+e; "
-                "add an after edge where one needs the other's output",
-                "2 pairs of Steps await the orchestrator's verdict on shared-risk-marker:auth, default "
-                "serialize: a+b, a+c; add an after edge to serialize them",
-            ],
-        )
-
-    def a_pair_with_an_unknown_default_is_refused_by_name(self):
-        with self.assertRaises(ValueError) as caught:
-            mitosis._coupling_attention([{"steps": ["a", "b"], "signals": ["import-adjacent"], "default": "later"}])
-        self.assertIn("a+b", str(caught.exception))
-        self.assertIn("'later'", str(caught.exception))
 
 
 class ReportSections(unittest.TestCase):
@@ -2335,11 +2313,6 @@ class LaneReport(unittest.TestCase):
         self.assertEqual([lane["steps"] for lane in found["lanes"]], [["s0", "s1", "s2"]])
         self.assertEqual([lane["session"] for lane in found["lanes"]], [None])
         self.assertEqual(found["attention"], [])
-
-    def a_coalesce_cap_below_one_is_a_usage_error(self):
-        code, _, err = self._plan_only(shared_lane_items(1), "--coalesce-max", "0")
-        self.assertEqual(code, mitosis.EXIT_USAGE)
-        self.assertIn("--coalesce-max must be at least 1", err)
 
 
 class GateClassRefusals(unittest.TestCase):

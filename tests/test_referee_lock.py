@@ -59,7 +59,7 @@ if limit:
     stream.flush()
     sys.exit(1)
 declared = job.get("declared", sorted(job.get("writes", {})))
-print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": job["step"], "status": "ok", "files_changed": declared, "notes": "done"}}))
+print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"status": "ok", "files_changed": declared, "notes": "done"}}))
 '''
 
 REASK_COMMAND = " ".join(

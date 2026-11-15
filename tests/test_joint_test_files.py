@@ -56,7 +56,7 @@ with open(log, "a", encoding="utf-8") as handle:
 if resolved != "-":
     with open(%(path)r, "w", encoding="utf-8") as handle:
         handle.write(resolved)
-reply = {"item": "second", "status": "ok", "files_changed": [%(path)r], "notes": "joined"}
+reply = {"status": "ok", "files_changed": [%(path)r], "notes": "joined"}
 print(json.dumps({"type": "result", "session_id": session, "result": "done", "structured_output": reply}))
 ''' % {"path": TESTS}
 
@@ -69,7 +69,7 @@ writes, session = json.loads(sys.argv[1]), sys.argv[3]
 for path, text in writes.items():
     with open(path, "w", encoding="utf-8") as handle:
         handle.write(text)
-reply = {"item": "second", "status": "ok", "files_changed": sorted(writes), "notes": "joined"}
+reply = {"status": "ok", "files_changed": sorted(writes), "notes": "joined"}
 print(json.dumps({"type": "result", "session_id": session, "result": "done", "structured_output": reply}))
 '''
 

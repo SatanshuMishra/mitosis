@@ -85,17 +85,17 @@ when it could not run, so the gate tells a broken build from a failing test:
 pytest exits 5 when it collects nothing, so a misspelled test reads as
 inconclusive. Wrap another runner to map its exit codes to those three.
 
-Reverting the implementation deletes new modules, so the wrapper exits 1 when
-an import fails on a module the revert removed, catching the whole import
-family; any other load error stays inconclusive.
+At the lock stage the new modules do not exist yet, so the wrapper exits 1
+when an import fails on a missing module; any other load error stays
+inconclusive.
 
 Exclude editor state and build caches, or they arrive as undeclared writes.
 
 Two more things every run needs: `--feature-branch`, which must exist and is
 what every MSP branches from, and the repository root as the working
 directory, since every path is relative to it, or mitosis refuses to run.
-`--timeout` is deprecated and ignored, mitosis has no wall-clock limit; a
-command's exit ends every wait, and every process gets no input.
+`--timeout` is deprecated and ignored, mitosis has no wall-clock limit: a command's exit ends every wait, and every
+process gets no input.
 
 mitosis writes no pull-request text: at ship it writes each MSP's facts file,
 runs pull-request render --fields on it and uses the printed title and body
@@ -112,9 +112,9 @@ tell them apart. Pass one, never both.
 
 ### Items: hand-written Steps
 
-`--items` takes a JSON array that must meet h12 in `contracts/`, or exit 3:
-every Step has `spec_ref`, its document sections, and `source`, the
-document's absolute path and SHA-256. A validator, then its flag:
+`--items` takes a JSON array meeting `schemas/mitosis-items.schema.json`, or
+exit 3; `spec_ref`, a Step's document sections, and `source`, the document's
+absolute path and SHA-256, are optional. A validator, then its flag:
 
 ```json
 [
@@ -211,9 +211,8 @@ since the Steps were cut.
 
 ## What a run does
 
-Validate, schedule, lock the checks an items file declares, one worktree and
-branch per MSP under the run directory, one Worker session per Lane, producers
-merged in first, then
+Validate, schedule, one worktree and branch per MSP under the run directory,
+one Worker session per Lane, producers merged in first, then
 per MSP: land, commit, gate, reconcile, push, open a pull request stacked on its single
 predecessor when `--pr-command` is given, report.
 
@@ -240,11 +239,11 @@ another process's lock is retried. A later change to a file whose Lane already
 committed is kept in its own commit and named in the pull request, `attention`
 and the exit code.
 
-Steps with no file in common are ordered when they share a risk marker, a
-recorded regression or a migration folder. A pair joined only by an import
-runs in parallel and is named in `attention`; add an `after` edge if needed.
+mitosis orders no Steps itself: Lanes sharing a risk marker, a recorded
+regression, a migration folder or an import run in parallel and are named in
+`attention`; add an `after` edge if one needs the other.
 
-mitosis refuses with exit 3 when git has no commit identity. A failed Lane is
+mitosis exits 3 when git has no commit identity. A failed Lane is
 retried once with the reason; a refused commit fails that Lane alone.
 
 The gate runs each acceptance property once, against the finished work.
@@ -253,10 +252,11 @@ acceptance command could not judge it. `not-applicable`: the Step declared none 
 changed no implementation. Implementation is derived: the MSP's
 write-set minus the files its acceptance properties name.
 
-A property exiting 1 with the work present gets its Lane one repair; still
-failing, it holds its MSP `gate-failed`, exit 21: committed, never pushed. Every
-other verdict, and a gate that could not run, ships and is named in the pull
-request's Testing table.
+A property exiting 1 with the work present gets its Lane one repair per fresh
+gate verdict; still failing, it holds its MSP `gate-failed`, exit 21:
+committed, never pushed; a gate that could not run holds it too. Every
+other verdict ships and is named in the pull request's Testing table. A
+failed repair's notes are in the MSP's `repair` list.
 
 `--trajectory` gets one outcome entry per acceptance test after
 every gate.
@@ -266,15 +266,15 @@ every gate.
 without a run and kept out of the plan id, so `--resume` rebuilds nothing; an
 entry naming no property is refused.
 
-mitosis never writes a check-author Step; an items file may declare one. A
-Step with `"role": "check-author"` is the lock stage, never a Lane, MSP
-or pull request. Each MSP's check-author locks its tests on that MSP's branch,
-from its own clone at the feature base: one per `msp` label, or the unlabelled
-one split by acceptance owner. Each test must exit 0 with its uncommitted
-probe, and each Step must hold one that exits 1 there; only the locked files
-are committed, as the MSP's first commit. Its record is the MSP's `lock` in
-JSON `msps`; refused twice, the MSP builds from its base with those tests
-`not-applicable`, and a resume never reruns it.
+mitosis writes no check-author Step. One an items file declares, a Step with
+`"role": "check-author"`, is folded: each Step whose acceptance names its file
+writes that file, and no lock stage runs. Only a `--plan-file` plan saved with
+check-authors runs the lock stage: each locks its tests on its MSP's branch from its own
+clone at the feature base. Each test must exit 0 with its uncommitted probe
+and each Step hold one that exits 1 there; the locked files alone are the
+MSP's first commit. Its record is the MSP's `lock` in JSON
+`msps`; refused twice, the MSP is built and held `gate-failed`, exit 21,
+finding lock-failed; no resume locks it again.
 
 The referee is what judges the work, and no Worker writes it: the charter's
 `- Locked:` lines, plus built-in markers for test configuration, snapshots,
@@ -300,8 +300,8 @@ once per gate with `{worktree}`; its output survives only at top-level names
 the commit lacks, such as the `.git` a git-running test needs. A top-level referee
 file or folder it makes, such as `conftest.py`, is fatal, exit 9. A Git LFS file stays
 pointer text and eol attributes may not apply; a test reading real content
-fails. A refused pre-gate commit or a pre-commit hook refusing the whole MSP
-holds it back `gate-failed`, exit 21; a failed gate setup holds nothing. Ship
+fails. A refused pre-gate commit, a pre-commit hook refusing the whole MSP or
+a failed gate setup holds it back `gate-failed`, exit 21. Ship
 refuses any head but the gated one, `ship-failed`, exit 22.
 
 An unreadable base submodule whose gitlink the branch changed cannot be
@@ -334,11 +334,10 @@ wants a conflict resolved and `blocked` a predecessor fixed.
 The last line of mitosis's output is one JSON object: the exit code and
 its meaning, every Lane with its state, reason, notes and log paths, every MSP
 with its branch, base, pull request, title, body, gate verdict and reconcile
-findings, and an `attention` list of what a human or the caller should look
-at. An agent that dispatched mitosis reads that line, not the report.
+findings, and an `attention` list of what to look at. An agent that dispatched mitosis reads that line, not the report.
 
 The run directory holds the plan, the state, the Steps, every Worker's
-output, and the worktrees, which survive a failure for inspection. Read a Lane's log there; its return is a
+output, and the worktrees, which survive a failure. Read a Lane's log there; its return is a
 claim, and the git log is the record.
 
 ## Resuming
@@ -348,10 +347,11 @@ A Worker stopped at a usage limit parks its Lane `parked-limit` and its MSP
 
 Pass `--resume` with the same input and run directory. Lanes already `ok` and
 MSPs already `shipped` or `pushed` are skipped, as is an MSP `unchanged` whose
-producers all finished. An MSP that did not ship is gated again, without
-rebuilding its Lanes, unless its recorded gate passed at its current HEAD. A
+producers all finished. An MSP that did not ship keeps its recorded gate
+result, passing or failing, at an unchanged HEAD and is gated again otherwise,
+without rebuilding its Lanes. A
 producer whose branch was deleted after its pull request merged is found
-through its recorded commit on the feature branch. If the Steps changed, the plan id differs and mitosis refuses to resume.
+through its recorded commit on the feature branch. A plan that differs from the run's is refused, naming what differs.
 
 ## Holding the work locally
 
@@ -362,8 +362,9 @@ those branches; `--resume` without `--no-push` ships what was held, and with
 it leaves a `committed` MSP where it is.
 
 `--proven-head <MSP label>=<commit>`, repeatable, ships a caller-proved HEAD
-ungated when a passing gate is recorded; a Proven head row in Testing names
-both commits. A malformed value or label exits 2.
+ungated when its recorded gate did not block and it was not held back; a
+Proven head row in Testing names both commits. A malformed value or label
+exits 2.
 
 ## Metrics
 

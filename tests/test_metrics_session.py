@@ -95,7 +95,7 @@ for path in paths:
 if len(sys.argv) > 3:
     with open(os.path.join(here, "lane-%s.txt" % sys.argv[2]), "w", encoding="utf-8") as handle:
         handle.write(sys.argv[3])
-reply = {"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"}
+reply = {"status": "ok", "files_changed": paths, "notes": "done"}
 session = sys.argv[3] if len(sys.argv) > 3 else ""
 print(json.dumps({"type": "result", "session_id": session, "result": "done", "structured_output": reply}))
 '''

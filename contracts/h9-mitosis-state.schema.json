@@ -776,7 +776,6 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "item",
         "status",
         "files_changed",
         "notes"
@@ -1127,6 +1126,13 @@
         },
         "referee": {
           "$ref": "#/$defs/referee"
+        },
+        "repair": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       },
       "allOf": [

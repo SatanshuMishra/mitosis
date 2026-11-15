@@ -54,7 +54,7 @@ named = [
 if len(named) > 1:
     named = [name for name in named if jobs[name].get("msp") in (None, sys.argv[1])]
 if len(named) != 1:
-    print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": "unknown", "status": "failed", "files_changed": [], "notes": "no job"}}))
+    print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"status": "failed", "files_changed": [], "notes": "no job"}}))
     sys.exit(1)
 name = named[0]
 job = jobs[name]
@@ -109,7 +109,7 @@ with open(os.path.join(here, "records", name + ".json"), "w", encoding="utf-8") 
     json.dump(record, handle)
 touched = sorted(set(job.get("writes", {})) | set(job.get("links", {})) | set(job.get("deletes", [])))
 declared = job.get("declared", touched)
-print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": name, "status": "ok", "files_changed": declared, "notes": "done"}}))
+print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"status": "ok", "files_changed": declared, "notes": "done"}}))
 '''
 
 REASK_COMMAND = " ".join(
@@ -131,7 +131,7 @@ import sys
 here = os.path.dirname(os.path.abspath(__file__))
 with open(os.path.join(here, "reask.log"), "a", encoding="utf-8") as handle:
     handle.write(json.dumps(sys.argv[1:]) + "\n")
-reply = {"item": "check-author", "status": "ok", "files_changed": ["tests/test_calc.py"], "notes": "asked again"}
+reply = {"status": "ok", "files_changed": ["tests/test_calc.py"], "notes": "asked again"}
 print(json.dumps({"type": "result", "session_id": sys.argv[2], "result": "done", "structured_output": reply}))
 '''
 
@@ -613,10 +613,10 @@ class CheckAuthorLane(unittest.TestCase):
         self.assertIn("Calc.adds", lock.get("reason") or "")
         self.assertIn("passes on the feature base without the build", lock.get("reason") or "")
         self.assertEqual(self._lane(summary, "add")["state"], "ok")
-        self.assertEqual(self._msp(summary, "calc").get("state"), "committed")
+        self.assertEqual(self._msp(summary, "calc").get("state"), "gate-failed")
         self.assertEqual(self._feature(), before)
         self.assertEqual(scratch.dispatched(), ["check-author", "check-author", "add"])
-        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
+        self.assertEqual(completed.returncode, 21, "mitosis exit code" + tail(completed))
 
     def a_locked_test_passing_before_the_build_beside_a_failing_one_is_a_guard(self):
         scratch = self._scratch({"calc.py": CORRECT_ADD})

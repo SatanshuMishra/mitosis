@@ -123,7 +123,7 @@ if mode == "noisy":
     for i in range(5000):
         print("prose line %d" % i, file=sys.stderr)
 status = "failed" if mode == "reports-failed" else "ok"
-reply = {"item": "lane-%s" % lane, "status": status, "files_changed": reported, "notes": "done"}
+reply = {"status": status, "files_changed": reported, "notes": "done"}
 if mode != "silent":
     print(json.dumps({"type": "result", "session_id": session, "result": "done", "structured_output": reply}))
 os.remove(running)
@@ -1293,19 +1293,6 @@ class Gate(RepoCase):
         self.assertEqual(len(plan["msps"]), 1)
         self.assertEqual(run.implementation_paths(plan, 0), ["impl.txt", "other.txt"])
 
-    def a_serial_acceptance_property_is_run_and_judged_like_any_other(self):
-        plan = core.plan([gated_step()], serial_markers=["impl.txt"])
-        self.assertEqual(plan["verify_modes"]["impl"], "serial")
-        trees = self.build(plan)
-        result = self.gate(plan, trees, accept="real")
-        self.assertEqual(result["outcome"], "pass")
-        self.assertFalse(result["blocks"])
-        self.assertEqual(
-            result["counts"], {"pass": 1, "weak": 0, "inert": 0, "inconclusive": 0, "not-applicable": 0}
-        )
-        self.assertEqual([p["outcome"] for p in result["properties"]], ["pass"])
-        self.assertEqual(len(self.gate_runs()), 1)
-
     def an_empty_acceptance_list_is_counted_and_does_not_block(self):
         plan = core.plan([step("a", ["a.txt"])])
         trees = self.build(plan)
@@ -1332,7 +1319,7 @@ class Gate(RepoCase):
         self.assertEqual(sh(["git", "status", "--porcelain"], tree), "")
         self.assertEqual(read(os.path.join(tree, "impl.txt")), "work by lane 0\n")
 
-    def a_gate_that_throws_records_the_error_and_ships(self):
+    def a_gate_that_throws_records_the_error_and_holds_the_msp(self):
         self.add_remote()
         plan = core.plan([gated_step()])
         state = run.execute(
@@ -1349,15 +1336,12 @@ class Gate(RepoCase):
             render_command=self.render_command,
             env=spawn_env(),
         )
-        self.assertEqual(state["msps"]["0"]["state"], "shipped")
+        self.assertEqual(state["msps"]["0"]["state"], "gate-failed")
         self.assertIsNone(state["msps"]["0"]["gate"])
         self.assertIn("no-such-runner", state["msps"]["0"]["gate_error"])
-        self.assertEqual(self.remote_heads(), ["mitosis/impl"])
-        self.assertEqual(len(self.pull_requests()), 1)
-        self.assertIn(
-            {"check": "Acceptance gate", "result": "Not run: the gate could not run"},
-            self.fields(0)["testing"],
-        )
+        self.assertIn("no-such-runner", state["msps"]["0"]["reason"])
+        self.assertEqual(self.remote_heads(), [])
+        self.assertEqual(self.pull_requests(), [])
 
     def _setup_gate(self, plan, trees, names):
         script = os.path.join(self.tmp, "setup.py")
@@ -1395,24 +1379,6 @@ class Gate(RepoCase):
         self.assertEqual(result["referee"], [])
         self.assertEqual(result["outcome"], "pass")
         self.assertEqual(len(self.gate_runs()), 1)
-
-    def an_unproven_property_is_named_in_the_body_with_its_step(self):
-        self.add_remote()
-        plan = core.plan([gated_step()])
-        held = self.execute(plan, accept="failing", pr=self.pr_command())
-        self.assertEqual(held["msps"]["0"]["state"], "gate-failed")
-        head = held["msps"]["0"]["gate"]["commit"]
-        state = self.execute(
-            plan, accept="failing", pr=self.pr_command(), resume=True, proven_heads={0: head}
-        )
-        self.assertEqual(state["msps"]["0"]["state"], "shipped")
-        self.assertEqual(state["msps"]["0"]["proven_head"], head)
-        self.assertEqual(self.remote_heads(), ["mitosis/impl"])
-        self.assertEqual(self.fields(0)["change"], ["Do impl."])
-        self.assertEqual(
-            self.fields(0)["testing"],
-            [{"check": "tests/t_impl.txt::property", "result": "Not run: the acceptance command was inconclusive"}],
-        )
 
     def an_error_in_one_run_starts_no_queued_test(self):
         names = ["p%d" % number for number in range(5)]

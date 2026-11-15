@@ -118,7 +118,6 @@ if "print" in chosen:
 if "exit" in chosen:
     sys.exit(chosen["exit"])
 reply = {
-    "item": "lane",
     "status": chosen.get("status", "ok"),
     "files_changed": paths,
     "notes": chosen.get("notes", "done"),
@@ -507,7 +506,7 @@ class BuildEvents(unittest.TestCase):
         ended = only(named(lines, "lane.end"))
         self.assertEqual(ended["state"], "ok")
         self.assertEqual(ended["exit"], 0)
-        self.assertIs(ended["timed_out"], False)
+        self.assertNotIn("timed_out", ended)
         self.assertIsInstance(ended["seconds"], (int, float))
         self.assertGreaterEqual(ended["seconds"], 0)
 

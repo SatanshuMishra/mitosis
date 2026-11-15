@@ -9,7 +9,7 @@ import uuid
 
 import referee
 
-__version__ = "0.23.0"
+__version__ = "0.24.0"
 
 PLAN_KEYS = (
     "plan_id",
@@ -20,14 +20,9 @@ PLAN_KEYS = (
     "lanes",
     "lane_after",
     "tiers",
-    "tier_notes",
-    "verify_modes",
     "context_packs",
-    "shared_context",
     "lane_order",
-    "coalesce",
     "coupling_review",
-    "verdict_groups",
     "counts",
     "shared_files",
     "integration_order",
@@ -103,11 +98,7 @@ COMPLEXITY_VALUES = ("simple", "complex")
 
 TIERS = ("top", "cheap")
 
-VERIFY_MODES = ("serial", "offload")
-
 COUNT_KEYS = ("missing_paths", "no_acceptance", "assumptions")
-
-RETURN_KEYS = ("item", "status", "files_changed", "notes")
 
 NOTES_CAP = 150
 
@@ -115,7 +106,7 @@ RETURN_SCHEMA = "h10-worker-return"
 
 RETURN_CONTRACT = (
     "Return your reply as structured output meeting the Worker return schema %s, "
-    'shaped {"item":"<name>","status":"ok"|"failed","files_changed":["path",...],'
+    'shaped {"status":"ok"|"failed","files_changed":["path",...],'
     '"notes":"<=%d chars"}, with notes at most %d characters; it is read from '
     "structured_output, never from a last JSON line." % (RETURN_SCHEMA, NOTES_CAP, NOTES_CAP)
 )
@@ -146,13 +137,9 @@ FLAG_NAMES = (
     "--concurrency",
     "--context-hops",
     "--context-cap",
-    "--coalesce-below",
-    "--coalesce-max",
     "--graph",
     "--risk-markers",
     "--shared-files",
-    "--serial-verify-markers",
-    "--serial-markers",
     "--trajectory",
     "--version",
     "--help",
@@ -336,34 +323,6 @@ def global_waves(items, adj, order_index, priority=None):
     return [w for w in waves if w]
 
 
-def ready_after(items, waves, shared_files=()):
-    after = {it["name"]: list(it.get("after") or []) for it in items}
-    adj = _conflict_adjacency(items, shared_files)
-    wave_of = {n: i for i, w in enumerate(waves) for n in w}
-    return {
-        it["name"]: sorted(
-            set(after[it["name"]])
-            | {m for m in adj.get(it["name"], ()) if wave_of.get(m, -1) < wave_of.get(it["name"], 0)}
-        )
-        for it in items
-    }
-
-
-def coalesce_groups(items, waves, tier, cost, below=2.0, max_size=4, deps=None):
-    deps = deps or {}
-    out = {}
-    for i, w in enumerate(waves):
-        small = [n for n in w if tier.get(n) != "top" and cost.get(n, 1.0) <= below]
-        by_deps = collections.defaultdict(list)
-        for n in small:
-            by_deps[tuple(deps.get(n, ()))].append(n)
-        groups = []
-        for key in sorted(by_deps):
-            bucket = by_deps[key]
-            groups += [g for g in (bucket[k:k + max_size] for k in range(0, len(bucket), max_size)) if len(g) > 1]
-        if groups:
-            out[str(i)] = groups
-    return out
 
 
 def _first_build_steps(items):
@@ -1094,9 +1053,8 @@ def tier_for(file_paths, risk_markers, complexity=None):
 def _tiered(item, risk_markers, history):
     tier = tier_for(_files(item), risk_markers, item.get("complexity"))
     if tier == "top" or not history:
-        return tier, None
-    bump, reason = history_tier_bump(item, history)
-    return ("top", "history: " + reason) if bump else (tier, None)
+        return tier
+    return "top" if history_tier_bump(item, history)[0] else tier
 
 
 def _item_graph_files(file_paths, adj_keys):
@@ -1157,7 +1115,7 @@ def _pair_signals(left, right, graph, risk_markers):
         + (("regression-history",) if regression else ())
         + tuple("same-migration-app:" + (m or "<root>") for m in mig)
     )
-    return list(signals), "serialize" if (shared or regression or mig) else "parallel"
+    return list(signals)
 
 
 def _ordered(items, a, b, by_name):
@@ -1182,7 +1140,7 @@ def coupling_review(items, lanes, graph, risk_markers=(), history=(), shared_fil
             overlap = sides[a]["files"] & sides[b]["files"]
             if lane_of[a] == lane_of[b] or any(not shared(path) for path in overlap):
                 continue
-            found, default = _pair_signals(sides[a], sides[b], adjacency, risk_markers or ())
+            found = _pair_signals(sides[a], sides[b], adjacency, risk_markers or ())
             signals = found + list(_shared_file_signals(overlap, shared))
             if not signals or _ordered(items, a, b, by_name):
                 continue
@@ -1191,21 +1149,10 @@ def coupling_review(items, lanes, graph, risk_markers=(), history=(), shared_fil
                     "steps": [items[a]["name"], items[b]["name"]],
                     "lanes": [lane_of[a], lane_of[b]],
                     "signals": signals,
-                    "default": default,
                 }
             )
     return review
 
-
-def verdict_groups(review):
-    buckets = {}
-    for e in review:
-        buckets.setdefault((tuple(e["signals"]), e["default"]), []).append(e["steps"])
-    out = [
-        {"signals": list(sig), "default": dflt, "count": len(pairs), "pairs": pairs}
-        for (sig, dflt), pairs in buckets.items()
-    ]
-    return sorted(out, key=lambda g: (-g["count"], g["signals"]))
 
 
 def _acceptance_files(item):
@@ -1218,12 +1165,6 @@ def _acceptance_files(item):
         if isinstance(entry, dict) and isinstance(entry.get("file"), str)
     )
 
-
-def verify_modes(items, serial_markers):
-    return {
-        it["name"]: ("serial" if any(m in f for m in serial_markers for f in it["files"]) else "offload")
-        for it in items
-    }
 
 
 def item_cost(item):
@@ -1287,18 +1228,6 @@ def context_packs(items, adj, hops=1, cap=CONTEXT_CAP):
         packs[it["name"]] = pack
     return packs
 
-
-def shared_context(packs, waves):
-    out = {}
-    for i, w in enumerate(waves):
-        counts = collections.defaultdict(int)
-        for n in w:
-            for f in packs.get(n, {}).get("read", []):
-                counts[f] += 1
-        shared = sorted(f for f, c in counts.items() if c > 1)
-        if shared:
-            out[str(i)] = shared
-    return out
 
 
 def _dependents(lane_count, edges):
@@ -1380,11 +1309,11 @@ def _lane_read_set(items, lane, packs, owned=()):
 
 
 CLONE_LINE = (
-    "You build in a clone of your own that no other Worker shares. Change only the files in your "
-    "write-set: when you return, mitosis copies them from the clone's working tree and commits "
-    "them, and it never reads the clone's commits, branches or other refs, so do not rely on "
-    "them. Run no command that changes the repository's index or history: no add, commit, "
-    "stash, reset, checkout, restore, clean, merge or rebase."
+    "You build in a clone of your own that no other Worker shares. When you return, mitosis "
+    "copies your write-set from the clone's working tree and commits it, and it never reads the "
+    "clone's commits, branches or other refs, so do not rely on them. Run no command that "
+    "changes the repository's index or history: no add, commit, stash, reset, checkout, restore, "
+    "clean, merge or rebase."
 )
 
 
@@ -1428,7 +1357,13 @@ JOINT_LINE = (
 )
 
 
-EDIT_RULE = "Edit ONLY the files listed under `edit`."
+AUTHOR_EDIT_RULE = "Change only the files listed under `edit`, your write-set."
+
+EDIT_RULE = (
+    AUTHOR_EDIT_RULE + " If a file outside it blocks the work, name it in your notes and report "
+    "failed; only if this brief says an earlier attempt failed, change it too instead, and "
+    "mitosis keeps that write."
+)
 
 
 def _task_line(leaves):
@@ -1449,7 +1384,8 @@ def brief_text(brief):
             "Document: %s (open it from your worktree; it carries what no Step owns)"
             % brief["document"]
         )
-    body = [_task_line(brief["steps"]), "", brief["spec"], "", EDIT_RULE]
+    rule = AUTHOR_EDIT_RULE if brief.get("role") == CHECK_AUTHOR else EDIT_RULE
+    body = [_task_line(brief["steps"]), "", brief["spec"], "", rule]
     footer = [CLONE_LINE, TEST_SCOPE_LINE] + (
         [JOINT_LINE % ", ".join(brief["joint"])] if brief.get("joint") else []
     ) + (
@@ -1775,14 +1711,11 @@ def plan(
     items,
     charter=None,
     risk_markers=(),
-    serial_markers=(),
     graph=None,
     hops=1,
     cap=CONTEXT_CAP,
     history=(),
     root=None,
-    coalesce_below=2.0,
-    coalesce_max=4,
     briefs=True,
     shared_files=(),
     folded=(),
@@ -1791,13 +1724,10 @@ def plan(
     items = [with_task(item) for item in items] if isinstance(items, list) else items
     counts, authors, locked, items, msps, placed = locked_steps(items, charter, root, shared)
     lanes = lane_items(items, shared)
-    tiered = {item["name"]: _tiered(item, risk_markers, history) for item in items}
-    tiers = {name: tier for name, (tier, _) in tiered.items()}
-    tier_notes = {name: note for name, (_, note) in tiered.items() if note}
+    tiers = {item["name"]: _tiered(item, risk_markers, history) for item in items}
     packs = context_packs(items, graph, hops, cap)
     labels = tuple(_msp_label(items, msp) for msp in msps)
     source = items[0].get("source") if items else None
-    steps, cost, waves = build_waves(items, shared)
     review = coupling_review(items, lanes, graph, risk_markers, history, shared)
     lane_tiers = tuple(
         "top" if any(tiers[items[i]["name"]] == "top" for i in lane) else "cheap" for lane in lanes
@@ -1832,16 +1762,9 @@ def plan(
         "lanes": lane_entries,
         "lane_after": lane_edges,
         "tiers": tiers,
-        "tier_notes": tier_notes,
-        "verify_modes": verify_modes(items, serial_markers),
         "context_packs": packs,
-        "shared_context": shared_context(packs, waves),
         "lane_order": list(lane_order(lanes, edges, items)),
-        "coalesce": coalesce_groups(
-            steps, waves, tiers, cost, coalesce_below, coalesce_max, ready_after(steps, waves, shared)
-        ),
         "coupling_review": review,
-        "verdict_groups": verdict_groups(review),
         "counts": counts,
         "shared_files": list(shared),
         "integration_order": integration_order(items, msps, shared),

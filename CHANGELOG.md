@@ -3,6 +3,54 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.24.0 - 2026-11-15
+
+- Work no test judged is no longer delivered as clean. A gate that could not
+  run, such as one whose `--gate-setup` failed, and a lock that failed now
+  hold their MSP back as `gate-failed`: committed, never pushed, with exit
+  21. The gate that could not run keeps its gate-inconclusive finding and
+  its error, and the failed lock gets a lock-failed finding. An MSP that
+  merges a held one is blocked, as after any hold. Before, both delivered
+  the MSP with exit 0.
+- What a Worker says when it reports failed is kept. The notes of a second
+  failed attempt, of a failed repair and of a check-author whose lock failed
+  are part of the Lane's reason, the MSP's reason and the finding. A failed
+  repair is also listed in the MSP's new `repair` list, in the JSON result
+  and the state, and in an attention line, also when the MSP ships with a
+  test that could not run. The lock record in the result gains `notes`.
+- `--proven-head` ships a head only over a recorded gate that did not block,
+  for an MSP that was not held back. Before, any recorded gate was enough, so
+  a held MSP shipped with no run.
+- A resume plans from the history its run first read, kept as
+  `planning-history.jsonl` in the run directory, so an entry appended to the
+  `--trajectory` file during the run no longer changes the plan id. A resume
+  refused for a different plan names the parts of the plan and the Steps
+  that differ.
+- Every Worker and check-author starts with `HARNESS_UNATTENDED=1` in its
+  environment.
+- A brief holds one write-set rule, which says when a second attempt may
+  change a file outside it, and the retry note no longer adds a second one.
+  A repair note asks that what each test asserts stays as it is and gives
+  one way out, a failed reply that says why, for a test that is itself wrong
+  and for a failure the environment causes.
+- Removed, because nothing read them: the reply field item; the plan
+  fields tier_notes, verify_modes, coalesce, shared_context and
+  verdict_groups, with the flags --coalesce-below, --coalesce-max,
+  --serial-markers and --serial-verify-markers; the ignored flags
+  --suite-command and --brief-command; the `default` of a coupled pair,
+  `coupling.ordered` and the line that asked for a verdict nobody could
+  send; the metrics field timed_out; and, in the result contract, the
+  finding kinds gate-inert, gate-weak and `manifest` and the exits 20,
+  23 and 24. A caller that still passes a removed flag exits 2.
+- The briefs and the plan changed, so every plan id changes with this
+  release: a run built by an earlier release is refused on `--resume`, with
+  the parts that differ named.
+- Text now says what the code does: the meaning of exit 11, the structured
+  output a Worker's reply is read from, and, in the skill and the README, the items schema, the folded
+  check-author, coupled pairs that are named and never ordered, the gate
+  result a resume reuses and one repair for each fresh gate verdict. The
+  README no longer says a run cannot resume on another release.
+
 ## 0.23.0 - 2026-11-15
 
 - A built run can relock a locked check that a fix repaired. `--relock
@@ -247,7 +295,7 @@ rather than about the code, now finish, as `docs/adr/0027` settles.
   longer gets a session and a commit of its own.
 - The split writes each Step's task in the call that names its files and
   tests, so a spec build makes no brief call: the brief stage and its h10c
-  reply schema are gone, and `--brief-command` is accepted and ignored with a
+  reply schema are gone, and --brief-command is accepted and ignored with a
   notice. A split Step that carries a role is asked again in the same session.
 - A plan mitosis makes from a spec or asks writes no check-author Step: each
   Step's acceptance test files join that Step's files unless the charter locks
@@ -297,7 +345,7 @@ rather than about the code, now finish, as `docs/adr/0027` settles.
   passes without the work or could not be judged is named in the pull request
   and no longer stops it. Exits 20 and 24 are gone.
 - Mutation stays as a finding for reviewers and never touches a file in a test
-  location. `--suite-command` is accepted and ignored.
+  location. --suite-command is accepted and ignored.
 - A gate that could not run is named in the pull request and holds nothing.
 - A Lane that fails is dispatched once more, told why. A check-author whose
   lock is refused continues its session once, told what was refused, rather
@@ -371,13 +419,13 @@ take one comma-separated value. This release breaks compatibility.
   the session limit and the MSP dependency groups.
 - The plan no longer carries the version, clusters, coupling_order,
   session_tokens or sizes keys, and the plan id no longer hashes a version key.
-  It adds `tier_notes`, `shared_context` and `verdict_groups`.
+  It adds tier_notes, shared_context and verdict_groups.
 - The lane-cycle and manifest-exports-nothing findings are removed, and exit 23
   with them; an empty manifest now exits 0.
-- `--risk-markers` and `--serial-markers` take one comma-separated value, such
+- `--risk-markers` and --serial-markers take one comma-separated value, such
   as `--risk-markers auth,billing`, and a repeated flag keeps the last value.
   The old space-separated form, `--risk-markers auth billing`, now exits 2.
-  `--serial-verify-markers` is the new name for `--serial-markers`, which
+  --serial-verify-markers is the new name for --serial-markers, which
   stays as an alias.
 - `--dry-run` prints each Worker's command and builds nothing.
 
@@ -423,7 +471,7 @@ is produced.
   reads, h15, the pull request's facts file, and h16, render's reply, which
   other plugins own. h8 and h9 accept the lock on each MSP, every lock state
   and the finding kinds a stopped lock reports.
-- `--dispatch-command`, `--decompose-command` and `--brief-command` must carry
+- `--dispatch-command`, `--decompose-command` and --brief-command must carry
   `{schema}`, the call schema as JSON text, and `{session_id}`; a template
   without either is refused with exit 3, where one without `{session_id}`
   used to run unpriced. Each reply is read only from the structured_output field of the JSON object
@@ -518,7 +566,7 @@ the build, and mutants come only from the lines an acceptance test runs.
   refuses file writes outside its clone, a private temp folder, its session
   transcript folder, /dev/null, /dev/tty, /dev/fd and each `--worker-write`
   path. It also runs the gate's `--gate-setup`, acceptance, mutant and
-  `--suite-command` runs and the lock stage's checks under sandbox-exec,
+  --suite-command runs and the lock stage's checks under sandbox-exec,
   writing only their clean checkout (`gate/msp-<n>/checkout-*` or
   `lock/checkout-*` under the run directory), a private temp folder
   (`gate/msp-<n>.tmp` or `lock.tmp`, passed as TMPDIR and holding the line
@@ -554,7 +602,7 @@ the build, and mutants come only from the lines an acceptance test runs.
   lines came from the trace and `untraced` whenever they did not, as when no
   trace was written, only JavaScript, TypeScript or shell lines were sampled,
   or the gate fell back to every added line.
-- `--suite-command` runs the project's full suite once with no mutant and
+- --suite-command runs the project's full suite once with no mutant and
   then on each mutant every acceptance test of a property survives; when the
   run with no mutant passed and the suite fails on each mutant, the property
   is covered-elsewhere and names the failing tests in `killers` instead of

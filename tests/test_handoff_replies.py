@@ -28,14 +28,13 @@ ORIGINAL_CALC = "def add(a, b):\n    return 0\n"
 SUM_CALC = "def add(a, b):\n    return a + b\n"
 
 VALID_RETURN = {
-    "item": "add-numbers",
     "status": "ok",
     "files_changed": ["src/calc.py"],
     "notes": "done",
 }
 
 PROSE_RETURN = (
-    'Done.\n{"item": "add-numbers", "status": "ok", "files_changed": ["src/calc.py"], "notes": "done"}'
+    'Done.\n{"status": "ok", "files_changed": ["src/calc.py"], "notes": "done"}'
 )
 
 USAGE_LIMIT_LINE = "You've hit your usage limit; it resets at 5pm"

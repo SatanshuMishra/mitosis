@@ -51,7 +51,7 @@ named = [
 if len(named) > 1:
     named = [name for name in named if jobs[name].get("msp") in (None, sys.argv[1])]
 if len(named) != 1:
-    print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": "unknown", "status": "failed", "files_changed": [], "notes": "no job"}}))
+    print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"status": "failed", "files_changed": [], "notes": "no job"}}))
     sys.exit(1)
 name = named[0]
 job = jobs[name]
@@ -106,7 +106,7 @@ with open(os.path.join(here, "records", name + ".json"), "w", encoding="utf-8") 
     json.dump(record, handle)
 touched = sorted(set(job.get("writes", {})) | set(job.get("links", {})) | set(job.get("deletes", [])))
 declared = job.get("declared", touched)
-print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": name, "status": "ok", "files_changed": declared, "notes": "done"}}))
+print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"status": "ok", "files_changed": declared, "notes": "done"}}))
 '''
 
 REASK_COMMAND = " ".join(

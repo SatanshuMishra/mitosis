@@ -86,26 +86,6 @@ class Clusters(accept.Case):
         self.assertEqual([line for line in completed.stdout.splitlines() if "Cluster" in line], [])
 
 
-class Coalesce(accept.Case):
-    def steps(self):
-        return [
-            S("a", ["x.py"], complexity="simple"),
-            S("b", ["x.py"], complexity="simple"),
-            S("c", ["c.py"], complexity="simple"),
-            S("d", ["d.py"], complexity="simple"),
-        ]
-
-    def small_cheap_steps_of_one_wave_are_grouped(self):
-        completed, plan = self.planned(self.steps())
-        self.assertEqual(plan.get("coalesce"), {"0": [["a", "c", "d"]]}, tail(completed))
-
-    def the_group_size_cap_is_a_flag(self):
-        completed = self.scratch.plan_only(self.steps(), "--coalesce-max", "2")
-        self.exits(completed, 0)
-        plan = self.plan(completed)
-        self.assertEqual(plan.get("coalesce"), {"0": [["a", "c"]]}, tail(completed))
-
-
 class PlanId(accept.Case):
     def plan_id_is_a_hash_of_the_plan(self):
         completed, plan = self.planned([S("a", ["a.py"])])
@@ -306,7 +286,6 @@ def load_tests(loader, standard, pattern):
         LaneOrder,
         TokenEstimates,
         Clusters,
-        Coalesce,
         PlanId,
         ContextPacks,
         ReadCap,

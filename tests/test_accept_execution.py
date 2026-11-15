@@ -92,7 +92,7 @@ jobs = load("worker.json")
 control = load("control.json")
 named = sorted((name for name in jobs if ("task-" + name) in prompt), key=len)
 if not named:
-    replied({"item": "unknown", "status": "failed", "files_changed": [], "notes": "no job"})
+    replied({"status": "failed", "files_changed": [], "notes": "no job"})
     sys.exit(1)
 name = named[-1]
 put(os.path.join(tmp, "started-" + name), "\n".join(listing()) + "\n")
@@ -105,7 +105,7 @@ writes = jobs[name]
 for path, content in sorted(writes.items()):
     put(path, content)
 status = job.get("status", "ok")
-replied({"item": name, "status": status, "files_changed": sorted(writes), "notes": status})
+replied({"status": status, "files_changed": sorted(writes), "notes": status})
 sys.exit(0)
 '''
 
@@ -464,7 +464,7 @@ class BriefFormat(Case):
         self.assertTrue(text.startswith("Lane 0 of MSP a\n"), text)
         self.assertIn("Task: Build a", text.splitlines(), text)
         self.assertIn(leaves, text)
-        self.assertIn("Edit ONLY the files listed under `edit`.", text)
+        self.assertIn("Change only the files listed under `edit`, your write-set.", text)
         self.assertNotIn("Write-set for this Lane", text)
 
 
@@ -519,33 +519,6 @@ class CrossMspStart(Case):
         self.assertFalse(os.path.exists(self.scratch.path("started-c")), tail(completed))
 
 
-class SerialVerifyMode(Case):
-    def make_scratch(self):
-        return Scratch(seeded={"tests/test_x.py": "import unittest\n"})
-
-    def a_serial_step_is_gated_like_any_other(self):
-        steps = [
-            S(
-                "x",
-                ["auth/x.py"],
-                complexity="simple",
-                acceptance=[{"file": "tests/test_x.py", "test": "x_works"}],
-            )
-        ]
-        completed = self.scratch.full_run(
-            steps, "--serial-markers", "auth", control={"accept_path": "auth/x.py"}
-        )
-        self.exits(completed, 0)
-        gate = (((self.state(completed).get("msps") or {}).get("0") or {}).get("gate")) or {}
-        self.assertEqual((gate.get("counts") or {}).get("not-applicable"), 0, json.dumps(gate))
-        outcomes = [
-            prop.get("outcome")
-            for prop in gate.get("properties") or []
-            if prop.get("step") == "x" or "x_works" in json.dumps(prop)
-        ]
-        self.assertEqual(outcomes, ["pass"], json.dumps(gate))
-
-
 class RunLog(Case):
     def a_run_log_holds_one_line_per_lane_with_the_plan_id(self):
         log = self.scratch.path("log.jsonl")
@@ -572,6 +545,6 @@ def load_tests(loader, standard, pattern):
             )
 
     suite = unittest.TestSuite()
-    for case in (EntryDirectory, BriefFormat, IntraMspScheduling, CrossMspStart, SerialVerifyMode, RunLog):
+    for case in (EntryDirectory, BriefFormat, IntraMspScheduling, CrossMspStart, RunLog):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite

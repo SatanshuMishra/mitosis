@@ -463,11 +463,11 @@ class Tiering(unittest.TestCase):
         graph = {"src/a.py": ["src/b.py"]}
         history = ({"files": ["src/a.py", "lib/auth/b.py"], "outcome": "failed"},)
         review = core.coupling_review(items, lanes, graph, risk_markers=("auth/",), history=history)
-        by_pair = {tuple(entry["steps"]): (entry["signals"], entry["default"]) for entry in review}
-        self.assertEqual(by_pair[("seven", "eight")], (["same-migration-app:db"], "serialize"))
-        self.assertEqual(by_pair[("root-one", "root-two")], (["same-migration-app:<root>"], "serialize"))
-        self.assertEqual(by_pair[("plain-a", "plain-b")], (["import-adjacent"], "parallel"))
-        self.assertEqual(by_pair[("auth-a", "auth-b")], (["shared-risk-marker:auth/"], "serialize"))
+        by_pair = {tuple(entry["steps"]): entry["signals"] for entry in review}
+        self.assertEqual(by_pair[("seven", "eight")], ["same-migration-app:db"])
+        self.assertEqual(by_pair[("root-one", "root-two")], ["same-migration-app:<root>"])
+        self.assertEqual(by_pair[("plain-a", "plain-b")], ["import-adjacent"])
+        self.assertEqual(by_pair[("auth-a", "auth-b")], ["shared-risk-marker:auth/"])
         self.assertNotIn(("sql-seven", "sql-eight"), by_pair)
         self.assertNotIn(("plain-a", "auth-b"), by_pair)
         self.assertNotIn(("shared-a", "shared-b"), by_pair)
@@ -484,7 +484,7 @@ class Tiering(unittest.TestCase):
             ],
         )
 
-    def a_strong_coupling_signal_flags_the_pair_serialize_and_an_import_link_leaves_it_parallel(self):
+    def every_coupled_pair_is_flagged_with_its_signals_and_none_is_ordered(self):
         items = [
             step("seven", ["db/migrations/0007_add_x.py"]),
             step("eight", ["db/migrations/0008_add_y.py"]),
@@ -498,14 +498,14 @@ class Tiering(unittest.TestCase):
         self.assertNotIn("coupling_order", plan)
         self.assertNotIn("lane_after", plan)
         self.assertFalse(any("after" in item for item in plan["items"]))
-        review = {tuple(entry["steps"]): (entry["signals"], entry["default"]) for entry in plan["coupling_review"]}
+        review = {tuple(entry["steps"]): entry["signals"] for entry in plan["coupling_review"]}
         self.assertEqual(
             review,
             {
-                ("seven", "eight"): (["same-migration-app:db"], "serialize"),
-                ("plain-a", "plain-b"): (["import-adjacent"], "parallel"),
-                ("plain-a", "auth-a"): (["regression-history"], "serialize"),
-                ("auth-a", "auth-b"): (["shared-risk-marker:auth/"], "serialize"),
+                ("seven", "eight"): ["same-migration-app:db"],
+                ("plain-a", "plain-b"): ["import-adjacent"],
+                ("plain-a", "auth-a"): ["regression-history"],
+                ("auth-a", "auth-b"): ["shared-risk-marker:auth/"],
             },
         )
         self.assertFalse(any("after" in item for item in items))
@@ -515,83 +515,16 @@ class Tiering(unittest.TestCase):
         lanes = core.lane_items(items)
         self.assertEqual(
             core.coupling_review(items, lanes, {"app/b.py": ["app/a.py"]}),
-            [{"steps": ["plain-a", "plain-b"], "lanes": [0, 1], "signals": ["import-adjacent"], "default": "parallel"}],
+            [{"steps": ["plain-a", "plain-b"], "lanes": [0, 1], "signals": ["import-adjacent"]}],
         )
-
-    def verdict_groups_bucket_pairs_by_signals_and_default_biggest_first(self):
-        review = [
-            {"steps": ["a", "b"], "lanes": [0, 1], "signals": ["import-adjacent"], "default": "parallel"},
-            {"steps": ["c", "d"], "lanes": [2, 3], "signals": ["shared-risk-marker:auth"], "default": "serialize"},
-            {"steps": ["c", "e"], "lanes": [2, 4], "signals": ["shared-risk-marker:auth"], "default": "serialize"},
-        ]
-        self.assertEqual(
-            core.verdict_groups(review),
-            [
-                {
-                    "signals": ["shared-risk-marker:auth"],
-                    "default": "serialize",
-                    "count": 2,
-                    "pairs": [["c", "d"], ["c", "e"]],
-                },
-                {"signals": ["import-adjacent"], "default": "parallel", "count": 1, "pairs": [["a", "b"]]},
-            ],
-        )
-        self.assertEqual(core.verdict_groups([]), [])
 
     def a_pair_already_ordered_by_an_after_edge_gets_no_verdict(self):
         items = [step("a", ["src/a.py"]), step("b", ["src/b.py"], after=["a"])]
         lanes = core.lane_items(items)
         self.assertEqual(core.coupling_review(items, lanes, {"src/a.py": ["src/b.py"]}), [])
 
-    def verify_mode_splits_serial_from_offloadable(self):
-        items = [
-            step("page", ["src/ui/page.tsx"]),
-            step("api", ["src/api/handler.py"]),
-            step("flow", ["src/api/flow.py"], acceptance=[{"file": "tests/ui/flow_test.py", "test": "F.t"}]),
-        ]
-        modes = core.verify_modes(items, ("ui/",))
-        self.assertEqual(modes, {"page": "serial", "api": "offload", "flow": "offload"})
-        self.assertEqual(
-            core.verify_modes([step("x", ["app/unauthenticated/x.ts"])], ("auth",)), {"x": "serial"}
-        )
-        self.assertEqual(core.verify_modes([step("x", ["src/UI/page.tsx"])], ("ui/",)), {"x": "offload"})
-        self.assertEqual(set(modes.values()) <= set(core.VERIFY_MODES), True)
-        self.assertEqual(core.verify_modes(items, ()), {"page": "offload", "api": "offload", "flow": "offload"})
-
 
 class Cost(unittest.TestCase):
-    def coalesce_groups_cheap_steps_of_one_wave_by_name_whatever_their_msp(self):
-        items = [
-            step("a1", ["a1.py"], msp="a", complexity="simple"),
-            step("a2", ["a2.py"], msp="a", complexity="simple"),
-            step("b1", ["b1.py"], msp="b", complexity="simple"),
-            step("b2", ["b2.py"], msp="b", complexity="simple"),
-        ]
-        self.assertEqual(core.plan(items)["coalesce"], {"0": [["a1", "a2", "b1", "b2"]]})
-        self.assertEqual(core.plan(items, coalesce_max=3)["coalesce"], {"0": [["a1", "a2", "b1"]]})
-        self.assertNotIn("coalesce", core.plan(items, coalesce_below=0))
-        wide = [step("w%d" % i, ["w%d.py" % i, "v%d.py" % i, "u%d.py" % i], complexity="simple") for i in range(2)]
-        self.assertNotIn("coalesce", core.plan(wide))
-
-    def coalesce_never_takes_a_top_tier_step(self):
-        items = [
-            step("c1", ["c1.py"], msp="m"),
-            step("c2", ["c2.py"], msp="m"),
-            step("risky", ["risky.py"], msp="m"),
-            step("c3", ["c3.py"], msp="m"),
-        ]
-        result = core.plan([{**item, "complexity": "simple"} for item in items], risk_markers=("risky",))
-        self.assertEqual(result["tiers"]["risky"], "top")
-        self.assertEqual(result["coalesce"], {"0": [["c1", "c2", "c3"]]})
-        dependent = [
-            step("p", ["p.py"], msp="m", complexity="simple"),
-            step("q", ["q.py"], msp="m", after=["p"], complexity="simple"),
-            step("r", ["r.py"], msp="m", after=["p"], complexity="simple"),
-            step("s", ["s.py"], msp="m", complexity="simple"),
-            step("t", ["t.py"], msp="m", complexity="simple"),
-        ]
-        self.assertEqual(core.plan(dependent)["coalesce"], {"0": [["p", "s", "t"]], "1": [["q", "r"]]})
-
     def context_pack_reports_truncation_instead_of_hiding_it(self):
         items = [step("a", ["a.py"])]
         adjacency = {"a.py": ["n5.py", "n1.py", "n4.py", "n2.py", "n3.py"], "n1.py": ["far.py"]}
@@ -657,8 +590,6 @@ class Plan(unittest.TestCase):
                 "locked",
                 "check_authors",
                 "folded_check_authors",
-                "tier_notes",
-                "shared_context",
                 "shared_files",
                 "integration_order",
                 "shared_file_candidates",
@@ -675,14 +606,11 @@ class Plan(unittest.TestCase):
         self.assertEqual(result["tiers"]["docs-readme"], "cheap")
         self.assertTrue(result["coupling_review"])
         self.assertTrue(result["lane_after"])
-        self.assertEqual(
-            result["coalesce"], {"0": [["core-vocab", "docs-readme", "docs-skill", "docs-lint"]]}
-        )
 
     def empty_sections_are_omitted_not_padded(self):
         result = core.plan([step("only", ["only.py"], complexity="simple")])
         self.assertTrue(set(result) < set(core.PLAN_KEYS))
-        for absent in ("source", "lane_after", "coalesce", "coupling_review"):
+        for absent in ("source", "lane_after", "coupling_review"):
             self.assertNotIn(absent, result)
         for key, value in result.items():
             self.assertIsNotNone(value)
@@ -719,7 +647,7 @@ class Plan(unittest.TestCase):
             for s in brief["steps"]:
                 self.assertIn(s["task"], brief["text"])
             self.assertIn(brief["spec"], brief["text"])
-            self.assertIn("Edit ONLY the files listed under `edit`.", brief["text"])
+            self.assertIn(core.EDIT_RULE, brief["text"])
             self.assertNotIn("Write-set for this Lane", brief["text"])
             self.assertIn("docs/charter.md", brief["text"])
             self.assertIn(SOURCE["path"], brief["text"])
@@ -752,8 +680,6 @@ class Plan(unittest.TestCase):
                 "locked",
                 "check_authors",
                 "folded_check_authors",
-                "tier_notes",
-                "shared_context",
                 "shared_files",
                 "integration_order",
                 "shared_file_candidates",
@@ -844,7 +770,7 @@ class OwnClone(unittest.TestCase):
             self.assertIn("changes the repository's index or history", brief["text"])
             self.assertNotIn("same worktree", brief["text"])
             self.assertNotIn("Other agents are working in this tree", brief["text"])
-            self.assertIn("Edit ONLY the files listed under `edit`.\n\n" + core.CLONE_LINE, brief["text"])
+            self.assertIn(core.EDIT_RULE + "\n\n" + core.CLONE_LINE, brief["text"])
 
 
 class GraphInput(unittest.TestCase):
@@ -870,24 +796,6 @@ class GraphInput(unittest.TestCase):
         plan = core.plan([step("edit-c", ["pkg/c.py"])], graph=adjacency)
         self.assertEqual(plan["briefs"][0]["read_set"], ["pkg/b.py"])
         self.assertEqual(plan["context_packs"]["edit-c"], {"edit": ["pkg/c.py"], "read": ["pkg/b.py"]})
-
-
-class SharedContext(unittest.TestCase):
-    def a_file_two_steps_of_one_wave_read_is_shared_under_that_wave(self):
-        packs = {
-            "a": {"edit": ["a.py"], "read": ["hub.py", "x.py"]},
-            "b": {"edit": ["b.py"], "read": ["hub.py"]},
-            "c": {"edit": ["c.py"], "read": ["x.py"]},
-        }
-        self.assertEqual(core.shared_context(packs, [["a", "b"], ["c"]]), {"0": ["hub.py"]})
-        self.assertEqual(core.shared_context(packs, [["a"], ["b", "c"]]), {})
-
-    def a_plan_carries_shared_context_only_when_some_wave_shares_a_file(self):
-        graph = {"a.py": ["hub.py"], "c.py": ["hub.py"], "hub.py": ["a.py", "c.py"]}
-        shared = core.plan([step("a", ["a.py"]), step("c", ["c.py"])], graph=graph)
-        self.assertEqual(shared["shared_context"], {"0": ["hub.py"]})
-        alone = core.plan([step("a", ["a.py"])], graph=graph)
-        self.assertNotIn("shared_context", alone)
 
 
 def shared_lane(count, **extra):
@@ -1028,7 +936,7 @@ class Referee(unittest.TestCase):
         )
         self.assertIn("Task: do build", brief["text"].splitlines())
         self.assertIn('"edit": [\n        "calc.py"\n      ],', brief["text"])
-        self.assertIn("Edit ONLY the files listed under `edit`.", brief["text"])
+        self.assertIn(core.EDIT_RULE, brief["text"])
         self.assertNotIn("Write-set for this Lane", brief["text"])
 
     def a_brief_with_nothing_locked_forbids_only_the_referee_files(self):
@@ -1120,7 +1028,8 @@ class CheckAuthor(unittest.TestCase):
             ),
             text,
         )
-        self.assertIn("Edit ONLY the files listed under `edit`.", text)
+        self.assertIn(core.AUTHOR_EDIT_RULE + "\n", text)
+        self.assertNotIn("an earlier attempt failed", text)
         self.assertNotIn("Write-set for this Lane", text)
         self.assertIn("Probe files, the only files your probe may write: calc.py (and no others).", text)
         self.assertIn("leave the probe in place in the clone and never commit it", text)
@@ -1257,7 +1166,7 @@ def load_tests(loader, tests, pattern):
             return sorted(names)
 
     suite = unittest.TestSuite()
-    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, SharedContext, OwnClone, ReadSetCap, OneSessionPerLane, Referee, CheckAuthor):
+    for case in (Grouping, Validation, Tiering, Cost, Plan, GraphInput, OwnClone, ReadSetCap, OneSessionPerLane, Referee, CheckAuthor):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite
 

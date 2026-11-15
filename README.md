@@ -114,9 +114,7 @@ claude plugin update mitosis@mitosis
 ```
 
 An installed copy only updates when the plugin's version changes, and every
-release changes it; `CHANGELOG.md` lists them. The version is part of each
-plan's id, so finish a run before updating: it cannot be resumed on another
-release.
+release changes it; `CHANGELOG.md` lists them.
 
 Without Claude Code, copy the nineteen modules, the `contracts/` folder and
 the `schemas/` folder into one directory and invoke `mitosis.py` by path. The
@@ -204,8 +202,6 @@ property:
 | `--no-run-dir` | keeps the plan, state, logs and clones in a private temp folder removed before mitosis exits, whether the run shipped, failed or was refused; `--run-dir` is ignored, `--resume` starts from nothing, each Worker's standard output is printed before the report, and the result line carries no run directory; the branches and worktrees stay, at `--worktree-root` or where a run of the same input keeps them |
 | `--worker-sandbox` | runs every Worker under sandbox-exec, refusing file writes outside its clone, a private temp folder, its session transcript folder, /dev/null, /dev/tty, /dev/fd and each `--worker-write` path, and refusing a signal to any process outside its own sandbox; it also runs the gate's setup and acceptance runs and the lock stage's checks under sandbox-exec, refusing writes outside their clean checkout, a private temp folder and each `--worker-write` path, so a `--gate-setup` that needs another writable path names it with `--worker-write`; a host without sandbox-exec refuses the run with exit 3 before any Worker starts |
 | `--worker-write PATH` | one more path a sandboxed Worker, gate run or lock-stage check may write under; repeatable; a path that is, holds or lies inside the run directory, the repository or its git directory refuses the run with exit 3 |
-| `--suite-command TEMPLATE` | deprecated and ignored; the gate runs only the acceptance tests each Step names |
-| `--brief-command TEMPLATE` | deprecated and ignored; the split writes each Step's task, so no brief call runs |
 | `--gate-classes PATH` | a JSON list of `{test, class, reason}` objects classing a property `not-applicable`, covered-elsewhere or `removed`, judged without a run and kept out of the plan id |
 
 ## Model replies and owned hand-offs
@@ -426,9 +422,9 @@ locked files the feature branch already holds is locked there with no
 check-author, so checks locked by hand keep working.
 
 Each MSP's lock record is its `lock` object in the JSON result's `msps` list,
-which replaces the top-level `lock` of earlier releases. A failed lock blocks
-only its MSP and the MSPs that merge it, directly or through another, and
-every other MSP is built, gated and finished. The gate and reconcile of an MSP
+which replaces the top-level `lock` of earlier releases. A failed lock holds
+back only its MSP, which blocks the MSPs that merge it, directly or through
+another, and every other MSP is built, gated and finished. The gate and reconcile of an MSP
 judge against its own lock commit, and its referee covers the locked files of
 its own lock and of every MSP it merges.
 
@@ -437,18 +433,27 @@ its own lock and of every MSP it merges.
 `--no-push` builds, gates and reconciles every MSP and publishes nothing;
 `--resume` with the same input and run directory continues a run, and
 without `--no-push` ships what was held. A resume reuses an MSP's recorded
-gate result when it passed and the MSP's HEAD is the commit the gate ran at;
-otherwise the MSP is gated again. Files the worktree holds outside that commit
-play no part, since the gate never reads them.
+gate result, passing or failing, when the MSP's HEAD is the commit the gate ran
+at and the gate's inputs are unchanged; otherwise the MSP is gated again, and a
+failing test is owed one repair again. An MSP held back at an unchanged head
+stays held from its recorded result. Files the worktree holds outside that
+commit play no part, since the gate never reads them.
+
+A run keeps the history its first planning read as `planning-history.jsonl` in
+its run directory, and a resume plans from that copy, so an entry appended to
+the `--trajectory` file since never changes the plan. A resume whose plan still
+differs from the run's is refused with exit 3, naming the parts of the plan and
+the Steps that differ.
 
 A caller that proved a later head itself names it with
 `--proven-head <MSP label>=<commit>`, once per MSP. mitosis ships that head
-without gating again when the MSP's HEAD equals the commit and a passing
-gate result is recorded, and the pull request's Testing section gets a
-Proven head row, marked Not run, naming both commits. A head that
-differs, or an MSP with no recorded gate result, is gated as before; a
-malformed value or a label the plan does not hold exits 2 before anything is
-built.
+without gating again when the MSP's HEAD equals the commit, a gate result
+that did not block is recorded and the MSP was not held back, and the pull
+request's Testing section gets a Proven head row, marked Not run, naming both
+commits. A head that differs, an MSP with no recorded gate result, one whose
+recorded gate blocked and one held back `gate-failed` are gated as on any
+resume; a malformed value or a label the plan does not hold exits 2 before
+anything is built.
 
 A proved head may hold repairs made after the gate. Where such a repair
 changes a file that only an MSP stacked with this one declares, one this
@@ -561,11 +566,15 @@ is committed on its branch and never pushed. A property the acceptance command
 cannot run with the work present, exiting with neither 0 nor 1, gets the same
 one repair, told that the command is given the test file and the test's name
 separately; when it still cannot run, its MSP ships with it `inconclusive`.
+A repair whose Worker reports failed is kept, with the Worker's notes, in the
+MSP's reason when it is held back, in its `repair` list in the JSON result and
+in an `attention` line.
 
 Every other verdict ships and is named in the pull request's Testing table.
 `pass` is a property that exits 0 against the finished work, and
 `inconclusive` one the acceptance command could not judge. A gate that could
-not run ships the same way, with a `Not run` row. The gate never runs a
+not run judged nothing, so its MSP is held back as `gate-failed`, with exit 21
+and the error in its `gate.error`. The gate never runs a
 property without the work and never alters the work to see whether a test
 notices, so `pass` says that the test passes, and not that it would fail
 without the work; `docs/adr/0028` holds the measurements behind that.
@@ -636,7 +645,7 @@ and runs that command once per gate in the clean checkout, with `{worktree}`
 naming it; a project whose root folders point back
 into the root checkout, such as an editable install, uses it. A gate setup
 that exits non-zero runs no acceptance test, records a gate error naming the
-gate setup, and holds nothing.
+gate setup, and holds the MSP back as `gate-failed`, with exit 21.
 A pre-gate commit that git refuses holds the MSP back as `gate-failed`, with
 exit 21, its work left uncommitted in the worktree and no gate run.
 
@@ -655,15 +664,18 @@ from the commit is caught the same way as a committed write: the gate lists
 it under its `referee` list, and the MSP is held back as `referee-reverted`
 and never pushed, with exit 9.
 
-A Lane whose Worker fails is dispatched once more, told why, and told it may
-change a file outside its write-set when that was the obstacle; mitosis keeps
-that write, shows it to the gate and reports it. A Worker that reports failure twice leaves its Lane
-`failed` and its MSP unshipped, while every other MSP carries on. A check-author
-whose lock is refused gets one retry too: the same session continues in its
-clone, told what was refused, and it starts again only when that session
-cannot continue. A lock refused twice no longer
-stops the build: the MSP builds from its base, its Steps' locked tests are judged
-`not-applicable` with the refusal as the reason, and the pull request says so.
+A Lane whose Worker fails is dispatched once more, told why in the Worker's
+own notes. Every brief holds one write-set rule: a file outside the write-set
+that stands in the way is named in the notes of a failed reply, and only the
+second attempt may change it, a write mitosis keeps and shows to the gate. A
+Worker that reports failure twice leaves its Lane `failed` and its MSP
+unshipped, its notes in both reasons, while every other MSP carries on. A
+check-author whose lock is refused gets one retry too: the same session
+continues in its clone, told what was refused, and it starts again only when
+that session cannot continue. A lock refused twice holds its MSP back: the MSP
+still builds from its base with its Steps' locked tests classed
+`not-applicable`, and ends `gate-failed`, with exit 21 and a lock-failed
+finding that carries the refusal and the check-author's notes.
 
 A repair lands the way a first attempt does: a write to another Lane's file is
 reported, a file a sibling had overwritten reaches the gate again, and an MSP

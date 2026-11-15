@@ -23,7 +23,7 @@ def item(plan, name):
 
 
 class CoupledPairs(accept.Case):
-    def a_serialize_default_pair_is_flagged_not_ordered(self):
+    def a_pair_sharing_a_risk_marker_is_flagged_not_ordered(self):
         completed, plan = self.planned(
             [S("a", ["auth/a.py"]), S("b", ["auth/b.py"])], "--risk-markers", "auth"
         )
@@ -33,7 +33,7 @@ class CoupledPairs(accept.Case):
         review = plan.get("coupling_review") or []
         self.assertEqual(len(review), 1, json.dumps(review))
         self.assertEqual(review[0].get("steps"), ["a", "b"], json.dumps(review))
-        self.assertEqual(review[0].get("default"), "serialize", json.dumps(review))
+        self.assertEqual(review[0].get("signals"), ["shared-risk-marker:auth"], json.dumps(review))
 
 
 class ImportAdjacency(accept.Case):
@@ -53,7 +53,7 @@ class ImportAdjacency(accept.Case):
         )
         self.assertEqual(
             plan.get("coupling_review"),
-            [{"steps": ["a", "b"], "lanes": [0, 1], "signals": ["import-adjacent"], "default": "parallel"}],
+            [{"steps": ["a", "b"], "lanes": [0, 1], "signals": ["import-adjacent"]}],
             tail(completed),
         )
         summary = accept.summary_of(completed)
@@ -69,7 +69,6 @@ class SharedMarker(accept.Case):
         )
         review = plan.get("coupling_review") or [{}]
         self.assertEqual(review[0].get("signals"), ["shared-risk-marker:auth"], tail(completed))
-        self.assertEqual(review[0].get("default"), "serialize", tail(completed))
 
 
 class RegressionSignal(accept.Case):
@@ -89,7 +88,6 @@ class RegressionSignal(accept.Case):
         )
         review = plan.get("coupling_review") or [{}]
         self.assertEqual(review[0].get("signals"), ["regression-history"], tail(completed))
-        self.assertEqual(review[0].get("default"), "serialize", tail(completed))
 
 
 class MigrationSignal(accept.Case):
@@ -99,7 +97,6 @@ class MigrationSignal(accept.Case):
         )
         review = plan.get("coupling_review") or [{}]
         self.assertEqual(review[0].get("signals"), ["same-migration-app:app"], tail(completed))
-        self.assertEqual(review[0].get("default"), "serialize", tail(completed))
 
     def numbered_sql_files_are_no_signal(self):
         completed, plan = self.planned([S("s1", ["db/0002_a.sql"]), S("s2", ["db/0003_b.sql"])])

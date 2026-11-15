@@ -40,7 +40,6 @@ OLD_IMPORT = re.compile(r"^\s*(?:import|from)\s+contract_schema\b", re.MULTILINE
 COMBINATORS = ("oneOf", "anyOf", "allOf")
 
 VALID_RETURN = {
-    "item": "add-numbers",
     "status": "ok",
     "files_changed": ["src/calc.py"],
     "notes": "done",
@@ -197,7 +196,7 @@ class ReplyReading(unittest.TestCase):
         handoff = module("handoff")
         stdout = (
             '{"type": "result", "session_id": "s", "result": "done", "structured_output": '
-            '{"item": "add-numbers", "status": "ok", "files_changed": ["src/calc.py"], "notes": "done"}}'
+            '{"status": "ok", "files_changed": ["src/calc.py"], "notes": "done"}}'
         )
         value, errors = handoff.read_reply(stdout, "h10-worker-return")
         self.assertEqual(value, VALID_RETURN)
@@ -217,13 +216,13 @@ class ReplyReading(unittest.TestCase):
 
     def a_return_line_in_the_result_text_is_never_read(self):
         handoff = module("handoff")
-        prose = 'Done.\n{"item": "add-numbers", "status": "ok", "files_changed": [], "notes": "done"}'
+        prose = 'Done.\n{"status": "ok", "files_changed": [], "notes": "done"}'
         stdout = json.dumps({"type": "result", "session_id": "s", "result": prose})
         value, errors = handoff.read_reply(stdout, "h10-worker-return")
         self.assertIsNone(value)
         self.assertIn("structured_output", joined(errors))
         self.assertNotEqual(
-            value, {"item": "add-numbers", "status": "ok", "files_changed": [], "notes": "done"}
+            value, {"status": "ok", "files_changed": [], "notes": "done"}
         )
 
     def output_that_is_not_one_json_object_is_an_error(self):
