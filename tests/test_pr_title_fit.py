@@ -60,6 +60,16 @@ class TitleFit(unittest.TestCase):
             ["feat(ship): %s (part 1 of 2)" % subject, "feat(ship): %s (part 2 of 2)" % subject],
         )
 
+    def a_label_holding_a_single_quote_gives_way_to_the_msp_number(self):
+        plan = {
+            "msps": [{"label": "m", "steps": ["a"]}, {"label": "reader's view", "steps": ["b"]}],
+            "items": [],
+        }
+        self.assertEqual(
+            pr_facts._title(header("hand facts to render"), plan, 1),
+            "feat(ship): hand facts to render (part 2 of 2)",
+        )
+
 
 class ThroughTheCommandLine(unittest.TestCase):
     def setUp(self):

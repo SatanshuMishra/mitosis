@@ -42,6 +42,13 @@ only when the version changes, so every release changes it.
   send; the metrics field timed_out; and, in the result contract, the
   finding kinds gate-inert, gate-weak and `manifest` and the exits 20,
   23 and 24. A caller that still passes a removed flag exits 2.
+- The pull request contracts h15 and h16 follow what render now accepts. A
+  title holding a single quote, a backtick, a semicolon, an ampersand, a bar
+  or an angle bracket, or a refused flag word before a space or an equals
+  sign, is no longer accepted: an MSP label holding one gives way to the
+  part number in its title, and a subject holding one is refused before any
+  Worker runs. A fact may open with Verified:, Not verified:, Door: or Blast
+  radius:. The vendored h11 and k2 are the program's current copies.
 - The briefs and the plan changed, so every plan id changes with this
   release: a run built by an earlier release is refused on `--resume`, with
   the parts that differ named.
