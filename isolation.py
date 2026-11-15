@@ -568,7 +568,7 @@ def _clone_file(clone, path):
     return (run.EXECUTABLE_MODE if executable else run.REGULAR_MODE), data
 
 
-def outside_writes(clone, tree, start_entries, write_set, seeded):
+def outside_writes(clone, tree, start_entries, write_set, seeded, claimed):
     linked = tuple(path for path, (mode, _) in start_entries.items() if mode == run.GITLINK_MODE)
     held = {path: entry for path, entry in start_entries.items() if entry[0] != run.GITLINK_MODE}
     seeded_roots = _seeded_roots(seeded)
@@ -600,9 +600,10 @@ def outside_writes(clone, tree, start_entries, write_set, seeded):
     added = tuple(path for path in fresh if path not in ignored)
     dropped = tuple(path for path in fresh if path in ignored)
     deletes = tuple(path for path in gone if not _escapes(clone, path))
+    named = frozenset(run._norm(name) for name in claimed)
     candidates = tuple(
         path
-        for path in changed + added
+        for path in changed + tuple(path for path in added if path in named)
         if found[path] == "file" and not _inside_nested_git(path)
     )
     read = {path: _clone_file(clone, path) for path in candidates}
@@ -619,9 +620,11 @@ def outside_writes(clone, tree, start_entries, write_set, seeded):
     }
 
 
-def read_lane(clone, tree, start, write_set, seeded):
+def read_lane(clone, tree, start, write_set, seeded, claimed):
     entries = write_set_entries(clone, write_set, seeded)
-    outside = outside_writes(clone, tree, run._committed_entries(tree, start), write_set, seeded)
+    outside = outside_writes(
+        clone, tree, run._committed_entries(tree, start), write_set, seeded, claimed
+    )
     return {**outside, "entries": entries}
 
 

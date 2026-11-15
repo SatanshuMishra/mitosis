@@ -110,7 +110,12 @@ class SeededListedRoot(unittest.TestCase):
         seeding = self.isolation.seed_clone(repo, plan, clone)
         put(os.path.join(clone, listed, WORKER_FILE), "a Worker's new file\n")
         outside = self.isolation.outside_writes(
-            clone, tree, self.run._committed_entries(tree, start), (), seeding["seeded"]
+            clone,
+            tree,
+            self.run._committed_entries(tree, start),
+            (),
+            seeding["seeded"],
+            (os.path.join(listed, WORKER_FILE),),
         )
         under = lambda paths: sorted(path for path in paths if path.startswith(listed))
         return seeding["seeded"], under(outside["writes"]), under(outside["ignored"])
@@ -155,7 +160,12 @@ class SeededListedRoot(unittest.TestCase):
         seeding = self.isolation.seed_clone(repo, self.isolation.seed_plan(repo), clone)
         put(os.path.join(clone, "objs", WORKER_FILE), "a Worker's new file\n")
         outside = self.isolation.outside_writes(
-            clone, tree, self.run._committed_entries(tree, start), (), seeding["seeded"]
+            clone,
+            tree,
+            self.run._committed_entries(tree, start),
+            (),
+            seeding["seeded"],
+            ("objs/" + WORKER_FILE,),
         )
         under = lambda paths: sorted(path for path in paths if path.startswith("objs/"))
         self.assertEqual(seeding["seeded"], ["objs/a.o"])

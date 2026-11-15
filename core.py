@@ -1362,7 +1362,8 @@ AUTHOR_EDIT_RULE = "Change only the files listed under `edit`, your write-set."
 EDIT_RULE = (
     AUTHOR_EDIT_RULE + " If a file outside it blocks the work, name it in your notes and report "
     "failed; only if this brief says an earlier attempt failed, change it too instead, and "
-    "mitosis keeps that write."
+    "mitosis keeps that write. A new file outside your write-set is kept only when your reply "
+    "names it in files_changed."
 )
 
 

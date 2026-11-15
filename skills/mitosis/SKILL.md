@@ -89,7 +89,7 @@ At the lock stage the new modules do not exist yet, so the wrapper exits 1
 when an import fails on a missing module; any other load error stays
 inconclusive.
 
-Exclude editor state and build caches, or they arrive as undeclared writes.
+A new file outside the write-set is kept only when the Worker's reply names it.
 
 Two more things every run needs: `--feature-branch`, which must exist and is
 what every MSP branches from, and the repository root as the working

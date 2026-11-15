@@ -18,6 +18,17 @@ only when the version changes, so every release changes it.
   repair is also listed in the MSP's new `repair` list, in the JSON result
   and the state, and in an attention line, also when the MSP ships with a
   test that could not run. The lock record in the result gains `notes`.
+- A new file outside a Lane's write-set is the Lane's work only when the
+  Worker's reply names it in files_changed. One the reply does not name is
+  left out of the MSP branch, still reported as an undeclared write and
+  listed under `unreplayed` in the Lane's record, and it never sets the exit
+  code. A repair of that Lane is told which were left out and why, and
+  every Worker brief states the rule. A change to a file that already
+  exists and a delete are replayed as before. Before, every such file was
+  kept, so a folder a tool dropped into a Worker's clone reached the pull
+  request. Two outcomes follow: a new file at another MSP's path that no
+  reply names is left out, so it is no longer a fatal crossing, and one at
+  a referee path still holds the MSP back, with nothing to restore.
 - `--proven-head` ships a head only over a recorded gate that did not block,
   for an MSP that was not held back. Before, any recorded gate was enough, so
   a held MSP shipped with no run.

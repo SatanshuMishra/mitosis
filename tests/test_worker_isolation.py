@@ -450,6 +450,10 @@ class WorkerIsolation(unittest.TestCase):
             and (msp is None or finding.get("msp") == msp)
         ]
 
+    def _lane_record(self, summary, name):
+        with open(os.path.join(self.scratch.run_dir, "state.json"), encoding="utf-8") as handle:
+            return json.load(handle)["lanes"][str(self._lane(summary, name)["lane"])]
+
     def _ran_in_a_clone(self, name, label="demo"):
         record = self.scratch.record(name)
         self.assertIn("cwd", record, "the stub Worker for %s recorded nothing" % name)
@@ -716,7 +720,7 @@ class WorkerIsolation(unittest.TestCase):
                 "first": {"writes": {"a.py": "A = 1\n"}},
                 "second": {
                     "writes": {"b.py": "B = 2\n", "stray.txt": "stray\n", "a.py": "A = 99\n"},
-                    "declared": ["b.py"],
+                    "declared": ["b.py", "stray.txt"],
                 },
             }
         )
@@ -735,7 +739,69 @@ class WorkerIsolation(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(scratch.repo, "stray.txt")))
         self.assertEqual(completed.returncode, 8, "mitosis exit code" + tail(completed))
 
+    def a_new_file_outside_the_write_set_the_reply_does_not_name_is_left_out(self):
+        scratch = self._scratch()
+        items = scratch.items(
+            [
+                step("first", ["a.py"], "demo"),
+                step("second", ["b.py"], "demo"),
+            ]
+        )
+        scratch.jobs(
+            {
+                "first": {"writes": {"a.py": "A = 1\n"}},
+                "second": {
+                    "writes": {"b.py": "B = 2\n", "stray.txt": "stray\n", "a.py": "A = 99\n"},
+                    "declared": ["b.py"],
+                },
+            }
+        )
+        completed = scratch.build(items, "--concurrency", "1")
+        self._ran_in_a_clone("second")
+        summary = summary_of(completed)
+        self.assertTrue(
+            self._finding(summary, "undeclared", "stray.txt"),
+            "no undeclared finding names stray.txt" + tail(completed),
+        )
+        self.assertTrue(
+            self._finding(summary, "foreign", "a.py"),
+            "no foreign finding names a.py" + tail(completed),
+        )
+        self.assertNotEqual(
+            scratch.git("cat-file", "-e", "mitosis/demo:stray.txt").returncode,
+            0,
+            "stray.txt is on the MSP branch though no reply named it",
+        )
+        self.assertEqual(scratch.checked("show", "mitosis/demo:b.py"), "B = 2\n")
+        self.assertFalse(os.path.exists(os.path.join(scratch.repo, "stray.txt")))
+        self.assertEqual(self._lane_record(summary, "second")["unreplayed"], ["stray.txt"])
+        self.assertIs((self._msp(summary).get("reconcile") or {}).get("fatal"), False)
+        self.assertEqual(completed.returncode, 8, "mitosis exit code" + tail(completed))
+
     def an_outside_write_never_reaches_the_gate(self):
+        scratch = self._scratch({TEST_FILE: EXACT_TEST})
+        items = scratch.items([step("add", ["calc.py"], "demo", acceptance=[ADDS])])
+        scratch.jobs(
+            {
+                "add": {
+                    "writes": {"calc.py": SHIM_CALC, "shim.py": CORRECT_ADD},
+                    "declared": ["calc.py", "shim.py"],
+                }
+            }
+        )
+        completed = scratch.build(items)
+        summary = summary_of(completed)
+        self.assertTrue(
+            self._finding(summary, "undeclared", "shim.py"),
+            "no undeclared finding names shim.py" + tail(completed),
+        )
+        self.assertEqual(scratch.checked("show", "mitosis/demo:shim.py"), CORRECT_ADD)
+        first = self._first_property(self._msp(summary))
+        self.assertEqual(first["outcome"], "inconclusive", "gate property" + tail(completed))
+        self.assertEqual(first["reason"], "fails against the finished work")
+        self.assertEqual(completed.returncode, 21, "mitosis exit code" + tail(completed))
+
+    def an_outside_new_file_the_reply_does_not_name_is_left_out_and_the_gate_still_judges(self):
         scratch = self._scratch({TEST_FILE: EXACT_TEST})
         items = scratch.items([step("add", ["calc.py"], "demo", acceptance=[ADDS])])
         scratch.jobs(
@@ -752,8 +818,16 @@ class WorkerIsolation(unittest.TestCase):
             self._finding(summary, "undeclared", "shim.py"),
             "no undeclared finding names shim.py" + tail(completed),
         )
-        self.assertEqual(scratch.checked("show", "mitosis/demo:shim.py"), CORRECT_ADD)
-        first = self._first_property(self._msp(summary))
+        self.assertNotEqual(
+            scratch.git("cat-file", "-e", "mitosis/demo:shim.py").returncode,
+            0,
+            "shim.py is on the MSP branch though no reply named it",
+        )
+        self.assertEqual(scratch.checked("show", "mitosis/demo:calc.py"), SHIM_CALC)
+        self.assertEqual(self._lane_record(summary, "add")["unreplayed"], ["shim.py"])
+        msp = self._msp(summary)
+        self.assertIs((msp.get("reconcile") or {}).get("fatal"), False)
+        first = self._first_property(msp)
         self.assertEqual(first["outcome"], "inconclusive", "gate property" + tail(completed))
         self.assertEqual(first["reason"], "fails against the finished work")
         self.assertEqual(completed.returncode, 21, "mitosis exit code" + tail(completed))
@@ -799,7 +873,9 @@ def load_tests(loader, standard, pattern):
                 "a_host_without_a_sandbox_refuses_before_any_worker",
                 "an_unsandboxed_run_says_so",
                 "a_write_outside_the_write_set_is_reported_and_never_landed",
+                "a_new_file_outside_the_write_set_the_reply_does_not_name_is_left_out",
                 "an_outside_write_never_reaches_the_gate",
+                "an_outside_new_file_the_reply_does_not_name_is_left_out_and_the_gate_still_judges",
                 "a_locked_write_in_the_clone_is_reverted_and_fatal",
             ),
         ),

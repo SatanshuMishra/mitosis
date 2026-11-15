@@ -499,7 +499,7 @@ class RefereeLock(unittest.TestCase):
                         "calc.py": "def add(a, b):\n    return a + b\n",
                         "notes.txt": "notes\n",
                     },
-                    "declared": ["calc.py"],
+                    "declared": ["calc.py", "notes.txt"],
                 }
             }
         )
@@ -511,6 +511,40 @@ class RefereeLock(unittest.TestCase):
         self.assertIs(reconcile["fatal"], False)
         self.assertEqual(reconcile.get("undeclared"), ["notes.txt"])
         self.assertEqual(scratch.git("cat-file", "-e", "mitosis/demo:notes.txt").returncode, 0)
+
+    def a_new_file_the_reply_does_not_name_is_left_out_and_not_fatal(self):
+        scratch = self._scratch()
+        charter = scratch.file("charter.md", PLAIN_CHARTER)
+        items = scratch.items([step("build", ["calc.py"], "demo")])
+        scratch.jobs(
+            {
+                "demo": {
+                    "step": "build",
+                    "writes": {
+                        "calc.py": "def add(a, b):\n    return a + b\n",
+                        "notes.txt": "notes\n",
+                    },
+                    "declared": ["calc.py"],
+                }
+            }
+        )
+        completed = scratch.build(items, "--charter", charter)
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + tail(completed))
+        msp = self._msp(summary_of(completed))
+        reconcile = self._reconcile(msp)
+        self.assertEqual(reconcile["referee"], [])
+        self.assertIs(reconcile["fatal"], False)
+        self.assertEqual(reconcile.get("undeclared"), ["notes.txt"])
+        self.assertNotEqual(
+            scratch.git("cat-file", "-e", "mitosis/demo:notes.txt").returncode,
+            0,
+            "notes.txt is on the MSP branch though no reply named it",
+        )
+        self.assertEqual(scratch.git("cat-file", "-e", "mitosis/demo:calc.py").returncode, 0)
+        with open(os.path.join(scratch.run_dir, "state.json"), encoding="utf-8") as handle:
+            lane = json.load(handle)["lanes"]["0"]
+        self.assertEqual(lane["unreplayed"], ["notes.txt"])
+        self.assertEqual(lane["replayed"], {})
 
 
 def load_tests(loader, standard, pattern):
@@ -527,6 +561,7 @@ def load_tests(loader, standard, pattern):
                 "a_worker_write_to_a_locked_path_is_reverted_and_fatal",
                 "a_worker_write_to_a_referee_marker_path_is_reverted_and_fatal",
                 "an_ordinary_undeclared_write_is_kept_and_not_fatal",
+                "a_new_file_the_reply_does_not_name_is_left_out_and_not_fatal",
             ),
         ),
     ):

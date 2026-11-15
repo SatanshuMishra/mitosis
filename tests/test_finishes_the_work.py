@@ -54,7 +54,7 @@ if attempt.get("self_commit"):
     subprocess.run(["git", "commit", "-q", "-m", "the Worker committed for itself"], check=True)
 reply = {
     "status": attempt.get("status", "ok"),
-    "files_changed": sorted(attempt.get("writes", {})),
+    "files_changed": sorted(set(attempt.get("writes", {})) - set(attempt.get("unnamed", ()))),
     "notes": attempt.get("notes", "done"),
 }
 print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": reply}))
@@ -789,6 +789,53 @@ class FinishesTheWork(unittest.TestCase):
         self.assertEqual(len(msp_of(summary, "first")["repair"]), 1)
         self.assertIn("the service is not reachable here", msp_of(summary, "first")["repair"][0])
 
+    def a_repair_is_told_which_new_files_were_left_out_and_why(self):
+        scratch = self._scratch()
+        completed, summary = scratch.built(
+            [built_step()],
+            {
+                "first": [
+                    {
+                        "writes": {
+                            "a.py": WRONG,
+                            TEST_FILE: PROPERTY_TEXT,
+                            "notes.md": "notes\n",
+                            "tool/graph.json": "{}\n",
+                            "tool/deep/index.json": "{}\n",
+                        },
+                        "unnamed": ["notes.md", "tool/graph.json", "tool/deep/index.json"],
+                    },
+                    {"writes": {"a.py": RIGHT, TEST_FILE: PROPERTY_TEXT}},
+                ]
+            },
+        )
+        self._exit(completed, 0)
+        tasks = scratch.attempts("first")
+        self.assertEqual(len(tasks), 2)
+        self.assertNotIn("left these out of the branch", tasks[0])
+        self.assertIn("left these out of the branch: notes.md, tool/.", tasks[1])
+        self.assertIn("kept only when your reply names it in files_changed", tasks[1])
+        self.assertFalse(scratch.on_branch("mitosis/first", "tool/graph.json"))
+        self.assertFalse(scratch.on_branch("mitosis/first", "notes.md"))
+        self.assertTrue(scratch.on_branch("mitosis/first", "a.py"))
+
+    def a_repair_of_a_lane_with_nothing_left_out_is_told_of_none(self):
+        scratch = self._scratch()
+        completed, summary = scratch.built(
+            [built_step()],
+            {
+                "first": [
+                    {"writes": {"a.py": WRONG, TEST_FILE: PROPERTY_TEXT, "tool/graph.json": "{}\n"}},
+                    {"writes": {"a.py": RIGHT, TEST_FILE: PROPERTY_TEXT}},
+                ]
+            },
+        )
+        self._exit(completed, 0)
+        tasks = scratch.attempts("first")
+        self.assertEqual(len(tasks), 2)
+        self.assertNotIn("left these out of the branch", tasks[1])
+        self.assertTrue(scratch.on_branch("mitosis/first", "tool/graph.json"))
+
     def a_producers_repair_that_conflicts_blocks_the_consumer_and_says_why(self):
         scratch = self._scratch()
         completed, summary = scratch.built(
@@ -896,6 +943,8 @@ def load_tests(loader, standard, pattern):
             "a_repair_note_stays_bounded_however_many_tests_fail",
             "a_sandboxed_run_fires_no_repository_hook_outside_the_sandbox",
             "a_repair_the_worker_reports_failed_is_named_in_the_held_reason",
+            "a_repair_is_told_which_new_files_were_left_out_and_why",
+            "a_repair_of_a_lane_with_nothing_left_out_is_told_of_none",
             "a_producers_repair_that_conflicts_blocks_the_consumer_and_says_why",
             "a_lane_failing_twice_ships_nothing_for_its_msp_and_its_sibling_still_ships",
             "a_test_failing_against_the_work_is_repaired_once_and_ships",

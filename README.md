@@ -256,7 +256,13 @@ commits them as the Lane's landing; a write-set path behind a symbolic-link
 folder fails the Lane. A file changed outside the write-set is replayed into
 mitosis's checkout as an uncommitted change and judged by reconcile alone:
 an undeclared write is kept and reported and does not set the run's exit code, and a
-referee write is reverted and exits 9. The gate and every acceptance run see such a path as it stood when
+referee write is reverted and exits 9. A file that is new and outside the
+write-set is replayed only when the Worker's reply names it in
+files_changed: one the reply does not name is left out of the branch,
+still reported as an undeclared write and listed under `unreplayed` in the
+Lane's record in the run state, and a repair of that Lane is told which
+were left out. So a folder a tool drops into a Worker's clone never reaches
+a pull request. The gate and every acceptance run see such a path as it stood when
 the Lane started, so an uncommitted helper never makes a test pass. A Lane
 does not see a sibling's uncommitted writes.
 
@@ -667,7 +673,9 @@ and never pushed, with exit 9.
 A Lane whose Worker fails is dispatched once more, told why in the Worker's
 own notes. Every brief holds one write-set rule: a file outside the write-set
 that stands in the way is named in the notes of a failed reply, and only the
-second attempt may change it, a write mitosis keeps and shows to the gate. A
+second attempt may change it, a write mitosis keeps and shows to the gate;
+the same rule says a new file outside the write-set is kept only when the
+reply names it. A
 Worker that reports failure twice leaves its Lane `failed` and its MSP
 unshipped, its notes in both reasons, while every other MSP carries on. A
 check-author whose lock is refused gets one retry too: the same session

@@ -1255,7 +1255,12 @@ def _land(plan, lane, tree, record, run_dir, header, settled=None):
     message = _landing_message(plan, lane, header)
     try:
         landing = isolation.read_lane(
-            clone, tree["path"], record["start"], write_set, record.get("seeded") or ()
+            clone,
+            tree["path"],
+            record["start"],
+            write_set,
+            record.get("seeded") or (),
+            (record.get("returned") or {}).get("files_changed") or (),
         )
         if joint_paths and _landed_before(tree["path"], record["start"], message):
             entries, joined = _as_on_the_branch(tree["path"], record["start"], landing["entries"], joint_paths), ()
@@ -3564,6 +3569,12 @@ REPAIR_WAY_OUT = (
     "to you can fix it, say why in your notes and report failed."
 )
 
+LEFT_OUT_NOTE = (
+    "\n\nmitosis left these out of the branch: %s. A new file outside your write-set is kept only "
+    "when your reply names it in files_changed, and only a regular file is kept. If the work needs "
+    "one of them, write it again and name it."
+)
+
 REPAIR_OUTPUT = "\n\nOutput of the run of %s:\n%s"
 
 
@@ -3595,7 +3606,26 @@ def _failing_by_lane(plan, gate_result):
     return grouped
 
 
-def _repair_note(settings, msp, failing):
+def _left_out_root(tree_path, path):
+    absent = next(
+        (
+            folder
+            for folder in _prefixes(path)[:-1]
+            if not os.path.isdir(os.path.join(tree_path, *_parts(folder)))
+        ),
+        None,
+    )
+    return path if absent is None else absent + "/"
+
+
+def _left_out_note(tree, record):
+    left_out = sorted(
+        {_left_out_root(tree["path"], path) for path in (record or {}).get("unreplayed") or ()}
+    )
+    return LEFT_OUT_NOTE % ", ".join(left_out) if left_out else ""
+
+
+def _repair_note(settings, msp, failing, left_out):
     asked, shown = (), ()
     for note, wanted in ((REPAIR_NOTE, fails_with_the_work), (UNRUNNABLE_NOTE, cannot_run_with_the_work)):
         chosen = tuple((position, entry) for position, entry in failing if wanted(entry))
@@ -3604,7 +3634,7 @@ def _repair_note(settings, msp, failing):
             logs = "\n".join(_gate_log_tail(settings, msp, position) for position, _ in chosen)
             asked = asked + (note % names,)
             shown = shown + (REPAIR_OUTPUT % (names, logs[-MAX_OUTPUT:]),)
-    return "".join((*asked, REPAIR_WAY_OUT, *shown)) if asked else ""
+    return "".join((*asked, left_out, REPAIR_WAY_OUT, *shown)) if asked else ""
 
 
 def _repaired_lane(plan, lane, tree, settings, note):
@@ -3691,7 +3721,8 @@ def _repair_lanes(plan, msp, tree, state, settings, gated):
     lanes = state["lanes"]
     outcomes = ()
     for lane, failing in sorted(_failing_by_lane(plan, gated["gate"]).items()):
-        record = _repaired_lane(plan, lane, tree, settings, _repair_note(settings, msp, failing))
+        note = _repair_note(settings, msp, failing, _left_out_note(tree, lanes.get(str(lane))))
+        record = _repaired_lane(plan, lane, tree, settings, note)
         outcomes = outcomes + ((lane, record),)
         if record["state"] == "ok":
             lanes = _with_repair(plan, msp, tree, lanes, lane, record)
@@ -4684,7 +4715,7 @@ def _landed_lock(plan, entry, settings, record, base):
         entries = isolation.write_set_entries(clone, slice_paths, seeded)
         writes = _probe_writes(clone, repo, base, probe, seeded)
         outside = isolation.outside_writes(
-            clone, repo, _committed_entries(repo, base), slice_paths + probe, seeded
+            clone, repo, _committed_entries(repo, base), slice_paths + probe, seeded, ()
         )
     except (GitError, OSError) as error:
         return _failed_lock(
