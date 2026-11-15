@@ -34,9 +34,12 @@ only when the version changes, so every release changes it.
   crossing or a referee write.
 - A `--pr-subject` holding a character or flag word no pull request title
   can carry is refused before any Worker runs, naming it, for a plan of
-  several parts as for one. Before, the title of each part was cut at that
-  character, so "keep the owner's files safe" shipped as "keep". A subject
-  is now shortened only when the tagged title is too long.
+  several parts as for one. A flag word that ends the subject is refused
+  for a plan of several parts, where each part's tag follows it. Before,
+  the title of each part was cut at that character, so "keep the owner's
+  files safe" shipped as "keep". A subject is now shortened only when the
+  tagged title is too long, and the part number replaces the MSP label when
+  it leaves more of the subject.
 - `--proven-head` ships a head only over a recorded gate that did not block,
   for an MSP that was not held back. Before, any recorded gate was enough, so
   a held MSP shipped with no run.

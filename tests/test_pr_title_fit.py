@@ -88,11 +88,29 @@ class TitleFit(unittest.TestCase):
                     pr_facts._title(header(subject), TWO_MSPS, 0), "feat(ship): %s" % subject
                 )
 
-    def a_title_that_fits_is_never_shortened_past_a_word_the_format_refuses(self):
-        subject = "fix the parse of -e"
-        self.assertIsNone(pr_facts.refused_subject(header(subject)))
+    def a_flag_word_ending_the_subject_is_refused_by_name_once_a_tag_follows_it(self):
+        for subject in ("fix the parse of -e", "support git commit -e"):
+            with self.subTest(subject=subject):
+                self.assertIsNone(pr_facts.refused_subject(header(subject)))
+                self.assertEqual(pr_facts.refused_subject(header(subject), 2), "-e")
+                self.assertEqual(
+                    pr_facts._title(header(subject), TWO_MSPS, 0), "feat(ship): %s" % subject
+                )
+
+    def a_long_label_gives_way_to_the_msp_number_when_that_keeps_more_of_the_subject(self):
+        plan = {
+            "msps": [
+                {"label": "hand-pull-request-facts-to-render-with-step-names", "steps": ["a"]},
+                {"label": "n", "steps": ["b"]},
+            ],
+            "items": [],
+        }
         self.assertEqual(
-            pr_facts._title(header(subject), TWO_MSPS, 0), "feat(ship): %s (m)" % subject
+            [pr_facts._title(header(LONG_SUBJECT), plan, msp) for msp in (0, 1)],
+            [
+                "feat(ship): hand pull request facts to render with step (part 1 of 2)",
+                "feat(ship): %s (n)" % SHORTENED_SUBJECT,
+            ],
         )
 
     def a_refused_subject_is_named_by_the_text_the_format_refuses(self):

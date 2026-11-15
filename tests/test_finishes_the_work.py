@@ -846,6 +846,29 @@ class FinishesTheWork(unittest.TestCase):
         self.assertIn("notes.md", lane["replayed"])
         self.assertEqual(msp_of(summary, "first")["reconcile"]["left_out"], ["tool/graph.json"])
 
+    def a_left_out_file_a_repair_names_and_mitosis_cannot_replay_is_listed_once(self):
+        scratch = self._scratch()
+        nested = "sub/.git/HEAD"
+        completed, summary = scratch.built(
+            [built_step()],
+            {
+                "first": [
+                    {
+                        "writes": {"a.py": WRONG, TEST_FILE: PROPERTY_TEXT, nested: "ref: refs/heads/main\n"},
+                        "unnamed": [nested],
+                    },
+                    {"writes": {"a.py": RIGHT, TEST_FILE: PROPERTY_TEXT, nested: "ref: refs/heads/main\n"}},
+                ]
+            },
+        )
+        self._exit(completed, 0)
+        self.assertIn("so mitosis left them out of the branch: sub/.", scratch.attempts("first")[1])
+        with open(os.path.join(scratch.run_dir, "state.json"), encoding="utf-8") as handle:
+            lane = json.load(handle)["lanes"]["0"]
+        self.assertEqual(lane["unreplayed"], ["sub/.git"])
+        self.assertEqual(lane["left_out"], [])
+        self.assertNotIn("left_out", msp_of(summary, "first")["reconcile"])
+
     def a_repair_of_a_lane_with_nothing_left_out_is_told_of_none(self):
         scratch = self._scratch()
         completed, summary = scratch.built(
@@ -972,6 +995,7 @@ def load_tests(loader, standard, pattern):
             "a_repair_the_worker_reports_failed_is_named_in_the_held_reason",
             "a_repair_is_told_which_new_files_were_left_out_and_why",
             "a_file_a_repair_writes_again_and_names_is_kept_and_no_longer_listed_as_left_out",
+            "a_left_out_file_a_repair_names_and_mitosis_cannot_replay_is_listed_once",
             "a_repair_of_a_lane_with_nothing_left_out_is_told_of_none",
             "a_producers_repair_that_conflicts_blocks_the_consumer_and_says_why",
             "a_lane_failing_twice_ships_nothing_for_its_msp_and_its_sibling_still_ships",

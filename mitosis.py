@@ -1445,7 +1445,7 @@ def refuse_unrenderable(args, plan, run_dir, repo=None):
             "a run that opens pull requests needs --pr-impact, what callers or users notice, "
             "or --pr-blast-radius for render's impact"
         )
-    refused = pr_facts.refused_subject(header)
+    refused = pr_facts.refused_subject(header, len(plan.get("msps") or []))
     if refused is not None:
         raise Refusal(
             "--pr-subject holds %s, which no pull request title can carry; reword the subject"

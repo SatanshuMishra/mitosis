@@ -3681,12 +3681,17 @@ NO_REPAIR = {"state": None, "landed": False, "parked": None, "failed": ()}
 
 def _keeping_outside_writes(earlier, repaired):
     landed = repaired.get("replayed") or {}
+    superseded = {"left_out": frozenset(repaired.get("unreplayed") or ())}
     return {
         **repaired,
         "replayed": {**landed, **(earlier.get("replayed") or {})},
         **{
             key: sorted(
-                {path for path in earlier.get(key) or () if path not in landed}
+                {
+                    path
+                    for path in earlier.get(key) or ()
+                    if path not in landed and path not in superseded.get(key, ())
+                }
                 | set(repaired.get(key) or ())
             )
             for key in OUTSIDE_PATH_KEYS

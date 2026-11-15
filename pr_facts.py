@@ -1,3 +1,4 @@
+import itertools
 import json
 import os
 import re
@@ -132,12 +133,13 @@ def _untagged(header):
     return "%s: %s" % (conventional_prefix(header["type"], header.get("scope")), header["subject"])
 
 
-def refused_subject(header):
+def refused_subject(header, parts=1):
     prefix = conventional_prefix(header["type"], header.get("scope"))
     if not _accepted("%s: a a" % prefix):
         return None
+    as_titled = _untagged(header) + (" (a)" if parts > 1 else "")
     found = (
-        re.search(pattern, _untagged(header))
+        re.search(pattern, as_titled)
         for pattern in _refused_patterns(*handoff.part_at(RENDER_SCHEMA, TITLE_RULE))
     )
     fragments = tuple(match.group(0) for match in found if match) + tuple(
@@ -158,13 +160,13 @@ def _tagged(header, tag, limit):
 
 
 def _title(header, plan, msp):
-    if len(plan.get("msps") or []) <= 1 or refused_subject(header) is not None:
+    parts = len(plan.get("msps") or [])
+    if parts <= 1 or refused_subject(header, parts) is not None:
         return _untagged(header)
     limit = handoff.part_at(RENDER_SCHEMA, TITLE_RULE)[1].get("maxLength")
-    tags = (plan["msps"][msp]["label"], "part %d of %d" % (msp + 1, len(plan["msps"])))
-    tagged = tuple(
-        title for tag in tags for title in _tagged(header, tag, limit)
-    )
+    tags = (plan["msps"][msp]["label"], "part %d of %d" % (msp + 1, parts))
+    by_subject = itertools.zip_longest(*(_tagged(header, tag, limit) for tag in tags))
+    tagged = tuple(title for titles in by_subject for title in titles if title is not None)
     return next((title for title in tagged if _accepted(title)), tagged[0])
 
 

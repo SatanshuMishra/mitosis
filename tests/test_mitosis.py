@@ -1806,6 +1806,7 @@ class RenderPreflight(unittest.TestCase):
         subjects = {
             "keep the owner's files safe": "\"'\"",
             "keep $HOME and every other secret variable out of the shared log lines": '"$"',
+            "support git commit -e": '"-e"',
         }
         for subject, named in subjects.items():
             with self.subTest(subject=subject):
