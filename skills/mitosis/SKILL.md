@@ -220,8 +220,9 @@ predecessor when `--pr-command` is given, report.
 Every Lane is one Worker session, which builds its Steps in Step order on its
 MSP's branch and lands one commit: subject `<type>(<scope>): <steps>` (chore,
 no scope, if absent), body each Step's task's first sentence. Steps share a
-Lane exactly when they share a file. On `--spec` and `--asks` each Step writes
-its own acceptance tests, whose files join its write-set unless the charter
+Lane exactly when they share a file, bar a test file each one's acceptance
+names, which mitosis joins as each Lane lands. On `--spec` and `--asks` each
+Step writes its own tests, whose files join its write-set unless the charter
 locks them.
 
 Each session builds in its own clone of the MSP branch under the run

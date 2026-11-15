@@ -96,6 +96,7 @@ def stage_folders(run_dir, name):
         "tmp": os.path.join(root, name + ".tmp"),
         "profile": os.path.join(root, name + ".sb"),
         "mark": os.path.join(root, name + ".mark"),
+        "kept": os.path.join(root, name + ".kept"),
     }
 
 
@@ -123,7 +124,7 @@ def remove_tree(path):
 
 
 def remove_lane_folders(folders):
-    for key in ("clone", "tmp", "profile", "mark"):
+    for key in ("clone", "tmp", "profile", "mark", "kept"):
         _remove_left(folders[key])
 
 
@@ -322,6 +323,8 @@ def confined(argv, env, confinement):
 def worker_confinement(folders, sandbox, env):
     if sandbox is None:
         return None
+    for key in ("tmp", "profile", "mark"):
+        _remove_left(folders[key])
     os.makedirs(folders["tmp"])
     transcript = transcript_folder(worker_home(env), folders["clone"])
     os.makedirs(transcript, exist_ok=True)

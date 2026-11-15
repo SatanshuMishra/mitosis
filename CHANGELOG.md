@@ -3,6 +3,43 @@
 Each heading is a release of the mitosis plugin. An installed copy updates
 only when the version changes, so every release changes it.
 
+## 0.22.0 - 2026-11-14
+
+- Steps that add their own tests to one test file build in separate Lanes.
+  A test file that two or more Steps each name in their acceptance and list
+  in their files, that no Step lists as other work and that is not declared
+  a shared file, keeps those Steps in one MSP and is no longer what puts
+  them in one Lane, so Steps that share nothing else each build in their own
+  Worker session on their own tier, beside the others when no `after` edge
+  orders them. Since 0.19.0 every Step whose tests live in one file built in
+  one Lane, one after another on the top model: the denied-terms items,
+  seven Steps over one test file, planned as one Lane and now plan as five
+  Lanes in three stages, three abreast, three of them on the cheap model.
+- When such a Lane lands, mitosis joins the file three ways, from the file
+  at the Lane's start, the file on the branch and the file in the Lane's
+  clone, and commits the joined file. Additions two Lanes made at the same
+  place are both kept, the landed Lane's first.
+- Where two Lanes changed the same lines, the Lane's Worker is asked once,
+  in its own session through `--reask-command`, to join them. The joined
+  file lands only when it holds no mark and still holds, in order, every
+  line the branch held that the Lane had not itself changed; otherwise the
+  Lane fails and none of its work lands.
+- A Lane that had landed before a run stopped is not joined a second time
+  when the run is resumed, and a join the stop cut short is asked again from
+  the Lane's own tests.
+- When the file is not on the base, the first of its Steps creates it and
+  the others wait for that Step's Lane; a notice names them. A Step that
+  would be the only one waiting builds in the creator's Lane, as before. A
+  resumed run reads the base commit it was pinned to.
+- A check-author Step an items file declares is still folded and no lock
+  stage runs, and a saved plan is still built as written.
+- The structure prompt no longer says that a test which already passes
+  stops the run, and no longer asks for an empty acceptance list on a Step
+  the code already satisfies. It says what the gate has done since 0.19.0:
+  each test runs once against the finished work, and one that already
+  passes guards that behaviour. It also says that a test file Steps share
+  never puts them with one agent.
+
 ## 0.21.2 - 2026-11-12
 
 - A repair made after the gate, on a head the caller proved, that changes

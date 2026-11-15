@@ -1041,8 +1041,19 @@ def staged(items, decomposed, run_dir, decisions, troubles=(), folded=()):
     }
 
 
-def base_holds(args, repo):
-    ref = args.feature_branch or "HEAD"
+def recorded_base(args, run_dir):
+    path = os.path.join(run_dir, run.STATE_FILE) if run_dir else None
+    if not args.resume or path is None or not os.path.isfile(path):
+        return None
+    try:
+        state = run.read_json(path)
+    except (OSError, ValueError):
+        return None
+    return state.get("base_commit") if isinstance(state, dict) else None
+
+
+def base_holds(args, repo, run_dir=None):
+    ref = recorded_base(args, run_dir) or args.feature_branch or "HEAD"
     return lambda path: repo is not None and run.git_ok(["cat-file", "-e", "%s:%s" % (ref, path)], repo)
 
 
@@ -1053,14 +1064,19 @@ def planning_shared_files(args):
     return tuple(loaded.get("shared_files") or ()) if isinstance(loaded, dict) else ()
 
 
-def owned_items(args, items, root, charter, run_dir):
+def owned_items(args, items, root, charter, run_dir, repo):
     path = os.path.join(run_dir, ITEMS_FILE)
     if args.resume and os.path.isfile(path):
-        return run.read_json(path)
-    owned = own_tests.owned(items, core.charter_locks(charter, root)[0])
+        return run.read_json(path), ()
+    owned, created = own_tests.created_once(
+        own_tests.owned(items, core.charter_locks(charter, root)[0]),
+        base_holds(args, repo),
+        planning_shared_files(args),
+    )
     run.write_json(path, owned)
     emit_items(args.emit_items, owned)
-    return owned
+    _print(tuple("mitosis: " + line for line in created), sys.stderr)
+    return owned, created
 
 
 def load_notices(run_dir):
@@ -1125,8 +1141,8 @@ def asks_input(args, root, repo, models, charter, run_dir):
     else:
         refuse_held_run(run_dir)
         items, notices = planned_asks(args, root, models, run_dir)
-    owned = owned_items(args, items, root, charter, run_dir)
-    return staged(owned, load_decomposed(run_dir), run_dir, None, notices)
+    owned, created = owned_items(args, items, root, charter, run_dir, repo)
+    return staged(owned, load_decomposed(run_dir), run_dir, None, tuple(notices) + created)
 
 
 def check_author_names(items):
@@ -1138,16 +1154,23 @@ def saved_plan_folds(path, items):
     return isinstance(loaded, dict) and loaded.get(FOLDED_KEY) == check_author_names(items)
 
 
-def folded_items(args, items, root, charter):
+def folded_items(args, items, root, charter, repo, run_dir):
     if args.plan_file is not None and not saved_plan_folds(args.plan_file, items):
         return items, (), ()
     locked = core.charter_locks(charter, root)[0]
     kept, notices = own_tests.folded(items, locked, planning_shared_files(args))
-    return kept, notices, check_author_names(items)
+    if args.plan_file is not None:
+        return kept, notices, check_author_names(items)
+    ordered, created = own_tests.created_once(
+        kept, base_holds(args, repo, run_dir), planning_shared_files(args)
+    )
+    return ordered, tuple(notices) + created, check_author_names(items)
 
 
-def items_input(args, root, charter, run_dir):
-    items, notices, folded = folded_items(args, read_items(os.path.abspath(args.items)), root, charter)
+def items_input(args, root, charter, run_dir, repo):
+    items, notices, folded = folded_items(
+        args, read_items(os.path.abspath(args.items)), root, charter, repo, run_dir
+    )
     _print(tuple("mitosis: " + notice for notice in notices), sys.stderr)
     return staged(items, load_decomposed(run_dir), run_dir, None, notices, folded)
 
@@ -1180,7 +1203,7 @@ def default_input_run_dir(args, root):
 
 def resolve_input(args, root, repo, models, charter, graph, run_dir):
     if args.items:
-        return items_input(args, root, charter, run_dir)
+        return items_input(args, root, charter, run_dir, repo)
     if args.asks:
         return asks_input(args, root, repo, models, charter, run_dir)
     document = check_document(args, root)
@@ -1198,8 +1221,8 @@ def resolve_input(args, root, repo, models, charter, graph, run_dir):
         items, decomposed = structure_document(
             args, root, run_dir, models, charter, graph, decisions, prior
         )
-    owned = owned_items(args, items, root, charter, run_dir)
-    return staged(owned, decomposed, run_dir, decisions)
+    owned, created = owned_items(args, items, root, charter, run_dir, repo)
+    return staged(owned, decomposed, run_dir, decisions, created)
 
 
 def marker_list(text):

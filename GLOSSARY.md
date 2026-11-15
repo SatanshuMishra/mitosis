@@ -136,6 +136,10 @@ _Avoid_: design doc, plan
 An acceptance test the Step it checks writes in the same Worker session as the work, its file part of that Step's files; every Step of a plan mitosis makes from a spec or asks writes its own tests.
 _Avoid_: unlocked test, worker test
 
+**Joint test file**:
+A test file two or more Steps each add their own tests to, that none edits as other work and that is not declared a shared file; it keeps those Steps in one MSP and is never what puts them in one Lane, and mitosis joins what each Lane added when that Lane lands.
+_Avoid_: shared test file, merged test file
+
 ## Plans
 
 **Departure**:

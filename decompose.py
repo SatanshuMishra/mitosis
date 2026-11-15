@@ -90,19 +90,25 @@ SCHEDULING_LINES = (
     "  When two Steps must run at different times, give them different files. When two Steps"
     " genuinely edit the same file, put every Step between them in that same write-set, or"
     " drop the ordering that forces one between them.",
+    "  A test file is the exception to all of this. Steps whose acceptance names the same test"
+    " file each add their own tests to it, and that file alone never puts them with one agent:"
+    " they may be built by separate agents, at the same time, unless one of them also changes"
+    " that file as work its acceptance does not name. When the file does not exist yet, the"
+    " first of them creates it and the others wait for that Step.",
     "  A file that declares what a package exports - __init__.py, index.ts, mod.rs - is the"
     " package's public surface, not a formality. Give it to a Step whose job IS that surface,"
     " and give that Step an after edge reaching every Step whose modules it exports, directly"
     " or through another. A Step that merely needs the file to exist will create it empty, every"
     " test will still pass, and the package will export nothing.",
-    "  When the codebase already holds an implementation, every acceptance property is judged"
-    " against the code as it stands TODAY, not against an empty file. A property describing"
-    " behaviour the existing code already has proves nothing about the Step and stops the run.",
+    "  When the codebase already holds an implementation, each acceptance property is run once,"
+    " against the Step's finished work, and never against the code as it stands today. A"
+    " property describing behaviour the existing code already has passes there and guards that"
+    " behaviour; it does not show that the Step was built.",
     "  So for each Step over existing code, ask what the document requires that the code does"
     " not already do. Name acceptance properties that FAIL against the current code and pass"
-    " only once the Step has changed it. If the answer is that the code already satisfies this"
-    " part of the document, keep the Step and return an EMPTY acceptance list, which records"
-    " that nothing was required here. Never pad a Step with properties that already hold.",
+    " only once the Step has changed it. Keep a property that already holds where the document"
+    " names it or requires that behaviour to stay as it is. Never pad a Step with properties"
+    " that already hold.",
 )
 
 TOP_LEVEL_LINES = (

@@ -91,11 +91,11 @@ claude plugin marketplace add SatanshuMishra/mitosis
 claude plugin install mitosis@mitosis
 ```
 
-The plugin carries the skill and the seventeen modules it runs — `core.py`,
+The plugin carries the skill and the eighteen modules it runs — `core.py`,
 `shape.py`, `decompose.py`, `run.py`, `isolation.py`, `pr_facts.py`,
 `mitosis.py`, `metrics.py`, `spend.py`, `metrics_writer.py`, `referee.py`,
 `outcomes.py`, `handoff.py`, `recon_text.py`, `step_names.py`,
-`asks.py`, `own_tests.py` — the two data files they read,
+`asks.py`, `own_tests.py`, `joint.py` — the two data files they read,
 `prices.json` and `catalogue.json`, the `contracts/` folder beside the
 modules, which holds byte-identical copies of the program's
 `contracts/validator.py` and of every owned schema mitosis writes or reads,
@@ -168,8 +168,9 @@ on its MSP's branch, and lands one commit with the subject
 `<type>(<scope>): <steps>`, from `--pr-type` and `--pr-scope`, or `chore`
 with no scope when the run names none, its Steps' names joined by commas,
 and each Step's task's first sentence as a line of the body. Steps share a
-Lane exactly when they share a file, so the branch's history is one commit
-per Lane.
+Lane exactly when they share a file other than a joint test file, described
+under "Test files several Steps add to", so the branch's history is one
+commit per Lane.
 
 Leave out `--pr-command` and mitosis pushes each branch, opens nothing, ends each such MSP `pushed`, and records
 the title and body in the run's state and in its JSON summary, so the caller
@@ -325,6 +326,51 @@ land and never reach the gate's clean checkout. Each Lane record and the lock
 record list `seeded`, seed_skipped and seed_seconds. With no
 `.worktreeinclude`, nothing changes.
 
+## Test files several Steps add to
+
+A test file that two or more Steps each name in their acceptance and list in
+their files, and that no Step lists as other work, is a joint test file. It
+keeps its Steps in one MSP and is never what puts them in one Lane, so Steps
+that share nothing else each build in their own Worker session, beside the
+others when no `after` edge orders them, on the tier their own work calls
+for. A Step that also changes the file as work its acceptance does not name
+puts every Step that writes it back in one Lane, and a file named in
+`--shared-files` is never a joint test file.
+
+Each Lane's brief names the file and says to add tests there and leave every
+line already in it as it is. When a Lane lands, mitosis joins the file three
+ways, from the file at the commit the Lane started on, the file on the MSP's
+branch and the file in the Lane's clone, and commits the joined file with
+the rest of the Lane's work. Additions two Lanes made at the same place are
+both kept, the landed Lane's first. Where both changed the same lines,
+mitosis writes the file into the Lane's clone with each side marked and asks
+that Lane's Worker once, in its own session through `--reask-command`, to
+join them. The joined file lands only when it holds no mark and still holds,
+in order, every line the branch held that the Lane had not itself changed
+before it was asked; otherwise, or when the turn fails or the Lane has no
+session on record, the Lane fails and none of its work lands. Nothing checks
+a joined file before the gate runs its tests: where two Lanes each added a
+different block at one place both blocks stay, so a line both blocks hold,
+such as one import, is there twice until a repair removes it.
+
+A Lane whose work had landed before a run stopped is not joined a second
+time when the run is resumed. A join that the stop cut short is asked again
+from the Lane's own tests, which mitosis keeps beside the clone before it
+marks the file.
+
+When the file is not on the base, two Lanes that each created it would have
+no common start to join from. The first of its Steps in input order that
+waits on none of the others creates it, and each other Step that waits on
+none of them waits for that Step's Lane; a notice names them. When only one
+Step waits, it waits for the last Step of that Lane and so builds in it, as
+any Step does that is the only one waiting on another: measured on a
+benchmark change, a session of its own that could start only once the
+creator's Lane ended cost more and took longer than building it there. A
+resumed run reads the base commit the run was pinned to, so its plan does not
+change once the file reaches the branch. A saved plan given by `--plan-file`
+is built as written and gains no such order. `docs/adr/0032` holds the
+measurements and what a joined file is not checked for.
+
 ## Check-author Steps an items file declares
 
 mitosis never writes a check-author Step itself, and a structure reply whose
@@ -334,8 +380,9 @@ a file the check-author writes writes that file with its work, the
 check-author's `after` edges go, and no lock stage runs. A file the
 check-author writes that no Step's acceptance names, such as a helper its
 tests import, goes to every Step that takes one of that check-author's test
-files; Steps that then write the same file build in one MSP, as any Steps
-that share a file do. Such a file stays with a Step that already writes it.
+files; Steps that then write the same file build in one MSP and one Lane, as
+any Steps that share a file other than a joint test file do. Such a file
+stays with a Step that already writes it.
 It is dropped when no Step takes one of that check-author's test files, when
 the charter locks it or it matches a referee marker, which no Step may
 write, and when sharing it would leave Lanes waiting on each other. Each
