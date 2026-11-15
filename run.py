@@ -4851,7 +4851,12 @@ def reached_referee_held(tree, head, settings):
         commit: git_ok(["merge-base", "--is-ancestor", commit, head], tree, env=PINNED_GIT)
         for commit in frozenset(holders.values())
     }
-    return {path: entry for path, entry in held.items() if reached.get(holders.get(path), True)}
+    return relocked_held(
+        tree,
+        head,
+        {path: entry for path, entry in held.items() if reached.get(holders.get(path), True)},
+        settings.get("referee_relocked") or (),
+    )
 
 
 def referee_entries(repo, holders):
@@ -5024,7 +5029,10 @@ def execute(
                 **{
                     str(msp): {
                         **(state["msps"].get(str(msp)) or {}),
-                        "referee": None if msp in stops else msp_referee(plan, state, settings, msp),
+                        "referee": None
+                        if msp in stops
+                        else relocked_referee(state, run_dir, msp)
+                        or msp_referee(plan, state, settings, msp),
                     }
                     for msp in range(len(plan["msps"]))
                     if plan.get("check_authors")
@@ -5103,7 +5111,8 @@ def unlocked_classes(plan, state, msp):
 
 
 def msp_settings(plan, state, settings, msp):
-    if not plan.get("check_authors"):
+    relocked = read_relock_journal(settings["run_dir"], msp)
+    if not plan.get("check_authors") and not relocked:
         return settings
     holders = referee_holders(plan, state, msp, settings["base_commit"])
     return {
@@ -5112,6 +5121,7 @@ def msp_settings(plan, state, settings, msp):
         "base_commit": msp_base(plan, state, msp, settings["base_commit"]),
         "referee_held": referee_entries(settings["repo"], holders) if holders else None,
         "referee_holders": {_norm(path): commit for path, commit in holders.items()} or None,
+        "referee_relocked": relocked,
     }
 
 
@@ -5125,3 +5135,397 @@ def _lock_stopped_record(state, msp, stop):
             str(msp): {**kept, **stop, "referee": None, "reconcile": NO_REFEREE_WRITE},
         },
     }
+
+
+RELOCK_DIR = "relock"
+
+RELOCK_KEYS = ("relocked",)
+
+COMMIT_NAME = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+UNNAMED_CHECK = "the locked check %s changed on %s and was not named repairable"
+
+UNNAMED_CHECKS = "the locked checks %s changed on %s and were not named repairable"
+
+REMOVED_CHECK = (
+    "the fix removed %s from %s, and a repair changes a locked check without removing it"
+)
+
+PASSES_AT_BASE = (
+    "%s now passes on the base without the work, where the locked check failed, so the repaired "
+    "check cannot tell the work from its absence"
+)
+
+UNRUNNABLE_AT_BASE = (
+    "%s can no longer run on the base without the work, where the locked check ran and failed: "
+    "exit %d"
+)
+
+FAILS_AT_HEAD = "%s fails against the work at %s"
+
+UNRUNNABLE_AT_HEAD = "%s could not run against the work at %s: exit %d"
+
+UNJUDGED_AT_HEAD = "%s was not judged against the work at %s: %s"
+
+RELOCK_WROTE_REFEREE = "an acceptance run of the relock wrote %s, which the referee owns"
+
+RELOCK_UNRUN = "mitosis could not run the repaired checks: %s"
+
+PROVEN_OUTCOMES = ("pass", "not-applicable")
+
+
+class RelockUnusable(RuntimeError):
+    pass
+
+
+Relocked = collections.namedtuple("Relocked", ("paths", "refused"))
+
+
+def relock_journal(run_dir, msp):
+    return os.path.join(run_dir, RELOCK_DIR, "msp-%d.json" % msp)
+
+
+def _commit_name(value):
+    return isinstance(value, str) and COMMIT_NAME.fullmatch(value) is not None
+
+
+def _journal_fault(held):
+    if not isinstance(held, dict) or tuple(held) != RELOCK_KEYS:
+        return True
+    relocked = held["relocked"]
+    return not isinstance(relocked, list) or not all(_commit_name(commit) for commit in relocked)
+
+
+def read_relock_journal(run_dir, msp):
+    path = relock_journal(run_dir, msp)
+    if not os.path.lexists(path):
+        return ()
+    try:
+        held = read_json(path)
+    except (OSError, ValueError) as error:
+        raise ResumeError("%s is not the relock journal mitosis wrote: %s" % (path, error))
+    if _journal_fault(held):
+        raise ResumeError("%s is not the relock journal mitosis wrote" % path)
+    return tuple(held["relocked"])
+
+
+def relocked_referee(state, run_dir, msp):
+    relocked = read_relock_journal(run_dir, msp)
+    recorded = (state["msps"].get(str(msp)) or {}).get("referee")
+    if relocked and isinstance(recorded, dict) and recorded.get("commit") == relocked[-1]:
+        return recorded
+    return None
+
+
+def _reaches(tree, commit, head):
+    return commit_exists(tree, commit) and git_ok(
+        ["merge-base", "--is-ancestor", commit, head], tree, env=PINNED_GIT
+    )
+
+
+def _live_relocks(tree, head, relocked):
+    return tuple(commit for commit in relocked if _reaches(tree, commit, head))
+
+
+def _last_proved(proved):
+    return next((entry for entry in reversed(proved) if entry is not None), None)
+
+
+def _held_entry(current, proved):
+    return current if current is not None and current in proved else _last_proved(proved)
+
+
+def relocked_held(tree, head, held, relocked):
+    live = _live_relocks(tree, head, relocked)
+    if not live:
+        return held
+    current = _committed_entries(tree, head)
+    listed = tuple(_committed_entries(tree, commit) for commit in live)
+    proved = {
+        path: (entry,) + tuple(found.get(path) for found in listed) for path, entry in held.items()
+    }
+    return {path: _held_entry(current.get(path), proved[path]) for path in held}
+
+
+def built_run(run_dir):
+    path = os.path.join(run_dir, PLAN_FILE)
+    state = load_state(run_dir)
+    if state is None or not os.path.isfile(path):
+        raise RelockUnusable("%s holds no built run, so there is nothing to relock" % run_dir)
+    try:
+        plan = read_json(path)
+    except ValueError as error:
+        raise RelockUnusable("%s is not the plan mitosis wrote: %s" % (path, error))
+    if not isinstance(plan, dict) or state.get("plan_id") != plan.get("plan_id"):
+        raise RelockUnusable(
+            "%s holds the state of plan %s beside another plan, so there is no built run to relock"
+            % (run_dir, state.get("plan_id"))
+        )
+    return plan, state
+
+
+def _relock_subject(plan, state, run_dir, label):
+    labels = {_label(plan, index): index for index in range(len(plan.get("msps") or []))}
+    if label not in labels:
+        raise RelockUnusable(
+            "--relock names MSP %s, which the run in %s does not hold" % (label, run_dir)
+        )
+    msp = labels[label]
+    tree = next((entry for entry in state.get("worktrees") or () if entry.get("msp") == msp), None)
+    if tree is None or not os.path.isdir(tree["path"]):
+        raise RelockUnusable(
+            "MSP %s has no worktree in %s, so it holds no built work to relock" % (label, run_dir)
+        )
+    head = branch_commit(tree["path"], tree["branch"])
+    if head is None or _head_off_branch(tree, head):
+        raise RelockUnusable(
+            "the worktree %s is not on %s at its commit, so a relock would not judge the commit "
+            "a ship pushes" % (tree["path"], tree["branch"])
+        )
+    return msp, tree, head
+
+
+def _folded_checks(authored, holders):
+    return tuple(
+        dict.fromkeys(path for path in (_norm(named) for named in authored) if path not in holders)
+    )
+
+
+def _built_commit(plan, state, msp, tree, head):
+    landed = {int(index): record for index, record in (state.get("lanes") or {}).items()}
+    built = _msp_head(tree["path"], plan, msp, landed)
+    if built is None or not _reaches(tree["path"], built, head):
+        raise RelockUnusable(
+            "%s no longer holds the commit its Lanes landed, so its checks have no built content "
+            "to compare" % tree["branch"]
+        )
+    return built
+
+
+def _unrepairable(changed, current, repairable, branch):
+    unnamed = tuple(path for path in changed if path not in repairable)
+    if unnamed:
+        return (UNNAMED_CHECK if len(unnamed) == 1 else UNNAMED_CHECKS) % (", ".join(unnamed), branch)
+    removed = tuple(path for path in changed if path not in current)
+    if removed:
+        return REMOVED_CHECK % (", ".join(removed), branch)
+    return None
+
+
+def _relock_checks(plan, msp, locked, classes):
+    steps = _steps_by_name(plan)
+    classed = frozenset(entry["test"] for entry in classes or ())
+    return _distinct(
+        tuple(
+            {"file": entry["file"], "test": entry["test"]}
+            for name in plan["msps"][msp]["steps"]
+            for entry in steps[name].get("acceptance") or ()
+            if _norm(entry["file"]) in locked
+            and property_key(entry["file"], entry["test"]) not in classed
+        )
+    )
+
+
+def _over_base(base_tree, entries):
+    return {**base_tree, **{path: (mode, oid, None) for path, (mode, oid) in entries.items()}}
+
+
+def _base_fault(plan, msp, base, settings, repaired, held):
+    checks = _relock_checks(
+        plan, msp, frozenset(repaired) | frozenset(held), settings.get("gate_classes")
+    )
+    if not checks:
+        return None
+    repo = settings["repo"]
+    locked = tuple(plan.get("locked") or ())
+    env = settings["env"]
+    base_tree = _expanded(repo, base, base)
+    with_repair, with_held = _over_base(base_tree, repaired), _over_base(base_tree, held)
+    log_dir = os.path.join(settings["run_dir"], RELOCK_DIR, "msp-%d" % msp, "base")
+    os.makedirs(log_dir, exist_ok=True)
+    _remove_gate_folders(log_dir)
+    folder = tempfile.mkdtemp(prefix=GATE_FOLDER_PREFIX, dir=log_dir)
+    try:
+        confinement = isolation.gate_confinement(settings.get("sandbox"), log_dir, folder)
+        reset_gate_folder(repo, folder, with_repair, (), locked)
+        top = frozenset(_parts(path)[0] for path in {**with_repair, **with_held})
+        setup = settings["gate_setup"]
+        kept = (
+            _link_dependencies(repo, folder, top)
+            if setup is None
+            else _gate_setup(setup, folder, top, log_dir, env, confinement)
+        )
+
+        def accepted(position, check, target, name):
+            reset_gate_folder(repo, folder, target, kept, locked)
+            return run_acceptance(
+                settings["acceptance_command"],
+                folder,
+                check,
+                os.path.join(log_dir, "%d-%s.log" % (position, name)),
+                env,
+                confinement,
+            )
+
+        for position, check in enumerate(checks):
+            code = accepted(position, check, with_repair, "repaired")
+            if code == ACCEPTANCE_FAILURE_EXIT:
+                continue
+            if accepted(position, check, with_held, "held") != ACCEPTANCE_FAILURE_EXIT:
+                continue
+            if code == 0:
+                return PASSES_AT_BASE % _named_check(check)
+            return UNRUNNABLE_AT_BASE % (_named_check(check), code)
+        return None
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+        isolation.release_gate(isolation.gate_folders(log_dir))
+
+
+def _work_fault(plan, state, msp, tree, head, base, settings):
+    result = gate(
+        plan,
+        msp,
+        tree["path"],
+        base,
+        settings["acceptance_command"],
+        os.path.join(settings["run_dir"], RELOCK_DIR, "msp-%d" % msp, "work"),
+        settings["env"],
+        settings["repo"],
+        settings["gate_setup"],
+        head,
+        isolation.msp_replayed(plan, msp, state["lanes"]),
+        settings.get("gate_classes"),
+        None,
+        settings.get("sandbox"),
+        settings["at_once"],
+    )
+    if result["referee"]:
+        return RELOCK_WROTE_REFEREE % ", ".join(result["referee"])
+    unproven = next(
+        (entry for entry in result["properties"] if entry["outcome"] not in PROVEN_OUTCOMES), None
+    )
+    if unproven is None:
+        return None
+    named = property_key(unproven["file"], unproven["test"])
+    code = unproven.get("with_work")
+    if code == ACCEPTANCE_FAILURE_EXIT:
+        return FAILS_AT_HEAD % (named, head[:12])
+    if code is None:
+        return UNJUDGED_AT_HEAD % (named, head[:12], _sentence(unproven.get("reason")))
+    return UNRUNNABLE_AT_HEAD % (named, head[:12], code)
+
+
+def _sentence(text):
+    return " ".join(str(text).split())
+
+
+def _unproved(plan, state, msp, tree, head, base, settings, repaired, held):
+    try:
+        fault = _base_fault(plan, msp, base, settings, repaired, held)
+        if fault is not None:
+            return fault
+        return _work_fault(plan, state, msp, tree, head, base, settings)
+    except (OSError, GitError, GateSetupError, subprocess.SubprocessError) as error:
+        return RELOCK_UNRUN % _sentence(error)
+
+
+def _state_as_held_now(run_dir, judged):
+    held = load_state(run_dir)
+    if held is None or held.get("plan_id") != judged.get("plan_id"):
+        raise RelockUnusable(
+            "%s no longer holds the run of plan %s the relock judged, so nothing was recorded"
+            % (run_dir, judged.get("plan_id"))
+        )
+    return held
+
+
+def _relocked(plan, state, settings, label, repairable, authored):
+    run_dir = settings["run_dir"]
+    msp, tree, head = _relock_subject(plan, state, run_dir, label)
+    _hold_branch(settings["repo"], tree["branch"])
+    base = msp_base(plan, state, msp, state["base_commit"])
+    holders = {
+        _norm(path): commit
+        for path, commit in referee_holders(plan, state, msp, state["base_commit"]).items()
+    }
+    folded = _folded_checks(authored, holders)
+    locked = tuple(holders) + folded
+    if not locked:
+        return Relocked((), None)
+    built = _built_commit(plan, state, msp, tree, head) if folded else None
+    live = _live_relocks(tree["path"], head, read_relock_journal(run_dir, msp))
+    listed = {
+        commit: _committed_entries(tree["path"], commit)
+        for commit in frozenset((head, *live, *holders.values(), *((built,) if built else ())))
+    }
+    current = listed[head]
+    proved = {
+        path: (listed[holders.get(path, built)].get(path),)
+        + tuple(listed[commit].get(path) for commit in live)
+        for path in locked
+    }
+    changed = tuple(path for path in locked if current.get(path) not in proved[path])
+    if not changed:
+        return Relocked((), None)
+    named = frozenset(_norm(path) for path in repairable)
+    refusal = _unrepairable(changed, current, named, tree["branch"]) or _unproved(
+        plan,
+        state,
+        msp,
+        tree,
+        head,
+        base,
+        settings,
+        {path: current[path] for path in locked if path in current},
+        {
+            path: _last_proved(proved[path])
+            for path in locked
+            if _last_proved(proved[path]) is not None
+        },
+    )
+    if refusal is not None:
+        return Relocked((), refusal)
+    record = locked_record(
+        settings["repo"], tree["branch"], head, [path for path in locked if path in current]
+    )
+    write_state(run_dir, _msp_record(_state_as_held_now(run_dir, state), msp, referee=record))
+    write_json(relock_journal(run_dir, msp), {"relocked": [*live, head]})
+    return Relocked(changed, None)
+
+
+def relock(
+    plan,
+    state,
+    repo,
+    run_dir,
+    label,
+    repairable,
+    acceptance_command,
+    authored=(),
+    concurrency=1,
+    env=None,
+    gate_setup=None,
+    gate_classes=None,
+    worker_sandbox=False,
+    worker_writes=(),
+    trees_root=None,
+):
+    check_template("acceptance", acceptance_command)
+    if gate_setup is not None:
+        check_template("gate-setup", gate_setup)
+    program = isolation.sandbox_program(worker_sandbox)
+    writes = isolation.refuse_overlapping_writes(run_dir, worker_writes, repo, trees_root)
+    sandbox = None if program is None else {"program": program, "writes": writes}
+    _keep_repository_programs_confined(sandbox)
+    settings = {
+        "repo": repo,
+        "run_dir": run_dir,
+        "acceptance_command": acceptance_command,
+        "gate_setup": gate_setup,
+        "gate_classes": tuple(gate_classes or ()),
+        "sandbox": sandbox,
+        "env": process_environ(env, repo),
+        "at_once": max(1, int(concurrency)),
+    }
+    return _relocked(plan, state, settings, label, tuple(repairable), tuple(authored))

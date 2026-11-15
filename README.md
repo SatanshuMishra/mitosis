@@ -475,6 +475,55 @@ MSP ends `ship-failed`, with exit 22, and its record keeps the earlier push.
 A gate that is interrupted leaves the MSP's worktree as it was, because
 the gate never runs there; the next gate removes the gate folder left behind.
 
+## Relocking a repaired check
+
+A locked check can itself be wrong, and a review of the built work is where
+that shows. A caller that had the check repaired on the MSP's branch asks
+mitosis to prove the repair and keep it, by adding two flags to the run's own
+invocation:
+
+```
+--relock <MSP label> --repairable tests/test_calc.py
+```
+
+`--relock` names the MSP by its label, and each `--repairable` names one
+locked check that may have changed, as a path from the repository root. A
+relock reads the plan and the state in the run directory. It plans nothing,
+dispatches no Worker, pushes nothing and moves no branch, and it is a usage
+error beside `--resume`, `--proven-head`, `--plan-only`, `--dry-run`,
+`--revise` or `--no-run-dir`.
+
+The locked checks of an MSP are the paths the charter locks, the checks its
+lock stage wrote and, for a plan made from folded items, the files of the
+folded check-author Steps. One has changed when its content at the head of the
+MSP's branch is neither what its lock holds, nor what the MSP's Lanes landed
+for a folded check, nor what an earlier relock of the MSP proved. A changed
+check that was not named is refused, and so is one the fix removed. mitosis
+then proves again what a lock proves: every acceptance test of the MSP's Steps
+that lives in a locked check must fail on the MSP's base without the work,
+unless it did not fail there before the repair either, and every acceptance
+test of the MSP must pass at the head.
+
+The last line of standard output is one JSON object, the paths relocked and
+the reason for a refusal:
+
+```json
+{"relocked": ["tests/test_calc.py"], "refused": null}
+```
+
+The list is empty when no locked check changed. A relock exits 0 when it held
+or had nothing to do, 1 when it refused, with the reason as one sentence and
+nothing written, and 2 when its flags or the run directory cannot be used,
+with nothing on standard output.
+
+A relock that holds is recorded as the MSP's lock record at that head, and
+from then on the gate and the ship keep the repaired check where they would
+have restored the locked one. A check changed again after its relock is
+restored to the repair, and a repair taken back to what was locked before
+stands. mitosis holds a folded check neither before nor after a relock, so
+there the relock is the proof and the record. `docs/adr/0033` holds the
+reasons and what the proof cannot show.
+
 ## The referee and the gate
 
 The referee is the set of files that decide whether the work is done, and no
