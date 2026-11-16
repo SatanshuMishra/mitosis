@@ -1,4 +1,3 @@
-import itertools
 import json
 import os
 import re
@@ -151,11 +150,9 @@ def refused_subject(header, parts=1):
     return refused and refused.strip(" ")
 
 
-def _tagged(header, tag, limit):
+def _tagged(header, tag):
     prefix = conventional_prefix(header["type"], header.get("scope"))
-    whole = "%s (%s)" % (_untagged(header), tag)
-    fits = limit is None or len(whole) <= limit
-    subjects = (header["subject"],) if fits else _subject_candidates(header["subject"])
+    subjects = _subject_candidates(header["subject"])
     return tuple("%s: %s (%s)" % (prefix, subject, tag) for subject in subjects)
 
 
@@ -163,10 +160,9 @@ def _title(header, plan, msp):
     parts = len(plan.get("msps") or [])
     if parts <= 1 or refused_subject(header, parts) is not None:
         return _untagged(header)
-    limit = handoff.part_at(RENDER_SCHEMA, TITLE_RULE)[1].get("maxLength")
     tags = (plan["msps"][msp]["label"], "part %d of %d" % (msp + 1, parts))
-    by_subject = itertools.zip_longest(*(_tagged(header, tag, limit) for tag in tags))
-    tagged = tuple(title for titles in by_subject for title in titles if title is not None)
+    by_subject = zip(*(_tagged(header, tag) for tag in tags))
+    tagged = tuple(title for titles in by_subject for title in titles)
     return next((title for title in tagged if _accepted(title)), tagged[0])
 
 
