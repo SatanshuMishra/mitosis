@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import sys
 import tempfile
@@ -37,10 +38,6 @@ EXIT_FOREIGN = 8
 EXIT_REFEREE = 9
 
 TIMEOUT_NOTICE = "mitosis: --timeout is deprecated and ignored; mitosis has no wall-clock limit"
-
-SUITE_NOTICE = "mitosis: --suite-command is deprecated and ignored; the gate runs only the acceptance tests each Step names"
-
-BRIEF_NOTICE = "mitosis: --brief-command is deprecated and ignored; the split writes each Step's task, so no brief call runs"
 
 EXIT_HANDOFF = 15
 
@@ -82,14 +79,13 @@ EXIT_MEANING = {
     EXIT_HANDOFF: "a hand-off mitosis was about to write failed its owned schema; mitosis wrote "
     "nothing for it and stopped",
     LANE_EXIT["failed"]: "a Lane failed",
-    LANE_EXIT["blocked"]: "a Lane or MSP was blocked, by a predecessor or by a write across an "
-    "MSP boundary",
+    LANE_EXIT["blocked"]: "a Lane or MSP was blocked by a predecessor",
     LANE_EXIT["merge-blocked"]: "a producer branch would not merge",
     LANE_EXIT[run.LANE_PARKED]: "a Worker stopped at a usage limit; the run is parked: pass "
     "--resume after the limit resets",
-    EXIT_HELD: "an MSP was held back instead of pushed: an acceptance test fails "
-    "against the finished work, the repository's hook refused the whole change, or the work could "
-    "not be committed",
+    EXIT_HELD: "an MSP was held back instead of pushed: an acceptance test fails against the "
+    "finished work, the gate could not run, the lock of its checks failed, the repository's hook "
+    "refused the whole change, or the work could not be committed",
     MSP_EXIT["ship-failed"]: "a commit, push or pull-request command failed",
 }
 
@@ -149,7 +145,6 @@ STAGE_FLAG_NAMES = (
     "--asks",
     "--recon-prompt-template",
     "--emit-items",
-    "--brief-command",
     "--decisions",
     "--structure-samples",
     "--pick",
@@ -161,7 +156,6 @@ STAGE_FLAG_NAMES = (
     "--worker-write",
     "--worktree-root",
     "--no-run-dir",
-    "--suite-command",
     "--gate-classes",
     "--pr-impact",
     "--render-command",
@@ -252,9 +246,9 @@ FLAG_SPECS = {
         "metavar": "LABEL=COMMIT",
         "action": "append",
         "default": [],
-        "help": "ship the MSP named LABEL without re-gating when its HEAD equals COMMIT and a "
-        "gate result that did not block is recorded for it; otherwise it is gated as without "
-        "this flag; repeatable",
+        "help": "ship the MSP named LABEL without re-gating when its HEAD equals COMMIT, a gate "
+        "result that did not block is recorded for it and it was not held back; otherwise it is "
+        "gated as without this flag; repeatable",
     },
     "--relock": {
         "metavar": "LABEL",
@@ -297,10 +291,6 @@ FLAG_SPECS = {
         "needs {schema} and {session_id}, and its reply meets %s as structured output"
         % (PLACEHOLDER_HELP["decompose"], decompose.REPLY_SCHEMA),
     },
-    "--brief-command": {
-        "metavar": "TEMPLATE",
-        "help": "deprecated and ignored; the split writes each Step's task, so no brief call runs",
-    },
     "--decisions": {
         "metavar": "PATH",
         "help": "the settled-questions file, injected verbatim into every structure prompt "
@@ -336,11 +326,6 @@ FLAG_SPECS = {
         "folder from the repository root; only what it writes at new top-level names survives "
         "each run's reset; a non-zero exit holds the MSP back "
         "gate-failed" % PLACEHOLDER_HELP["gate-setup"],
-    },
-    "--suite-command": {
-        "metavar": "TEMPLATE",
-        "help": "deprecated and ignored: the gate runs only the acceptance tests each Step names, "
-        "so nothing runs the suite",
     },
     "--gate-classes": {
         "metavar": "PATH",
@@ -448,19 +433,6 @@ FLAG_SPECS = {
         "help": "most graph neighbours kept per Step; the overflow is counted "
         "(default: %d)" % core.CONTEXT_CAP,
     },
-    "--coalesce-below": {
-        "metavar": "COST",
-        "type": float,
-        "default": 2.0,
-        "help": "cheap-tier Steps at or below this cost may be grouped into one Worker "
-        "(0 disables; default: 2)",
-    },
-    "--coalesce-max": {
-        "metavar": "N",
-        "type": int,
-        "default": 4,
-        "help": "most Steps in one coalesced group (default: 4)",
-    },
     "--graph": {
         "metavar": "PATH",
         "help": "a JSON object mapping each path to the paths it imports, or a node-link "
@@ -482,19 +454,6 @@ FLAG_SPECS = {
         "help": "comma-separated path markers that force the top tier and count as a coupling "
         "signal; a one-word marker matches a word of the path, any other marker a "
         "case-insensitive substring; a repeated flag keeps the last value",
-    },
-    "--serial-verify-markers": {
-        "metavar": "MARKERS",
-        "dest": "serial_markers",
-        "default": "",
-        "help": "comma-separated path substrings; a Step with a file containing one verifies "
-        "serially, and such properties are counted not-applicable",
-    },
-    "--serial-markers": {
-        "metavar": "MARKERS",
-        "dest": "serial_markers",
-        "default": "",
-        "help": "the same as --serial-verify-markers",
     },
     "--trajectory": {
         "metavar": "PATH",
@@ -1258,10 +1217,32 @@ def shared_list(text):
     return tuple(entry for entry in (part.strip() for part in (text or "").split(",")) if entry)
 
 
-def planning_history(args):
+HISTORY_FILE = "planning-history.jsonl"
+
+
+def kept_history(args, run_dir):
+    kept = os.path.join(run_dir, HISTORY_FILE)
+    if args.resume and os.path.isfile(kept):
+        return kept
+    source = args.trajectory or core.DEFAULT_TRAJECTORY_STORE
+    try:
+        os.makedirs(run_dir, exist_ok=True)
+        with open(kept + ".part", "wb") as handle:
+            if source and os.path.isfile(source):
+                with open(source, "rb") as read:
+                    shutil.copyfileobj(read, handle)
+        os.replace(kept + ".part", kept)
+    except OSError:
+        return source
+    return kept
+
+
+def planning_history(args, run_dir=None):
     if args.no_trajectories:
         return ()
-    return core.trajectory_store(args.trajectory or core.DEFAULT_TRAJECTORY_STORE)
+    if run_dir is None:
+        return core.trajectory_store(args.trajectory or core.DEFAULT_TRAJECTORY_STORE)
+    return core.trajectory_store(kept_history(args, run_dir))
 
 
 def refused_steps(error):
@@ -1270,20 +1251,17 @@ def refused_steps(error):
     )
 
 
-def build_plan(args, items, root, charter, graph, folded=()):
+def build_plan(args, items, root, charter, graph, folded=(), run_dir=None):
     try:
         return core.plan(
             items,
             charter=charter,
             risk_markers=marker_list(args.risk_markers),
-            serial_markers=marker_list(args.serial_markers),
             graph=graph,
             hops=args.context_hops,
             cap=args.context_cap,
-            history=planning_history(args),
+            history=planning_history(args, run_dir),
             root=root,
-            coalesce_below=args.coalesce_below,
-            coalesce_max=args.coalesce_max,
             briefs=not args.no_briefs,
             shared_files=shared_list(args.shared_files),
             folded=folded,
@@ -1317,9 +1295,9 @@ def saved_plan(path, items, charter, root):
     return {**loaded, "locked": list(locked)}
 
 
-def planned(args, items, root, charter, graph, folded=()):
+def planned(args, items, root, charter, graph, folded=(), run_dir=None):
     if args.plan_file is None:
-        return build_plan(args, items, root, charter, graph, folded)
+        return build_plan(args, items, root, charter, graph, folded, run_dir)
     return saved_plan(args.plan_file, items, charter, root)
 
 
@@ -1466,6 +1444,12 @@ def refuse_unrenderable(args, plan, run_dir, repo=None):
         raise Refusal(
             "a run that opens pull requests needs --pr-impact, what callers or users notice, "
             "or --pr-blast-radius for render's impact"
+        )
+    refused = pr_facts.refused_subject(header, len(plan.get("msps") or []))
+    if refused is not None:
+        raise Refusal(
+            "--pr-subject holds %s, which no pull request title can carry; reword the subject"
+            % json.dumps(refused)
         )
     env = run.process_environ(recorder_of(args).env, repo)
     for index in range(len(plan.get("msps") or [])):
@@ -1838,6 +1822,7 @@ def reconcile_lines(plan, state):
             ),
         )
         lines = lines + tuple("  undeclared: " + path for path in undeclared)
+        lines = lines + tuple("  left out: " + path for path in found.get("left_out") or ())
         lines = lines + tuple("  unwritten: " + path for path in unwritten)
         lines = lines + tuple("  untouched: " + path for path in untouched)
         lines = lines + tuple(
@@ -1872,14 +1857,10 @@ def _coupling_pair_line(pair, verb):
         ", ".join(str(lane) for lane in pair.get("lanes") or []),
         verb,
     )
-    return COUPLING_LINE[_coupling_form(pair)] % (named, " and ".join(pair.get("signals") or []))
+    return COUPLING_LINE % (named, " and ".join(pair.get("signals") or []))
 
 
-COUPLING_LINE = {
-    "parallel": "%s with only %s between them; add an after edge if one needs the other's output",
-    "serialize": "%s awaiting the orchestrator's verdict on %s, default serialize; add an after edge "
-    "to serialize them",
-}
+COUPLING_LINE = "%s with only %s between them; add an after edge if one needs the other's output"
 
 
 def stacking_lines(plan, state):
@@ -2000,7 +1981,7 @@ def _msp_findings(plan, index, record, lane_records):
     )
 
 
-LOCK_EXIT = {run.MSP_PARKED: MSP_EXIT[run.MSP_PARKED]}
+LOCK_EXIT = {run.MSP_PARKED: MSP_EXIT[run.MSP_PARKED], "failed": EXIT_HELD}
 
 
 def locks(state, plan):
@@ -2019,7 +2000,7 @@ def _lock_findings(state, plan):
     found = []
     for msp, lock in locks(state, plan):
         label = _label(plan, msp)
-        if lock.get("state") not in run.LOCK_FALLS_BACK:
+        if lock.get("state") != "ok":
             found = found + [
                 _finding(
                     label,
@@ -2166,6 +2147,7 @@ def _msp_summary(plan, state):
                         key: list(findings.get(key) or ())
                         for key in ("undeclared", "unwritten", "untouched")
                     },
+                    **({"left_out": list(findings["left_out"])} if findings.get("left_out") else {}),
                     **_referee_verdict(record.get("reconcile")),
                     **(
                         {"shared_overlaps": list(findings["shared_overlaps"])}
@@ -2178,6 +2160,7 @@ def _msp_summary(plan, state):
                 "trajectory_error": record.get("trajectory_error"),
                 "lock": _lock_summary(record.get("lock")),
                 "referee": _referee_summary(record.get("referee")),
+                **({"repair": list(record["repair"])} if record.get("repair") else {}),
             }
         )
     return summaries
@@ -2192,8 +2175,11 @@ def _lock_summary(lock):
     if not isinstance(lock, dict):
         return None
     return {
-        key: list(lock.get(key) or ()) if key in ("probes", "undeclared") else lock.get(key)
-        for key in LOCK_SUMMARY_KEYS
+        **{
+            key: list(lock.get(key) or ()) if key in ("probes", "undeclared") else lock.get(key)
+            for key in LOCK_SUMMARY_KEYS
+        },
+        "notes": (lock.get("returned") or {}).get("notes"),
     }
 
 
@@ -2248,6 +2234,7 @@ def _attention(plan, lanes, msps):
             )
         if msp["gate"]["error"]:
             lines.append("MSP %s could not be gated: %s" % (msp["msp"], msp["gate"]["error"]))
+        lines.extend("MSP %s: %s" % (msp["msp"], sentence) for sentence in msp.get("repair") or ())
         if msp["crossing"]:
             lines.append(
                 "MSP %s wrote files another MSP owns: %s" % (msp["msp"], ", ".join(msp["crossing"]))
@@ -2265,7 +2252,6 @@ COUPLING_NAMED = 8
 
 def _coupling_summary(plan):
     return {
-        "ordered": [],
         "parallel": [
             {"steps": list(pair["steps"]), "signals": list(pair["signals"])}
             for pair in plan.get("coupling_review") or []
@@ -2273,33 +2259,23 @@ def _coupling_summary(plan):
     }
 
 
-COUPLING_ATTENTION = {
-    "parallel": "%s run in parallel with only %s between them: %s%s; add an after edge where one "
-    "needs the other's output",
-    "serialize": "%s await the orchestrator's verdict on %s, default serialize: %s%s; add an after "
-    "edge to serialize them",
-}
-
-
-def _coupling_form(pair):
-    if pair.get("default") not in COUPLING_ATTENTION:
-        raise ValueError(
-            "coupling pair %s has an unknown default %r" % ("+".join(pair["steps"]), pair.get("default"))
-        )
-    return pair["default"]
+COUPLING_ATTENTION = (
+    "%s run in parallel with only %s between them: %s%s; add an after edge where one needs the "
+    "other's output"
+)
 
 
 def _coupling_attention(review):
-    keyed = sorted(((_coupling_form(pair), tuple(pair["signals"])), "+".join(pair["steps"])) for pair in review)
+    keyed = sorted((tuple(pair["signals"]), "+".join(pair["steps"])) for pair in review)
     return [
-        COUPLING_ATTENTION[default]
+        COUPLING_ATTENTION
         % (
             _n(len(names), "pair") + " of Steps",
             " and ".join(signals),
             ", ".join(names[:COUPLING_NAMED]),
             " and %d more" % (len(names) - COUPLING_NAMED) if len(names) > COUPLING_NAMED else "",
         )
-        for (default, signals), names in (
+        for signals, names in (
             (key, [name for _, name in group])
             for key, group in itertools.groupby(keyed, key=lambda entry: entry[0])
         )
@@ -2563,7 +2539,7 @@ def run_stages(args, repo, root, models, charter, graph, run_dir):
     from_items = bool(args.items)
     notices = resolved["troubles"]
     shown = None if args.no_run_dir else run_dir
-    plan = planned(args, items, root, charter, graph, resolved["folded"])
+    plan = planned(args, items, root, charter, graph, resolved["folded"], run_dir)
     if args.plan_file is None:
         refuse_unwritten(plan, base_holds(args, repo))
     recorder.planned(plan, lane_width(plan), len(empty_manifests(plan.get("items") or [])))
@@ -2727,8 +2703,6 @@ def main(argv=None):
         parser.error("--revise runs the structure stage, which --resume skips; run --plan-only --revise first")
     if args.no_briefs and not args.plan_only:
         parser.error("--no-briefs omits the briefs a run dispatches from; use it with --plan-only")
-    if args.coalesce_max < 1:
-        parser.error("--coalesce-max must be at least 1")
     if args.structure_samples < 1:
         parser.error("--structure-samples must be at least 1")
     if args.pick is not None and not 1 <= args.pick <= args.structure_samples:
@@ -2738,10 +2712,6 @@ def main(argv=None):
         )
     if args.timeout is not None:
         _print((TIMEOUT_NOTICE,), sys.stderr)
-    if args.suite_command is not None:
-        _print((SUITE_NOTICE,), sys.stderr)
-    if args.brief_command is not None:
-        _print((BRIEF_NOTICE,), sys.stderr)
     malformed = next(
         (value for value in args.proven_head if PROVEN_HEAD.fullmatch(value) is None), None
     )

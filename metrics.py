@@ -369,9 +369,7 @@ class Run:
                 continue
             self.append(
                 "lane.end",
-                self.lane_end_fields(
-                    lane, entry, exit=entry.get("exit"), timed_out=bool(entry.get("timed_out"))
-                ),
+                self.lane_end_fields(lane, entry, exit=entry.get("exit")),
             )
         self.write_summary(None, None)
 
@@ -470,7 +468,6 @@ class Run:
             "lane_states": counted(
                 tuple(record.get("state") for record in settled.values()), core.LANE_STATES
             ),
-            "timed_out": sum(1 for record in settled.values() if record.get("timed_out")),
             "lane_seconds": sum(entry["seconds"] for entry in runs),
             "wall_seconds": run.seconds_between(identity["start"], end),
             "msp_states": counted(

@@ -33,7 +33,6 @@ ORIGINAL_CALC = "def add(a, b):\n    return 0\n"
 SUM_CALC = "def add(a, b):\n    return a + b\n"
 
 VALID_RETURN = {
-    "item": "add-numbers",
     "status": "ok",
     "files_changed": ["src/calc.py"],
     "notes": "done",

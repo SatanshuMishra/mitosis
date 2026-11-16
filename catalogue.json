@@ -599,20 +599,6 @@
           ],
           "question": "Did the Worker exit cleanly?"
         },
-        "timed_out": {
-          "type": "boolean",
-          "description": "Whether the Worker hit the per-Lane timeout.",
-          "measured_from": "The timeout mitosis enforced.",
-          "unit": "none",
-          "includes": "This Lane's Worker.",
-          "excludes": "Acceptance and pull-request timeouts.",
-          "reading": "true means mitosis stopped the Worker.",
-          "readers": [
-            "owner",
-            "pipeline"
-          ],
-          "question": "Did the Lane run out of time?"
-        },
         "seconds": {
           "type": "number",
           "description": "How long the Lane took.",
@@ -1176,20 +1162,6 @@
             "question": "How did this invocation's Lanes end?"
           }
         }
-      },
-      "timed_out": {
-        "type": "integer",
-        "description": "The number of Lanes that hit the timeout.",
-        "measured_from": "Counted by mitosis as it ran.",
-        "unit": "count",
-        "includes": "This invocation's Lanes.",
-        "excludes": "Earlier invocations' Lanes.",
-        "reading": "0 means none; higher means more.",
-        "readers": [
-          "owner",
-          "pipeline"
-        ],
-        "question": "Did Lanes run out of time?"
       },
       "lane_seconds": {
         "type": "number",

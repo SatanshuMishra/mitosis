@@ -116,7 +116,7 @@ for action in job["actions"]:
         replace_tree(action[1], action[2])
     else:
         sys.exit("unknown action %r" % (kind,))
-print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": job["step"], "status": "ok", "files_changed": job["declared"], "notes": "done"}}))
+print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"status": "ok", "files_changed": job["declared"], "notes": "done"}}))
 '''
 
 REASK_COMMAND = " ".join(
@@ -375,7 +375,8 @@ class CleanGate(unittest.TestCase):
                 ["write", "calc.py", CALC],
                 ["write", "tests/conftest.py", HIDDEN_CONFTEST],
                 ["append-git-path", "info/exclude", "tests/conftest.py"],
-            ]
+            ],
+            declared=("calc.py", "tests/conftest.py"),
         )
         completed = self._build(flags=self._charter(lock_fixtures.PLAIN_CHARTER))
         self.assertEqual(completed.returncode, 9, "mitosis exit code" + lock_fixtures.tail(completed))
@@ -384,6 +385,30 @@ class CleanGate(unittest.TestCase):
         self.assertEqual(msp["state"], "referee-reverted")
         self.assertEqual(msp["reconcile"]["referee"], ["tests/conftest.py"])
         self.assertIs(msp["reconcile"]["fatal"], True)
+        self.assertNotEqual(
+            self.scratch.git("cat-file", "-e", "mitosis/demo:tests/conftest.py").returncode, 0
+        )
+
+    def a_hidden_referee_file_the_reply_does_not_name_is_left_out_and_never_reaches_the_gate(self):
+        self._scratch()
+        self._worker(
+            [
+                ["write", "calc.py", CALC],
+                ["write", "tests/conftest.py", HIDDEN_CONFTEST],
+                ["append-git-path", "info/exclude", "tests/conftest.py"],
+            ]
+        )
+        completed = self._build(flags=self._charter(lock_fixtures.PLAIN_CHARTER))
+        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
+        entries = self._accept_log()
+        self._gate_folders(entries)
+        for entry in entries:
+            self.assertNotIn("tests/conftest.py", entry["listing"])
+        msp = self._msp(completed)
+        self.assertEqual(msp["reconcile"]["referee"], [])
+        self.assertIs(msp["reconcile"]["fatal"], False)
+        self.assertEqual(msp["reconcile"]["left_out"], ["tests/conftest.py"])
+        self.assertEqual(self._ignored(msp), [])
         self.assertNotEqual(
             self.scratch.git("cat-file", "-e", "mitosis/demo:tests/conftest.py").returncode, 0
         )
@@ -464,13 +489,20 @@ class CleanGate(unittest.TestCase):
                 [path for path in entry["listing"] if path.split("/")[0] == "node_modules"], []
             )
 
-    def a_failing_gate_setup_is_recorded_and_never_holds_the_msp(self):
+    def a_failing_gate_setup_holds_the_msp_back_and_says_why(self):
         self._scratch()
         self._worker([["write", "calc.py", CALC]])
         completed = self._build(flags=self._setup("setup_fails.py"))
-        self.assertEqual(completed.returncode, 0, "mitosis exit code" + lock_fixtures.tail(completed))
-        self.assertEqual(self._msp(completed)["state"], "committed")
+        self.assertEqual(completed.returncode, 21, "mitosis exit code" + lock_fixtures.tail(completed))
+        msp = self._msp(completed)
+        self.assertEqual(msp["state"], "gate-failed")
+        self.assertIn("the gate could not run", msp["reason"])
+        self.assertIn("gate-setup", msp["reason"])
         self.assertIn("gate-setup", self._recorded().get("gate_error") or "")
+        self.assertEqual(
+            [(entry["kind"], entry["exit"]) for entry in lock_fixtures.summary_of(completed)["findings"]],
+            [("gate-inconclusive", 21)],
+        )
         self.assertFalse(os.path.exists(os.path.join(self.scratch.tmp, "accept.log")))
 
     def a_locked_path_a_gate_run_writes_is_fatal(self):
@@ -661,11 +693,12 @@ def load_tests(loader, standard, pattern):
             (
                 "the_gate_runs_in_a_clean_checkout_of_the_commit",
                 "a_referee_file_hidden_by_the_clone_exclude_is_reverted_before_the_gate",
+                "a_hidden_referee_file_the_reply_does_not_name_is_left_out_and_never_reaches_the_gate",
                 "worker_written_git_settings_never_shape_the_gate_bytes",
                 "a_locked_edit_hidden_by_a_replace_ref_is_reverted_and_fatal",
                 "dependency_folders_come_from_the_repository_root",
                 "gate_setup_runs_in_the_clean_checkout_first",
-                "a_failing_gate_setup_is_recorded_and_never_holds_the_msp",
+                "a_failing_gate_setup_holds_the_msp_back_and_says_why",
                 "a_locked_path_a_gate_run_writes_is_fatal",
                 "a_file_one_gate_run_leaves_never_reaches_the_next_run",
                 "a_dependency_folder_an_acceptance_run_installs_stays_for_the_next_run",

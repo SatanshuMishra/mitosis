@@ -110,15 +110,59 @@ def _subject_candidates(subject):
     return (subject,) + shortened
 
 
-def _title(header, plan, msp):
-    prefix = conventional_prefix(header["type"], header.get("scope"))
-    subject = header["subject"]
-    if len(plan.get("msps") or []) <= 1:
-        return "%s: %s" % (prefix, subject)
-    tags = (plan["msps"][msp]["label"], "part %d of %d" % (msp + 1, len(plan["msps"])))
-    tagged = tuple(
-        "%s: %s (%s)" % (prefix, candidate, tag) for tag in tags for candidate in _subject_candidates(subject)
+def _refused_patterns(scope, node, refused=False):
+    if isinstance(node, list):
+        return tuple(found for value in node for found in _refused_patterns(scope, value, refused))
+    if not isinstance(node, dict):
+        return ()
+    own = (node["pattern"],) if refused and isinstance(node.get("pattern"), str) else ()
+    behind = (
+        _refused_patterns(*handoff.referred(scope, node["$ref"]), refused) if "$ref" in node else ()
     )
+    nested = tuple(
+        found
+        for key, value in node.items()
+        if key not in ("pattern", "$ref")
+        for found in _refused_patterns(scope, value, refused != (key == "not"))
+    )
+    return own + behind + nested
+
+
+def _untagged(header):
+    return "%s: %s" % (conventional_prefix(header["type"], header.get("scope")), header["subject"])
+
+
+def refused_subject(header, parts=1):
+    prefix = conventional_prefix(header["type"], header.get("scope"))
+    if not _accepted("%s: a a" % prefix):
+        return None
+    as_titled = _untagged(header) + (" (a)" if parts > 1 else "")
+    found = (
+        re.search(pattern, as_titled)
+        for pattern in _refused_patterns(*handoff.part_at(RENDER_SCHEMA, TITLE_RULE))
+    )
+    fragments = tuple(match.group(0) for match in found if match) + tuple(
+        dict.fromkeys(header["subject"])
+    )
+    refused = next(
+        (fragment for fragment in fragments if not _accepted("%s: a%sa" % (prefix, fragment))), None
+    )
+    return refused and refused.strip(" ")
+
+
+def _tagged(header, tag):
+    prefix = conventional_prefix(header["type"], header.get("scope"))
+    subjects = _subject_candidates(header["subject"])
+    return tuple("%s: %s (%s)" % (prefix, subject, tag) for subject in subjects)
+
+
+def _title(header, plan, msp):
+    parts = len(plan.get("msps") or [])
+    if parts <= 1 or refused_subject(header, parts) is not None:
+        return _untagged(header)
+    tags = (plan["msps"][msp]["label"], "part %d of %d" % (msp + 1, parts))
+    by_subject = zip(*(_tagged(header, tag) for tag in tags))
+    tagged = tuple(title for titles in by_subject for title in titles)
     return next((title for title in tagged if _accepted(title)), tagged[0])
 
 
@@ -314,6 +358,7 @@ def _overlap_sentences(entries):
 def _tradeoffs(plan, msp, findings, exception, foreign):
     found = findings or {}
     undeclared = list(dict.fromkeys(found.get("undeclared") or ()))
+    left_out = list(dict.fromkeys(found.get("left_out") or ()))
     unwritten = list(dict.fromkeys(found.get("unwritten") or ()))
     crossing = _paths_of(found.get("crossing"))
     foreign_paths = _paths_of(foreign)
@@ -324,6 +369,12 @@ def _tradeoffs(plan, msp, findings, exception, foreign):
             "Reconcile found %s"
             % _counted(len(undeclared), "undeclared write", "undeclared writes"),
             undeclared,
+        ),
+        left_out
+        and _sentence(
+            "This branch leaves out %s" % _counted(len(left_out), "new file", "new files"),
+            left_out,
+            " no reply named",
         ),
         unwritten
         and _sentence(

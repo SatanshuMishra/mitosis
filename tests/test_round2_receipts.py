@@ -228,7 +228,7 @@ class Receipts(unittest.TestCase):
         logs = os.path.join(folder, "worker")
         run.run_command(argv, folders["clone"], logs + ".out", logs + ".err", env, confinement)
         try:
-            isolation.read_lane(folders["clone"], checkout, start, ("a.py",), ())
+            isolation.read_lane(folders["clone"], checkout, start, ("a.py",), (), ())
         except (OSError, run.GitError):
             pass
         self.assertEqual(

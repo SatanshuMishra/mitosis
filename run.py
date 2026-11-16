@@ -756,6 +756,11 @@ def reask_values(values):
     }
 
 
+def _told(returned):
+    notes = returned.get("notes")
+    return ": %s" % notes.strip() if isinstance(notes, str) and notes.strip() else ""
+
+
 def lane_verdict(exit_code, returned, errors=()):
     status = returned.get("status") if returned else None
     if exit_code == 0 and status == "ok":
@@ -763,10 +768,10 @@ def lane_verdict(exit_code, returned, errors=()):
     if returned is None:
         return "failed", "exit %d with no valid reply: %s" % (exit_code, reply_errors(errors))
     if exit_code == 0:
-        return "failed", "exit 0 but reported %s" % status
+        return "failed", "exit 0 but reported %s%s" % (status, _told(returned))
     if status == "ok":
         return "failed", "exit %d but reported ok" % exit_code
-    return "failed", "exit %d and reported %s" % (exit_code, status)
+    return "failed", "exit %d and reported %s%s" % (exit_code, status, _told(returned))
 
 
 def run_command(argv, cwd, stdout_path, stderr_path, env=None, sandbox=None):
@@ -930,6 +935,9 @@ def msp_hook_refusal(tree, base, head, log_dir, env=None, sandbox=None):
     return (_read_tail(err) or _read_tail(out)).strip() or "exit %d" % code
 
 
+UNATTENDED = "HARNESS_UNATTENDED"
+
+
 def cluster_label(steps, index):
     return steps[0] if len(steps) == 1 else "cluster-%d" % index
 
@@ -944,6 +952,7 @@ def worker_environ(env, steps, files, label, plan_id, tier, branch):
         "MITOSIS_PLAN_ID": plan_id,
         "MITOSIS_TIER": tier or "",
         "MITOSIS_FILES": ",".join(sorted(set(files))),
+        UNATTENDED: "1",
     }
 
 
@@ -1049,11 +1058,6 @@ def _worker_values(plan, lane, tree, models, run_dir, session_id, template=None)
 
 RETRY_NOTE = "\n\nAn earlier attempt at this work failed: %s. Start again from this clone."
 
-OUTSIDE_WRITE_NOTE = (
-    " If the obstacle was a file outside your write-set, change that file as well and name it in "
-    "your notes: mitosis keeps the write, shows it to the gate and reports it."
-)
-
 RETRY_STEM = "retry"
 
 REPAIR_STEM = "repair"
@@ -1064,11 +1068,7 @@ def _attempt_stem(lane, retrying):
 
 
 def _retry_note(judged):
-    told = (judged.get("returned") or {}).get("notes")
-    return (
-        RETRY_NOTE % ("%s (%s)" % (judged["reason"], told) if told else judged["reason"])
-        + OUTSIDE_WRITE_NOTE
-    )
+    return RETRY_NOTE % judged["reason"]
 
 
 def _with_note(values, note):
@@ -1255,7 +1255,12 @@ def _land(plan, lane, tree, record, run_dir, header, settled=None):
     message = _landing_message(plan, lane, header)
     try:
         landing = isolation.read_lane(
-            clone, tree["path"], record["start"], write_set, record.get("seeded") or ()
+            clone,
+            tree["path"],
+            record["start"],
+            write_set,
+            record.get("seeded") or (),
+            (record.get("returned") or {}).get("files_changed") or (),
         )
         if joint_paths and _landed_before(tree["path"], record["start"], message):
             entries, joined = _as_on_the_branch(tree["path"], record["start"], landing["entries"], joint_paths), ()
@@ -1291,6 +1296,7 @@ def _land(plan, lane, tree, record, run_dir, header, settled=None):
     return commit, None, {
         "replayed": replayed,
         "unreplayed": landing["unreplayed"],
+        "left_out": landing["left_out"],
         "ignored": landing["ignored"],
     }
 
@@ -1851,10 +1857,65 @@ def prior_state(run_dir, plan, resume):
         return None
     if state.get("plan_id") != plan.get("plan_id"):
         raise ResumeError(
-            "%s holds a run of plan %s, not plan %s; the work-set changed, "
-            "so prior results do not apply" % (run_dir, state.get("plan_id"), plan.get("plan_id"))
+            "%s holds a run of plan %s, not plan %s: %s, so prior results do not apply"
+            % (
+                run_dir,
+                state.get("plan_id"),
+                plan.get("plan_id"),
+                plan_difference(_saved_plan(run_dir), plan),
+            )
         )
     return state
+
+
+STEPS_NAMED = 5
+
+
+def _saved_plan(run_dir):
+    try:
+        saved = read_json(os.path.join(run_dir, PLAN_FILE))
+    except (OSError, ValueError):
+        return None
+    return saved if isinstance(saved, dict) else None
+
+
+def _step_views(plan):
+    briefs = {
+        name: brief.get("text")
+        for brief in plan.get("briefs") or ()
+        for name in (step.get("name") for step in brief.get("steps") or ())
+    }
+    return {
+        item.get("name"): (
+            item,
+            (plan.get("tiers") or {}).get(item.get("name")),
+            (plan.get("context_packs") or {}).get(item.get("name")),
+            briefs.get(item.get("name")),
+        )
+        for item in plan.get("items") or ()
+    }
+
+
+def _listed(names):
+    names = tuple(names)
+    return " and ".join(part for part in (", ".join(names[:-1]), names[-1]) if part)
+
+
+def plan_difference(saved, plan):
+    if saved is None:
+        return "what differs is not known, because the run directory holds no readable %s" % PLAN_FILE
+    parts = sorted(
+        key for key in {*saved, *plan} if key != "plan_id" and saved.get(key) != plan.get(key)
+    )
+    then, now = _step_views(saved), _step_views(plan)
+    steps = tuple(str(name) for name in sorted({*then, *now}, key=str) if then.get(name) != now.get(name))
+    named = steps[:STEPS_NAMED] + (
+        ("%d more" % (len(steps) - STEPS_NAMED),) if len(steps) > STEPS_NAMED else ()
+    )
+    where = " (the Step%s %s)" % ("" if len(steps) == 1 else "s", _listed(named)) if steps else ""
+    if not parts:
+        return "the two plans hold the same parts and differ only in their id"
+    return "the plan's %s differ%s%s" % (_listed(parts), "s" if len(parts) == 1 else "", where)
 
 
 def merge_danger_pair(header):
@@ -3433,7 +3494,11 @@ def _lane_block(plan, msp, state):
                 % (index, LANE_PARKED),
             }
         if lane_state != "ok":
-            return {"state": MSP_BLOCKED, "reason": "Lane %d is %s" % (index, lane_state)}
+            why = (state["lanes"].get(str(index)) or {}).get("reason")
+            return {
+                "state": MSP_BLOCKED,
+                "reason": "Lane %d is %s%s" % (index, lane_state, ": %s" % why if why else ""),
+            }
     return None
 
 
@@ -3490,17 +3555,27 @@ def gate_inputs(settings, replayed):
 
 REPAIR_NOTE = (
     "\n\nThe finished build fails %s against this Lane's work. Change the work until each passes, "
-    "and leave the test as it is. If the failure comes from the environment and no change to the "
-    "code can fix it, say so in your notes and report failed.\n\nOutput of the failing run:\n%s"
+    "and leave what each test asserts as it is."
 )
 
 UNRUNNABLE_NOTE = (
     "\n\nThe acceptance command could not run %s against this Lane's work, so nothing judged it. "
     "The command is given the test file and the test's name separately; change the test file so "
-    "each test runs under exactly the name given, and leave the name as it is. If the failure "
-    "comes from the environment and no change to the code can fix it, say so in your notes and "
-    "report failed.\n\nOutput of the run:\n%s"
+    "each test runs under exactly the name given, and leave the name and what the test asserts "
+    "as they are."
 )
+
+REPAIR_WAY_OUT = (
+    "\n\nIf a test is itself wrong, or the environment fails and no change of yours can fix it, "
+    "say why in your notes and report failed."
+)
+
+LEFT_OUT_NOTE = (
+    "\n\nNo reply named these new files, so mitosis left them out of the branch: %s. To keep one, "
+    "write it again and name each file, not a folder, in files_changed."
+)
+
+REPAIR_OUTPUT = "\n\nOutput of the run of %s:\n%s"
 
 
 def _gate_log_tail(settings, msp, entry):
@@ -3531,15 +3606,35 @@ def _failing_by_lane(plan, gate_result):
     return grouped
 
 
-def _repair_note(settings, msp, failing):
-    notes = ()
+def _left_out_root(tree_path, path):
+    absent = next(
+        (
+            folder
+            for folder in _prefixes(path)[:-1]
+            if not os.path.isdir(os.path.join(tree_path, *_parts(folder)))
+        ),
+        None,
+    )
+    return path if absent is None else absent + "/"
+
+
+def _left_out_note(tree, record):
+    left_out = sorted(
+        {_left_out_root(tree["path"], path) for path in (record or {}).get("left_out") or ()}
+    )
+    return LEFT_OUT_NOTE % ", ".join(left_out) if left_out else ""
+
+
+def _repair_note(settings, msp, failing, left_out):
+    asked, shown = (), ()
     for note, wanted in ((REPAIR_NOTE, fails_with_the_work), (UNRUNNABLE_NOTE, cannot_run_with_the_work)):
         chosen = tuple((position, entry) for position, entry in failing if wanted(entry))
         if chosen:
             names = ", ".join(property_key(entry["file"], entry["test"]) for _, entry in chosen)
             logs = "\n".join(_gate_log_tail(settings, msp, position) for position, _ in chosen)
-            notes = notes + (note % (names, logs[-MAX_OUTPUT:]),)
-    return "".join(notes)
+            asked = asked + (note % names,)
+            shown = shown + (REPAIR_OUTPUT % (names, logs[-MAX_OUTPUT:]),)
+    return "".join((*asked, left_out, REPAIR_WAY_OUT, *shown)) if asked else ""
 
 
 def _repaired_lane(plan, lane, tree, settings, note):
@@ -3579,17 +3674,26 @@ def _repaired_lane(plan, lane, tree, settings, note):
     return landed
 
 
-OUTSIDE_PATH_KEYS = ("unreplayed", "ignored")
+OUTSIDE_PATH_KEYS = ("unreplayed", "left_out", "ignored")
 
 NO_REPAIR = {"state": None, "landed": False, "parked": None, "failed": ()}
 
 
 def _keeping_outside_writes(earlier, repaired):
+    landed = repaired.get("replayed") or {}
+    superseded = {"left_out": frozenset(repaired.get("unreplayed") or ())}
     return {
         **repaired,
-        "replayed": {**(repaired.get("replayed") or {}), **(earlier.get("replayed") or {})},
+        "replayed": {**landed, **(earlier.get("replayed") or {})},
         **{
-            key: sorted(set(earlier.get(key) or ()) | set(repaired.get(key) or ()))
+            key: sorted(
+                {
+                    path
+                    for path in earlier.get(key) or ()
+                    if path not in landed and path not in superseded.get(key, ())
+                }
+                | set(repaired.get(key) or ())
+            )
             for key in OUTSIDE_PATH_KEYS
         },
     }
@@ -3626,7 +3730,8 @@ def _repair_lanes(plan, msp, tree, state, settings, gated):
     lanes = state["lanes"]
     outcomes = ()
     for lane, failing in sorted(_failing_by_lane(plan, gated["gate"]).items()):
-        record = _repaired_lane(plan, lane, tree, settings, _repair_note(settings, msp, failing))
+        note = _repair_note(settings, msp, failing, _left_out_note(tree, lanes.get(str(lane))))
+        record = _repaired_lane(plan, lane, tree, settings, note)
         outcomes = outcomes + ((lane, record),)
         if record["state"] == "ok":
             lanes = _with_repair(plan, msp, tree, lanes, lane, record)
@@ -3684,8 +3789,17 @@ def _reusable_gate(prior, head, inputs):
     return recorded
 
 
+def _gate_blocked(prior):
+    recorded = prior.get("gate")
+    return (
+        not isinstance(recorded, dict)
+        or bool(recorded.get("blocks"))
+        or prior.get("state") == MSP_GATE_FAILED
+    )
+
+
 def _proven_head(prior, head, proven):
-    if proven is None or head is None or not isinstance(prior.get("gate"), dict):
+    if proven is None or head is None or _gate_blocked(prior):
         return None
     return head if head.startswith(proven) else None
 
@@ -3740,9 +3854,10 @@ def _producer_heads(tree, producers, trees):
     return tuple(commit for commit in found if commit is not None)
 
 
-def _with_unreplayed(plan, findings, unreplayed):
+def _with_unreplayed(plan, findings, unreplayed, left_out):
+    noted = {**findings, "left_out": sorted(left_out)} if left_out else findings
     if not unreplayed:
-        return findings
+        return noted
     marked = _referee_marked(unreplayed, tuple(plan.get("locked") or ()))
     reported = (
         {"undeclared": sorted(set(findings["undeclared"]) | set(unreplayed))}
@@ -3750,7 +3865,7 @@ def _with_unreplayed(plan, findings, unreplayed):
         else {}
     )
     return {
-        **findings,
+        **noted,
         **reported,
         "referee": sorted(set(findings["referee"]) | marked),
         "fatal": bool(findings["fatal"] or marked),
@@ -3758,7 +3873,7 @@ def _with_unreplayed(plan, findings, unreplayed):
 
 
 def _reconcile_stage(
-    plan, msp, tree, producers, trees, settings, head=None, unreplayed=(), repair=None
+    plan, msp, tree, producers, trees, settings, head=None, unreplayed=(), repair=None, left_out=()
 ):
     try:
         findings = reconcile(
@@ -3778,10 +3893,10 @@ def _reconcile_stage(
             "reason": "mitosis could not judge the referee paths in the commits of %s, so the gate "
             "did not run and the MSP is held back: %s" % (tree["branch"], error),
         }
-    return {"reconcile": _with_unreplayed(plan, findings, unreplayed)}
+    return {"reconcile": _with_unreplayed(plan, findings, unreplayed, left_out)}
 
 
-def _committed_reconcile(plan, tree, settings, uncommitted, head=None, unreplayed=()):
+def _committed_reconcile(plan, tree, settings, uncommitted, head=None, unreplayed=(), left_out=()):
     try:
         written = referee_writes(
             plan,
@@ -3800,7 +3915,7 @@ def _committed_reconcile(plan, tree, settings, uncommitted, head=None, unreplaye
         }
     return {
         "reconcile": _with_unreplayed(
-            plan, {"referee": written, "fatal": bool(written)}, unreplayed
+            plan, {"referee": written, "fatal": bool(written)}, unreplayed, left_out
         )
     }
 
@@ -3816,11 +3931,14 @@ def _referee_stage(
     head=None,
     unreplayed=(),
     repair=None,
+    left_out=(),
 ):
     reconciled = (
-        _reconcile_stage(plan, msp, tree, producers, trees, settings, head, unreplayed, repair)
+        _reconcile_stage(
+            plan, msp, tree, producers, trees, settings, head, unreplayed, repair, left_out
+        )
         if uncommitted is None
-        else _committed_reconcile(plan, tree, settings, uncommitted, head, unreplayed)
+        else _committed_reconcile(plan, tree, settings, uncommitted, head, unreplayed, left_out)
     )
     if reconciled.get("state") == MSP_GATE_FAILED:
         return {**reconciled, "gate": None, "gate_error": reconciled["reason"]}
@@ -3977,7 +4095,26 @@ def _with_gate_referee(reconciled, tampered):
     }
 
 
-def _held_back(gated, branch, hook_refusal=None):
+GATE_UNRUN = "the gate could not run, so nothing judged %s and it was committed and not pushed: %s"
+
+LOCK_UNJUDGED = (
+    "the lock of MSP %s failed, so no locked test judged %s and it was committed and not pushed: %s"
+)
+
+
+def _unlocked_hold(plan, msp, state, branch):
+    record = lock_of(state, msp) or {}
+    if record.get("state") != "failed":
+        return None
+    return {
+        "state": MSP_GATE_FAILED,
+        "reason": LOCK_UNJUDGED % (_label(plan, msp), branch, record.get("reason")),
+    }
+
+
+def _held_back(gated, branch, hook_refusal=None, unlocked=None):
+    if gated["gate"] is None:
+        return {"state": MSP_GATE_FAILED, "reason": GATE_UNRUN % (branch, gated["gate_error"])}
     if hook_refusal is not None:
         return {
             "state": MSP_GATE_FAILED,
@@ -3986,7 +4123,7 @@ def _held_back(gated, branch, hook_refusal=None):
         }
     failing = failing_properties(gated["gate"])
     if not failing:
-        return None
+        return unlocked
     return {
         "state": MSP_GATE_FAILED,
         "reason": "%s failed against the finished work, so %s was committed and not pushed"
@@ -4014,6 +4151,20 @@ def _blocked_record(block, held):
     }
 
 
+REPAIR_KEY = "repair"
+
+
+def _told_repairs(told):
+    return {REPAIR_KEY: list(told)} if told else {}
+
+
+def _telling(run_dir, state, msp, told):
+    if not told:
+        return state
+    earlier = (state["msps"].get(str(msp)) or {}).get(REPAIR_KEY) or ()
+    return write_state(run_dir, _msp_record(state, msp, **_told_repairs((*told, *earlier))))
+
+
 def _pushed_ship(record):
     shipped = record.get("ship") or {}
     return shipped if shipped.get("pushed") else None
@@ -4036,6 +4187,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
     block = _lane_block(plan, msp, state) or _producer_block(plan, msp, state, producers)
     replayed = isolation.msp_replayed(plan, msp, state["lanes"])
     unreplayed = isolation.msp_unreplayed(plan, msp, state["lanes"])
+    left_out = isolation.msp_left_out(plan, msp, state["lanes"])
     state = write_state(run_dir, _msp_record(state, msp, replayed=replayed))
     head, commit_error, conflict = (
         (None, None, None)
@@ -4052,7 +4204,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
     proven_head = _proven_head(prior, head, settings["proven_heads"].get(msp))
     repair = _proved_repair(plan, msp, prior, state, settings, proven_head)
     held = _referee_stage(
-        plan, msp, tree, producers, trees, settings, uncommitted, head, unreplayed, repair
+        plan, msp, tree, producers, trees, settings, uncommitted, head, unreplayed, repair, left_out
     )
     if held is not None:
         notify(
@@ -4108,7 +4260,9 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
         )
     tampered = _gate_referee_writes(gated) if judged_now else []
     reconciled = _with_gate_referee(
-        _reconcile_stage(plan, msp, tree, producers, trees, settings, head, unreplayed, repair),
+        _reconcile_stage(
+            plan, msp, tree, producers, trees, settings, head, unreplayed, repair, left_out
+        ),
         tampered,
     )
     notify(
@@ -4139,11 +4293,16 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
             settings.get("env"),
             settings.get("sandbox"),
         )
+        if judged_now and gated["gate"] is not None
+        else None
+    )
+    held_back = (
+        _held_back(gated, tree["branch"], refused, _unlocked_hold(plan, msp, state, tree["branch"]))
         if judged_now
         else None
     )
-    held_back = _held_back(gated, tree["branch"], refused) if judged_now else None
     unrunnable = judged_now and refused is None and bool(unrunnable_properties(gated["gate"]))
+    told = tuple(prior.get(REPAIR_KEY) or ()) if recorded_gate is not None else ()
     if held_back is not None or unrunnable:
         owed = recorded_gate is None or prior.get("state") != MSP_GATE_FAILED
         repair = (
@@ -4151,6 +4310,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
             if repairable and refused is None and owed
             else NO_REPAIR
         )
+        told = repair["failed"] or told
         if repair["parked"] is not None:
             return write_state(
                 run_dir,
@@ -4162,17 +4322,20 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
                 ),
             )
         if repair["landed"]:
-            return _finish_msp(plan, msp, trees, producers, repair["state"], settings, repairable=False)
+            return _telling(
+                run_dir,
+                _finish_msp(plan, msp, trees, producers, repair["state"], settings, repairable=False),
+                msp,
+                repair["failed"],
+            )
     if held_back is not None:
         return write_state(
             run_dir,
             _msp_record(
                 state,
                 msp,
-                **{
-                    **held_back,
-                    "reason": "; ".join((held_back["reason"], *repair["failed"])),
-                },
+                **{**held_back, "reason": "; ".join((held_back["reason"], *told))},
+                **_told_repairs(told),
             ),
         )
     base, exception = pr_base(
@@ -4193,7 +4356,7 @@ def _finish_msp(plan, msp, trees, producers, state, settings, repairable=True):
         msp_foreign_writes(plan, msp, state["lanes"]),
         _pushed_ship(prior),
     )
-    return write_state(run_dir, _msp_record(state, msp, **shipped))
+    return write_state(run_dir, _msp_record(state, msp, **shipped, **_told_repairs(told)))
 
 
 LOCK_MESSAGE = "test: lock the acceptance checks"
@@ -4568,7 +4731,7 @@ def _landed_lock(plan, entry, settings, record, base):
         entries = isolation.write_set_entries(clone, slice_paths, seeded)
         writes = _probe_writes(clone, repo, base, probe, seeded)
         outside = isolation.outside_writes(
-            clone, repo, _committed_entries(repo, base), slice_paths + probe, seeded
+            clone, repo, _committed_entries(repo, base), slice_paths + probe, seeded, ()
         )
     except (GitError, OSError) as error:
         return _failed_lock(
@@ -4580,7 +4743,10 @@ def _landed_lock(plan, entry, settings, record, base):
         **record,
         "probes": sorted(writes),
         "undeclared": sorted(
-            set(outside["writes"]) | set(outside["deletes"]) | set(outside["unreplayed"])
+            set(outside["writes"])
+            | set(outside["deletes"])
+            | set(outside["unreplayed"])
+            | set(outside["left_out"])
         ),
         "ignored": list(outside["ignored"]),
     }

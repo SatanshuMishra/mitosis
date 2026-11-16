@@ -177,7 +177,7 @@ class SharedOverlap(OptionsCase):
         completed, plan = self.planned(
             [S("a", [SHARED]), S("b", [SHARED]), S("c", [SHARED])], "--shared-files", SHARED
         )
-        self.assertEqual(plan.get("coalesce"), {"0": [["a", "b", "c"]]}, tail(completed))
+        self.assertNotIn("lane_after", plan, tail(completed))
 
 
 class SharedCoupling(OptionsCase):
@@ -185,7 +185,7 @@ class SharedCoupling(OptionsCase):
         completed, plan = self.planned(two_editors(SHARED, SHARED), "--shared-files", SHARED)
         self.assertEqual(
             plan.get("coupling_review"),
-            [{"steps": ["a", "b"], "lanes": [0, 1], "signals": ["shared-file:" + SHARED], "default": "parallel"}],
+            [{"steps": ["a", "b"], "lanes": [0, 1], "signals": ["shared-file:" + SHARED]}],
             tail(completed),
         )
 
@@ -199,7 +199,7 @@ class SharedCoupling(OptionsCase):
         self.assertEqual(len(review), 1, tail(completed))
         self.assertEqual(review[0].get("signals"), ["shared-file:r/x.py", "shared-file:s/y.py"], tail(completed))
 
-    def a_shared_risk_marker_still_decides_the_default(self):
+    def a_shared_risk_marker_is_named_beside_the_shared_file(self):
         completed, plan = self.planned(
             two_editors(SHARED, SHARED), "--shared-files", SHARED, "--risk-markers", "reg"
         )
@@ -208,7 +208,6 @@ class SharedCoupling(OptionsCase):
         self.assertEqual(
             review[0].get("signals"), ["shared-risk-marker:reg", "shared-file:" + SHARED], tail(completed)
         )
-        self.assertEqual(review[0].get("default"), "serialize", tail(completed))
 
 
 class IntegrationOrder(OptionsCase):
@@ -550,7 +549,7 @@ class NoRunDir(OptionsCase):
                 parsed = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(parsed, dict) and (parsed.get("structured_output") or {}).get("item") == "a":
+            if isinstance(parsed, dict) and (parsed.get("structured_output") or {}).get("files_changed") == ["a.py"]:
                 found.append(number)
         return found
 

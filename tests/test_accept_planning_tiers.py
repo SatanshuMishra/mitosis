@@ -88,27 +88,6 @@ class MarkerList(accept.Case):
         self.assertEqual((plan.get("tiers") or {}).get("b"), "top", tail(completed))
 
 
-class VerifyMarkers(accept.Case):
-    def make_scratch(self):
-        return accept.Scratch(seeded={"auth/test_a.py": "import unittest\n"})
-
-    def a_serial_marker_is_a_raw_substring_of_a_file(self):
-        completed, plan = self.planned(
-            [S("x", ["app/unauthenticated/x.ts"])], "--serial-markers", "auth"
-        )
-        self.assertEqual((plan.get("verify_modes") or {}).get("x"), "serial", tail(completed))
-
-    def an_acceptance_file_alone_never_makes_a_step_serial(self):
-        completed = self.scratch.plan_only(
-            [S("a", ["a.py"], acceptance=[{"file": "auth/test_a.py", "test": "a_works"}])],
-            "--serial-verify-markers",
-            "auth",
-        )
-        self.exits(completed, 0)
-        plan = self.plan(completed)
-        self.assertEqual((plan.get("verify_modes") or {}).get("a"), "offload", tail(completed))
-
-
 def load_tests(loader, standard, pattern):
     class Loader(unittest.TestLoader):
         def getTestCaseNames(self, case):
@@ -126,7 +105,6 @@ def load_tests(loader, standard, pattern):
         HistoryMatching,
         GlobMarkers,
         MarkerList,
-        VerifyMarkers,
     ):
         suite.addTests(Loader().loadTestsFromTestCase(case))
     return suite

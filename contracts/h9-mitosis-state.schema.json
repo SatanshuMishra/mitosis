@@ -580,6 +580,14 @@
             "minLength": 1
           }
         },
+        "left_out": {
+          "description": "New files outside a write-set that no Worker reply named, so the branch does not hold them.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
         "unwritten": {
           "type": "array",
           "items": {
@@ -776,7 +784,6 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "item",
         "status",
         "files_changed",
         "notes"
@@ -1015,6 +1022,14 @@
             "minLength": 1
           }
         },
+        "left_out": {
+          "description": "New files outside the Lane's write-set that its reply did not name, so mitosis left them out of the branch.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
         "ignored": {
           "type": "array",
           "items": {
@@ -1127,6 +1142,13 @@
         },
         "referee": {
           "$ref": "#/$defs/referee"
+        },
+        "repair": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       },
       "allOf": [

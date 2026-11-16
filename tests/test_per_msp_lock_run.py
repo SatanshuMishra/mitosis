@@ -103,7 +103,7 @@ def put(path, content):
 
 
 def failed(name, why):
-    replied({"item": name, "status": "failed", "files_changed": [], "notes": why})
+    replied({"status": "failed", "files_changed": [], "notes": why})
 
 
 with open(os.path.join(here, "worker.json"), encoding="utf-8") as handle:
@@ -148,7 +148,7 @@ if job.get("exit"):
 time.sleep(job.get("sleep", 0))
 for path, content in sorted(job.get("writes", {}).items()):
     put(path, content)
-replied({"item": name, "status": "ok", "files_changed": sorted(job.get("writes", {})), "notes": "done"})
+replied({"status": "ok", "files_changed": sorted(job.get("writes", {})), "notes": "done"})
 '''
 
 ACCEPT = r'''
@@ -708,15 +708,16 @@ class PerMspLockRun(unittest.TestCase):
         items = scratch.items(labelled())
         completed = scratch.pushing(items, "--plan-file", scratch.saved(items), *LOCK_TIMEOUT)
         self.assertEqual(scratch.remote_ref("refs/heads/feature"), before, "remote feature" + tail(completed))
-        fallen_back = scratch.first_after(before, "refs/heads/mitosis/beta", git_dir=scratch.remote)
-        self.assertNotIn(("A", TEST_B), scratch.changes(before, fallen_back, git_dir=scratch.remote))
+        self.assertIsNone(
+            scratch.remote_ref("refs/heads/mitosis/beta"), "beta was pushed unlocked" + tail(completed)
+        )
         self.assertIsNotNone(
             scratch.remote_ref("refs/heads/mitosis/alpha"), "alpha was never pushed" + tail(completed)
         )
         first = scratch.first_after(before, "refs/heads/mitosis/alpha", git_dir=scratch.remote)
         self.assertEqual(scratch.changes(before, first, git_dir=scratch.remote), [("A", TEST_A)])
         self.assertIn("mitosis/alpha", scratch.pull_requests())
-        self.assertIn("mitosis/beta", scratch.pull_requests())
+        self.assertNotIn("mitosis/beta", scratch.pull_requests())
 
     def test_locked_files_already_at_the_base_need_no_check_author(self):
         scratch, before, completed, summary = self._run(None, None, {TEST_A: checking(TEST_A)})
@@ -731,21 +732,29 @@ class PerMspLockRun(unittest.TestCase):
         first = self._lock_commit_only(scratch, before, "mitosis/beta", TEST_B, completed)
         self.assertEqual(beta.get("commit"), first)
 
-    def test_a_failed_lock_falls_back_for_its_msp_alone(self):
+    def _held(self, summary, label, completed):
+        found = msp_summary(self, summary, label, completed)
+        self.assertEqual(found.get("state"), "gate-failed", "MSP %s state" % label + tail(completed))
+        return found
+
+    def test_a_failed_lock_holds_back_its_msp_alone(self):
         scratch, before, completed, summary = self._run(
             None, standard_jobs(**{"check-author-alpha": {"exit": 1}})
         )
-        self._committed(summary, "alpha", completed)
+        self._held(summary, "alpha", completed)
         self.assertEqual(lock_of(self, summary, "alpha", completed).get("state"), "failed")
         self.assertIn("build-a", scratch.dispatched())
         self._gate_passed(summary, "beta", completed)
+        self.assertEqual(completed.returncode, 21, "mitosis exit code" + tail(completed))
 
-    def test_a_failed_lock_never_blocks_the_msps_that_merge_it(self):
+    def test_a_failed_lock_blocks_the_msps_that_merge_it(self):
         scratch, before, completed, summary = self._run(
             labelled(b_after_a=True), standard_jobs(**{"check-author-alpha": {"exit": 1}})
         )
-        self._committed(summary, "alpha", completed)
-        self._committed(summary, "beta", completed)
+        self._held(summary, "alpha", completed)
+        self.assertEqual(
+            msp_summary(self, summary, "beta", completed).get("state"), "blocked", tail(completed)
+        )
         self.assertIn("build-a", scratch.dispatched())
         self.assertIn("build-b", scratch.dispatched())
 
@@ -759,7 +768,7 @@ class PerMspLockRun(unittest.TestCase):
         self.assertNotIn("build-a", scratch.dispatched())
         self.assertNotIn("build-c", scratch.dispatched())
 
-    def test_a_resume_never_reruns_a_lock_that_fell_back(self):
+    def test_a_resume_never_reruns_a_failed_lock(self):
         scratch, before, completed, summary = self._run(
             None, standard_jobs(**{"check-author-alpha": {"exit": 1}})
         )
@@ -771,7 +780,7 @@ class PerMspLockRun(unittest.TestCase):
         )
         self.assertEqual(scratch.dispatched()[first_run:], [], tail(resumed))
         result = summary_of(resumed)
-        self._committed(result, "alpha", resumed)
+        self._held(result, "alpha", resumed)
         self._committed(result, "beta", resumed)
         self.assertEqual(lock_of(self, result, "alpha", resumed).get("state"), "failed")
 

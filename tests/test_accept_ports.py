@@ -35,47 +35,6 @@ def checked_steps():
     ]
 
 
-class TierNotes(accept.Case):
-    def a_history_bump_is_explained(self):
-        history = store(
-            self.scratch,
-            {"files": ["a.py"], "outcome": "reverted"},
-            {"files": ["a.py"], "outcome": "speculative"},
-        )
-        completed, plan = self.planned(
-            [S("a", ["a.py"], complexity="simple")], "--trajectory", history
-        )
-        self.assertEqual(plan.get("tier_notes"), {"a": "history: 1 reverted, 1 speculative"}, tail(completed))
-
-
-class VerdictGroups(accept.Case):
-    def pairs_with_one_signal_set_share_a_verdict(self):
-        completed, plan = self.planned(
-            [S("a", ["auth/a.py"]), S("b", ["auth/b.py"]), S("c", ["auth/c.py"])], "--risk-markers", "auth"
-        )
-        self.assertEqual(
-            plan.get("verdict_groups"),
-            [
-                {
-                    "signals": ["shared-risk-marker:auth"],
-                    "default": "serialize",
-                    "count": 3,
-                    "pairs": [["a", "b"], ["a", "c"], ["b", "c"]],
-                }
-            ],
-            tail(completed),
-        )
-
-
-class SharedContext(accept.Case):
-    def a_neighbour_two_steps_read_is_shared(self):
-        graph = accept.put_json(
-            self.scratch.path("graph.json"), accept.node_link([("a.py", "hub.py"), ("c.py", "hub.py")])
-        )
-        completed, plan = self.planned([S("a", ["a.py"]), S("c", ["c.py"])], "--graph", graph)
-        self.assertEqual(plan.get("shared_context"), {"0": ["hub.py"]}, tail(completed))
-
-
 class PromptTemplate(accept.Case):
     def a_build_lane_gets_the_callers_template(self):
         completed = self.scratch.full_run(
@@ -238,9 +197,6 @@ def load_tests(loader, standard, pattern):
 
     suite = unittest.TestSuite()
     for case in (
-        TierNotes,
-        VerdictGroups,
-        SharedContext,
         PromptTemplate,
         WorkerEnvironment,
         OutputTail,

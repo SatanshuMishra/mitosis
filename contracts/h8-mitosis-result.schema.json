@@ -114,6 +114,12 @@
                 "type": "string",
                 "minLength": 1
               }
+            },
+            "notes": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         },
@@ -375,6 +381,14 @@
             "minLength": 1
           }
         },
+        "left_out": {
+          "description": "New files outside a write-set that no Worker reply named, so the branch does not hold them.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
         "unwritten": {
           "type": "array",
           "items": {
@@ -563,6 +577,13 @@
         },
         "referee": {
           "$ref": "h9-mitosis-state.schema.json#/$defs/referee"
+        },
+        "repair": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       },
       "allOf": [
@@ -670,11 +691,8 @@
             "merge-blocked",
             "parked-limit",
             "parked",
-            "gate-inert",
             "gate-inconclusive",
             "ship-failed",
-            "manifest",
-            "gate-weak",
             "lock-failed",
             "lock-parked-limit",
             "lock-parked",
@@ -692,11 +710,8 @@
             11,
             12,
             13,
-            20,
             21,
-            22,
-            23,
-            24
+            22
           ]
         },
         "detail": {
@@ -916,22 +931,6 @@
           "if": {
             "properties": {
               "kind": {
-                "const": "gate-inert"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "exit": {
-                "const": 20
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "kind": {
                 "const": "gate-inconclusive"
               }
             }
@@ -964,30 +963,14 @@
           "if": {
             "properties": {
               "kind": {
-                "const": "manifest"
+                "const": "lock-failed"
               }
             }
           },
           "then": {
             "properties": {
               "exit": {
-                "const": 23
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "kind": {
-                "const": "gate-weak"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "exit": {
-                "const": 24
+                "const": 21
               }
             }
           }
@@ -998,40 +981,9 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "ordered",
         "parallel"
       ],
       "properties": {
-        "ordered": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "first",
-              "then",
-              "signals"
-            ],
-            "properties": {
-              "first": {
-                "type": "string",
-                "minLength": 1
-              },
-              "then": {
-                "type": "string",
-                "minLength": 1
-              },
-              "signals": {
-                "type": "array",
-                "minItems": 1,
-                "items": {
-                  "type": "string",
-                  "pattern": "^(import-adjacency|shared-risk-marker|recorded-regression|same-migration-directory|import-adjacent|regression-history|shared-risk-marker:.+|same-migration-app:.+|shared-file:.+)$"
-                }
-              }
-            }
-          }
-        },
         "parallel": {
           "type": "array",
           "items": {

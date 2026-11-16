@@ -96,7 +96,7 @@ A file in the Worker's worktree that the MSP's commit does not carry; it never r
 _Avoid_: stray, uncommitted write
 
 **Held-back MSP**:
-An MSP with an acceptance test still failing against the finished work after one repair, or whose whole change a repository hook refused, committed on its branch in the state gate-failed and never pushed.
+An MSP with an acceptance test still failing against the finished work after its repair, one per fresh gate verdict, or whose whole change a repository hook refused, whose gate could not run or whose lock failed, committed on its branch in the state gate-failed and never pushed.
 
 **Parked Lane**:
 A Lane whose Worker stopped at a usage limit, or that was not dispatched after one, recorded parked-limit so a resume runs it.
@@ -153,21 +153,9 @@ _Avoid_: shared test file, merged test file
 A behaviour in which mitosis differs from the reference planner, the planner mitosis is built from; it stays only when a measurement or a reproduction shows the reference planner's behaviour failing where mitosis's does not.
 _Avoid_: improvement, divergence
 
-**Tier note**:
-A line of a plan that says why a Step's tier was raised: its blast radius, its complexity, a risk marker or a recorded breakage.
-_Avoid_: tier reason, bump reason
-
 **Coupled pair**:
-Two Lanes a coupling signal links, which mitosis flags for a verdict and never orders itself.
+Two Lanes a coupling signal links, which mitosis names in the result and never orders itself.
 _Avoid_: ordered pair, conflict
-
-**Verdict group**:
-The coupled pairs that share one set of coupling signals, answered by one verdict.
-_Avoid_: pair group, cluster
-
-**Shared context**:
-A file two or more Steps read but none edits, listed once for all of them.
-_Avoid_: common files
 
 **Saved plan**:
 A plan file mitosis builds as written, with the charter's locks and its check authors' files merged back into its locked list.

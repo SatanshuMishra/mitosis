@@ -568,7 +568,7 @@ def _clone_file(clone, path):
     return (run.EXECUTABLE_MODE if executable else run.REGULAR_MODE), data
 
 
-def outside_writes(clone, tree, start_entries, write_set, seeded):
+def outside_writes(clone, tree, start_entries, write_set, seeded, claimed):
     linked = tuple(path for path, (mode, _) in start_entries.items() if mode == run.GITLINK_MODE)
     held = {path: entry for path, entry in start_entries.items() if entry[0] != run.GITLINK_MODE}
     seeded_roots = _seeded_roots(seeded)
@@ -600,28 +600,33 @@ def outside_writes(clone, tree, start_entries, write_set, seeded):
     added = tuple(path for path in fresh if path not in ignored)
     dropped = tuple(path for path in fresh if path in ignored)
     deletes = tuple(path for path in gone if not _escapes(clone, path))
+    named = frozenset(run._norm(name) for name in claimed)
+    claimed_new = tuple(path for path in added if path in named)
     candidates = tuple(
         path
-        for path in changed + added
+        for path in changed + claimed_new
         if found[path] == "file" and not _inside_nested_git(path)
     )
     read = {path: _clone_file(clone, path) for path in candidates}
     writes = {path: entry for path, entry in read.items() if entry is not None}
     unreplayed = sorted(
-        {_reported(path) for path in changed + added if path not in writes}
+        {_reported(path) for path in changed + claimed_new if path not in writes}
         | {path for path in gone if path not in deletes}
     )
     return {
         "writes": writes,
         "deletes": deletes,
         "unreplayed": unreplayed,
+        "left_out": sorted({_reported(path) for path in added if path not in named}),
         "ignored": _ignored_report(tree, dropped),
     }
 
 
-def read_lane(clone, tree, start, write_set, seeded):
+def read_lane(clone, tree, start, write_set, seeded, claimed):
     entries = write_set_entries(clone, write_set, seeded)
-    outside = outside_writes(clone, tree, run._committed_entries(tree, start), write_set, seeded)
+    outside = outside_writes(
+        clone, tree, run._committed_entries(tree, start), write_set, seeded, claimed
+    )
     return {**outside, "entries": entries}
 
 
@@ -665,6 +670,10 @@ def _msp_paths(plan, msp, lane_records, key):
 
 def msp_unreplayed(plan, msp, lane_records):
     return _msp_paths(plan, msp, lane_records, "unreplayed")
+
+
+def msp_left_out(plan, msp, lane_records):
+    return _msp_paths(plan, msp, lane_records, "left_out")
 
 
 def msp_ignored(plan, msp, lane_records):

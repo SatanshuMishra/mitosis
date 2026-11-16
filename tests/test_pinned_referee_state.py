@@ -75,7 +75,7 @@ for action in job["actions"]:
         sys.exit(action[1])
     else:
         sys.exit("unknown action %r" % (kind,))
-print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"item": job["step"], "status": "ok", "files_changed": job["declared"], "notes": "done"}}))
+print(json.dumps({"type": "result", "session_id": SESSION, "result": "done", "structured_output": {"status": "ok", "files_changed": job["declared"], "notes": "done"}}))
 '''
 
 REASK_COMMAND = " ".join(

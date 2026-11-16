@@ -109,21 +109,24 @@ if mode in ("foreign-" + lane, "sneak-" + lane):
         handle.write("shape changed by lane %s\n" % lane)
     if mode == "foreign-" + lane:
         reported = reported + ["iface.txt"]
-if mode == "undeclared":
+if mode in ("undeclared", "undeclared-unnamed"):
     with open("stray.txt", "w") as handle:
         handle.write("undeclared\n")
-if mode == "referee":
+if mode in ("referee", "referee-unnamed"):
     os.makedirs("tests", exist_ok=True)
     with open(os.path.join("tests", "conftest.py"), "w") as handle:
         handle.write("collect_ignore = ['test_a.py']\n")
-if mode == "cross":
+if mode in ("cross", "cross-unnamed"):
     with open("b.txt", "a") as handle:
         handle.write("written across an MSP boundary by lane %s\n" % lane)
+named_outside = {"undeclared": "stray.txt", "referee": "tests/conftest.py", "cross": "b.txt"}
+if mode in named_outside and named_outside[mode] not in reported:
+    reported = reported + [named_outside[mode]]
 if mode == "noisy":
     for i in range(5000):
         print("prose line %d" % i, file=sys.stderr)
 status = "failed" if mode == "reports-failed" else "ok"
-reply = {"item": "lane-%s" % lane, "status": status, "files_changed": reported, "notes": "done"}
+reply = {"status": status, "files_changed": reported, "notes": "done"}
 if mode != "silent":
     print(json.dumps({"type": "result", "session_id": session, "result": "done", "structured_output": reply}))
 os.remove(running)
@@ -1293,19 +1296,6 @@ class Gate(RepoCase):
         self.assertEqual(len(plan["msps"]), 1)
         self.assertEqual(run.implementation_paths(plan, 0), ["impl.txt", "other.txt"])
 
-    def a_serial_acceptance_property_is_run_and_judged_like_any_other(self):
-        plan = core.plan([gated_step()], serial_markers=["impl.txt"])
-        self.assertEqual(plan["verify_modes"]["impl"], "serial")
-        trees = self.build(plan)
-        result = self.gate(plan, trees, accept="real")
-        self.assertEqual(result["outcome"], "pass")
-        self.assertFalse(result["blocks"])
-        self.assertEqual(
-            result["counts"], {"pass": 1, "weak": 0, "inert": 0, "inconclusive": 0, "not-applicable": 0}
-        )
-        self.assertEqual([p["outcome"] for p in result["properties"]], ["pass"])
-        self.assertEqual(len(self.gate_runs()), 1)
-
     def an_empty_acceptance_list_is_counted_and_does_not_block(self):
         plan = core.plan([step("a", ["a.txt"])])
         trees = self.build(plan)
@@ -1332,7 +1322,7 @@ class Gate(RepoCase):
         self.assertEqual(sh(["git", "status", "--porcelain"], tree), "")
         self.assertEqual(read(os.path.join(tree, "impl.txt")), "work by lane 0\n")
 
-    def a_gate_that_throws_records_the_error_and_ships(self):
+    def a_gate_that_throws_records_the_error_and_holds_the_msp(self):
         self.add_remote()
         plan = core.plan([gated_step()])
         state = run.execute(
@@ -1349,15 +1339,12 @@ class Gate(RepoCase):
             render_command=self.render_command,
             env=spawn_env(),
         )
-        self.assertEqual(state["msps"]["0"]["state"], "shipped")
+        self.assertEqual(state["msps"]["0"]["state"], "gate-failed")
         self.assertIsNone(state["msps"]["0"]["gate"])
         self.assertIn("no-such-runner", state["msps"]["0"]["gate_error"])
-        self.assertEqual(self.remote_heads(), ["mitosis/impl"])
-        self.assertEqual(len(self.pull_requests()), 1)
-        self.assertIn(
-            {"check": "Acceptance gate", "result": "Not run: the gate could not run"},
-            self.fields(0)["testing"],
-        )
+        self.assertIn("no-such-runner", state["msps"]["0"]["reason"])
+        self.assertEqual(self.remote_heads(), [])
+        self.assertEqual(self.pull_requests(), [])
 
     def _setup_gate(self, plan, trees, names):
         script = os.path.join(self.tmp, "setup.py")
@@ -1395,24 +1382,6 @@ class Gate(RepoCase):
         self.assertEqual(result["referee"], [])
         self.assertEqual(result["outcome"], "pass")
         self.assertEqual(len(self.gate_runs()), 1)
-
-    def an_unproven_property_is_named_in_the_body_with_its_step(self):
-        self.add_remote()
-        plan = core.plan([gated_step()])
-        held = self.execute(plan, accept="failing", pr=self.pr_command())
-        self.assertEqual(held["msps"]["0"]["state"], "gate-failed")
-        head = held["msps"]["0"]["gate"]["commit"]
-        state = self.execute(
-            plan, accept="failing", pr=self.pr_command(), resume=True, proven_heads={0: head}
-        )
-        self.assertEqual(state["msps"]["0"]["state"], "shipped")
-        self.assertEqual(state["msps"]["0"]["proven_head"], head)
-        self.assertEqual(self.remote_heads(), ["mitosis/impl"])
-        self.assertEqual(self.fields(0)["change"], ["Do impl."])
-        self.assertEqual(
-            self.fields(0)["testing"],
-            [{"check": "tests/t_impl.txt::property", "result": "Not run: the acceptance command was inconclusive"}],
-        )
 
     def an_error_in_one_run_starts_no_queued_test(self):
         names = ["p%d" % number for number in range(5)]
@@ -1652,6 +1621,19 @@ class Reconcile(RepoCase):
         self.assertFalse(findings["fatal"])
         self.assertEqual(sorted(findings["changed"]), ["a.txt", "stray.txt"])
 
+    def a_new_file_the_reply_does_not_name_never_reaches_the_git_diff(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        trees = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)
+        records = self.dispatch(plan, trees, mode="undeclared-unnamed")
+        self.assertEqual(records[0]["left_out"], ["stray.txt"])
+        self.assertEqual(records[0]["unreplayed"], [])
+        self.assertEqual(records[0]["replayed"], {})
+        run.commit_all(trees[0]["path"], "everything")
+        findings = run.reconcile(plan, 0, trees[0]["path"], trees[0]["branch"], "main")
+        self.assertEqual(findings["undeclared"], [], "stray.txt reached the branch though no reply named it")
+        self.assertEqual(findings["changed"], ["a.txt"])
+        self.assertFalse(findings["fatal"])
+
     def a_declared_file_never_written_is_reported(self):
         plan = core.plan([step("a", ["a.txt", "never.txt"])])
         trees = self.build(plan, mode="partial")
@@ -1716,6 +1698,27 @@ class Reconcile(RepoCase):
                 "Reconcile found 1 undeclared write: b.txt.",
                 "Another MSP also changes 1 file this branch writes: b.txt.",
             ],
+        )
+
+    def a_new_file_across_an_msp_boundary_the_reply_does_not_name_is_left_out(self):
+        plan = core.plan([step("a", ["a.txt"]), step("b", ["b.txt"], msp="beta")])
+        self.add_remote()
+        state = self.execute(plan, mode="cross-unnamed", pr=self.pr_command())
+        record = state["msps"]["0"]
+        lane = state["lanes"][str(lane_named(plan, "a"))]
+        self.assertEqual(lane["left_out"], ["b.txt"])
+        self.assertEqual(lane["replayed"], {})
+        self.assertEqual(record["reconcile"]["crossing"], [], "b.txt crossed though no reply named it")
+        self.assertFalse(record["reconcile"]["fatal"])
+        self.assertEqual(record["reconcile"]["undeclared"], [])
+        self.assertEqual(record["reconcile"]["left_out"], ["b.txt"])
+        self.assertEqual(record["state"], "shipped")
+        self.assertEqual(
+            self.fields(0)["tradeoffs"],
+            ["This branch leaves out 1 new file no reply named: b.txt."],
+        )
+        self.assertFalse(
+            run.git_ok(["cat-file", "-e", "%s:b.txt" % state["worktrees"][0]["branch"]], self.repo)
         )
 
     def reconcile_ignores_the_worker_self_report(self):
@@ -1808,6 +1811,26 @@ class Reconcile(RepoCase):
         again = resumed["msps"]["0"]
         self.assertEqual(again["state"], run.MSP_COMMITTED)
         self.assertEqual(again["reconcile"]["referee"], [])
+        self.assertFalse(again["reconcile"]["fatal"])
+
+    def a_new_referee_file_the_reply_does_not_name_is_left_out_and_never_holds_the_msp_back(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        state = self.execute(plan, mode="referee-unnamed", no_push=True)
+        record = state["msps"]["0"]
+        self.assertEqual(state["lanes"]["0"]["left_out"], ["tests/conftest.py"])
+        self.assertEqual(state["lanes"]["0"]["unreplayed"], [])
+        self.assertEqual(state["lanes"]["0"]["replayed"], {})
+        self.assertEqual(record["state"], run.MSP_COMMITTED, record.get("reason"))
+        self.assertEqual(record["reconcile"]["referee"], [])
+        self.assertFalse(record["reconcile"]["fatal"])
+        self.assertEqual(record["reconcile"]["left_out"], ["tests/conftest.py"])
+        branch = state["worktrees"][0]["branch"]
+        self.assertFalse(
+            run.git_ok(["cat-file", "-e", "%s:tests/conftest.py" % branch], self.repo)
+        )
+        resumed = self.execute(plan, mode="referee-unnamed", no_push=True, resume=True)
+        again = resumed["msps"]["0"]
+        self.assertEqual(again["state"], run.MSP_COMMITTED, again.get("reason"))
         self.assertFalse(again["reconcile"]["fatal"])
 
 
@@ -2313,7 +2336,12 @@ class Clones(RepoCase):
         write(os.path.join(clone, "sub", ".git", "config"), "[core]\n")
         os.symlink(outside, os.path.join(clone, "out"))
         found = isolation.outside_writes(
-            clone, tree["path"], run._committed_entries(tree["path"], start), ["a.txt"], ()
+            clone,
+            tree["path"],
+            run._committed_entries(tree["path"], start),
+            ["a.txt"],
+            (),
+            ["new.txt", "link.txt", "sub/.git/config", "out"],
         )
         self.assertEqual(
             found["writes"],
@@ -2321,7 +2349,31 @@ class Clones(RepoCase):
         )
         self.assertEqual(found["deletes"], ("gone.txt",))
         self.assertEqual(found["unreplayed"], ["link.txt", "out", "sub/.git"])
+        self.assertEqual(found["left_out"], [])
         self.assertEqual(found["ignored"], ["debug.log"])
+
+    def a_new_file_outside_the_write_set_is_replayed_only_when_the_reply_names_it(self):
+        plan = core.plan([step("a", ["a.txt"])])
+        tree = run.prepare_worktrees(plan["msps"], "main", self.trees, self.repo)[0]
+        folders = isolation.lane_folders(self.run_dir, 0)
+        start = isolation.cut_clone(tree, folders)
+        clone = folders["clone"]
+        write(os.path.join(clone, "a.txt"), "declared\n")
+        write(os.path.join(clone, "named.txt"), "named\n")
+        write(os.path.join(clone, "tool", "graph.json"), "{}\n")
+        found = isolation.outside_writes(
+            clone,
+            tree["path"],
+            run._committed_entries(tree["path"], start),
+            ["a.txt"],
+            (),
+            ["a.txt", "./named.txt"],
+        )
+        self.assertEqual(found["writes"], {"named.txt": (run.REGULAR_MODE, b"named\n")})
+        self.assertEqual(found["left_out"], ["tool/graph.json"])
+        self.assertEqual(found["unreplayed"], [])
+        self.assertEqual(found["deletes"], ())
+        self.assertEqual(found["ignored"], [])
 
     def a_replayed_path_is_released_when_its_owning_lane_lands(self):
         items = [

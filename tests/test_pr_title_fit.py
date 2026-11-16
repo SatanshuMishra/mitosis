@@ -15,6 +15,7 @@ import test_finishes_the_work as finishes
 
 LONG_SUBJECT = "hand pull request facts to render with step names and tests"
 SHORTENED_SUBJECT = "hand pull request facts to render with step names"
+LONG_TAIL = "keep %s and every other secret variable out of the shared log lines"
 TWO_MSPS = {
     "msps": [{"label": "m", "steps": ["a"]}, {"label": "n", "steps": ["b"]}],
     "items": [],
@@ -59,6 +60,78 @@ class TitleFit(unittest.TestCase):
             [pr_facts._title(header(subject), plan, msp) for msp in (0, 1)],
             ["feat(ship): %s (part 1 of 2)" % subject, "feat(ship): %s (part 2 of 2)" % subject],
         )
+
+    def a_label_holding_a_single_quote_gives_way_to_the_msp_number(self):
+        plan = {
+            "msps": [{"label": "m", "steps": ["a"]}, {"label": "reader's view", "steps": ["b"]}],
+            "items": [],
+        }
+        self.assertEqual(
+            pr_facts._title(header("hand facts to render"), plan, 1),
+            "feat(ship): hand facts to render (part 2 of 2)",
+        )
+
+
+    def a_subject_holding_a_refused_character_is_never_cut_to_fit(self):
+        for subject in (
+            "keep the owner's files safe",
+            "fix it -e mode",
+            "pass a & b",
+            "keep files sa\u200bfe",
+            LONG_TAIL % "$HOME",
+            LONG_TAIL % "~",
+            LONG_TAIL % "caf\u00e9 tables",
+            LONG_TAIL % "https://example.org",
+        ):
+            with self.subTest(subject=subject):
+                self.assertEqual(
+                    pr_facts._title(header(subject), TWO_MSPS, 0), "feat(ship): %s" % subject
+                )
+
+    def a_flag_word_ending_the_subject_is_refused_by_name_once_a_tag_follows_it(self):
+        for subject in ("fix the parse of -e", "support git commit -e"):
+            with self.subTest(subject=subject):
+                self.assertIsNone(pr_facts.refused_subject(header(subject)))
+                self.assertEqual(pr_facts.refused_subject(header(subject), 2), "-e")
+                self.assertEqual(
+                    pr_facts._title(header(subject), TWO_MSPS, 0), "feat(ship): %s" % subject
+                )
+
+    def a_long_label_gives_way_to_the_msp_number_when_that_keeps_more_of_the_subject(self):
+        plan = {
+            "msps": [
+                {"label": "hand-pull-request-facts-to-render-with-step-names", "steps": ["a"]},
+                {"label": "n", "steps": ["b"]},
+            ],
+            "items": [],
+        }
+        self.assertEqual(
+            [pr_facts._title(header(LONG_SUBJECT), plan, msp) for msp in (0, 1)],
+            [
+                "feat(ship): hand pull request facts to render with step (part 1 of 2)",
+                "feat(ship): %s (n)" % SHORTENED_SUBJECT,
+            ],
+        )
+
+    def a_refused_subject_is_named_by_the_text_the_format_refuses(self):
+        named = {
+            "keep the owner's files safe": "'",
+            "fix it -e mode": "-e",
+            "pass a & b": "&",
+            "keep files sa\u200bfe": "\u200b",
+            LONG_TAIL % "$HOME": "$",
+            LONG_TAIL % "~": "~",
+            LONG_TAIL % "caf\u00e9 tables": "\u00e9",
+            LONG_TAIL % "https://example.org": "://",
+            "hand facts to render": None,
+            LONG_SUBJECT + " and more words": None,
+        }
+        for subject, refused in named.items():
+            with self.subTest(subject=subject):
+                self.assertEqual(pr_facts.refused_subject(header(subject)), refused)
+
+    def a_subject_is_not_blamed_for_a_scope_the_format_refuses(self):
+        self.assertIsNone(pr_facts.refused_subject(header("keep files safe", "Ship")))
 
 
 class ThroughTheCommandLine(unittest.TestCase):

@@ -158,44 +158,6 @@ class Builds(unittest.TestCase):
         msps = fixtures.summary_of(completed)["msps"]
         self.assertEqual([entry["gate"]["outcome"] for entry in msps], ["pass"], fixtures.tail(completed))
 
-    def an_older_callers_brief_command_is_ignored_with_a_notice(self):
-        scratch = self.scratch
-        scratch.checked("checkout", "-q", "feature")
-        fixtures.put(os.path.join(scratch.stubs, "structure.py"), STRUCTURE)
-        fixtures.put(os.path.join(scratch.stubs, "brief.py"), BRIEF)
-        step = {
-            "name": "first",
-            "task": "build first",
-            "files": ["a.py"],
-            "spec_ref": ["1.1"],
-            "acceptance": [finishes.PROPERTY],
-        }
-        fixtures.put(
-            os.path.join(scratch.stubs, "structure-reply.json"),
-            json.dumps({"items": [step], "assumptions": [], "constraints": []}),
-        )
-        completed = scratch.mitosis(
-            "--spec",
-            SPEC,
-            "--plan-only",
-            "--run-dir",
-            scratch.run_dir,
-            "--feature-branch",
-            "feature",
-            "--decompose-command",
-            scratch.stub("structure.py", "{session_id}", "{schema}"),
-            "--reask-command",
-            fixtures.REASK_COMMAND,
-            "--brief-command",
-            scratch.stub("brief.py", "{step}", "{session_id}", "{schema}"),
-        )
-        self._exit(completed, 0)
-        self.assertIn(
-            "mitosis: --brief-command is deprecated and ignored; the split writes each Step's task",
-            completed.stderr,
-        )
-        self.assertEqual(lines(os.path.join(scratch.stubs, "brief-calls.jsonl")), [])
-
     def steps_sharing_a_file_build_in_one_worker_session(self):
         scratch = self.scratch
         alpha = fixtures.step("alpha", ["a.py", finishes.TEST_FILE], "alpha", [{"file": finishes.TEST_FILE, "test": "A.works"}])
@@ -241,7 +203,6 @@ def load_tests(loader, tests, pattern):
     suite.addTest(OwnTests("an_asks_plan_gives_no_step_a_check_author_and_each_step_writes_its_test"))
     for name in (
         "a_spec_build_hands_the_splits_task_to_its_worker_with_no_brief_or_lock_session",
-        "an_older_callers_brief_command_is_ignored_with_a_notice",
         "steps_sharing_a_file_build_in_one_worker_session",
         "a_named_test_the_acceptance_command_cannot_run_goes_back_to_its_worker",
     ):

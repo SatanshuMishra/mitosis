@@ -79,7 +79,7 @@ if "model" in config:
         handle.write(json.dumps(message) + "\n")
 if lane in config.get("failing_lanes", []):
     sys.exit(4)
-reply = {"item": "lane", "status": "ok", "files_changed": paths, "notes": "done"}
+reply = {"status": "ok", "files_changed": paths, "notes": "done"}
 print(json.dumps({"type": "result", "session_id": session, "result": "done", "structured_output": reply}))
 '''
 
